@@ -152,15 +152,37 @@ pub fn deploy(data_dir: &Path, files: &[(&str, &[u8])]) -> io::Result<Deployed> 
         Err(e) => {
             // The folder itself is in use (Windows: a process has it or a
             // file in it open without delete sharing): overwrite the files.
+            remove_path(&temp);
+            // Never write through a link: a symlinked/junctioned folder could
+            // point anywhere, so only overwrite a real directory in place.
+            if is_link(&target)? {
+                return Err(e);
+            }
             log(format_args!(
                 "could not move {} ({e}); overwriting its files",
                 target.display()
             ));
-            remove_path(&temp);
             write_files(&target, files)?;
             Ok(Deployed::Overwritten)
         }
     }
+}
+
+/// True for a symlink or (on Windows) any reparse point such as a junction.
+fn is_link(path: &Path) -> io::Result<bool> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(true);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Only plain relative paths (`a/b.js`) – never `..`, absolute or empty.
@@ -302,6 +324,18 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with(WORK_PREFIX))
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_detected_so_the_fallback_never_writes_through_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!is_link(&real).unwrap());
+        assert!(is_link(&link).unwrap());
     }
 
     #[test]
