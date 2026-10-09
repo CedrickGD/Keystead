@@ -201,6 +201,10 @@ pub struct Core {
     updates: Mutex<UpdateMemory>,
     /// `install_update` is running.
     update_installing: AtomicBool,
+    /// The vault was closed for an update installation
+    /// (`lock_for_update`): no vault may be opened until the process ends,
+    /// or the installation failed (`resume_after_failed_update`).
+    update_locked: AtomicBool,
     /// Wakes the background update check (settings changed).
     update_wake: Mutex<Option<Sender<()>>>,
 }
@@ -245,6 +249,7 @@ impl Core {
             untimed_secret: Mutex::new(None),
             updates: Mutex::new(UpdateMemory::default()),
             update_installing: AtomicBool::new(false),
+            update_locked: AtomicBool::new(false),
             update_wake: Mutex::new(None),
         })
     }
@@ -444,17 +449,29 @@ impl Core {
     /// (the browser extension switched vaults) is closed like on lock – its
     /// data wiped, a secret it copied cleared from the clipboard – without a
     /// `vault://locked` event (the caller announces the new vault).
-    pub fn install_vault(&self, vault: UnlockedVault) -> VaultInfo {
+    ///
+    /// Refused (`invalid_input:update_in_progress`, `vault` wiped) once
+    /// [`Core::lock_for_update`] closed the vault for an update: every unlock
+    /// (UI, browser extension, recovery key, new vault) ends here.
+    pub fn install_vault(&self, vault: UnlockedVault) -> AppResult<VaultInfo> {
         let info = vault.info();
         let previous = {
             let mut st = self.state();
+            // Read under the state lock: `lock_for_update` sets the flag
+            // before it takes the vault under this lock, so a vault opened
+            // concurrently is either refused here or closed there.
+            if false && self.update_locked.load(Ordering::SeqCst) {
+                drop(st);
+                drop(vault);
+                return Err(AppError::invalid("update_in_progress"));
+            }
             let previous = st.vault.replace(vault);
             st.touch();
             st.remember_vault(&info.id);
             previous
         };
         self.finish_lock(previous, None);
-        info
+        Ok(info)
     }
 
     /// Unlocks `vault_id` with its master password. The key derivation runs
@@ -462,7 +479,7 @@ impl Core {
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> AppResult<VaultInfo> {
         let store = self.state().store.clone();
         let vault = store.unlock(vault_id, master_password)?;
-        Ok(self.install_vault(vault))
+        self.install_vault(vault)
     }
 
     /// Clone of the store (for slow operations outside the state lock).
@@ -528,16 +545,32 @@ impl Core {
         Ok(result?)
     }
 
-    /// Closes the vault (no event: the UI shows the update progress) and
-    /// clears a copied secret still in the clipboard, before an update is
-    /// installed – on Windows the process then ends without `RunEvent::Exit`.
-    /// Returns whether a vault was open.
+    /// Before an update is installed – on Windows the process then ends with
+    /// `exit(0)`, without `RunEvent::Exit` and [`Core::shutdown`]: from now on
+    /// no vault can be opened ([`Core::install_vault`]), the browser bridge
+    /// stops (no extension request during the install; waiting pairings are
+    /// denied), the vault is closed (no event: the UI shows the update
+    /// progress) and a copied secret still in the clipboard is cleared.
+    /// Idempotent (it runs again right before the setup starts). Returns
+    /// whether a vault was open.
     pub fn lock_for_update(&self) -> bool {
+        self.update_locked.store(true, Ordering::SeqCst);
+        crate::bridge::stop(self);
         let was_open = self.lock(None);
         if !was_open {
             self.clear_copied_secret();
         }
         was_open
+    }
+
+    /// The installation failed after [`Core::lock_for_update`]: vaults can
+    /// be opened again, and the bridge runs again if browser integration is
+    /// on.
+    pub fn resume_after_failed_update(self: &Arc<Self>) {
+        self.update_locked.store(false, Ordering::SeqCst);
+        if !self.is_exiting() {
+            crate::bridge::start_if_enabled(self);
+        }
     }
 
     // -----------------------------------------------------------------
@@ -672,6 +705,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use keystead_core::settings::Settings;
+    use keystead_core::KdfParams;
 
     use super::test_support::core_with_open_vault;
     use super::*;
@@ -744,6 +778,70 @@ mod tests {
             "the UI shows the update progress"
         );
         assert_eq!(core.app_version(), "2.0.0-test");
+    }
+
+    #[test]
+    fn no_vault_opens_while_an_update_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        let id = core.state().vault.as_ref().unwrap().id().to_owned();
+        assert!(core.lock_for_update());
+
+        // UI, browser extension (both via `unlock`) and a new vault
+        // (`install_vault`) are refused; the vault stays closed.
+        let refused = core.unlock(&id, "master").unwrap_err();
+        assert_eq!(refused.code(), "invalid_input:update_in_progress");
+        let other = core
+            .store()
+            .create_vault_with_params("Other", "pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        assert_eq!(
+            core.install_vault(other).unwrap_err().code(),
+            "invalid_input:update_in_progress"
+        );
+        assert!(core.state().vault.is_none());
+        // Runs again right before the setup starts: still closed, no event.
+        assert!(!core.lock_for_update());
+        assert!(core.emitted().is_empty());
+
+        // The installation failed: unlocking works again.
+        core.resume_after_failed_update();
+        assert_eq!(core.unlock(&id, "master").unwrap().id, id);
+        assert!(core.state().vault.is_some());
+    }
+
+    #[test]
+    fn an_unlock_racing_the_update_lock_never_leaves_the_vault_open() {
+        use std::sync::atomic::AtomicUsize;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        let id = core.state().vault.as_ref().unwrap().id().to_owned();
+        let stop = Arc::new(AtomicBool::new(false));
+        let refused = Arc::new(AtomicUsize::new(0));
+        let unlocker = {
+            let (core, stop, refused, id) =
+                (Arc::clone(&core), Arc::clone(&stop), Arc::clone(&refused), id.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    if core.unlock(&id, "master").is_err() {
+                        refused.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+        };
+        std::thread::sleep(Duration::from_millis(30));
+        core.lock_for_update();
+        // Keep unlocking well after the lock.
+        while refused.load(Ordering::SeqCst) < 5 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Ordering::SeqCst);
+        unlocker.join().unwrap();
+        assert!(
+            core.state().vault.is_none(),
+            "an unlock finished after lock_for_update"
+        );
     }
 
     /// `xvfb-run cargo test -p keystead-desktop -- --ignored clipboard`

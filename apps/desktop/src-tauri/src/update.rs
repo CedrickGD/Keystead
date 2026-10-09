@@ -10,9 +10,10 @@
 //! * `check_update` / the background check (15 s after start, then every
 //!   6 h while `updateCheck` is on; `update://available` once per version);
 //! * `install_update`: download with `update://progress`, `update://ready`,
-//!   lock the vault and clear a copied secret, then install: on Windows the
-//!   plugin starts the setup (passive mode, restarts the app) and exits the
-//!   process, elsewhere the app restarts itself.
+//!   stop the browser bridge, lock the vault (no unlock until the process
+//!   ends) and clear a copied secret, then install: on Windows the plugin
+//!   runs our `on_before_exit` hook, starts the setup (passive mode, restarts
+//!   the app) and exits the process, elsewhere the app restarts itself.
 //!
 //! Only installed copies update themselves (`canInstall`): the portable
 //! build gets a link to the release page instead.
@@ -24,7 +25,7 @@ use std::time::{Duration, Instant};
 use keystead_core::settings::UpdateChannel;
 use semver::Version;
 use serde::Serialize;
-use tauri::{AppHandle, Url};
+use tauri::{AppHandle, Manager as _, Url};
 use tauri_plugin_updater::{Error as UpdaterError, RemoteRelease, Update, Updater, UpdaterExt};
 
 use crate::error::{AppError, AppResult};
@@ -161,7 +162,8 @@ pub fn info_from(
 /// What remains of a failed `latest.json` check.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CheckFailure {
-    /// The channel has no `latest.json` (yet): nothing to offer.
+    /// The channel has no `latest.json` (yet, HTTP 404/410): nothing to
+    /// offer.
     NoRelease,
     /// The release has no build for this platform: show it, but only as a
     /// download link.
@@ -170,7 +172,9 @@ pub enum CheckFailure {
     Other(String),
 }
 
-/// Classifies an updater error.
+/// Classifies an updater error. `ReleaseNotFound` is only a candidate for
+/// [`CheckFailure::NoRelease`]: the plugin also reports it for a 403 or 5xx
+/// answer, see [`missing_release_cause`].
 pub fn classify(error: &UpdaterError) -> CheckFailure {
     match error {
         UpdaterError::ReleaseNotFound => CheckFailure::NoRelease,
@@ -178,6 +182,55 @@ pub fn classify(error: &UpdaterError) -> CheckFailure {
             CheckFailure::NoBuildForPlatform
         }
         other => CheckFailure::Other(other.to_string()),
+    }
+}
+
+/// Why the plugin found no release, judged by the status a second request
+/// for `latest.json` gets. The plugin treats every non-2xx answer as "no
+/// release" (`ReleaseNotFound`) and drops the status, so a rate limit (403,
+/// 429) or a server error (5xx) would read as "up to date".
+///
+/// Only 404/410 mean "nothing to offer": the channel has no `latest.json`
+/// (yet), e.g. the stable channel while GitHub's "latest" release is still a
+/// VaultX 1.x one. A success now means the earlier answer was a passing error.
+pub fn missing_release_cause(status: reqwest::StatusCode) -> CheckFailure {
+    use reqwest::StatusCode;
+    if status == StatusCode::NOT_FOUND || status == StatusCode::GONE {
+        CheckFailure::NoRelease
+    } else if status.is_success() {
+        CheckFailure::Other("the update server answered with an error, try again".into())
+    } else {
+        CheckFailure::Other(format!("HTTP {status}"))
+    }
+}
+
+/// The HTTP client for [`missing_release`]: like the plugin's (system proxy,
+/// redirects followed, timeout).
+fn probe_client() -> Result<reqwest::Client, String> {
+    // `rustls-no-provider`: building a client without a process-wide crypto
+    // provider panics. The plugin's check installs ring the same way.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    reqwest::Client::builder()
+        .user_agent(concat!("Keystead/", env!("CARGO_PKG_VERSION")))
+        .timeout(CHECK_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Requests `url` once more after the plugin reported `ReleaseNotFound` and
+/// classifies the answer ([`missing_release_cause`]); a network error is
+/// [`CheckFailure::Other`].
+pub async fn missing_release(client: &reqwest::Client, url: &str) -> CheckFailure {
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await;
+    match response {
+        Ok(response) => missing_release_cause(response.status()),
+        Err(e) => CheckFailure::Other(e.to_string()),
     }
 }
 
@@ -262,7 +315,6 @@ pub fn can_install(app: &AppHandle) -> bool {
         }
         #[cfg(target_os = "linux")]
         {
-            use tauri::Manager as _;
             app.env().appimage.is_some()
         }
         #[cfg(not(any(windows, target_os = "linux")))]
@@ -283,9 +335,23 @@ fn build_updater(
     seen: Arc<Mutex<Option<ReleaseFacts>>>,
 ) -> Result<Updater, UpdaterError> {
     let url = Url::parse(endpoint(channel)).map_err(|_| UpdaterError::EmptyEndpoints)?;
+    let exit_app = app.clone();
     app.updater_builder()
         .endpoints(vec![url])?
         .timeout(CHECK_TIMEOUT)
+        // Windows: runs once the setup is written, right before it is started
+        // and the process ends with `exit(0)` – no `RunEvent::Exit`, so no
+        // `Core::shutdown`. Replaces the plugin's default hook, whose
+        // `cleanup_before_exit` (tray icon, resources) is kept. The vault was
+        // closed and the bridge stopped before `install`; this repeats it
+        // for anything copied since (idempotent). If starting the setup
+        // fails, `install_inner` undoes it.
+        .on_before_exit(move || {
+            if let Some(core) = exit_app.try_state::<Arc<Core>>() {
+                core.lock_for_update();
+            }
+            exit_app.cleanup_before_exit();
+        })
         // Called with the parsed `latest.json` before the platform entry is
         // looked up: remembers the release even if it has no build for this
         // platform (then shown as a download link).
@@ -298,7 +364,9 @@ fn build_updater(
 }
 
 /// Checks the channel. Returns the info for the UI and the installable
-/// update (only when `info.can_install`).
+/// update (only when `info.can_install`). No `latest.json` (404/410) → not
+/// available; any other HTTP error, a network error or an unreadable
+/// manifest → `io:<detail>`.
 pub async fn check(
     app: &AppHandle,
     channel: UpdateChannel,
@@ -316,13 +384,24 @@ pub async fn check(
             let update = update.filter(|_| info.can_install);
             Ok((info, update))
         }
-        Err(e) => match classify(&e) {
-            CheckFailure::NoRelease => Ok((info_from(&current, None, false), None)),
-            CheckFailure::NoBuildForPlatform => {
-                Ok((info_from(&current, facts.as_ref(), false), None))
+        Err(e) => {
+            let failure = match classify(&e) {
+                // Any non-2xx answer: ask again to tell "no latest.json"
+                // (404) from a rate limit or server error.
+                CheckFailure::NoRelease => match probe_client() {
+                    Ok(client) => missing_release(&client, endpoint(channel)).await,
+                    Err(detail) => CheckFailure::Other(detail),
+                },
+                other => other,
+            };
+            match failure {
+                CheckFailure::NoRelease => Ok((info_from(&current, None, false), None)),
+                CheckFailure::NoBuildForPlatform => {
+                    Ok((info_from(&current, facts.as_ref(), false), None))
+                }
+                CheckFailure::Other(detail) => Err(AppError::io(detail)),
             }
-            CheckFailure::Other(detail) => Err(AppError::io(detail)),
-        },
+        }
     }
 }
 
@@ -449,17 +528,20 @@ async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
     );
 
     // Nothing decrypted may outlive the process, and the setup replaces the
-    // executable: close the vault and clear a copied secret first.
+    // executable: stop the bridge, close the vault (and keep it closed) and
+    // clear a copied secret first.
     let was_open = core.lock_for_update();
     log(format_args!("installing update {}", update.version));
     match update.install(&bytes) {
         Ok(()) => {
             // Windows never gets here (the plugin exits the process once the
-            // setup runs). AppImage: the file was replaced – restart into it.
+            // setup runs). AppImage: the file was replaced – restart into it
+            // (`RunEvent::Exit` → `Core::shutdown`).
             app.request_restart();
             Ok(())
         }
         Err(e) => {
+            core.resume_after_failed_update();
             if was_open {
                 // The page still shows the vault: back to the unlock screen.
                 core.emit_locked(LockReason::Manual);
@@ -581,6 +663,111 @@ mod tests {
         assert!(matches!(
             classify(&UpdaterError::Network("offline".into())),
             CheckFailure::Other(_)
+        ));
+    }
+
+    #[test]
+    fn only_404_and_410_mean_no_release() {
+        use reqwest::StatusCode;
+        for status in [StatusCode::NOT_FOUND, StatusCode::GONE] {
+            assert_eq!(missing_release_cause(status), CheckFailure::NoRelease);
+        }
+        // Rate limits and server errors must not read as "up to date".
+        for (status, detail) in [
+            (StatusCode::FORBIDDEN, "HTTP 403 Forbidden"),
+            (StatusCode::TOO_MANY_REQUESTS, "HTTP 429 Too Many Requests"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "HTTP 500 Internal Server Error"),
+            (StatusCode::BAD_GATEWAY, "HTTP 502 Bad Gateway"),
+            (StatusCode::SERVICE_UNAVAILABLE, "HTTP 503 Service Unavailable"),
+            (StatusCode::UNAUTHORIZED, "HTTP 401 Unauthorized"),
+        ] {
+            assert_eq!(
+                missing_release_cause(status),
+                CheckFailure::Other(detail.into())
+            );
+        }
+        // Answered now, not a moment ago: still an error, not "no release".
+        assert!(matches!(
+            missing_release_cause(StatusCode::OK),
+            CheckFailure::Other(_)
+        ));
+    }
+
+    /// A one-path-per-status HTTP server on 127.0.0.1: `/<status>` answers
+    /// with that status, `/redirect/<status>` with a 302 to `/<status>` (like
+    /// GitHub's release asset redirect).
+    fn status_server() -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                let mut header = String::new();
+                while reader.read_line(&mut header).is_ok_and(|n| n > 2) {
+                    header.clear();
+                }
+                let path = request_line.split(' ').nth(1).unwrap_or("/").to_owned();
+                let response = match path.strip_prefix("/redirect/") {
+                    Some(status) => format!(
+                        "HTTP/1.1 302 Found\r\nLocation: /{status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ),
+                    None => format!(
+                        "HTTP/1.1 {} X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",
+                        path.trim_start_matches('/')
+                    ),
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        base
+    }
+
+    fn test_client() -> reqwest::Client {
+        // The production client must build (crypto provider installed) …
+        probe_client().unwrap();
+        // … the tests' one ignores proxies from the environment.
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_failed_check_asks_the_server_why() {
+        let base = status_server();
+        let client = test_client();
+        let ask = |path: &str| {
+            tauri::async_runtime::block_on(missing_release(&client, &format!("{base}{path}")))
+        };
+        assert_eq!(ask("/404"), CheckFailure::NoRelease);
+        assert_eq!(ask("/410"), CheckFailure::NoRelease);
+        assert_eq!(ask("/redirect/404"), CheckFailure::NoRelease);
+        assert_eq!(
+            ask("/403"),
+            CheckFailure::Other("HTTP 403 Forbidden".into())
+        );
+        assert_eq!(
+            ask("/503"),
+            CheckFailure::Other("HTTP 503 Service Unavailable".into())
+        );
+        assert_eq!(
+            ask("/redirect/429"),
+            CheckFailure::Other("HTTP 429 Too Many Requests".into())
+        );
+        assert!(matches!(ask("/200"), CheckFailure::Other(_)));
+
+        // Nobody listening: a network error.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/latest.json", closed.local_addr().unwrap());
+        drop(closed);
+        assert!(matches!(
+            tauri::async_runtime::block_on(missing_release(&client, &url)),
+            CheckFailure::Other(detail) if !detail.is_empty()
         ));
     }
 

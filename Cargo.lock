@@ -2699,6 +2699,8 @@ dependencies = [
  "libloading",
  "open",
  "raw-window-handle",
+ "reqwest",
+ "rustls",
  "semver",
  "serde",
  "serde_json",

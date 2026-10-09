@@ -190,7 +190,7 @@ pub async fn create_vault(
 ) -> CmdResult<VaultInfo> {
     run(&core, true, move |c| {
         let vault = c.store().create_vault(&name, &master_password)?;
-        Ok(c.install_vault(vault))
+        c.install_vault(vault)
     })
     .await
 }
@@ -215,7 +215,7 @@ pub async fn unlock_with_recovery(
         let vault =
             c.store()
                 .unlock_with_recovery_key(&vault_id, &recovery_key, &new_master_password)?;
-        Ok(c.install_vault(vault))
+        c.install_vault(vault)
     })
     .await
 }

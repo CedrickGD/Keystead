@@ -24,6 +24,12 @@ tauri-plugin-single-instance = "2"
 # the update is the signed setup.exe itself, not an archive.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2"
+# Only to learn the HTTP status of `latest.json` when the updater reports "no
+# release" (it drops the status): same versions and features as the plugin's,
+# so nothing extra is compiled. `rustls-no-provider` → ring is installed as the
+# process default first (as the plugin does).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1", features = ["derive"] }

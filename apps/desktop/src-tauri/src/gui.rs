@@ -25,7 +25,9 @@ pub fn run(background: bool) -> i32 {
         }))
         .plugin(tauri_plugin_dialog::init())
         // The UI never calls these plugins directly (no permission granted):
-        // `check_update` / `install_update` below drive the updater.
+        // `check_update` / `install_update` below drive the updater. Its
+        // Windows exit hook (`on_before_exit`) is set where the updater is
+        // built, `update::build_updater`.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
