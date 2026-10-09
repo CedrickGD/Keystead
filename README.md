@@ -66,8 +66,9 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
    - `Keystead-<version>-windows-portable.zip` – entpacken und `Keystead.exe`
      starten, keine Installation nötig. Enthält auch `keystead-cli.exe`, den Ordner
      `browser-extension` und die Kurzanleitung `LIESMICH.txt`.
-   - `Keystead-<version>-windows-setup.exe` – klassischer Installer (optional, ohne
-     Administratorrechte; installiert nach `%LOCALAPPDATA%\Keystead`, ohne portablen Modus).
+   - `Keystead-<version>-windows-setup.exe` – klassischer Installer (ohne
+     Administratorrechte; installiert nach `%LOCALAPPDATA%\Keystead`, ohne portablen
+     Modus). Die installierte Version **aktualisiert sich selbst**, siehe [Updates](#updates).
    - `Keystead-<version>-browser-extension.zip` – nur die Browser-Erweiterung.
 2. Die EXE ist nicht signiert. Zeigt Windows SmartScreen „Der Computer wurde durch
    Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
@@ -84,17 +85,40 @@ Regel schon installiert).
    **Aktivieren** klicken (registriert den Native-Messaging-Host `com.keystead.bridge`).
 2. Im Browser `chrome://extensions` (Edge: `edge://extensions`) öffnen, den
    **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner
-   `browser-extension` auswählen. Die Erweiterungs-ID ist immer
-   `imfndemblnaalppnmdplagajjielnaok`.
+   wählen, den Keystead unter **Einstellungen → Browser-Integration** anzeigt
+   (**Ordner öffnen** / **Pfad kopieren**) – das ist `browser-extension` im
+   Datenordner, z. B. `%LOCALAPPDATA%\Keystead\browser-extension`. Die
+   Erweiterungs-ID ist immer `imfndemblnaalppnmdplagajjielnaok`.
 3. Auf das Keystead-Symbol in der Browserleiste klicken → **Mit Keystead verbinden**
    und den angezeigten 6-stelligen Code in der App bestätigen.
 
-Den Ordner `browser-extension` danach nicht verschieben oder löschen – der Browser
-lädt die Erweiterung von dort. Wird `Keystead.exe` verschoben, einfach einmal
-starten; die Registrierung wird automatisch aktualisiert.
+Keystead legt die Erweiterung bei jedem Start in diesen Ordner und hält sie dort
+aktuell: Nach einem App-Update lädt sich die Erweiterung selbst neu. Wurde sie aus
+einem anderen Ordner geladen (z. B. aus einer ZIP-Datei), zeigt ihr Popup „Neue
+Plugin-Version verfügbar“ mit dem richtigen Ordner – dann einmal von dort laden.
+Wird `Keystead.exe` verschoben, einfach einmal starten; die Registrierung wird
+automatisch aktualisiert.
 
 Tastenkürzel: `Strg+Umschalt+Y` öffnet das Popup, `Strg+Umschalt+L` füllt das
 Login der Seite aus, `Strg+Umschalt+9` setzt ein neues Passwort ins aktive Feld.
+
+<a id="updates"></a>
+
+### Updates
+
+Keystead sucht beim Start und danach alle 6 Stunden nach einer neuen Version
+(abschaltbar unter **Einstellungen → Über Keystead**, dort auch **Nach Updates
+suchen**). Ist eine da, erscheint oben ein Hinweis: **Jetzt aktualisieren** lädt das
+Update, prüft seine **Signatur** (nur von den Keystead-Entwicklern signierte Updates
+werden installiert), sperrt den Tresor und startet Keystead neu – **Später** blendet
+den Hinweis bis zum nächsten Start aus.
+
+- **Update-Kanal:** „Beta-Versionen“ (Standard während der Testphase, enthält auch
+  stabile Versionen) oder „Nur stabile Versionen“.
+- Die **portable ZIP-Version** aktualisiert sich nicht selbst; sie meldet neue
+  Versionen mit einem Link zum Download.
+- Bei der Prüfung wird nur eine Versionsdatei (`latest.json`) von GitHub abgerufen –
+  keine Tresordaten, keine Kennungen.
 
 ### Terminal-Version
 
@@ -121,8 +145,9 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
-Stand), `settings.json` (Einstellungen, nicht geheim) und `bridge-clients.json`
-(verbundene Browser, nur Hashes). Den portablen Modus schaltest du unter
+Stand), `settings.json` (Einstellungen, nicht geheim), `bridge-clients.json`
+(verbundene Browser, nur Hashes) und `browser-extension` (die Browser-Erweiterung,
+von der App verwaltet). Den portablen Modus schaltest du unter
 **Einstellungen → Erweitert** um – oder du legst den Ordner `Keystead-Data` selbst an.
 
 ### Sicherheit in Kürze
@@ -132,9 +157,12 @@ Stand), `settings.json` (Einstellungen, nicht geheim) und `bridge-clients.json`
   (64 MiB, 3 Durchläufe) zu einem Schlüssel, der nur diesen Tresorschlüssel umhüllt.
 - Tresor-ID und Revision sind an den Geheimtext gebunden; Manipulationen fallen auf.
 - Der Wiederherstellungsschlüssel (125 Bit) umhüllt den Tresorschlüssel ein zweites Mal.
-- Keine Netzwerkverbindungen: Die Erweiterung spricht per Native Messaging mit der
-  App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem Unix-Socket, die
-  ausschließlich dem eigenen Benutzer zugänglich sind.
+- Keine Netzwerkverbindungen für deine Daten: Die Erweiterung spricht per Native
+  Messaging mit der App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem
+  Unix-Socket, die ausschließlich dem eigenen Benutzer zugänglich sind. Ins Internet
+  geht nur die (abschaltbare) Update-Prüfung bei GitHub.
+- Updates sind signiert (minisign/Ed25519); die App installiert nur Dateien mit
+  gültiger Signatur für genau die angekündigte Version.
 - Ein Browser wird erst nach Bestätigung eines 6-stelligen Codes in der App
   verbunden; gespeichert wird nur ein Hash seines Tokens.
 - Die Erweiterung füllt nur nach einer Aktion des Nutzers aus und nur Logins, die
@@ -194,8 +222,9 @@ and also available in English.
    - `Keystead-<version>-windows-portable.zip` – unzip and run `Keystead.exe`, no
      installation needed. Also contains `keystead-cli.exe`, the `browser-extension`
      folder and the German quick start `LIESMICH.txt`.
-   - `Keystead-<version>-windows-setup.exe` – classic installer (optional, no admin
-     rights needed; installs to `%LOCALAPPDATA%\Keystead`, no portable mode).
+   - `Keystead-<version>-windows-setup.exe` – classic installer (no admin rights
+     needed; installs to `%LOCALAPPDATA%\Keystead`, no portable mode). The installed
+     version **updates itself**, see [In-app updates](#in-app-updates).
    - `Keystead-<version>-browser-extension.zip` – the browser extension only.
 2. The exe is not code-signed. If Windows SmartScreen says "Windows protected your
    PC", click "More info" → "Run anyway".
@@ -211,14 +240,37 @@ Requires Windows 10 or 11 (the WebView2 runtime they need is normally already in
    integration) → click **Aktivieren** (Enable) next to your browser. This registers
    the native messaging host `com.keystead.bridge`.
 2. Open `chrome://extensions` (Edge: `edge://extensions`), enable **developer mode**,
-   click **Load unpacked** and select the `browser-extension` folder. The extension
-   ID is always `imfndemblnaalppnmdplagajjielnaok`.
+   click **Load unpacked** and select the folder Keystead shows under
+   **Einstellungen → Browser-Integration** (**Ordner öffnen** / **Pfad kopieren** –
+   open folder / copy path): `browser-extension` in the data folder, e.g.
+   `%LOCALAPPDATA%\Keystead\browser-extension`. The extension ID is always
+   `imfndemblnaalppnmdplagajjielnaok`.
 3. Click the Keystead toolbar icon → **Mit Keystead verbinden** (Connect to Keystead)
    and confirm the 6-digit code in the app.
 
-Do not move or delete the `browser-extension` folder afterwards – the browser loads
-the extension from there. If you move `Keystead.exe`, start it once; the
-registration is updated automatically. More: [extension/chrome/README.md](extension/chrome/README.md).
+Keystead writes the extension to that folder on every start and keeps it up to
+date: after an app update the extension reloads itself. If it was loaded from
+another folder (e.g. an unzipped download), its popup shows "Neue Plugin-Version
+verfügbar" (new extension version available) with the right folder – load it from
+there once. If you move `Keystead.exe`, start it once; the registration is updated
+automatically. More: [extension/chrome/README.md](extension/chrome/README.md).
+
+<a id="in-app-updates"></a>
+
+### In-app updates
+
+Keystead looks for a new version at start and every 6 hours (switch it off under
+**Settings → About Keystead**, which also has **Check for updates**). A banner offers
+**Update now**: the app downloads the update, verifies its **signature** (only
+updates signed with the Keystead release key are installed), locks the vault and
+restarts. **Later** hides the banner until the next start.
+
+- **Update channel:** beta versions (default during the beta phase, includes stable
+  releases) or stable versions only.
+- The **portable ZIP version** does not update itself; it announces new versions with
+  a download link.
+- The check only fetches a version file (`latest.json`) from GitHub – no vault data,
+  no identifiers.
 
 ### Terminal version
 
@@ -247,8 +299,9 @@ the shell history may see it).
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
-previous version), `settings.json` (non-secret settings) and `bridge-clients.json`
-(paired browsers, hashes only). `KEYSTEAD_DATA_DIR` overrides the location.
+previous version), `settings.json` (non-secret settings), `bridge-clients.json`
+(paired browsers, hashes only) and `browser-extension` (the browser extension,
+managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 
 ### Security design
 
@@ -260,9 +313,12 @@ previous version), `settings.json` (non-secret settings) and `bridge-clients.jso
   modification of the file is detected.
 - The optional recovery key (125 bits, Crockford base32) wraps the vault key a
   second time.
-- No network access: the extension talks to the app via Native Messaging; the app
-  only listens on a local named pipe (Windows, restricted to the current user) or a
-  Unix socket (mode 0600, peer uid checked).
+- No network access for your data: the extension talks to the app via Native
+  Messaging; the app only listens on a local named pipe (Windows, restricted to the
+  current user) or a Unix socket (mode 0600, peer uid checked). The only internet
+  access is the update check against GitHub (can be switched off).
+- Updates are signed (minisign/Ed25519): the app installs only files with a valid
+  signature for exactly the announced version.
 - A browser is paired only after you confirm a 6-digit code in the app; the app
   stores only a SHA-256 hash of the browser's token.
 - The extension fills only after a user action, only logins that match the real URL
@@ -282,7 +338,9 @@ Requirements: Rust (stable), Node.js 22; on Windows the MSVC build tools; on Lin
 # Desktop app (Keystead / Keystead.exe, on Windows also the NSIS installer)
 cd apps/desktop
 npm ci
-npx tauri build
+# Without the release signing key (TAURI_SIGNING_PRIVATE_KEY) skip the signed
+# updater artifacts – the build itself is the same:
+npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 cd ../..
 
 # Terminal version (keystead-cli / keystead-cli.exe)
@@ -303,7 +361,14 @@ npx tauri dev        # the real desktop app
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
 ```
+
+Releases: CI (`.github/workflows/build.yml`) versions every build
+(`2.0.0-beta.<run>`, or the tag `v<version>`), signs the setup for the in-app updater
+with the repository secret `TAURI_SIGNING_PRIVATE_KEY` and publishes pre-releases
+for commits with `[release]` (stable releases for tags without suffix); see
+"Releases & in-app updates" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### Project layout
 

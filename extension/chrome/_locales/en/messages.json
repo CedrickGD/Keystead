@@ -157,6 +157,7 @@
   "extUpdateTitle": { "message": "New extension version available ($VERSION$)", "placeholders": { "version": { "content": "$1" } } },
   "extUpdateText": { "message": "This extension was loaded from another folder. The Keystead app keeps it up to date here:" },
   "extUpdateHint": { "message": "Switch once: open chrome://extensions → “Load unpacked” → choose this folder. From then on the extension updates with the app." },
+  "extUpdateDetails": { "message": "Details" },
   "extUpdateCopyPath": { "message": "Copy path" },
   "extUpdatePathCopied": { "message": "Path copied" }
 }

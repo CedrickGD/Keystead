@@ -9,10 +9,22 @@ nothing leaves the machine.
 1. Start the Keystead desktop app → *Einstellungen → Browser-Integration* →
    click *Aktivieren* next to your browser (registers the native host).
 2. Open `chrome://extensions` (Edge: `edge://extensions`), enable developer
-   mode, *Load unpacked* → select this folder. The `key` in `manifest.json`
-   pins the extension ID to `imfndemblnaalppnmdplagajjielnaok`.
+   mode, *Load unpacked* → select the folder the app shows in step 2
+   (`<data dir>/browser-extension`, e.g. `%LOCALAPPDATA%\Keystead\browser-extension`;
+   buttons *Ordner öffnen* / *Pfad kopieren*). The app embeds this extension and
+   writes it there on start. The `key` in `manifest.json` pins the extension ID
+   to `imfndemblnaalppnmdplagajjielnaok`.
 3. Click the toolbar icon → *Mit Keystead verbinden* and confirm the 6-digit
    code in the app.
+
+Updates: the app reports the version it delivers (`extensionVersion`) and the
+folder (`extensionDir`) in `status`. When that version is newer than the running
+one, the service worker reloads the extension once for that version
+(`chrome.runtime.reload()`, remembered in `chrome.storage.local`
+`extensionReloadedFor`, no loops). If it is still older afterwards – loaded from
+another folder, e.g. an unzipped download – the popup shows *Neue
+Plugin-Version verfügbar* with the app's folder (copy button) and how to load it
+from there once. `popup.html?demo=<state>&ext=notice|reloading` shows the notice.
 
 Shortcuts (change them at `chrome://extensions/shortcuts`): `Ctrl+Shift+Y`
 popup, `Ctrl+Shift+L` fill the login for the current page, `Ctrl+Shift+9`
@@ -32,7 +44,8 @@ accepted (*Zurück* returns to it).
 |---|---|
 | `background.js` | Service worker: native port (`lib/bridge.js`), status cache, pairing, badge, context menu, commands, credential release to content scripts, save/update prompts. |
 | `lib/bridge.js` | Native messaging client: lazy port, reconnect, per-request timeouts (10 s; 12 s while the host may still launch the app; `pair` 125 s on its own port). |
-| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options, the id of the vault last unlocked here (`chosenVaultId`, written by the popup). `session`: status (incl. the open vault's name and id), pairing progress, pending save prompts. |
+| `lib/version.js` | Extension version compare and the self-update decision (`extensionUpdateAction`); tested by `extension/tests/version.test.mjs` (`node --test extension/tests/*.test.mjs`). |
+| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the extension version and folder the app delivers), pairing progress, pending save prompts. |
 | `content.js` | Inline icon + dropdown, autofill, capture of submitted logins, save bar – UI in a closed shadow root. |
 | `lib/forms.js` | Pure DOM helpers for form detection and filling (`globalThis.KeysteadForms`); loadable on its own in a test page. |
 | `popup.html/.css/.js` | Popup (setup guide, pairing, unlock, *Diese Seite* / *Suche* / *Generator*, add login). `popup.html?demo=<state>` renders fake data only (no storage, no native host) for design work and screenshots; states: `host_missing`, `app_unavailable`, `not_paired`, `pairing`, `paired`, `denied`, `locked`, `locked_single`, `unlocked`, `unlocked_single`, `unlocked_empty`, `not_web`, `insecure` (`_single`: one vault, else three; password `demo`). |

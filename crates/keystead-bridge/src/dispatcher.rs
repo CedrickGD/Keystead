@@ -16,8 +16,8 @@ use zeroize::Zeroizing;
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
 use crate::protocol::{
-    BridgeError, CopyData, CopyField, ExtensionInfo, IdData, ListVaultsData, LoginSecret,
-    PairData, Payload, Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT,
+    BridgeError, CopyData, CopyField, ExtensionInfo, IdData, ListVaultsData, LoginSecret, PairData,
+    Payload, Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT,
     SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;

@@ -417,13 +417,18 @@ mod tests {
         fs::create_dir_all(portable.parent().unwrap()).unwrap();
         write(&default.join("vaults/a.keystead"), "A");
         write(&default.join("browser-extension/manifest.json"), "{}");
-        write(&default.join(".browser-extension.1-2.tmp/manifest.json"), "{}");
+        write(
+            &default.join(".browser-extension.1-2.tmp/manifest.json"),
+            "{}",
+        );
         // Only the top-level folder is special.
         write(&default.join("vaults/browser-extension/x"), "x");
 
         let files = collect_files(&default).unwrap();
         assert!(files.iter().all(|f| !f.starts_with("browser-extension")));
-        assert!(files.iter().all(|f| !f.starts_with(".browser-extension.1-2.tmp")));
+        assert!(files
+            .iter()
+            .all(|f| !f.starts_with(".browser-extension.1-2.tmp")));
         assert!(files.contains(&PathBuf::from("vaults/browser-extension/x")));
 
         enable(&default, &portable).unwrap();

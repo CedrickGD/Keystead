@@ -10,8 +10,14 @@ fn main() {
 /// (`include_bytes!`, so file edits are tracked by rustc as well). The app
 /// writes it to `<data_dir>/browser-extension` (see `src/extension.rs`).
 fn embed_browser_extension() {
-    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let source = manifest_dir.join("..").join("..").join("..").join("extension").join("chrome");
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("extension")
+        .join("chrome");
     // A directory: cargo re-runs this script when anything below it changes
     // (also added or removed files).
     println!("cargo:rerun-if-changed={}", source.display());
@@ -33,7 +39,8 @@ fn embed_browser_extension() {
         ));
     }
     code.push_str("]\n");
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("extension_files.rs");
+    let out =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("extension_files.rs");
     std::fs::write(&out, code).expect("write extension_files.rs");
 }
 

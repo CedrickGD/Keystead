@@ -32,7 +32,9 @@ an interface here, change every side.
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
-| `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). |
+| `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
+| `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`). |
+| `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `legacy/` | The old PowerShell VaultX 1.x, kept for reference. |
 | `docs/` | This file + user docs. |
@@ -101,6 +103,9 @@ returned code: `0` success, `1` error, `2` invalid usage.
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
+* Browser extension: `<data_dir>/browser-extension` – written and kept up to
+  date by the app (see "Browser extension deployment"); the user loads the
+  extension unpacked from there.
 * Legacy VaultX 1.x vaults: `%LOCALAPPDATA%\VaultX\accounts.json` +
   `vault_*.json` (Linux/macOS: none – only manual file import).
   `$KEYSTEAD_LEGACY_DIR` overrides this directory on every OS (tests).
@@ -530,8 +535,12 @@ interface Settings {
   browserIntegration: boolean;               // bridge server on/off; default true
   lastVaultId: string | null;
   showIcons: boolean;                        // website favicons – false by default: offline, letter avatars instead
+  updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
+  updateChannel: "beta" | "stable";          // default "beta" (betas + stable releases); "stable" = stable releases only
 }
 ```
+Loading is lenient: missing fields (settings files of older versions) and
+invalid values get their defaults; unknown keys are ignored.
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -589,17 +598,27 @@ history. The bridge's own writes are not affected.
 | `export_data` † | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` |
-| `browser_status` | – | `BrowserStatus { serverRunning, extensionId, browsers: BrowserInfo[], clients: PairedClient[] }` |
+| `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
 | `register_browsers` | `browsers: string[]` (ids) | `BrowserStatus` |
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
 | `revoke_client` | `clientId` | `BrowserStatus` |
 | `respond_pairing` | `requestId, approve: boolean` | `null` |
 | `open_terminal` | – | `null` (spawns `Keystead --cli` in a new console) |
 | `open_data_dir` | – | `null` |
+| `open_extension_dir` | – | `null` (opens `<data_dir>/browser-extension`, writes it first if missing) |
 | `set_portable_mode` | `enabled: boolean` | `AppInfo` (moves vault files; requires locked or re-unlock) |
+| `check_update` | – | `UpdateInfo` – checks the configured channel now; network/HTTP errors → `io:<detail>` |
+| `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
+| `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
-`PairedClient { id, name, createdAt, lastSeenAt }`.
+`PairedClient { id, name, createdAt, lastSeenAt }`,
+`UpdateInfo { available: boolean, currentVersion, version: string|null, notes: string|null, date: string|null /*RFC 3339*/, canInstall: boolean, releaseUrl }`
+(`available` = the channel offers a newer version than the running one;
+`canInstall` = `available` and this copy can install it – false for the
+portable build and Linux/macOS except an AppImage: the UI links to
+`releaseUrl` = `https://github.com/CedrickGD/Keystead/releases/tag/v<version>`,
+or `…/releases` without a version).
 
 **Events** (backend → frontend, `app.emit`):
 * `vault://locked` – payload `{ reason: "manual"|"timeout"|"system" }`
@@ -610,6 +629,14 @@ history. The bridge's own writes are not affected.
   a newer request of the same browser, timed out): the UI closes its modal.
   `respond_pairing` for it answers `not_found`.
 * `bridge://unlock-request` – payload `{}` – extension asked to open the app; UI focuses the unlock screen.
+* `update://available` – payload `UpdateInfo` – the background check found a
+  version not announced before (once per version; also not after a manual
+  `check_update` found it). The UI shows a banner above the main window and
+  the unlock screen.
+* `update://progress` – payload `{ downloaded: number, total: number|null }`
+  (bytes, at most every 100 ms) while `install_update` downloads.
+* `update://ready` – payload `{ version }` – downloaded and verified; the app
+  locks, installs and restarts now.
 * `vault://unlocked` – payload `VaultInfo` – the vault was unlocked outside
   the UI (extension `unlock`); the UI switches to the unlocked view. Also
   sent when the extension switched to another vault while one was open: the
@@ -623,9 +650,15 @@ falls back to an in-memory **mock backend** (`src/lib/mock.ts`, realistic
 sample data, password `demo`) when not running inside Tauri
 (`!("__TAURI_INTERNALS__" in window)`) – used for `npm run dev` in a browser
 and for automated screenshots. Mock-only extras: `?mock=empty` starts without
-any vault (first-run screen), `?lang=en` starts in English, and
+any vault (first-run screen), `?lang=en` starts in English, `?update=available`
+announces a fake update (2.0.0-beta.4 → 2.0.0-beta.5) 1 s after start,
+`?update=portable` the same for a portable copy, `?update=none` lets the manual
+check find nothing (default: only the manual check finds the fake update; the
+stable channel has no release), `&updateSpeed=slow` keeps the download progress
+on screen (a normal install "restarts" by reloading with the new version), and
 `window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
-`simulateExternalChange()` and `simulateUnlockRequest()`.
+`simulateExternalChange()`, `simulateUnlockRequest()` and
+`simulateUpdate(portable?)`.
 
 Frontend integration requirements for `src-tauri`:
 * File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
@@ -702,8 +735,9 @@ Frontend integration requirements for `src-tauri`:
   UI also checks `session_state` afterwards in both cases –, moves the whole data
   directory (copy, commit by creating/renaming `Keystead-Data`, then delete
   the old copy; `*.lock`/`*.tmp` – including the `.<name>.<hex>.tmp` temporary
-  files of `write_atomic` – are skipped), re-registers the native host
-  and restarts the bridge. Errors: `unsupported:data_dir_override` (with
+  files of `write_atomic` – and the `browser-extension` folder are skipped),
+  re-registers the native host, writes the browser extension folder at the
+  new location and restarts the bridge. Errors: `unsupported:data_dir_override` (with
   `$KEYSTEAD_DATA_DIR`), `unsupported:portable_installed` (enabling while the
   exe lives in the default data directory itself – the per-user NSIS setup
   installs to `%LOCALAPPDATA%\Keystead`), `invalid_input:target_exists` (a
@@ -726,6 +760,156 @@ Frontend integration requirements for `src-tauri`:
   `WDA_EXCLUDEFROMCAPTURE` – screenshots, recordings, screen sharing and
   Windows Recall see it black or not at all; before Windows 10 2004 it is
   shown black; macOS `NSWindowSharingNone`; no effect on Linux).
+
+## In-app updates (`src-tauri/src/update.rs`)
+
+`tauri-plugin-updater` 2 + `tauri-plugin-process` 2. The UI never calls the
+plugins' JS APIs (no `updater:*`/`process:*` permission in
+`capabilities/default.json`); it uses `check_update` / `pending_update` /
+`install_update` and the `update://*` events.
+
+* **Signing**: every update is a minisign (Ed25519) signed file.
+  `tauri.conf.json` → `plugins.updater.pubkey` holds the public key
+  (key id `0DFE3A3BD1834D53`); the private key exists only as the repository
+  secret `TAURI_SIGNING_PRIVATE_KEY` (empty password) and is never committed.
+  The plugin verifies the downloaded bytes against the signature from
+  `latest.json` before anything is written or run. `requireSignedVersion:
+  true`: the signature's trusted comment must name exactly the version
+  `latest.json` announces (the Tauri CLI ≥ 2.12 binds it when signing), so a
+  forged manifest cannot pair a newer version number with an older signed
+  setup. Downgrades are never offered (semver `>` only).
+* **Channels** (endpoint chosen at runtime, `UpdaterExt::updater_builder()
+  .endpoints(…)`, nothing in `tauri.conf.json`):
+  * `beta` → `https://github.com/CedrickGD/Keystead/releases/download/updater-beta/latest.json`
+    (a fixed pre-release that CI updates with every published build, betas
+    and stable releases);
+  * `stable` → `https://github.com/CedrickGD/Keystead/releases/latest/download/latest.json`
+    (GitHub's "latest" = newest non-pre-release).
+  A channel without `latest.json` (404) means "nothing available", not an error.
+* **latest.json** (static format): `{ version, notes, pub_date (RFC 3339),
+  platforms: { "windows-x86_64": { signature, url } } }` – `signature` = the
+  content of the `.sig` file `tauri build` writes next to the NSIS setup,
+  `url` = the setup asset of the versioned release
+  (`…/releases/download/v<version>/Keystead-<version>-windows-setup.exe`).
+  The updater looks up `windows-x86_64-nsis`, then `windows-x86_64`.
+* **Versions** are semver; every CI build has its own (`2.0.0-beta.<run>`,
+  see "Releases & in-app updates"), so `2.0.0-beta.4 < 2.0.0-beta.5 < 2.0.0`.
+  The app's version is `tauri.conf.json` → `version` (CI sets it per build);
+  the About page and the bridge `status` show `KEYSTEAD_VERSION_LABEL` (set
+  by CI to the same value) or that version.
+* **canInstall** (`update::can_install`, computed once): Windows – the exe
+  is an installed copy: its folder is the per-user NSIS install folder
+  (`%LOCALAPPDATA%\Keystead`, `installMode: currentUser`) or the folder the
+  installer's uninstall entry names – `HKCU\Software\Microsoft\Windows\
+  CurrentVersion\Uninstall\Keystead` (`UNINSTKEY` = product name in the Tauri
+  NSIS template), values `InstallLocation` (quoted) and `UninstallString`
+  (`update::is_installed_copy`, compared case-insensitively). Anything else is
+  the portable build: it never runs the setup (that would install a second
+  copy) and shows a download link. Linux: only an AppImage
+  (`$APPIMAGE`); macOS: never.
+* **Check** (`update::check`): fetches the channel's `latest.json` (30 s
+  timeout). The version comparator records the release before the platform
+  entry is looked up, so a release without a build for this OS is still
+  reported (`available`, `canInstall: false`). No manifest (any HTTP error
+  status, e.g. 404) → not available; network errors and an unreadable
+  manifest → `io:<detail>`.
+* **Background check**: 15 s after start, then every 6 h, while
+  `updateCheck` is on; turning it on or changing the channel checks at once.
+  A version not announced before → `update://available`; errors are only
+  logged (`[keystead] update check failed: …`). The last result is kept
+  for `pending_update`; changing the channel or turning the check on drops
+  it and lets the next find be announced again.
+* **Install** (`install_update`): one at a time. Checks again, downloads
+  (`update://progress`), verifies, emits `update://ready`, then locks the
+  vault (wiping it, no `vault://locked` – the banner shows the restart) and
+  clears a copied secret still in the clipboard, then installs: on Windows
+  the plugin runs `on_before_exit` (`cleanup_before_exit`), starts the setup
+  with `/P /UPDATE /R /ARGS <current args>` (`installMode: passive`: progress
+  window, no questions) and ends the process with `exit(0)` – the setup
+  closes leftovers (native host processes) via the Restart Manager, replaces
+  the files in place and restarts Keystead. AppImage: the file is replaced and
+  the app restarts (`AppHandle::request_restart`, i.e. `RunEvent::Exit` →
+  `Core::shutdown` first). If the installation fails after the vault was
+  closed, `vault://locked {manual}` sends the UI back to the unlock screen.
+  Vault files, settings and the extension folder are untouched by the setup
+  (the NSIS uninstaller in update mode only replaces program files).
+* **UI** (`src/state/update.tsx`, `src/components/UpdateBanner.tsx`): banner
+  "Keystead <version> ist verfügbar" with [Jetzt aktualisieren] (portable:
+  [Herunterladen] → `releaseUrl` in the system browser), [Später] (hides that
+  version for the window's lifetime, `sessionStorage`) and "Was ist neu?"
+  (the notes); progress bar; "Keystead wird neu gestartet …". Settings → Über
+  Keystead: installed version, "Nach Updates suchen" with the result,
+  "Automatisch nach Updates suchen", "Update-Kanal".
+
+## Browser extension deployment (`src-tauri/build.rs`, `src-tauri/src/extension.rs`)
+
+* `build.rs` embeds every file of `extension/chrome` (hidden files skipped)
+  as `include_bytes!` pairs; the directory is a `rerun-if-changed` input.
+  `extensionVersion` = `version` of the embedded `manifest.json`
+  (1–4 dot-separated integers ≤ 65535; CI sets `<x.y.z>.<run number>`).
+* On every start (background thread), after a portable-mode switch and in
+  `open_extension_dir`, the app makes `<data_dir>/browser-extension` hold
+  exactly the embedded files (missing, other version, or a file changed or
+  deleted → rewrite; additional files of the user are ignored while it is
+  current): write a temporary sibling `.browser-extension.<id>.tmp`, rename
+  the old folder to `.browser-extension.<id>.old`, rename the new one into
+  place, delete the old one. Renames and writes are retried with growing
+  pauses (Windows: a browser or virus scanner may hold a file); if the old
+  folder cannot be moved, its files are overwritten in place. Leftover
+  `.browser-extension.*.tmp|.old` folders of an interrupted run are removed
+  on the next run; nothing else is touched (a symlinked folder is replaced,
+  never followed). Errors are logged; the app works without the folder.
+* The portable-mode move skips the top-level `browser-extension` folder and
+  these work folders (the browser may still use the old copy); the app
+  writes the folder again at the new location, and the extension points the
+  user there (see below). Disabling portable mode deletes `Keystead-Data`
+  with its copy, as before.
+* Updating the extension: the bridge `status` tells paired clients the
+  delivered version and folder. The extension's service worker compares it
+  with `chrome.runtime.getManifest().version` (numeric, `lib/version.js`);
+  newer → `chrome.runtime.reload()` after 2.5 s, at most once per target
+  version (`chrome.storage.local.extensionReloadedFor`), never while a
+  pairing waits. Still older after that (loaded from another folder, e.g. the
+  ZIP's `browser-extension`) → the popup shows "Neue Plugin-Version verfügbar
+  (<version>)" (collapsed, "Details": the folder with a copy button and how to
+  load it once); while the reload is pending it says so.
+* Settings → Browser-Integration, step 2: load the extension unpacked from
+  that folder, with "Ordner öffnen" (`open_extension_dir`) and "Pfad kopieren".
+
+## Releases & in-app updates (CI, `.github/workflows/build.yml`)
+
+* **test** (Linux): `cargo fmt --check`, clippy `-D warnings`, `cargo test`,
+  `npm run build`, `node --check` of the extension and `.github/scripts`,
+  `node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs`.
+* **windows**: `.github/scripts/release-version.mjs --write` first: version
+  `v<semver>` tag → that version, otherwise `<tauri.conf.json version>-beta.
+  <run number>` (e.g. `2.0.0-beta.57`), written into `tauri.conf.json`
+  (`version`: app, NSIS setup – `VIProductVersion` drops the pre-release,
+  `ProductVersion`/`DisplayVersion` keep it – and updater); the extension
+  manifest gets `<x.y.z>.<run number>` (also for tags, so a stable release is
+  newer than the betas before it for Chrome too). Then `tauri build` with
+  `TAURI_SIGNING_PRIVATE_KEY` (secret) and an empty
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` → `…-setup.exe` + `.sig`. Without the
+  secret: `--config` with `bundle.createUpdaterArtifacts=false` and a
+  `::warning::` – the build succeeds, just without `.sig`/`latest.json`.
+  Packaging renames the setup to `Keystead-<version>-windows-setup.exe`
+  (+ `.sig`) and writes `latest.json` (`.github/scripts/latest-json.mjs`,
+  notes = the commit subject without `[release]`) pointing at exactly that
+  asset name. The portable ZIP and the extension ZIP stay.
+* **release** (tags `v*`, or pushes whose commit message contains
+  `[release]`): versions with a `-suffix` are published as **pre-release**
+  with `make_latest: false` (VaultX 1.x follows GitHub's "latest" release and
+  must never see a beta); a tag without suffix (`v2.0.0`) becomes a normal
+  release marked latest. All assets incl. `.sig` and `latest.json` are
+  uploaded. Then the beta channel: the pre-release `updater-beta` (created if
+  missing, kept pre-release and not latest, title "Keystead Updater
+  (Beta-Kanal)", technical description) gets the new `latest.json` – unless
+  it already offers a newer version (re-runs never move the channel back).
+  `updater-beta` does not match the `v*` tag trigger.
+* Required repository secret: **`TAURI_SIGNING_PRIVATE_KEY`** (content of the
+  private key file generated with `tauri signer generate` with an empty
+  password; its public key is the `pubkey` above). Losing it means installed
+  copies can no longer be updated in-app (a new key needs a manual update).
 
 ## Browser bridge protocol – `keystead-bridge`
 
@@ -763,7 +947,7 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 
 | type | needs pairing | payload | data |
 |---|---|---|---|
-| `status` | no | – | `{ appVersion, paired: bool, unlocked: bool, vaultName: string\|null, vaultId: string\|null }` |
+| `status` | no | – | `{ appVersion, paired: bool, unlocked: bool, vaultName: string\|null, vaultId: string\|null, extensionVersion: string\|null, extensionDir: string\|null }` |
 | `pair` | no | `clientName` (e.g. "Chrome – DESKTOP-1"), `code` (6 digits shown in the popup) | `{ clientId, token }` once the user approved in the app (the request blocks up to 120 s) |
 | `list_vaults` | yes (locked or unlocked) | – | `{ vaults: { id, name }[], currentVaultId: string\|null, lastVaultId: string\|null }` – sorted by name (case-insensitive); `currentVaultId` = the unlocked vault |
 | `unlock` | yes | `password`, `vaultId?` | `{ vaultName, vaultId }` – opens `vaultId` (switching if another vault is open), without it the app's last used vault |
@@ -818,6 +1002,11 @@ Behaviour (additive to the table above):
   is a string, else `""`).
 * `status`: `vaultName` and `vaultId` are only revealed to paired clients
   (else `null`); invalid credentials just give `paired: false`.
+  `extensionVersion` (manifest version of the extension the app delivers)
+  and `extensionDir` (absolute path of `<data_dir>/browser-extension`) come
+  from `VaultBackend::extension_info` and are also only sent to paired
+  clients (`null` otherwise, and from apps without the method). Clients
+  treat missing fields as `null`.
 * `list_vaults`: `VaultBackend::list_vaults` sorted by name (lowercase, then
   id); `lastVaultId` only if that vault is listed. Not a user action (the
   popup lists the vaults whenever it opens).
@@ -885,6 +1074,7 @@ Behaviour (additive to the table above):
 pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop app
     fn app_version(&self) -> String;
     fn unlocked_vault(&self) -> Option<VaultSummary>;                            // { id, name } of the open vault
+    fn extension_info(&self) -> Option<ExtensionInfo> { None }                  // { version, dir } of the delivered extension (status, paired only)
     fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError>; // all vaults (any order) + lastVaultId
     fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError>; // None: last used / only vault; replaces an open vault only on success
     fn lock(&self);

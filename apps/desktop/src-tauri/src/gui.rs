@@ -257,6 +257,50 @@ mod tests {
     }
 
     #[test]
+    fn updater_is_configured_for_signed_passive_updates() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["bundle"]["createUpdaterArtifacts"], true);
+        let updater = &config["plugins"]["updater"];
+        // The public half of the release signing key (minisign); the private
+        // key only exists as the CI secret TAURI_SIGNING_PRIVATE_KEY.
+        assert!(
+            updater["pubkey"].as_str().is_some_and(
+                |k| k.starts_with("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6")
+            )
+        );
+        assert_eq!(updater["requireSignedVersion"], true);
+        assert_eq!(updater["windows"]["installMode"], "passive");
+        // Endpoints are chosen at runtime by channel (`update::endpoint`).
+        assert!(updater.get("endpoints").is_none());
+        // The NSIS setup must keep `currentUser`: `update::is_installed_copy`
+        // looks for the exe in %LOCALAPPDATA%\Keystead and under HKCU.
+        assert_eq!(
+            config["bundle"]["windows"]["nsis"]["installMode"],
+            "currentUser"
+        );
+        assert_eq!(config["productName"], "Keystead");
+    }
+
+    #[test]
+    fn the_webview_cannot_call_the_updater_or_process_plugins() {
+        // The UI only uses the app's own commands (check_update,
+        // install_update); the plugins' JS APIs stay unreachable.
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        for permission in capability["permissions"].as_array().unwrap() {
+            let id = permission
+                .as_str()
+                .or_else(|| permission["identifier"].as_str())
+                .unwrap();
+            assert!(
+                !id.starts_with("updater:") && !id.starts_with("process:"),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
     fn app_urls() {
         let u = |s: &str| Url::parse(s).unwrap();
         let dev = u("http://localhost:1420");

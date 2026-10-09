@@ -12,8 +12,8 @@ export function useUpdateErrorText(): (err: unknown) => string {
     err instanceof ApiError && err.code === "io" ? t("update.errorNetwork", { detail: err.detail }) : errorText(err);
 }
 
-function formatMb(bytes: number): string {
-  return (bytes / (1024 * 1024)).toFixed(1);
+function formatMb(bytes: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(bytes / (1024 * 1024));
 }
 
 /**
@@ -22,7 +22,7 @@ function formatMb(bytes: number): string {
  * [Später], "Was ist neu?"), then the download progress and the restart.
  */
 export function UpdateBanner() {
-  const { t, lang } = useT();
+  const { t, locale } = useT();
   const updateErrorText = useUpdateErrorText();
   const { info, phase, progress, error, bannerVisible, install, dismiss } = useUpdate();
   const [notesOpen, setNotesOpen] = useState(false);
@@ -48,8 +48,12 @@ export function UpdateBanner() {
                 ? t("update.restartingHint")
                 : progress
                   ? total
-                    ? t("update.progress", { done: formatMb(progress.downloaded), total: formatMb(total), percent: percent ?? 0 })
-                    : t("update.progressUnknown", { done: formatMb(progress.downloaded) })
+                    ? t("update.progress", {
+                        done: formatMb(progress.downloaded, locale),
+                        total: formatMb(total, locale),
+                        percent: percent ?? 0,
+                      })
+                    : t("update.progressUnknown", { done: formatMb(progress.downloaded, locale) })
                   : t("update.lockHint")}
             </span>
           </div>
@@ -95,7 +99,7 @@ export function UpdateBanner() {
   const date = info.date ? new Date(info.date) : null;
   const dateText =
     date && !Number.isNaN(date.getTime())
-      ? new Intl.DateTimeFormat(lang === "de" ? "de-DE" : "en-US", { dateStyle: "medium" }).format(date)
+      ? new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(date)
       : null;
 
   return (

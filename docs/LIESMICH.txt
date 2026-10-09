@@ -28,15 +28,38 @@ Modus, oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
 a) In Keystead: Einstellungen → Browser-Integration → beim Browser „Aktivieren“.
 b) Im Browser chrome://extensions (bzw. edge://extensions) öffnen,
    „Entwicklermodus“ einschalten, „Entpackte Erweiterung laden“ und den Ordner
-   "browser-extension" aus diesem ZIP auswählen.
+   wählen, den Keystead unter Einstellungen → Browser-Integration anzeigt
+   (Knöpfe „Ordner öffnen“ und „Pfad kopieren“). Das ist der Ordner
+   "browser-extension" im Datenordner, normalerweise
+   %LOCALAPPDATA%\Keystead\browser-extension
+   (im portablen Modus: Keystead-Data\browser-extension neben Keystead.exe).
    Erwartete Erweiterungs-ID: imfndemblnaalppnmdplagajjielnaok
 c) Auf das Keystead-Symbol in der Browserleiste klicken →
    „Mit Keystead verbinden“ → den angezeigten Code in der App bestätigen.
 
-Wichtig: Den Ordner "browser-extension" nach dem Laden nicht verschieben oder
-löschen – der Browser lädt die Erweiterung von dort. Wenn du Keystead.exe
-verschiebst, einfach einmal Keystead starten; die Registrierung wird automatisch
-aktualisiert.
+Keystead legt die Erweiterung bei jedem Start in diesen Ordner und hält sie dort
+aktuell – nach einem Update der App lädt sich die Erweiterung selbst neu. Den
+Ordner deshalb nicht löschen. Der Ordner "browser-extension" in diesem ZIP ist
+nur eine Kopie: Wer die Erweiterung von dort lädt, bekommt nach einem Update im
+Popup den Hinweis „Neue Plugin-Version verfügbar“ mit dem richtigen Ordner und
+lädt sie einmal von dort.
+Wenn du Keystead.exe verschiebst, einfach einmal Keystead starten; die
+Registrierung wird automatisch aktualisiert.
+
+Updates
+-------
+Keystead sucht beim Start und alle 6 Stunden nach neuen Versionen
+(Einstellungen → Über Keystead: „Nach Updates suchen“, „Automatisch nach Updates
+suchen“, Update-Kanal „Beta-Versionen“ oder „Nur stabile Versionen“).
+- Mit dem Installer (Keystead-…-windows-setup.exe) installiert: oben erscheint
+  „Keystead … ist verfügbar“ → „Jetzt aktualisieren“. Das Update ist signiert
+  und wird vor der Installation geprüft; der Tresor wird gesperrt und Keystead
+  startet neu.
+- Diese ZIP-Version (portabel) aktualisiert sich nicht selbst: „Herunterladen“
+  öffnet die Release-Seite; die neue ZIP einfach über die alte entpacken
+  (der Ordner Keystead-Data bleibt erhalten).
+Bei der Prüfung wird nur eine Versionsdatei von GitHub abgerufen – keine
+Tresordaten.
 
 3. Terminal-Version
 -------------------

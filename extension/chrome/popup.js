@@ -245,10 +245,10 @@ function setExtensionUpdate(update) {
     return;
   }
   const dir = typeof update.dir === "string" ? update.dir : "";
-  extensionNotice = h(
+  // Collapsed to one line by default: the screens below must keep fitting.
+  const details = h(
     "div",
-    { class: "ext-update notice-card", role: "status" },
-    h("div", { class: "ext-update-head" }, icon("alert"), h("strong", { text: t("extUpdateTitle", update.version) })),
+    { class: "ext-update-details", id: "ext-update-details", hidden: true },
     h("p", { text: t("extUpdateText") }),
     dir
       ? h(
@@ -265,6 +265,29 @@ function setExtensionUpdate(update) {
         )
       : null,
     h("p", { class: "ext-update-hint", text: t("extUpdateHint") }),
+  );
+  const toggle = h(
+    "button",
+    {
+      class: "link-btn ext-update-toggle",
+      type: "button",
+      "aria-expanded": "false",
+      "aria-controls": "ext-update-details",
+      onclick: () => {
+        const open = details.hidden;
+        details.hidden = !open;
+        toggle.setAttribute("aria-expanded", String(open));
+        extensionNotice?.classList.toggle("open", open);
+      },
+    },
+    t("extUpdateDetails"),
+    icon("chevron"),
+  );
+  extensionNotice = h(
+    "div",
+    { class: "ext-update notice-card", role: "status" },
+    h("div", { class: "ext-update-head" }, icon("alert"), h("strong", { text: t("extUpdateTitle", update.version) }), toggle),
+    details,
   );
 }
 

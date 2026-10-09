@@ -157,6 +157,7 @@
   "extUpdateTitle": { "message": "Neue Plugin-Version verfügbar ($VERSION$)", "placeholders": { "version": { "content": "$1" } } },
   "extUpdateText": { "message": "Dieses Plugin wurde aus einem anderen Ordner geladen. Die Keystead-App hält es hier aktuell:" },
   "extUpdateHint": { "message": "Einmalig umstellen: chrome://extensions öffnen → „Entpackte Erweiterung laden“ → diesen Ordner wählen. Danach aktualisiert sich das Plugin mit der App." },
+  "extUpdateDetails": { "message": "Details" },
   "extUpdateCopyPath": { "message": "Pfad kopieren" },
   "extUpdatePathCopied": { "message": "Pfad kopiert" }
 }

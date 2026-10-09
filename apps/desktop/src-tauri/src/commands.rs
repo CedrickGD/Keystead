@@ -580,8 +580,7 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
         settings.save()?;
         std::mem::replace(&mut st.settings, settings.clone())
     };
-    if settings.update_channel != old.update_channel
-        || (settings.update_check && !old.update_check)
+    if settings.update_channel != old.update_channel || (settings.update_check && !old.update_check)
     {
         core.wake_update_checker();
     }

@@ -307,7 +307,12 @@ mod tests {
     #[test]
     fn embedded_extension_is_complete() {
         let paths: Vec<&str> = FILES.iter().map(|(p, _)| *p).collect();
-        for needed in ["manifest.json", "background.js", "popup.html", "lib/bridge.js"] {
+        for needed in [
+            "manifest.json",
+            "background.js",
+            "popup.html",
+            "lib/bridge.js",
+        ] {
             assert!(paths.contains(&needed), "{needed} missing: {paths:?}");
         }
         assert!(paths.iter().all(|p| check_relative(p).is_ok()));
@@ -323,7 +328,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         let m = manifest("2.0.0.5");
-        assert_eq!(deploy(&data, &bundle(&m, b"v5")).unwrap(), Deployed::Created);
+        assert_eq!(
+            deploy(&data, &bundle(&m, b"v5")).unwrap(),
+            Deployed::Created
+        );
         assert_eq!(read(&data, "manifest.json"), m);
         assert_eq!(read(&data, "background.js"), b"v5");
         assert_eq!(read(&data, "lib/bridge.js"), b"// bridge");
@@ -338,10 +346,19 @@ mod tests {
         let ext = extension_dir(dir.path());
         // A file the user (or the browser) put there stays.
         fs::write(ext.join("notes.txt"), "mine").unwrap();
-        let before = fs::metadata(ext.join("background.js")).unwrap().modified().unwrap();
-        assert_eq!(deploy(dir.path(), &bundle(&m, b"v5")).unwrap(), Deployed::Unchanged);
+        let before = fs::metadata(ext.join("background.js"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            deploy(dir.path(), &bundle(&m, b"v5")).unwrap(),
+            Deployed::Unchanged
+        );
         assert_eq!(fs::read_to_string(ext.join("notes.txt")).unwrap(), "mine");
-        let after = fs::metadata(ext.join("background.js")).unwrap().modified().unwrap();
+        let after = fs::metadata(ext.join("background.js"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(before, after, "not rewritten");
     }
 
@@ -354,7 +371,10 @@ mod tests {
         deploy(dir.path(), &old_bundle).unwrap();
 
         let new = manifest("2.0.0.6");
-        assert_eq!(deploy(dir.path(), &bundle(&new, b"v6")).unwrap(), Deployed::Replaced);
+        assert_eq!(
+            deploy(dir.path(), &bundle(&new, b"v6")).unwrap(),
+            Deployed::Replaced
+        );
         assert_eq!(read(dir.path(), "manifest.json"), new);
         assert_eq!(read(dir.path(), "background.js"), b"v6");
         assert!(!extension_dir(dir.path()).join("obsolete.js").exists());
@@ -367,10 +387,16 @@ mod tests {
         let m = manifest("2.0.0.5");
         deploy(dir.path(), &bundle(&m, b"v5")).unwrap();
         fs::remove_file(extension_dir(dir.path()).join("lib/bridge.js")).unwrap();
-        assert_eq!(deploy(dir.path(), &bundle(&m, b"v5")).unwrap(), Deployed::Replaced);
+        assert_eq!(
+            deploy(dir.path(), &bundle(&m, b"v5")).unwrap(),
+            Deployed::Replaced
+        );
         assert_eq!(read(dir.path(), "lib/bridge.js"), b"// bridge");
         fs::write(extension_dir(dir.path()).join("background.js"), "edited").unwrap();
-        assert_eq!(deploy(dir.path(), &bundle(&m, b"v5")).unwrap(), Deployed::Replaced);
+        assert_eq!(
+            deploy(dir.path(), &bundle(&m, b"v5")).unwrap(),
+            Deployed::Replaced
+        );
         assert_eq!(read(dir.path(), "background.js"), b"v5");
     }
 
@@ -392,10 +418,16 @@ mod tests {
         fs::write(data.join("vaults").join("a.keystead"), "vault").unwrap();
         fs::write(data.join(".browser-extension-notes.txt"), "user file").unwrap();
 
-        assert_eq!(deploy(data, &bundle(&m, b"v5")).unwrap(), Deployed::Unchanged);
+        assert_eq!(
+            deploy(data, &bundle(&m, b"v5")).unwrap(),
+            Deployed::Unchanged
+        );
         assert!(!temp.exists());
         assert!(!retired.exists());
-        assert_eq!(fs::read_to_string(data.join("vaults/a.keystead")).unwrap(), "vault");
+        assert_eq!(
+            fs::read_to_string(data.join("vaults/a.keystead")).unwrap(),
+            "vault"
+        );
         assert!(data.join(".browser-extension-notes.txt").exists());
         assert!(work_dirs(data).is_empty());
     }
@@ -412,9 +444,18 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, extension_dir(&data)).unwrap();
 
         let m = manifest("2.0.0.7");
-        assert_eq!(deploy(&data, &bundle(&m, b"v7")).unwrap(), Deployed::Replaced);
-        assert!(!fs::symlink_metadata(extension_dir(&data)).unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_to_string(elsewhere.join("keep.txt")).unwrap(), "user data");
+        assert_eq!(
+            deploy(&data, &bundle(&m, b"v7")).unwrap(),
+            Deployed::Replaced
+        );
+        assert!(!fs::symlink_metadata(extension_dir(&data))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("keep.txt")).unwrap(),
+            "user data"
+        );
     }
 
     #[test]
@@ -429,7 +470,10 @@ mod tests {
 
     #[test]
     fn manifest_versions() {
-        assert_eq!(manifest_version(&manifest("2.0.0.42")).as_deref(), Some("2.0.0.42"));
+        assert_eq!(
+            manifest_version(&manifest("2.0.0.42")).as_deref(),
+            Some("2.0.0.42")
+        );
         assert_eq!(manifest_version(b"{}"), None);
         assert_eq!(manifest_version(b"not json"), None);
         assert!(is_managed_entry("browser-extension"));

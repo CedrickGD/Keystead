@@ -379,10 +379,13 @@ code {
 .screen.center {
   padding: 28px 24px 18px;
   background: var(--bg-panel);
+  /* Scrolls instead of overlapping when a notice above takes room. */
+  overflow-y: auto;
 }
 
 .center-body {
-  flex: 1;
+  /* Never squeezed below its content: the screen scrolls instead (e.g. with the extension update notice). */
+  flex: 1 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -985,7 +988,7 @@ code {
 
 .ext-update.notice-card {
   display: block;
-  padding: 10px 14px 11px;
+  padding: 8px 14px;
   background: var(--warning-soft);
   border-bottom-color: var(--warning-border);
   color: var(--text-2);
@@ -996,7 +999,33 @@ code {
   align-items: center;
   gap: 7px;
   color: var(--warning-text);
-  margin-bottom: 3px;
+}
+
+.ext-update-head strong {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.ext-update-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.ext-update-toggle .ico {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--dur) var(--ease);
+}
+
+.ext-update.open .ext-update-toggle .ico {
+  transform: rotate(180deg);
+}
+
+.ext-update-details {
+  margin-top: 6px;
 }
 
 .ext-update-head .ico {

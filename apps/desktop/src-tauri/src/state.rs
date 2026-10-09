@@ -568,9 +568,14 @@ impl Core {
     }
 
     /// Lets the background update check run now (setting turned on,
-    /// channel changed). The result of the old channel is dropped.
+    /// channel changed). The result of the old channel is dropped, and what
+    /// it finds is announced again (the UI forgot it with the old channel).
     pub fn wake_update_checker(&self) {
-        lock_mutex(&self.updates).pending = None;
+        {
+            let mut memory = lock_mutex(&self.updates);
+            memory.pending = None;
+            memory.announced = None;
+        }
         if let Some(tx) = lock_mutex(&self.update_wake).as_ref() {
             let _ = tx.send(());
         }
@@ -708,10 +713,12 @@ mod tests {
         // Nothing newer (e.g. other channel): no pending update, no event.
         assert!(!core.remember_update(&update("2.0.0-beta.1", false)));
         assert_eq!(core.pending_update(), None);
-        // Settings changed: the old channel's result is dropped.
+        // Settings changed: the old channel's result is dropped and the next
+        // find is announced again.
         core.remember_update(&update("2.0.0-beta.4", true));
         core.wake_update_checker();
         assert_eq!(core.pending_update(), None);
+        assert!(core.remember_update(&update("2.0.0-beta.4", true)));
     }
 
     #[test]
@@ -732,7 +739,10 @@ mod tests {
         assert!(core.lock_for_update());
         assert!(core.state().vault.is_none());
         assert!(!core.lock_for_update());
-        assert!(core.emitted().is_empty(), "the UI shows the update progress");
+        assert!(
+            core.emitted().is_empty(),
+            "the UI shows the update progress"
+        );
         assert_eq!(core.app_version(), "2.0.0-test");
     }
 

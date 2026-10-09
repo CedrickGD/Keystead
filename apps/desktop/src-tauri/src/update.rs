@@ -140,7 +140,11 @@ impl ReleaseFacts {
 
 /// Builds the [`UpdateInfo`] for the running version `current`, the release
 /// the channel announces (if any) and whether this copy could install it.
-pub fn info_from(current: &Version, release: Option<&ReleaseFacts>, can_install: bool) -> UpdateInfo {
+pub fn info_from(
+    current: &Version,
+    release: Option<&ReleaseFacts>,
+    can_install: bool,
+) -> UpdateInfo {
     let available = release.is_some_and(|r| r.version > *current);
     let version = release.map(|r| r.version.to_string());
     UpdateInfo {
@@ -188,9 +192,7 @@ pub fn classify(error: &UpdaterError) -> CheckFailure {
 fn normalize_windows_dir(dir: &str) -> String {
     let dir = dir.trim().trim_matches('"').trim();
     let dir = dir.strip_prefix(r"\\?\").unwrap_or(dir);
-    dir.replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_lowercase()
+    dir.replace('/', "\\").trim_end_matches('\\').to_lowercase()
 }
 
 /// Whether the exe in `exe_dir` is an installed copy (Windows paths): it
@@ -297,7 +299,10 @@ fn build_updater(
 
 /// Checks the channel. Returns the info for the UI and the installable
 /// update (only when `info.can_install`).
-pub async fn check(app: &AppHandle, channel: UpdateChannel) -> AppResult<(UpdateInfo, Option<Update>)> {
+pub async fn check(
+    app: &AppHandle,
+    channel: UpdateChannel,
+) -> AppResult<(UpdateInfo, Option<Update>)> {
     let current = app.package_info().version.clone();
     let installable = can_install(app);
     let seen = Arc::new(Mutex::new(None));
@@ -313,7 +318,9 @@ pub async fn check(app: &AppHandle, channel: UpdateChannel) -> AppResult<(Update
         }
         Err(e) => match classify(&e) {
             CheckFailure::NoRelease => Ok((info_from(&current, None, false), None)),
-            CheckFailure::NoBuildForPlatform => Ok((info_from(&current, facts.as_ref(), false), None)),
+            CheckFailure::NoBuildForPlatform => {
+                Ok((info_from(&current, facts.as_ref(), false), None))
+            }
             CheckFailure::Other(detail) => Err(AppError::io(detail)),
         },
     }
@@ -521,7 +528,12 @@ mod tests {
             }
         );
         let json = serde_json::to_value(&info).unwrap();
-        let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             keys.len(),
             7,
@@ -543,7 +555,10 @@ mod tests {
         let none = info_from(&v("2.0.0"), None, true);
         assert!(!none.available && !none.can_install);
         assert_eq!(none.version, None);
-        assert_eq!(none.release_url, "https://github.com/CedrickGD/Keystead/releases");
+        assert_eq!(
+            none.release_url,
+            "https://github.com/CedrickGD/Keystead/releases"
+        );
         // Portable copy: available, but only as a download.
         let portable = info_from(&v("2.0.0-beta.4"), Some(&facts("2.0.0")), false);
         assert!(portable.available && !portable.can_install);
@@ -551,7 +566,10 @@ mod tests {
 
     #[test]
     fn errors_are_classified() {
-        assert_eq!(classify(&UpdaterError::ReleaseNotFound), CheckFailure::NoRelease);
+        assert_eq!(
+            classify(&UpdaterError::ReleaseNotFound),
+            CheckFailure::NoRelease
+        );
         assert_eq!(
             classify(&UpdaterError::TargetsNotFound(vec!["linux-x86_64".into()])),
             CheckFailure::NoBuildForPlatform
@@ -584,10 +602,22 @@ mod tests {
         // Installed elsewhere: the uninstall entry names the folder (the
         // NSIS template writes InstallLocation in quotes).
         let registered = vec![r#""D:\Apps\Keystead""#.to_owned()];
-        assert!(is_installed_copy(r"D:\Apps\Keystead", per_user, &registered));
-        assert!(is_installed_copy("D:/Apps/Keystead/", per_user, &registered));
+        assert!(is_installed_copy(
+            r"D:\Apps\Keystead",
+            per_user,
+            &registered
+        ));
+        assert!(is_installed_copy(
+            "D:/Apps/Keystead/",
+            per_user,
+            &registered
+        ));
         // Portable: unzipped anywhere else.
-        assert!(!is_installed_copy(r"C:\Users\Ann\Downloads\Keystead-2.0.0", per_user, &registered));
+        assert!(!is_installed_copy(
+            r"C:\Users\Ann\Downloads\Keystead-2.0.0",
+            per_user,
+            &registered
+        ));
         assert!(!is_installed_copy(r"E:\Keystead", per_user, &[]));
         // Below the install folder is not the installed exe either.
         assert!(!is_installed_copy(
@@ -606,6 +636,9 @@ mod tests {
             release_url(Some("2.0.0")),
             "https://github.com/CedrickGD/Keystead/releases/tag/v2.0.0"
         );
-        assert_eq!(release_url(None), "https://github.com/CedrickGD/Keystead/releases");
+        assert_eq!(
+            release_url(None),
+            "https://github.com/CedrickGD/Keystead/releases"
+        );
     }
 }

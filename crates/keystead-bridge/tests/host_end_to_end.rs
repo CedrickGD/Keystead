@@ -63,7 +63,12 @@ impl VaultBackend for CoreBackend {
     fn extension_info(&self) -> Option<ExtensionInfo> {
         Some(ExtensionInfo {
             version: "2.0.0.12".into(),
-            dir: self.store.root().join("browser-extension").display().to_string(),
+            dir: self
+                .store
+                .root()
+                .join("browser-extension")
+                .display()
+                .to_string(),
         })
     }
 
