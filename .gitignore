@@ -1,2 +1,8 @@
 .tools/
 dist/
+target/
+node_modules/
+apps/desktop/dist/
+*.pem
+.DS_Store
+/legacy/dist/

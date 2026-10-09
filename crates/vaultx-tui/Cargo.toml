@@ -1,0 +1,13 @@
+[package]
+name = "vaultx-tui"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+description = "VaultX terminal UI"
+
+[[bin]]
+name = "vaultx-cli"
+path = "src/main.rs"
+
+[dependencies]
+vaultx-core = { path = "../vaultx-core" }
