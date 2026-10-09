@@ -2560,6 +2560,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "keystead-bridge"
+version = "2.0.0"
+dependencies = [
+ "data-encoding",
+ "dirs",
+ "interprocess",
+ "keystead-core",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "uuid",
+ "widestring",
+ "windows-sys 0.61.2",
+ "winreg",
+ "zeroize",
+]
+
+[[package]]
+name = "keystead-core"
+version = "2.0.0"
+dependencies = [
+ "aes",
+ "arboard",
+ "argon2",
+ "base64 0.23.1",
+ "cbc",
+ "chacha20poly1305",
+ "csv",
+ "data-encoding",
+ "dirs",
+ "getrandom 0.4.3",
+ "hmac",
+ "pbkdf2",
+ "psl",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.0",
+ "subtle",
+ "sys-locale",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+ "uuid",
+ "zeroize",
+ "zxcvbn",
+]
+
+[[package]]
+name = "keystead-desktop"
+version = "2.0.0"
+dependencies = [
+ "keystead-bridge",
+ "keystead-core",
+ "keystead-tui",
+ "libloading",
+ "open",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "keystead-tui"
+version = "2.0.0"
+dependencies = [
+ "clap",
+ "keystead-core",
+ "open",
+ "ratatui",
+ "rpassword",
+ "tempfile",
+ "unicode-width",
+ "zeroize",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5141,92 +5227,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vaultx-bridge"
-version = "2.0.0"
-dependencies = [
- "data-encoding",
- "dirs",
- "interprocess",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.21",
- "uuid",
- "vaultx-core",
- "widestring",
- "windows-sys 0.61.2",
- "winreg",
- "zeroize",
-]
-
-[[package]]
-name = "vaultx-core"
-version = "2.0.0"
-dependencies = [
- "aes",
- "arboard",
- "argon2",
- "base64 0.23.1",
- "cbc",
- "chacha20poly1305",
- "csv",
- "data-encoding",
- "dirs",
- "getrandom 0.4.3",
- "hmac",
- "pbkdf2",
- "psl",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.11.0",
- "subtle",
- "sys-locale",
- "tempfile",
- "thiserror 2.0.21",
- "url",
- "uuid",
- "zeroize",
- "zxcvbn",
-]
-
-[[package]]
-name = "vaultx-desktop"
-version = "2.0.0"
-dependencies = [
- "libloading",
- "open",
- "raw-window-handle",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-single-instance",
- "tempfile",
- "vaultx-bridge",
- "vaultx-core",
- "vaultx-tui",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "vaultx-tui"
-version = "2.0.0"
-dependencies = [
- "clap",
- "open",
- "ratatui",
- "rpassword",
- "tempfile",
- "unicode-width",
- "vaultx-core",
- "zeroize",
 ]
 
 [[package]]

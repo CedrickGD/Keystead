@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { Copy, ExternalLink, Eye, EyeOff } from "lucide-react";
+import { ExternalLink, Eye, EyeOff } from "lucide-react";
 import { openExternal } from "../../lib/api";
 import { useT } from "../../i18n";
-import { useCopy } from "../../state/app";
+import { CopyButton } from "../../components/CopyButton";
 import { PasswordText } from "../../components/PasswordText";
 
 const MASK = "••••••••••••";
@@ -42,7 +42,6 @@ export function FieldRow({
   footer,
 }: FieldRowProps) {
   const { t } = useT();
-  const copy = useCopy();
   const [revealed, setRevealed] = useState(false);
   const masked = secret && !revealed;
 
@@ -92,17 +91,7 @@ export function FieldRow({
             {revealed ? <EyeOff /> : <Eye />}
           </button>
         )}
-        {copyLabel && (
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => void copy(value, { label: copyLabel, sensitive })}
-            title={t("common.copyNamed", { what: copyLabel })}
-            aria-label={t("common.copyNamed", { what: copyLabel })}
-          >
-            <Copy />
-          </button>
-        )}
+        {copyLabel && <CopyButton value={value} label={copyLabel} sensitive={sensitive} />}
       </div>
     </div>
   );

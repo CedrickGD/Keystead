@@ -7,10 +7,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use serde_json::Value;
-use tauri::State;
 use keystead_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_ID};
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::health::{self, HealthReport, Strength};
@@ -19,19 +15,24 @@ use keystead_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
 use keystead_core::settings::Settings;
 use keystead_core::totp::{self, TotpCode};
 use keystead_core::{clipboard, export, paths, Error as CoreError, VaultStore};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+use tauri::State;
 
 use crate::bridge;
 use crate::error::{AppError, AppResult};
 use crate::platform;
 use crate::portable;
-use crate::state::{log, Core};
+use crate::state::{log, Core, LockReason};
 
 type Shared<'a> = State<'a, Arc<Core>>;
 type CmdResult<T> = Result<T, String>;
 
-/// Delay before pending pairing requests are re-sent to a freshly loaded
-/// page (its event listeners subscribe asynchronously after boot).
-const PAIRING_RESEND_DELAY: Duration = Duration::from_millis(1000);
+/// Delay before events a freshly loaded page may have missed are re-sent:
+/// its listeners subscribe asynchronously after boot, and the boot applies
+/// its `session_state` answer only once all boot requests have returned.
+const BOOT_RESEND_DELAY: Duration = Duration::from_millis(1000);
 
 /// Runs `f` on the blocking pool. `activity`: the command is a deliberate
 /// user action and resets the auto-lock timer (passive/polled commands such
@@ -103,7 +104,7 @@ fn app_info_of(core: &Core) -> AppInfo {
 }
 
 fn browser_status_of(core: &Core) -> AppResult<BrowserStatus> {
-    let server_running = core.state().bridge.as_ref().is_some_and(|b| b.is_running());
+    let server_running = bridge::is_running(core);
     Ok(BrowserStatus {
         server_running,
         extension_id: EXTENSION_ID,
@@ -140,12 +141,21 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
     run(&core, false, |c| {
         let vault = c.read(|v| v.info()).ok();
         if c.take_page_loaded() {
-            // A pairing request may have arrived before the page listened.
+            let answered_unlocked = vault.is_some();
             let c = Arc::clone(c);
             std::thread::spawn(move || {
-                std::thread::sleep(PAIRING_RESEND_DELAY);
+                std::thread::sleep(BOOT_RESEND_DELAY);
+                // A pairing request may have arrived before the page listened.
                 for request in bridge::pending_pairings(&c) {
                     c.emit_pairing_request(request);
+                }
+                // The extension may have unlocked (or locked) the vault while
+                // the page booted: its event got lost, or the boot overwrote it
+                // with this (by then stale) answer.
+                match (answered_unlocked, c.read(|v| v.info()).ok()) {
+                    (false, Some(info)) => c.emit_unlocked(&info),
+                    (true, None) => c.emit_locked(LockReason::Manual),
+                    _ => {}
                 }
             });
         }

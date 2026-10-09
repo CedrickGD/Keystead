@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Plus, Settings2, Star, Trash2, WandSparkles, X } from "lucide-react";
+import { ChevronDown, Folder as FolderIcon, Plus, Settings2, Star, Trash2, WandSparkles, X } from "lucide-react";
 import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatch, VaultItem } from "../../lib/types";
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
 import { useT } from "../../i18n";
@@ -83,27 +83,26 @@ function PasswordField({ value, onChange }: { value: string; onChange: (value: s
   const [genOpen, setGenOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
   return (
-    <Field label={t("field.password")} htmlFor={id}>
+    <Field
+      label={t("field.password")}
+      htmlFor={id}
+      aside={
+        <button
+          ref={anchorRef}
+          type="button"
+          className="link-btn"
+          onClick={() => setGenOpen((o) => !o)}
+          aria-expanded={genOpen}
+          aria-haspopup="dialog"
+          title={t("generator.generate")}
+        >
+          <WandSparkles size={14} />
+          {t("generator.generateShort")}
+        </button>
+      }
+    >
       <div className="popover-anchor">
-        <PasswordInput
-          id={id}
-          value={value}
-          onChange={onChange}
-          actionCount={1}
-          actions={
-            <button
-              ref={anchorRef}
-              type="button"
-              className="icon-btn"
-              onClick={() => setGenOpen((o) => !o)}
-              aria-expanded={genOpen}
-              aria-label={t("generator.generate")}
-              title={t("generator.generate")}
-            >
-              <WandSparkles />
-            </button>
-          }
-        />
+        <PasswordInput id={id} value={value} onChange={onChange} />
         {genOpen && (
           <GeneratorPopover anchorRef={anchorRef} onClose={() => setGenOpen(false)} onUse={(pw) => onChange(pw)} />
         )}
@@ -467,6 +466,17 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
               {TYPE_ICONS[draft.type]}
               {isNew ? t("item.newOfType", { type: t(`type.${draft.type}`) }) : t(`type.${draft.type}`)}
             </span>
+            <label className="chip-select" title={t("field.folder")}>
+              <FolderIcon aria-hidden />
+              <select id={folderId} value={draft.folderId ?? ""} onChange={(e) => set({ folderId: e.target.value || null })} aria-label={t("field.folder")}>
+                {folderOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown aria-hidden />
+            </label>
             {showErrors && nameMissing && <span className="chip danger">{t("item.nameRequired")}</span>}
           </div>
         </div>
@@ -507,8 +517,8 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
           />
         )}
 
-        <EditSection title={draft.type === "note" ? t("field.notes") : t("item.organisation")}>
-          {draft.type === "note" && (
+        {draft.type === "note" && (
+          <EditSection title={t("field.notes")}>
             <textarea
               className="input note-textarea"
               value={draft.notes}
@@ -517,20 +527,8 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
               placeholder={t("item.notePlaceholder")}
               rows={10}
             />
-          )}
-          <div className="form-grid-2">
-            <Field label={t("field.folder")} htmlFor={folderId}>
-              <Select id={folderId} value={draft.folderId ?? ""} onChange={(v) => set({ folderId: v || null })} options={folderOptions} />
-            </Field>
-            <div className="field">
-              <span className="field-label">{t("item.favorite")}</span>
-              <div className="switch-row">
-                <Switch checked={draft.favorite} onChange={(favorite) => set({ favorite })} label={t("item.favorite")} />
-                <span className="muted">{draft.favorite ? t("item.isFavorite") : t("item.notFavorite")}</span>
-              </div>
-            </div>
-          </div>
-        </EditSection>
+          </EditSection>
+        )}
 
         {draft.type !== "note" && (
           <EditSection title={t("field.notes")}>

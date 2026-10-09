@@ -3,6 +3,7 @@ Keystead – Schnellstart
 
 Keystead ist ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf
 diesem Rechner – es gibt keinen Server und keine Cloud.
+(Keystead = Key + Homestead: deine Schlüssel bleiben zu Hause.)
 
 1. Starten
 ----------
@@ -15,22 +16,22 @@ Windows-SmartScreen-Hinweis: Die EXE ist nicht signiert. Falls „Der Computer
 wurde durch Windows geschützt“ erscheint: „Weitere Informationen“ →
 „Trotzdem ausführen“.
 
-Alte VaultX-1.x-Tresore: beim Einrichten „Alten VaultX-Tresor importieren“
-wählen oder später unter Einstellungen → Daten → Importieren.
+Alte VaultX-1.x-Tresore: beim ersten Start „Von VaultX umsteigen“ wählen oder
+später unter Einstellungen → Import & Export → Importieren.
 
-Speicherort der Daten: %LOCALAPPDATA%\Keystead\v2
-Portabler Modus (Daten neben der EXE): Einstellungen → Daten → Portabler Modus,
-oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
+Speicherort der Daten: %LOCALAPPDATA%\Keystead
+Portabler Modus (Daten neben der EXE): Einstellungen → Erweitert → Portabler
+Modus, oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
 
 2. Browser-Erweiterung (Chrome, Edge, Brave)
 --------------------------------------------
-a) In Keystead: Einstellungen → Browser-Integration → beim Browser „Verbinden“.
+a) In Keystead: Einstellungen → Browser-Integration → beim Browser „Aktivieren“.
 b) Im Browser chrome://extensions (bzw. edge://extensions) öffnen,
    „Entwicklermodus“ einschalten, „Entpackte Erweiterung laden“ und den Ordner
    "browser-extension" aus diesem ZIP auswählen.
    Erwartete Erweiterungs-ID: imfndemblnaalppnmdplagajjielnaok
-c) Auf das Keystead-Symbol in der Browserleiste klicken → „Mit Keystead verbinden“
-   → den angezeigten Code in der App bestätigen.
+c) Auf das Keystead-Symbol in der Browserleiste klicken →
+   „Mit Keystead verbinden“ → den angezeigten Code in der App bestätigen.
 
 Wichtig: Den Ordner "browser-extension" nach dem Laden nicht verschieben oder
 löschen – der Browser lädt die Erweiterung von dort. Wenn du Keystead.exe
@@ -39,5 +40,5 @@ aktualisiert.
 
 3. Terminal-Version
 -------------------
-In der App: Einstellungen → Terminal-Version öffnen.
+In der App: Einstellungen → Erweitert → „Terminal öffnen“.
 Oder in einer Konsole: keystead-cli.exe  (Hilfe: keystead-cli.exe --help)

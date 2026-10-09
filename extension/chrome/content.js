@@ -269,7 +269,6 @@
     .icon:hover { opacity: 1; box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.22); }
     .icon svg { width: 100%; height: 100%; }
     .icon.locked .tile { fill: #7d8592; }
-    .icon.locked .hole { fill: #7d8592; }
 
     .dropdown {
       background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
@@ -428,22 +427,37 @@
     return node;
   }
 
-  /** The Keystead mark (shield with keyhole on a rounded tile), as in the desktop app. */
+  /** Shield with the keyhole cut out (even-odd) on the 512 × 512 grid of assets/keystead.svg. */
+  const SHIELD_WITH_KEYHOLE =
+    "M256 100 388 150v104c0 82-56 136-132 164-76-28-132-82-132-164V150ZM242.61 265.06a32 32 0 1 1 26.78 0L278 336h-44Z";
+  let logoCount = 0;
+
+  function svgNode(tag, attrs) {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+    return node;
+  }
+
+  /** The Keystead mark (white shield with keyhole on a blue→violet rounded tile), as in the desktop app. */
   function logo() {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 32 32");
-    svg.setAttribute("aria-hidden", "true");
-    const parts = [
-      ["rect", { class: "tile", width: "32", height: "32", rx: "8", fill: "#2f6fed" }],
-      ["path", { class: "shield", d: "M16 5.75 24 8.6v6.35c0 5.1-3.4 9.2-8 10.95-4.6-1.75-8-5.85-8-10.95V8.6z", fill: "#fff" }],
-      ["circle", { class: "hole", cx: "16", cy: "14", r: "2.4", fill: "#2f6fed" }],
-      ["path", { class: "hole", d: "M14.85 15.3h2.3l.65 4.7h-3.6z", fill: "#2f6fed" }],
-    ];
-    for (const [tag, attrs] of parts) {
-      const node = document.createElementNS(SVG_NS, tag);
-      for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
-      svg.append(node);
-    }
+    // Unique gradient ids: a reference to a gradient inside a hidden SVG (e.g. a hidden field icon) does not render.
+    const id = `ks-logo-${++logoCount}`;
+    const svg = svgNode("svg", { viewBox: "0 0 512 512", "aria-hidden": "true" });
+    const defs = svgNode("defs", {});
+    const bg = svgNode("linearGradient", { id: `${id}-bg`, x1: 0, y1: 0, x2: 1, y2: 1 });
+    bg.append(svgNode("stop", { offset: 0, "stop-color": "#2f6fed" }), svgNode("stop", { offset: 1, "stop-color": "#7c4dff" }));
+    const hl = svgNode("linearGradient", { id: `${id}-hl`, x1: 0, y1: 0, x2: 0, y2: 1 });
+    hl.append(
+      svgNode("stop", { offset: 0, "stop-color": "#fff", "stop-opacity": 0.22 }),
+      svgNode("stop", { offset: 0.55, "stop-color": "#fff", "stop-opacity": 0 }),
+    );
+    defs.append(bg, hl);
+    svg.append(
+      defs,
+      svgNode("rect", { class: "tile", width: 512, height: 512, rx: 116, fill: `url(#${id}-bg)` }),
+      svgNode("rect", { width: 512, height: 512, rx: 116, fill: `url(#${id}-hl)` }),
+      svgNode("path", { fill: "#fff", "fill-rule": "evenodd", d: SHIELD_WITH_KEYHOLE }),
+    );
     return svg;
   }
 

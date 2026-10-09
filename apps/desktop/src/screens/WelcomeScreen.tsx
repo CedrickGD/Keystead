@@ -1,24 +1,23 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   Check,
   ChevronRight,
-  FileUp,
   FolderInput,
   HardDrive,
   KeyRound,
   LifeBuoy,
   Plug,
-  ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
-import { api, pickOpenFile } from "../lib/api";
-import type { ImportReport, LegacyVaultInfo, VaultInfo } from "../lib/types";
+import { api } from "../lib/api";
+import type { ImportReport, VaultInfo } from "../lib/types";
 import { useT } from "../i18n";
 import { useApp } from "../state/app";
 import { Logo } from "../components/Logo";
 import { Button, Field, PasswordInput } from "../components/Controls";
 import { RecoveryKeyReveal } from "../components/RecoveryKey";
+import { LegacySourcePicker } from "../components/LegacySourcePicker";
 import {
   MasterPasswordFields,
   masterPasswordProblem,
@@ -56,7 +55,7 @@ export function WelcomeScreen() {
         <div className="welcome-choices">
           <button type="button" className="choice-card" onClick={() => setMode("create")}>
             <span className="choice-icon">
-              <ShieldCheck />
+              <Logo variant="glyph" />
             </span>
             <span className="choice-text">
               <span className="choice-title">{t("welcome.createTitle")}</span>
@@ -251,48 +250,12 @@ function CreateVaultStep({
 function LegacyImportStep({ onDone }: { onDone: () => void }) {
   const { t, tp, errorText } = useT();
   const pwId = useId();
-  const [found, setFound] = useState<LegacyVaultInfo[] | null>(null);
+  const sourceId = useId();
   const [path, setPath] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ImportReport | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .legacyScan()
-      .then((list) => {
-        if (cancelled) return;
-        setFound(list);
-        if (list[0]) setPath(list[0].path);
-      })
-      .catch(() => {
-        if (!cancelled) setFound([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const pickFile = async () => {
-    try {
-      const picked = await pickOpenFile({
-        title: t("import.pickLegacy"),
-        filters: [{ name: "VaultX 1.x", extensions: ["json"] }],
-      });
-      if (!picked) return;
-      setFound((list) => {
-        const current = list ?? [];
-        if (current.some((v) => v.path === picked)) return current;
-        const fileName = picked.split(/[\\/]/).pop() ?? picked;
-        return [...current, { name: fileName, path: picked }];
-      });
-      setPath(picked);
-    } catch (err) {
-      setError(errorText(err));
-    }
-  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -346,31 +309,10 @@ function LegacyImportStep({ onDone }: { onDone: () => void }) {
       </div>
 
       <div className="field">
-        <span className="field-label">{t("import.source")}</span>
-        {found === null ? (
-          <div className="legacy-list-loading">
-            <span className="spinner" /> {t("import.scanning")}
-          </div>
-        ) : (
-          <div className="legacy-list" role="radiogroup" aria-label={t("import.source")}>
-            {found.length === 0 && <div className="legacy-empty">{t("import.noneFound")}</div>}
-            {found.map((v) => (
-              <label key={v.path} className={`legacy-option ${path === v.path ? "selected" : ""}`}>
-                <input type="radio" name="legacy" checked={path === v.path} onChange={() => setPath(v.path)} />
-                <span className="legacy-option-text">
-                  <span className="legacy-option-name">{v.name}</span>
-                  <span className="legacy-option-path" title={v.path}>
-                    {v.path}
-                  </span>
-                </span>
-              </label>
-            ))}
-            <button type="button" className="legacy-pick" onClick={() => void pickFile()}>
-              <FileUp />
-              {t("import.pickOther")}
-            </button>
-          </div>
-        )}
+        <span className="field-label" id={sourceId}>
+          {t("import.source")}
+        </span>
+        <LegacySourcePicker path={path} onPath={setPath} onError={setError} labelledBy={sourceId} />
       </div>
 
       <Field label={t("import.legacyPassword")} htmlFor={pwId} hint={t("import.legacyPasswordHint")}>

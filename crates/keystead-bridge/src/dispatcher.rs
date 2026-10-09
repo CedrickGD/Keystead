@@ -2,15 +2,15 @@
 //! unlock rate limiting on top of a [`VaultBackend`] implemented by the app.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
-use serde_json::Value;
 use keystead_core::generator::GeneratorOptions;
 use keystead_core::model::ItemSummary;
 use keystead_core::totp::TotpCode;
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
@@ -23,6 +23,8 @@ use crate::util::{lock, log};
 
 /// Maximum length (in characters) of a client name.
 pub const MAX_CLIENT_NAME_CHARS: usize = 100;
+/// How often a waiting `pair` request checks whether its connection is gone.
+const PEER_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// At most this many pairing requests can wait for the user at once.
 const MAX_PENDING_PAIRINGS: usize = 4;
 
@@ -44,6 +46,14 @@ pub trait VaultBackend: Send + Sync + 'static {
     /// Asks the user to approve a pairing (emit `bridge://pairing-request`).
     /// Must not block; the answer comes via [`Dispatcher::respond_pairing`].
     fn request_pairing(&self, request_id: &str, client_name: &str, code: &str);
+    /// A pairing request announced by [`VaultBackend::request_pairing`] ended
+    /// without the user's decision: the browser cancelled it (its connection
+    /// closed), a newer request of the same client replaced it, or it timed
+    /// out. [`Dispatcher::respond_pairing`] no longer accepts it; e.g. close
+    /// the dialog.
+    fn pairing_closed(&self, request_id: &str) {
+        let _ = request_id;
+    }
     /// Logins matching the page URL (favorites first).
     fn logins_for_url(&self, url: &str) -> std::result::Result<Vec<ItemSummary>, BridgeError>;
     /// Search over the unlocked vault (the dispatcher caps the result at 50).
@@ -171,6 +181,13 @@ impl Dispatcher {
 
     /// Answers one request (same as [`BridgeHandler::handle`]).
     pub fn dispatch(&self, request: Request) -> Response {
+        self.dispatch_for_peer(request, &|| false)
+    }
+
+    /// Answers one request of a connection; a `pair` request is withdrawn as
+    /// soon as `peer_gone()` reports that the requester hung up (see
+    /// [`BridgeHandler::handle_for_peer`]).
+    pub fn dispatch_for_peer(&self, request: Request, peer_gone: &dyn Fn() -> bool) -> Response {
         let Request {
             id,
             client_id,
@@ -178,7 +195,7 @@ impl Dispatcher {
             payload,
         } = request;
         let user_action = payload.is_user_action();
-        let result = self.execute(client_id.as_deref(), token.as_deref(), payload);
+        let result = self.execute(client_id.as_deref(), token.as_deref(), payload, peer_gone);
         if result.is_ok() && user_action {
             self.backend.on_activity();
         }
@@ -213,6 +230,7 @@ impl Dispatcher {
         client_id: Option<&str>,
         token: Option<&str>,
         payload: Payload,
+        peer_gone: &dyn Fn() -> bool,
     ) -> std::result::Result<Value, BridgeError> {
         let paired = self.authenticate(client_id, token);
         if payload.needs_pairing() && !paired {
@@ -232,7 +250,9 @@ impl Dispatcher {
                     vault_name: vault_name.filter(|_| paired),
                 })
             }
-            Payload::Pair { client_name, code } => json(&self.pair(&client_name, &code)?),
+            Payload::Pair { client_name, code } => {
+                json(&self.pair(&client_name, &code, peer_gone)?)
+            }
             Payload::Unlock { password } => json(&UnlockData {
                 vault_name: self.unlock(&password)?,
             }),
@@ -269,16 +289,29 @@ impl Dispatcher {
         }
     }
 
-    fn pair(&self, client_name: &str, code: &str) -> std::result::Result<PairData, BridgeError> {
+    fn pair(
+        &self,
+        client_name: &str,
+        code: &str,
+        peer_gone: &dyn Fn() -> bool,
+    ) -> std::result::Result<PairData, BridgeError> {
         let name = sanitize_client_name(client_name).ok_or(BridgeError::InvalidRequest)?;
         if !is_pairing_code(code) {
             return Err(BridgeError::InvalidRequest);
         }
-        let ticket = self.pairing.begin(&name, code)?;
-        self.backend
-            .request_pairing(&ticket.request_id, &name, code);
-        if !ticket.wait(self.config.pairing_timeout) {
-            return Err(BridgeError::PairingDenied);
+        let (ticket, superseded) = self.pairing.begin(&name, code)?;
+        for request_id in &superseded {
+            self.backend.pairing_closed(request_id);
+        }
+        let request_id = ticket.request_id.clone();
+        self.backend.request_pairing(&request_id, &name, code);
+        match ticket.wait(self.config.pairing_timeout, peer_gone) {
+            PairingOutcome::Approved => {}
+            PairingOutcome::Denied => return Err(BridgeError::PairingDenied),
+            PairingOutcome::Closed => {
+                self.backend.pairing_closed(&request_id);
+                return Err(BridgeError::PairingDenied);
+            }
         }
         let (client, token) = lock(&self.clients).add(&name).map_err(|e| {
             log(format_args!("could not store the paired client: {e}"));
@@ -318,6 +351,10 @@ impl Dispatcher {
 impl BridgeHandler for Dispatcher {
     fn handle(&self, request: Request) -> Response {
         self.dispatch(request)
+    }
+
+    fn handle_for_peer(&self, request: Request, peer_gone: &dyn Fn() -> bool) -> Response {
+        self.dispatch_for_peer(request, peer_gone)
     }
 }
 
@@ -376,19 +413,48 @@ struct PairingTicket {
     pending: PendingMap,
 }
 
+/// How a pairing request ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairingOutcome {
+    /// The user approved it.
+    Approved,
+    /// The user denied it, or a newer request of the same client replaced it.
+    Denied,
+    /// Withdrawn without a decision: timed out, or the requester hung up.
+    Closed,
+}
+
 impl PairingTicket {
-    /// Blocks until the user decided or `timeout` passed (→ denied).
-    fn wait(self, timeout: Duration) -> bool {
-        match self.reply.recv_timeout(timeout) {
-            Ok(approved) => approved,
-            Err(_) => {
-                let mut pending = lock(&self.pending);
-                if pending.remove(&self.request_id).is_some() {
-                    false
-                } else {
-                    // Answered between the timeout and taking the lock.
-                    self.reply.try_recv().unwrap_or(false)
+    /// Blocks until the user decided, `timeout` passed or `peer_gone()`
+    /// reports that the requester hung up (checked every
+    /// [`PEER_CHECK_INTERVAL`]). A request whose requester is gone is never
+    /// approved: nobody would receive the token.
+    fn wait(self, timeout: Duration, peer_gone: &dyn Fn() -> bool) -> PairingOutcome {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.reply.recv_timeout(left.min(PEER_CHECK_INTERVAL)) {
+                Ok(true) => return PairingOutcome::Approved,
+                Ok(false) | Err(RecvTimeoutError::Disconnected) => return PairingOutcome::Denied,
+                Err(RecvTimeoutError::Timeout) => {
+                    if peer_gone() {
+                        lock(&self.pending).remove(&self.request_id);
+                        return PairingOutcome::Closed;
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
                 }
+            }
+        }
+        let mut pending = lock(&self.pending);
+        if pending.remove(&self.request_id).is_some() {
+            PairingOutcome::Closed
+        } else {
+            // Answered between the timeout and taking the lock.
+            match self.reply.try_recv() {
+                Ok(true) => PairingOutcome::Approved,
+                _ => PairingOutcome::Denied,
             }
         }
     }
@@ -403,16 +469,19 @@ impl Drop for PairingTicket {
 impl PairingBroker {
     /// Registers a request. A still pending request with the same client
     /// name is superseded (answered as denied): only the newest code shown
-    /// in the extension can be approved.
+    /// in the extension can be approved. Returns the ticket and the ids of
+    /// the superseded requests.
     fn begin(
         &self,
         client_name: &str,
         code: &str,
-    ) -> std::result::Result<PairingTicket, BridgeError> {
+    ) -> std::result::Result<(PairingTicket, Vec<String>), BridgeError> {
         let mut pending = lock(&self.pending);
-        pending.retain(|_, p| {
+        let mut superseded = Vec::new();
+        pending.retain(|id, p| {
             if p.client_name == client_name {
                 let _ = p.reply.try_send(false);
+                superseded.push(id.clone());
                 false
             } else {
                 true
@@ -431,11 +500,14 @@ impl PairingBroker {
                 reply: tx,
             },
         );
-        Ok(PairingTicket {
-            request_id,
-            reply: rx,
-            pending: Arc::clone(&self.pending),
-        })
+        Ok((
+            PairingTicket {
+                request_id,
+                reply: rx,
+                pending: Arc::clone(&self.pending),
+            },
+            superseded,
+        ))
     }
 
     /// Sends the decision while holding the lock, so [`PairingTicket::wait`]
@@ -484,9 +556,13 @@ mod tests {
     #[test]
     fn broker_timeout_and_late_answer() {
         let broker = PairingBroker::default();
-        let ticket = broker.begin("a", "123456").unwrap();
+        let (ticket, superseded) = broker.begin("a", "123456").unwrap();
+        assert!(superseded.is_empty());
         let id = ticket.request_id.clone();
-        assert!(!ticket.wait(Duration::from_millis(10)));
+        assert_eq!(
+            ticket.wait(Duration::from_millis(10), &|| false),
+            PairingOutcome::Closed
+        );
         assert!(
             !broker.respond(&id, true),
             "answer after timeout is rejected"
@@ -495,16 +571,53 @@ mod tests {
     }
 
     #[test]
+    fn broker_withdraws_the_request_when_the_requester_hangs_up() {
+        let broker = PairingBroker::default();
+        let (ticket, _) = broker.begin("a", "123456").unwrap();
+        let id = ticket.request_id.clone();
+        let started = Instant::now();
+        assert_eq!(
+            ticket.wait(Duration::from_secs(30), &|| true),
+            PairingOutcome::Closed
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "not the full timeout"
+        );
+        assert!(broker.pending().is_empty());
+        assert!(
+            !broker.respond(&id, true),
+            "a request whose requester is gone cannot be approved"
+        );
+
+        // A decision that arrives while the requester is still there wins.
+        let (ticket, _) = broker.begin("b", "123456").unwrap();
+        assert!(broker.respond(&ticket.request_id, true));
+        assert_eq!(
+            ticket.wait(Duration::from_secs(30), &|| false),
+            PairingOutcome::Approved
+        );
+    }
+
+    #[test]
     fn broker_supersedes_same_name_and_caps_pending() {
         let broker = PairingBroker::default();
-        let first = broker.begin("a", "111111").unwrap();
-        let second = broker.begin("a", "222222").unwrap();
+        let (first, _) = broker.begin("a", "111111").unwrap();
+        let first_id = first.request_id.clone();
+        let (second, superseded) = broker.begin("a", "222222").unwrap();
+        assert_eq!(superseded, vec![first_id]);
         // The first one was answered "denied" immediately.
-        assert!(!first.wait(Duration::from_secs(5)));
+        assert_eq!(
+            first.wait(Duration::from_secs(5), &|| false),
+            PairingOutcome::Denied
+        );
         assert_eq!(broker.pending().len(), 1);
         assert_eq!(broker.pending()[0].code, "222222");
         assert!(broker.respond(&second.request_id, true));
-        assert!(second.wait(Duration::from_secs(5)));
+        assert_eq!(
+            second.wait(Duration::from_secs(5), &|| false),
+            PairingOutcome::Approved
+        );
         assert!(broker.pending().is_empty());
 
         let tickets: Vec<_> = (0..MAX_PENDING_PAIRINGS)

@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import {
   Check,
   ChevronRight,
-  Copy,
   Eye,
   EyeOff,
   Folder as FolderIcon,
@@ -18,7 +17,7 @@ import type { Folder, VaultItem } from "../../lib/types";
 import { normalizeUrl } from "../../lib/api";
 import { formatCardNumber, identityFullName } from "../../lib/utils";
 import { useT } from "../../i18n";
-import { useCopy } from "../../state/app";
+import { CopyButton } from "../../components/CopyButton";
 import { Avatar } from "../../components/Avatar";
 import { Menu, MenuItem } from "../../components/Menu";
 import { TotpValue, useTotp } from "../../components/Totp";
@@ -28,7 +27,6 @@ import { TYPE_ICONS } from "./ItemList";
 
 function TotpRow({ seed }: { seed: string }) {
   const { t } = useT();
-  const copy = useCopy();
   const totp = useTotp(seed);
   return (
     <div className="fieldrow">
@@ -39,16 +37,7 @@ function TotpRow({ seed }: { seed: string }) {
         </div>
       </div>
       <div className="fieldrow-actions">
-        <button
-          type="button"
-          className="icon-btn"
-          disabled={!totp.code}
-          onClick={() => totp.code && void copy(totp.code.code, { label: t("field.totpShort"), sensitive: true })}
-          title={t("common.copyNamed", { what: t("field.totpShort") })}
-          aria-label={t("common.copyNamed", { what: t("field.totpShort") })}
-        >
-          <Copy />
-        </button>
+        <CopyButton value={totp.code?.code ?? ""} label={t("field.totpShort")} sensitive disabled={!totp.code} />
       </div>
     </div>
   );
@@ -56,7 +45,6 @@ function TotpRow({ seed }: { seed: string }) {
 
 function PasswordHistory({ item }: { item: VaultItem }) {
   const { t, formatDateTime } = useT();
-  const copy = useCopy();
   const [open, setOpen] = useState(false);
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
   if (item.passwordHistory.length === 0) return null;
@@ -98,15 +86,7 @@ function PasswordHistory({ item }: { item: VaultItem }) {
                   >
                     {shown ? <EyeOff /> : <Eye />}
                   </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={t("common.copyNamed", { what: t("field.password") })}
-                    aria-label={t("common.copyNamed", { what: t("field.password") })}
-                    onClick={() => void copy(entry.password, { label: t("field.password"), sensitive: true })}
-                  >
-                    <Copy />
-                  </button>
+                  <CopyButton value={entry.password} label={t("field.password")} sensitive />
                 </div>
               </div>
             );
@@ -307,9 +287,9 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
             >
               <Star fill={item.favorite ? "currentColor" : "none"} />
             </button>
-            <button type="button" className="btn btn-secondary" onClick={onEdit} data-detail-primary>
+            <button type="button" className="btn btn-secondary edit-btn" onClick={onEdit} data-detail-primary title={t("common.edit")}>
               <Pencil />
-              {t("common.edit")}
+              <span className="btn-label">{t("common.edit")}</span>
             </button>
             <div className="popover-anchor">
               <button
@@ -351,13 +331,15 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
               <strong>{t("trash.itemInTrash")}</strong>
               <span>{t("trash.deletedAt", { when: formatRelative(item.deletedAt ?? 0) })}</span>
             </div>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={onRestore} data-detail-primary>
-              <RotateCcw />
-              {t("trash.restore")}
-            </button>
-            <button type="button" className="btn btn-danger-ghost btn-sm" onClick={onDeleteForever}>
-              {t("trash.deleteForever")}
-            </button>
+            <div className="trash-banner-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={onRestore} data-detail-primary>
+                <RotateCcw />
+                {t("trash.restore")}
+              </button>
+              <button type="button" className="btn btn-danger-ghost btn-sm" onClick={onDeleteForever}>
+                {t("trash.deleteForever")}
+              </button>
+            </div>
           </div>
         )}
 

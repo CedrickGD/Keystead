@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, History, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Copy, History, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import type { GeneratedPassword, GeneratorOptions } from "../lib/types";
 import { useT } from "../i18n";
@@ -9,6 +9,7 @@ import { useConfirm } from "../components/Confirm";
 import { Button } from "../components/Controls";
 import { EmptyState } from "../components/EmptyState";
 import { PasswordText } from "../components/PasswordText";
+import { CopyButton } from "../components/CopyButton";
 import { StrengthMeter } from "../components/StrengthMeter";
 import { GeneratorOptionsForm, loadGeneratorOptions, saveGeneratorOptions } from "../components/GeneratorOptionsForm";
 
@@ -22,7 +23,10 @@ export function GeneratorPage() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<GeneratedPassword[] | null>(null);
   const [spinning, setSpinning] = useState(false);
+  const [copied, setCopied] = useState(false);
   const requestId = useRef(0);
+  const copiedTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -100,8 +104,21 @@ export function GeneratorPage() {
             <Button variant="secondary" onClick={regenerate} icon={<RefreshCw className={spinning ? "spin-once" : ""} />}>
               {t("generator.regenerate")}
             </Button>
-            <Button variant="primary" onClick={() => void copy(value, { label: copyLabel, sensitive: true })} icon={<Copy />} disabled={!value}>
-              {t("common.copy")}
+            <Button
+              variant="primary"
+              className="gen-copy"
+              onClick={() =>
+                void copy(value, { label: copyLabel, sensitive: true }).then((ok) => {
+                  if (!ok) return;
+                  setCopied(true);
+                  window.clearTimeout(copiedTimer.current);
+                  copiedTimer.current = window.setTimeout(() => setCopied(false), 1500);
+                })
+              }
+              icon={copied ? <Check /> : <Copy />}
+              disabled={!value}
+            >
+              {copied ? t("common.copied") : t("common.copy")}
             </Button>
           </div>
         </section>
@@ -135,15 +152,7 @@ export function GeneratorPage() {
                       <PasswordText value={entry.password} className="truncate selectable" />
                       <span className="gen-history-time">{formatRelative(entry.createdAt)}</span>
                     </div>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      onClick={() => void copy(entry.password, { label: t("field.password"), sensitive: true })}
-                      title={t("common.copy")}
-                      aria-label={t("common.copy")}
-                    >
-                      <Copy />
-                    </button>
+                    <CopyButton value={entry.password} label={t("field.password")} sensitive />
                   </li>
                 ))}
               </ul>

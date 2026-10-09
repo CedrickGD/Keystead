@@ -1,11 +1,11 @@
 //! Vault picker, vault creation, unlock prompt, item editor and generator.
 
+use keystead_core::generator::GeneratorKind;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
-use keystead_core::generator::GeneratorKind;
 
 use super::{bold, centered, dim, error_style, panel, reversed, sanitize, wrap};
 use crate::app::form::FormFocus;

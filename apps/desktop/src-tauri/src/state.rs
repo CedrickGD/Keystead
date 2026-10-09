@@ -12,12 +12,12 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
 use keystead_bridge::{Dispatcher, ServerHandle};
 use keystead_core::model::VaultInfo;
 use keystead_core::settings::Settings;
 use keystead_core::{clipboard, Error as CoreError, UnlockedVault, VaultStore};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::error::{AppError, AppResult};
 use crate::monitor::MonitorSignal;
@@ -31,6 +31,10 @@ pub const EVENT_CHANGED: &str = "vault://changed";
 pub const EVENT_UNLOCKED: &str = "vault://unlocked";
 /// `bridge://pairing-request` – payload `{ requestId, clientName, code }`.
 pub const EVENT_PAIRING_REQUEST: &str = "bridge://pairing-request";
+/// `bridge://pairing-closed` – payload `{ requestId }`: a pairing request
+/// ended without the user's decision (cancelled in the browser, replaced by a
+/// newer one, timed out); its dialog can be closed.
+pub const EVENT_PAIRING_CLOSED: &str = "bridge://pairing-closed";
 /// `bridge://unlock-request` – payload `{}`.
 pub const EVENT_UNLOCK_REQUEST: &str = "bridge://unlock-request";
 
@@ -53,6 +57,12 @@ struct LockedPayload {
 
 #[derive(Debug, Clone, Serialize)]
 struct EmptyPayload {}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingClosedPayload {
+    request_id: String,
+}
 
 /// Writes a diagnostic line to stderr. Never pass secrets. A missing or
 /// broken stderr (Windows GUI subsystem) is ignored.
@@ -247,6 +257,15 @@ impl Core {
 
     pub fn emit_pairing_request<S: Serialize + Clone>(&self, request: S) {
         self.emit(EVENT_PAIRING_REQUEST, request);
+    }
+
+    pub fn emit_pairing_closed(&self, request_id: &str) {
+        self.emit(
+            EVENT_PAIRING_CLOSED,
+            PairingClosedPayload {
+                request_id: request_id.to_owned(),
+            },
+        );
     }
 
     /// Shows, restores and focuses the main window.

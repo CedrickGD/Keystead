@@ -5,13 +5,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use keystead_core::model::{CardData, IdentityData, ItemType, LoginUri, VaultItem};
+use keystead_core::settings::{Language, Settings};
+use keystead_core::{KdfParams, UnlockedVault, VaultStore};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use tempfile::TempDir;
-use keystead_core::model::{CardData, IdentityData, ItemType, LoginUri, VaultItem};
-use keystead_core::settings::{Language, Settings};
-use keystead_core::{KdfParams, UnlockedVault, VaultStore};
 
 use crate::app::App;
 use crate::platform::Platform;

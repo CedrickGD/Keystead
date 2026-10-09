@@ -8,16 +8,19 @@ use std::thread;
 use std::time::Duration;
 
 use common::*;
-use serde_json::json;
 use keystead_bridge::socket::{self, Client, Endpoint};
 use keystead_bridge::{
     start_server_at, BridgeError, ClientStore, Dispatcher, Error, Payload, Request, Response,
 };
+use serde_json::json;
 
 /// A unique endpoint per test.
 fn endpoint(dir: &tempfile::TempDir, name: &str) -> Endpoint {
     if cfg!(windows) {
-        Endpoint::Namespaced(format!("keystead-bridge-test-{}-{name}", std::process::id()))
+        Endpoint::Namespaced(format!(
+            "keystead-bridge-test-{}-{name}",
+            std::process::id()
+        ))
     } else {
         Endpoint::Path(dir.path().join(format!("{name}.sock")))
     }
@@ -169,9 +172,85 @@ fn pairing_blocks_only_its_own_connection() {
 }
 
 #[test]
+fn pairing_is_withdrawn_when_the_requester_hangs_up() {
+    // The extension cancelled the pairing (or the browser closed): the native
+    // host and with it the connection are gone. The request must disappear
+    // and must not be approvable anymore (nobody would get the token).
+    let dir = tempfile::tempdir().unwrap();
+    let ep = endpoint(&dir, "hangup");
+    let (d, backend) = dispatcher(&dir);
+    let _server = start_server_at(ep.clone(), d.clone()).unwrap();
+
+    let mut stream = socket::connect(&ep).unwrap();
+    keystead_bridge::framing::write_frame(
+        &mut stream,
+        json!({"id": "p", "type": "pair", "clientName": "Chrome", "code": "123456"})
+            .to_string()
+            .as_bytes(),
+        keystead_bridge::framing::MAX_MESSAGE_SIZE,
+    )
+    .unwrap();
+    let req = backend.next_pairing(Duration::from_secs(10)).unwrap();
+    assert_eq!(d.pending_pairings().len(), 1);
+    drop(stream);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !d.pending_pairings().is_empty() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(d.pending_pairings().is_empty(), "request withdrawn");
+    assert!(!d.respond_pairing(&req.request_id, true));
+    assert!(d.clients().is_empty(), "no client was paired");
+    assert_eq!(
+        *backend.closed_pairings.lock().unwrap(),
+        vec![req.request_id.clone()],
+        "the app was told to close its dialog"
+    );
+}
+
+#[test]
+fn superseded_pairing_is_reported_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ep = endpoint(&dir, "supersede");
+    let (d, backend) = dispatcher(&dir);
+    let _server = start_server_at(ep.clone(), d.clone()).unwrap();
+    thread::scope(|s| {
+        let pair = |code: &'static str| {
+            let ep = ep.clone();
+            move || {
+                Client::connect(&ep)
+                    .unwrap()
+                    .request(&Request::new(
+                        code,
+                        Payload::Pair {
+                            client_name: "Edge".into(),
+                            code: code.into(),
+                        },
+                    ))
+                    .unwrap()
+            }
+        };
+        let first = s.spawn(pair("111111"));
+        let old = backend.next_pairing(Duration::from_secs(10)).unwrap();
+        let second = s.spawn(pair("222222"));
+        let new = backend.next_pairing(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            first.join().unwrap(),
+            Response::error("111111", BridgeError::PairingDenied)
+        );
+        assert_eq!(
+            *backend.closed_pairings.lock().unwrap(),
+            vec![old.request_id.clone()]
+        );
+        assert!(d.respond_pairing(&new.request_id, true));
+        assert!(second.join().unwrap().ok);
+    });
+}
+
+#[test]
 fn raw_garbage_on_the_socket_gets_invalid_request() {
-    use std::io::Write;
     use keystead_bridge::framing::{read_frame, write_frame, MAX_MESSAGE_SIZE};
+    use std::io::Write;
 
     let dir = tempfile::tempdir().unwrap();
     let ep = endpoint(&dir, "garbage");

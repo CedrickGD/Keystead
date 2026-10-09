@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use keystead_bridge::server::{handle_frame, BridgeHandler};
 use keystead_bridge::{BridgeError, LoginSecret, PairingRequest, Response, VaultBackend};
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::matching;
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
 use keystead_core::totp::{self, TotpCode};
+use serde_json::Value;
 
 pub const PASSWORD: &str = "correct horse battery staple";
 pub const VAULT_NAME: &str = "Privat";
@@ -27,6 +27,8 @@ pub struct FakeBackend {
     items: Mutex<Vec<VaultItem>>,
     pairings: Mutex<VecDeque<PairingRequest>>,
     pairing_cv: Condvar,
+    /// Request ids passed to `pairing_closed`.
+    pub closed_pairings: Mutex<Vec<String>>,
     pub unlock_calls: AtomicUsize,
     pub activity: AtomicUsize,
     pub focus_calls: AtomicUsize,
@@ -75,6 +77,7 @@ impl FakeBackend {
             ]),
             pairings: Mutex::new(VecDeque::new()),
             pairing_cv: Condvar::new(),
+            closed_pairings: Mutex::new(Vec::new()),
             unlock_calls: AtomicUsize::new(0),
             activity: AtomicUsize::new(0),
             focus_calls: AtomicUsize::new(0),
@@ -145,6 +148,13 @@ impl VaultBackend for FakeBackend {
             code: code.to_owned(),
         });
         self.pairing_cv.notify_all();
+    }
+
+    fn pairing_closed(&self, request_id: &str) {
+        self.closed_pairings
+            .lock()
+            .unwrap()
+            .push(request_id.to_owned());
     }
 
     fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError> {

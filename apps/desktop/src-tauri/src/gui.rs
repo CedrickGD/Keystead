@@ -4,10 +4,10 @@
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use keystead_core::settings::Settings;
 use keystead_core::{paths, VaultStore};
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
+use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
 use crate::{bridge, commands, monitor, platform, tray, BACKGROUND_ARG};
@@ -133,6 +133,15 @@ fn setup(app: &AppHandle, background: bool) {
     monitor::spawn(Arc::downgrade(&core), signals_rx);
 
     bridge::start_if_enabled(&core);
+    if background && !bridge::is_running(&core) {
+        // Only the native host starts the app with --background, to reach
+        // the bridge. Without a running bridge (browser integration off, or
+        // the endpoint is served elsewhere) the host cannot use this
+        // instance, and a hidden window would just linger unnoticed.
+        log("started in the background, but the browser bridge is not running: exiting");
+        app.exit(0);
+        return;
+    }
     if settings.browser_integration {
         // Registry/file work off the main thread.
         let _ = std::thread::Builder::new()

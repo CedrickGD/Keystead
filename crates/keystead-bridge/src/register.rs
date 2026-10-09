@@ -16,8 +16,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
 use keystead_core::paths;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::util::write_atomic;
@@ -538,7 +538,10 @@ mod tests {
         assert_eq!(registered_browsers_in(&layout), registered);
 
         assert!(!needs_reregister_in(&layout, exe));
-        assert!(needs_reregister_in(&layout, Path::new("/elsewhere/Keystead")));
+        assert!(needs_reregister_in(
+            &layout,
+            Path::new("/elsewhere/Keystead")
+        ));
 
         // A broken manifest also asks for re-registration.
         fs::write(&chrome_manifest, b"{broken").unwrap();

@@ -16,11 +16,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER, HEXLOWER_PERMISSIVE};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use keystead_core::crypto;
 use keystead_core::model::now_ms;
 use keystead_core::paths;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::Result;
 use crate::util::{log, write_atomic};

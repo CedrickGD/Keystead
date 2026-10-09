@@ -5,11 +5,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use clap::{Arg, ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use keystead_core::generator::{self, GeneratorKind, GeneratorOptions};
 use keystead_core::model::{ItemType, VaultInfo, VaultItem};
 use keystead_core::settings::Settings;
 use keystead_core::{clipboard, paths, totp, UnlockedVault, VaultStore};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zeroize::Zeroizing;
 
 use crate::app::{clipboard_detail, first_url, password_of, username_of, App};
@@ -183,7 +183,10 @@ pub fn main(args: Vec<String>, via_cli_flag: bool) -> i32 {
             .first()
             .map(Path::new)
             .and_then(Path::file_name)
-            .map_or_else(|| "Keystead".to_owned(), |f| f.to_string_lossy().into_owned());
+            .map_or_else(
+                || "Keystead".to_owned(),
+                |f| f.to_string_lossy().into_owned(),
+            );
         cmd = cmd.bin_name(format!("{exe} --cli"));
     }
     let matches = match cmd.try_get_matches_from(&args) {

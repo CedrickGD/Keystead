@@ -46,7 +46,7 @@
   "hostMissingTitle": { "message": "Keystead app not found" },
   "hostMissingText": { "message": "The extension works together with the Keystead app on this computer. To set it up:" },
   "hostStep1": { "message": "Install Keystead or start Keystead.exe." },
-  "hostStep2": { "message": "In Keystead: Settings → Browser integration → click “Connect” next to your browser." },
+  "hostStep2": { "message": "In Keystead: Settings → Browser integration → click “Enable” next to your browser." },
   "hostStep3": { "message": "Close this window and open it again." },
 
   "appUnavailableTitle": { "message": "Keystead app is not running" },
@@ -72,6 +72,7 @@
   "masterPassword": { "message": "Master password" },
   "unlock": { "message": "Unlock" },
   "wrongPassword": { "message": "Wrong master password. Please try again." },
+  "unlockNoVault": { "message": "No vault selected. Unlock the vault you want to use once in the Keystead app – after that it works here too." },
   "openInApp": { "message": "Open in Keystead app" },
   "showPassword": { "message": "Show password" },
   "hidePassword": { "message": "Hide password" },

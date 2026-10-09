@@ -1,5 +1,10 @@
 /* Design tokens. Light is the default; dark applies via [data-theme="dark"]
-   on <html> (set from Settings, "system" follows prefers-color-scheme). */
+   on <html> (set from Settings, "system" follows prefers-color-scheme).
+
+   Brand: the Keystead mark is a blue→violet tile (#2f6fed → #7c4dff). The UI
+   uses one calm indigo-blue accent from the middle of that range; the logo is
+   the only gradient. All text colours meet WCAG AA (≥ 4.5:1) on the surfaces
+   they are used on. */
 
 :root {
   --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", Inter, system-ui, -apple-system,
@@ -9,122 +14,139 @@
   --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "DejaVu Sans Mono", ui-monospace,
     "SFMono-Regular", Menlo, monospace;
 
+  /* Type scale: 11 · 12 · 13 · 14 (body) · 15 · 16 · 18 · 20 · 24 · 28 */
+
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius: 8px;
   --radius-md: 10px;
   --radius-lg: 12px;
 
-  --sidebar-w: 236px;
-  --list-w: 336px;
+  --sidebar-w: 240px;
+  --list-w: 340px;
 
   --dur: 140ms;
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
 
   color-scheme: light;
 
-  --bg-app: #f4f5f7;
-  --bg-sidebar: #edf0f5;
+  --bg-app: #f5f6f8;
+  --bg-sidebar: #eef0f4;
   --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
   --bg-input: #ffffff;
-  --bg-muted: #f0f2f5;
-  --bg-hover: rgba(17, 24, 39, 0.045);
-  --bg-active: rgba(17, 24, 39, 0.08);
-  --nav-active-bg: #dfe8fa;
+  --bg-muted: #f1f3f6;
+  --bg-hover: rgba(20, 26, 40, 0.045);
+  --bg-active: rgba(20, 26, 40, 0.08);
+  --nav-active-bg: #e3e8fb;
+  /* Solid row states (quick actions sit on top of them). */
+  --row-hover: #f2f4f7;
+  --row-selected: #eaeefd;
 
   --border: #e1e4ea;
-  --border-strong: #cbd1da;
-  --border-input: #c9cfd8;
+  --border-strong: #cdd2db;
+  --border-input: #c6ccd6;
 
-  --text: #181b21;
-  --text-2: #4f5663;
-  --text-3: #626976;
+  --text: #171a20;
+  --text-2: #4b5260;
+  --text-3: #5f6673;
   --text-on-accent: #ffffff;
 
-  --accent: #2f6fed;
-  --accent-text: #1c54c2;
-  --accent-soft: #eaf1fe;
-  --accent-soft-border: #cfdffb;
-  --primary-bg: #2f6fed;
-  --primary-bg-hover: #2861d6;
-  --primary-bg-active: #2254bd;
+  --accent: #3b5bdb;
+  --accent-text: #2f4bc0;
+  --accent-soft: #edf0fd;
+  --accent-soft-border: #d2d9f8;
+  --primary-bg: #3b5bdb;
+  --primary-bg-hover: #3451c7;
+  --primary-bg-active: #2e48b3;
 
   --danger: #d1242f;
-  --danger-bg: #cf222e;
-  --danger-bg-hover: #b51e28;
+  --danger-bg: #c9252f;
+  --danger-bg-hover: #b01f28;
   --danger-text: #b42318;
-  --danger-soft: #fdeded;
-  --danger-border: #f7c5c5;
+  --danger-soft: #fdeeee;
+  --danger-border: #f4c7c7;
 
   --warning-text: #8a4b06;
   --warning-icon: #c26a0a;
-  --warning-soft: #fdf5e7;
-  --warning-border: #f2dbb0;
+  --warning-soft: #fdf6e9;
+  --warning-border: #f0dcb4;
 
   --success-text: #146c36;
   --success-icon: #1f9a4c;
-  --success-soft: #e9f6ee;
+  --success-soft: #eaf6ef;
   --success-border: #c3e6cf;
 
-  --star: #e9a100;
+  --star: #e09b00;
   --mark-bg: rgba(250, 204, 21, 0.38);
 
-  --strength-0: #c4262e;
-  --strength-1: #d9631c;
-  --strength-2: #b7860b;
-  --strength-3: #2f9a52;
-  --strength-4: #16803d;
+  /* Strength: --strength-N is used for bars, --strength-N-text for labels (AA on panels). */
+  --strength-0: #d0303a;
+  --strength-1: #e2702a;
+  --strength-2: #d9a21b;
+  --strength-3: #3aa560;
+  --strength-4: #1e8a47;
+  --strength-0-text: #b42318;
+  --strength-1-text: #b4460f;
+  --strength-2-text: #8f5f05;
+  --strength-3-text: #157337;
+  --strength-4-text: #146c36;
 
-  --focus-ring: 0 0 0 3px rgba(47, 111, 237, 0.3);
+  --pw-digit: #2f4bc0;
+  --pw-symbol: #b4460f;
+
+  --focus-ring: 0 0 0 3px rgba(59, 91, 219, 0.28);
   --shadow-xs: 0 1px 1px rgba(16, 24, 40, 0.04);
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.07);
   --shadow-md: 0 6px 16px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.06);
   --shadow-lg: 0 18px 48px rgba(16, 24, 40, 0.18), 0 2px 8px rgba(16, 24, 40, 0.08);
   --overlay: rgba(17, 21, 30, 0.42);
 
-  --toast-bg: #1d2128;
+  --toast-bg: #1c2029;
   --toast-text: #f3f4f6;
-  --toast-action: #9cc0ff;
+  --toast-action: #a9b9ff;
 
-  --avatar-bg-s: 78%;
+  /* Letter avatars: muted tints so the list stays calm. */
+  --avatar-bg-s: 46%;
   --avatar-bg-l: 93%;
-  --avatar-fg-s: 58%;
-  --avatar-fg-l: 36%;
+  --avatar-fg-s: 42%;
+  --avatar-fg-l: 34%;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg-app: #14161a;
-  --bg-sidebar: #101215;
-  --bg-panel: #1a1d22;
-  --bg-elevated: #22262d;
-  --bg-input: #121418;
+  --bg-app: #131519;
+  --bg-sidebar: #0f1114;
+  --bg-panel: #191c21;
+  --bg-elevated: #20242a;
+  --bg-input: #111317;
   --bg-muted: #23272e;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-active: rgba(255, 255, 255, 0.09);
-  --nav-active-bg: rgba(79, 140, 255, 0.16);
+  --nav-active-bg: rgba(107, 133, 245, 0.17);
+  --row-hover: #212429;
+  --row-selected: #232a3f;
 
-  --border: #2a2f37;
+  --border: #292e36;
   --border-strong: #3a414c;
   --border-input: #3a414c;
 
-  --text: #e8eaee;
+  --text: #e7e9ee;
   --text-2: #aab1bd;
-  --text-3: #8c94a1;
+  --text-3: #8b93a0;
 
-  --accent: #4f8cff;
-  --accent-text: #8fb6ff;
-  --accent-soft: rgba(79, 140, 255, 0.13);
-  --accent-soft-border: rgba(79, 140, 255, 0.32);
-  --primary-bg: #2f6fed;
-  --primary-bg-hover: #3b7af2;
-  --primary-bg-active: #2a63d6;
+  --accent: #6b85f5;
+  --accent-text: #a3b3ff;
+  --accent-soft: rgba(107, 133, 245, 0.14);
+  --accent-soft-border: rgba(107, 133, 245, 0.34);
+  --primary-bg: #4460e0;
+  --primary-bg-hover: #4f6ae9;
+  --primary-bg-active: #3b55cc;
 
   --danger: #f2555e;
-  --danger-bg: #c7262f;
-  --danger-bg-hover: #d6343d;
+  --danger-bg: #c4262f;
+  --danger-bg-hover: #d3343d;
   --danger-text: #ff8a8a;
   --danger-soft: rgba(242, 85, 94, 0.12);
   --danger-border: rgba(242, 85, 94, 0.35);
@@ -147,27 +169,35 @@
   --strength-2: #f2c94c;
   --strength-3: #5fd28a;
   --strength-4: #3fc775;
+  --strength-0-text: #ff8a8a;
+  --strength-1-text: #ffa36e;
+  --strength-2-text: #f2c94c;
+  --strength-3-text: #6ad891;
+  --strength-4-text: #4cc77a;
 
-  --focus-ring: 0 0 0 3px rgba(79, 140, 255, 0.38);
+  --pw-digit: #a3b3ff;
+  --pw-symbol: #ffa36e;
+
+  --focus-ring: 0 0 0 3px rgba(107, 133, 245, 0.4);
   --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.2);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
   --overlay: rgba(0, 0, 0, 0.55);
 
-  --toast-bg: #2b3038;
+  --toast-bg: #2a2f38;
   --toast-text: #f3f4f6;
-  --toast-action: #9cc0ff;
+  --toast-action: #a9b9ff;
 
-  --avatar-bg-s: 38%;
-  --avatar-bg-l: 23%;
-  --avatar-fg-s: 85%;
+  --avatar-bg-s: 26%;
+  --avatar-bg-l: 22%;
+  --avatar-fg-s: 60%;
   --avatar-fg-l: 78%;
 }
 
 @media (max-width: 1100px) {
   :root {
-    --sidebar-w: 208px;
-    --list-w: 292px;
+    --sidebar-w: 212px;
+    --list-w: 296px;
   }
 }

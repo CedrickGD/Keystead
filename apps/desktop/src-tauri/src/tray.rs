@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
+use keystead_core::settings::Language;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
-use keystead_core::settings::Language;
 
 use crate::state::{log, show_main_window, Core, LockReason};
 

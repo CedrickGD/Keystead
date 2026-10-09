@@ -46,7 +46,7 @@
   "hostMissingTitle": { "message": "Keystead-App nicht gefunden" },
   "hostMissingText": { "message": "Die Erweiterung arbeitet mit der Keystead-App auf diesem Computer zusammen. So richtest du sie ein:" },
   "hostStep1": { "message": "Keystead installieren bzw. Keystead.exe starten." },
-  "hostStep2": { "message": "In Keystead: Einstellungen → Browser-Integration → bei deinem Browser auf „Verbinden“ klicken." },
+  "hostStep2": { "message": "In Keystead: Einstellungen → Browser-Integration → bei deinem Browser auf „Aktivieren“ klicken." },
   "hostStep3": { "message": "Dieses Fenster schließen und erneut öffnen." },
 
   "appUnavailableTitle": { "message": "Keystead-App läuft nicht" },
@@ -72,6 +72,7 @@
   "masterPassword": { "message": "Master-Passwort" },
   "unlock": { "message": "Entsperren" },
   "wrongPassword": { "message": "Falsches Master-Passwort. Bitte versuche es erneut." },
+  "unlockNoVault": { "message": "Kein Tresor ausgewählt. Entsperre den gewünschten Tresor einmal in der Keystead-App – danach geht es auch hier." },
   "openInApp": { "message": "In Keystead-App öffnen" },
   "showPassword": { "message": "Passwort anzeigen" },
   "hidePassword": { "message": "Passwort verbergen" },

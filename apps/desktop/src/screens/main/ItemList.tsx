@@ -11,12 +11,14 @@ import {
   Star,
   StickyNote,
   Trash2,
+  UserRound,
   X,
   Layers,
 } from "lucide-react";
 import type { ItemType, VaultItem } from "../../lib/types";
 import { itemSubtitle } from "../../lib/utils";
 import { useT } from "../../i18n";
+import { useCopy } from "../../state/app";
 import { Avatar } from "../../components/Avatar";
 import { EmptyState, Highlight } from "../../components/EmptyState";
 import { Menu, MenuItem } from "../../components/Menu";
@@ -148,6 +150,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
   searchRef,
 ) {
   const { t, formatRelative } = useT();
+  const copy = useCopy();
   const listRef = useRef<HTMLDivElement>(null);
   const isTrash = filter.kind === "trash";
 
@@ -222,6 +225,9 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
       <EmptyState icon={<Trash2 />} title={t("list.trashEmpty")} hint={t("list.trashEmptyHint")} />
     ) : filter.kind === "favorites" ? (
       <EmptyState icon={<Star />} title={t("list.noFavorites")} hint={t("list.noFavoritesHint")} />
+    ) : filter.kind === "all" ? (
+      // The detail pane shows the "get started" actions for an empty vault.
+      <EmptyState icon={<Layers />} title={t("list.empty")} />
     ) : (
       <EmptyState
         icon={<Layers />}
@@ -268,6 +274,41 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
                 </div>
               </div>
               {item.favorite && !isTrash && <Star className="row-star" aria-label={t("item.favorite")} />}
+              {!isTrash && item.login && (item.login.username || item.login.password) && (
+                // Mouse shortcut for the most common task; keyboard users have Ctrl+B / Ctrl+Shift+C.
+                <div className="row-actions">
+                  {item.login.username && (
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      tabIndex={-1}
+                      title={t("common.copyNamed", { what: t("field.username") })}
+                      aria-label={t("common.copyNamed", { what: t("field.username") })}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copy(item.login?.username ?? "", { label: t("field.username"), sensitive: false });
+                      }}
+                    >
+                      <UserRound />
+                    </button>
+                  )}
+                  {item.login.password && (
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      tabIndex={-1}
+                      title={t("common.copyNamed", { what: t("field.password") })}
+                      aria-label={t("common.copyNamed", { what: t("field.password") })}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copy(item.login?.password ?? "", { label: t("field.password"), sensitive: true });
+                      }}
+                    >
+                      <KeyRound />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

@@ -269,7 +269,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
           </div>
           <Field label={t("export.password")} htmlFor={exportPwId} error={showErrors && exportPwProblem === t("export.passwordRequired") ? exportPwProblem : null}>
             <PasswordInput id={exportPwId} value={exportPassword} onChange={setExportPassword} />
-            <StrengthMeter password={exportPassword} />
+            <StrengthMeter password={exportPassword} emptyHint={t("export.passwordHint")} />
           </Field>
           <Field
             label={t("export.passwordConfirm")}

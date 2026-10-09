@@ -1280,7 +1280,10 @@ pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>,
 
 /// Reads an encrypted Keystead export (any v1 vault file) with its password.
 /// Trashed items are left out.
-pub fn import_keystead_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)> {
+pub fn import_keystead_export(
+    path: &Path,
+    password: &str,
+) -> Result<(Vec<VaultItem>, Vec<Folder>)> {
     let file = VaultFile::read(path)?;
     let key = file.unwrap_key(password)?;
     let data = file.decrypt_payload(&key)?;

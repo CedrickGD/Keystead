@@ -1,8 +1,8 @@
 //! Rendering tests with ratatui's `TestBackend`.
 
-use ratatui::crossterm::event::KeyCode;
 use keystead_core::settings::Language;
 use keystead_core::totp;
+use ratatui::crossterm::event::KeyCode;
 
 use crate::app::{App, Overlay, Screen};
 use crate::test_support::*;

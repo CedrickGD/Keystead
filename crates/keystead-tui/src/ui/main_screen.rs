@@ -1,12 +1,12 @@
 //! Main screen: item list with search (left) and details (right).
 
+use keystead_core::model::{now_ms, FieldKind, ItemType, VaultItem};
+use keystead_core::totp;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use ratatui::Frame;
-use keystead_core::model::{now_ms, FieldKind, ItemType, VaultItem};
-use keystead_core::totp;
 
 use super::{bold, dim, error_style, panel, reversed, sanitize, set_cursor, wrap};
 use crate::app::{App, Focus};

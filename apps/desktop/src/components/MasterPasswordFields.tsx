@@ -59,7 +59,7 @@ export function MasterPasswordFields({
           autoFocus={autoFocus}
           size="lg"
         />
-        <StrengthMeter password={value.password} strength={strength} />
+        <StrengthMeter password={value.password} strength={strength} emptyHint={t("master.hint", { min: MIN_MASTER_LENGTH })} />
       </Field>
       <Field label={labels?.confirm ?? t("master.confirm")} htmlFor={confirmId} error={confirmError}>
         <PasswordInput

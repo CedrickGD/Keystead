@@ -1,13 +1,13 @@
 //! The serde representation matches the JSON in docs/ARCHITECTURE.md
 //! ("Browser bridge protocol"), checked against literal JSON strings.
 
-use serde_json::{json, Value};
 use keystead_bridge::protocol::{
     extract_id, IdData, PairData, StatusData, UnlockData, PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
 use keystead_bridge::{BridgeError, LoginSecret, Payload, Request, Response};
 use keystead_core::generator::{GeneratorKind, GeneratorOptions};
 use keystead_core::totp::TotpCode;
+use serde_json::{json, Value};
 
 fn parse(s: &str) -> Request {
     Request::parse(s.as_bytes()).unwrap_or_else(|r| panic!("{s} rejected: {r:?}"))

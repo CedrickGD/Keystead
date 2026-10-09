@@ -30,6 +30,15 @@ const STOP_WAIT: Duration = Duration::from_secs(3);
 /// several connection threads.
 pub trait BridgeHandler: Send + Sync + 'static {
     fn handle(&self, request: Request) -> Response;
+
+    /// Like [`BridgeHandler::handle`] for a request of a live connection:
+    /// `peer_gone()` tells whether the requesting peer has hung up since, so
+    /// a request that waits for the user (`pair`) can be withdrawn instead of
+    /// being approved for nobody. Defaults to `handle`.
+    fn handle_for_peer(&self, request: Request, peer_gone: &dyn Fn() -> bool) -> Response {
+        let _ = peer_gone;
+        self.handle(request)
+    }
 }
 
 #[derive(Default)]
@@ -187,7 +196,14 @@ fn accept_loop(listener: &Listener, handler: &Arc<dyn BridgeHandler>, shared: &A
         let handler = Arc::clone(handler);
         let spawned = thread::Builder::new()
             .name("keystead-bridge-conn".into())
-            .spawn(move || serve_connection(stream, handler.as_ref(), &slot.0.stopping));
+            .spawn(move || {
+                serve_connection(
+                    stream,
+                    handler.as_ref(),
+                    &slot.0.stopping,
+                    socket::peer_hung_up,
+                );
+            });
         if let Err(e) = spawned {
             log(format_args!(
                 "could not spawn a bridge connection thread: {e}"
@@ -197,10 +213,13 @@ fn accept_loop(listener: &Listener, handler: &Arc<dyn BridgeHandler>, shared: &A
 }
 
 /// Serves one connection until EOF, an I/O error or server stop.
+/// `peer_gone` checks (without blocking or reading) whether the peer has
+/// closed the connection while a request is being handled.
 fn serve_connection<S: Read + Write>(
     mut stream: S,
     handler: &dyn BridgeHandler,
     stopping: &AtomicBool,
+    peer_gone: impl Fn(&S) -> bool,
 ) {
     loop {
         let frame = match framing::read_frame(&mut stream, MAX_MESSAGE_SIZE) {
@@ -222,7 +241,7 @@ fn serve_connection<S: Read + Write>(
             // restarted server transparently (or reports `app_unavailable`).
             return;
         }
-        let response = handle_frame(handler, &frame);
+        let response = handle_frame_for_peer(handler, &frame, &|| peer_gone(&stream));
         if send(&mut stream, &response).is_err() {
             return;
         }
@@ -233,16 +252,28 @@ fn serve_connection<S: Read + Write>(
 /// yields `invalid_request`, a panicking handler `internal` (in builds that
 /// unwind). The response always carries the request's id.
 pub fn handle_frame(handler: &dyn BridgeHandler, frame: &[u8]) -> Response {
+    handle_frame_for_peer(handler, frame, &|| false)
+}
+
+/// [`handle_frame`] for a request of a connection whose hang-up `peer_gone`
+/// detects (see [`BridgeHandler::handle_for_peer`]).
+pub fn handle_frame_for_peer(
+    handler: &dyn BridgeHandler,
+    frame: &[u8],
+    peer_gone: &dyn Fn() -> bool,
+) -> Response {
     let request = match Request::parse(frame) {
         Ok(request) => request,
         Err(invalid) => return invalid,
     };
     let id = request.id.clone();
-    let mut response = panic::catch_unwind(AssertUnwindSafe(|| handler.handle(request)))
-        .unwrap_or_else(|_| {
-            log("bridge request handler panicked");
-            Response::error(id.clone(), BridgeError::Internal)
-        });
+    let mut response = panic::catch_unwind(AssertUnwindSafe(|| {
+        handler.handle_for_peer(request, peer_gone)
+    }))
+    .unwrap_or_else(|_| {
+        log("bridge request handler panicked");
+        Response::error(id.clone(), BridgeError::Internal)
+    });
     response.id = id;
     response
 }
@@ -326,7 +357,7 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        serve_connection(&mut conn, &Echo, &AtomicBool::new(false));
+        serve_connection(&mut conn, &Echo, &AtomicBool::new(false), |_| false);
         let r = responses(&conn.output);
         assert_eq!(r.len(), 5);
         assert_eq!(r[0], Response::null("1"));
@@ -354,7 +385,7 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        serve_connection(&mut conn, &Echo, &AtomicBool::new(false));
+        serve_connection(&mut conn, &Echo, &AtomicBool::new(false), |_| false);
         assert_eq!(
             responses(&conn.output),
             vec![Response::error("", BridgeError::InvalidRequest)]
@@ -371,7 +402,7 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        serve_connection(&mut conn, &Echo, &AtomicBool::new(true));
+        serve_connection(&mut conn, &Echo, &AtomicBool::new(true), |_| false);
         assert!(conn.output.is_empty());
     }
 }

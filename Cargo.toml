@@ -18,7 +18,10 @@ authors = ["CedrickGD"]
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Keep unwinding (no `panic = "abort"`): the bridge server catches a panicking
+# request handler and answers `internal`, Tauri commands report a panicked
+# task as an error and the state mutex recovers from poisoning – with abort
+# any such bug would kill the app instead.
 strip = true
 
 # Key derivation, ciphers and the strength estimator are unbearably slow

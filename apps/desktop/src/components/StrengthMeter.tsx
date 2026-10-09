@@ -32,7 +32,16 @@ export function useStrength(password: string, delay = 180): Strength | null {
 
 const LABELS: MessageKey[] = ["strength.0", "strength.1", "strength.2", "strength.3", "strength.4"];
 
-export function StrengthMeter({ password, strength: given }: { password: string; strength?: Strength | null }) {
+export function StrengthMeter({
+  password,
+  strength: given,
+  emptyHint,
+}: {
+  password: string;
+  strength?: Strength | null;
+  /** Shown instead of the (empty) meter while nothing is typed. */
+  emptyHint?: string;
+}) {
   const { t } = useT();
   const fetched = useStrength(given === undefined ? password : "");
   const strength = given === undefined ? fetched : given;
@@ -40,6 +49,13 @@ export function StrengthMeter({ password, strength: given }: { password: string;
   const label = score >= 0 ? t(LABELS[score] ?? "strength.0") : "";
   // One bar for "very weak", all four for "very strong".
   const filled = score < 0 ? 0 : Math.max(1, score);
+  if (!password && emptyHint) {
+    return (
+      <div className="strength">
+        <span className="field-hint">{emptyHint}</span>
+      </div>
+    );
+  }
   return (
     <div className="strength" data-score={score >= 0 ? score : undefined}>
       <div className="strength-bars" aria-hidden style={score < 0 ? { visibility: "hidden" } : undefined}>
@@ -48,7 +64,7 @@ export function StrengthMeter({ password, strength: given }: { password: string;
         ))}
       </div>
       <span className="strength-label" aria-live="polite">
-        {label || " "}
+        {label || " "}
       </span>
     </div>
   );

@@ -102,7 +102,7 @@ function bool(args: Record<string, unknown>, key: string): boolean {
 }
 
 function dataDir(portable: boolean): string {
-  return portable ? "D:\\Keystead\\Keystead-Data" : "C:\\Users\\Demo\\AppData\\Local\\Keystead\\v2";
+  return portable ? "D:\\Keystead\\Keystead-Data" : "C:\\Users\\Demo\\AppData\\Local\\Keystead";
 }
 
 function vaultPath(id: string, portable: boolean): string {

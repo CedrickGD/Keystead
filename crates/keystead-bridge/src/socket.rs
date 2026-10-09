@@ -201,6 +201,66 @@ pub(crate) fn peer_is_current_user(stream: &Stream) -> bool {
     }
 }
 
+/// True if the peer of `stream` has closed its end. Never blocks and never
+/// consumes data (unread bytes count as "still connected"). Used while a
+/// request (`pair`) waits for the user and nobody reads the connection; must
+/// not be called while another thread reads from `stream`.
+pub(crate) fn peer_hung_up(stream: &Stream) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsFd, AsRawFd};
+        let Stream::UdSocket(inner) = stream;
+        let fd = inner.as_fd().as_raw_fd();
+        let mut byte = 0u8;
+        // SAFETY: `fd` is a valid socket owned by `stream` for the duration
+        // of the call; the buffer is one writable byte.
+        let n = unsafe {
+            libc::recv(
+                fd,
+                (&mut byte as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        match n {
+            0 => true, // orderly shutdown by the peer
+            n if n > 0 => false,
+            _ => !matches!(
+                io::Error::last_os_error().kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let Stream::NamedPipe(inner) = stream;
+        let handle = inner.as_handle().as_raw_handle();
+        let mut available = 0u32;
+        // SAFETY: the handle is a valid pipe handle owned by `stream`; all
+        // optional out-pointers but `available` are null.
+        let ok = unsafe {
+            PeekNamedPipe(
+                handle.cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        // Fails with ERROR_BROKEN_PIPE / ERROR_PIPE_NOT_CONNECTED once the
+        // client has closed its end.
+        ok == 0
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = stream;
+        false
+    }
+}
+
 /// A simple synchronous client: one connection, one request at a time.
 /// (The native host uses its own relay; this is for tools and tests.)
 #[derive(Debug)]

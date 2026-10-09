@@ -40,7 +40,12 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!vault || !password || busy) return;
+    if (!vault || busy) return;
+    if (!password) {
+      setError(t("master.required"));
+      inputRef.current?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -100,13 +105,12 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
                   size="lg"
                   mono={false}
                   invalid={Boolean(error)}
-                  placeholder={t("unlock.placeholder")}
                   autoFocus
                 />
               </div>
             </Field>
 
-            <Button type="submit" variant="primary" size="lg" block loading={busy} disabled={!password} icon={<Lock />}>
+            <Button type="submit" variant="primary" size="lg" block loading={busy} icon={<Lock />}>
               {t("unlock.button")}
             </Button>
 

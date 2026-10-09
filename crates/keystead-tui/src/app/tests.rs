@@ -2,9 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use keystead_core::settings::{Language, Settings};
 use keystead_core::{totp, KdfParams, VaultStore};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::*;
 use crate::test_support::*;

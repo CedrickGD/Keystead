@@ -1,0 +1,334 @@
+<p align="center">
+  <img src="assets/keystead.svg" width="96" height="96" alt="Keystead logo">
+</p>
+
+<h1 align="center">Keystead</h1>
+
+<p align="center">
+  Lokaler Passwort-Manager für Windows – mit Browser-Erweiterung und Terminal-Version.<br>
+  <em>A local password manager for Windows – with a browser extension and a terminal version.</em>
+</p>
+
+<p align="center">
+  <a href="#deutsch">Deutsch</a> · <a href="#english">English</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/keystead-main-light.png" width="800" alt="Keystead – Hauptfenster / main window">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/keystead-main-dark.png" width="264" alt="Keystead – dunkles Design / dark theme">
+  <img src="docs/screenshots/keystead-generator.png" width="264" alt="Keystead – Passwort-Generator / password generator">
+  <img src="docs/screenshots/keystead-settings.png" width="264" alt="Keystead – Einstellungen / settings">
+</p>
+
+---
+
+<a id="deutsch"></a>
+
+## Was ist Keystead?
+
+**Keystead** = *Key* + *Homestead*: deine Schlüssel bleiben zu Hause. Keystead ist
+ein Passwort-Manager im Stil von Bitwarden oder 1Password – aber **komplett lokal**.
+Es gibt keinen Server, kein Konto und keine Cloud-Synchronisation; deine Tresore
+liegen verschlüsselt auf deinem Rechner und verlassen ihn nie.
+
+Keystead 2.0 ist der Nachfolger von VaultX 1.x (PowerShell). Alte VaultX-Tresore
+lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
+
+> **Status:** Testversion (Beta). Erstelle regelmäßig einen verschlüsselten Export
+> als Sicherung.
+
+### Funktionen
+
+- **Tresore** für Logins, Zahlungskarten, Identitäten und sichere Notizen – mit
+  Ordnern, Favoriten, Papierkorb, eigenen Feldern und Passwortverlauf.
+- **Generator** für Passwörter und Passphrasen (EFF-Wortliste) mit Verlauf.
+- **Einmalcodes (TOTP/2FA)** direkt im Eintrag, kompatibel mit Google Authenticator & Co.
+- **Sicherheitsbericht**: schwache, mehrfach verwendete und alte Passwörter.
+- **Wiederherstellungsschlüssel**, falls das Master-Passwort vergessen wird.
+- **Automatische Sperre** nach Inaktivität und beim Sperren des Computers;
+  kopierte Passwörter werden aus der Zwischenablage gelöscht.
+- **Browser-Erweiterung** für Chrome, Edge, Brave, Chromium und Vivaldi: Logins
+  ausfüllen, neue Logins speichern, Passwörter generieren.
+- **Terminal-Version** (`keystead-cli`) mit Vollbild-Oberfläche und Befehlen für Skripte.
+- **Import** aus VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) und
+  Keystead-Exporten; **Export** als verschlüsselte `.keystead`-Datei, CSV oder
+  Bitwarden-JSON.
+- **Portabler Modus** (Daten neben der EXE, z. B. auf einem USB-Stick),
+  Infobereich-Symbol, helles/dunkles Design, Deutsch und Englisch.
+
+### Download & Schnellstart
+
+1. Unter [Releases](../../releases) die neueste
+   Version herunterladen:
+   - `Keystead-<version>-windows-portable.zip` – entpacken und `Keystead.exe`
+     starten, keine Installation nötig. Enthält auch `keystead-cli.exe`, den Ordner
+     `browser-extension` und die Kurzanleitung `LIESMICH.txt`.
+   - `Keystead-<version>-windows-setup.exe` – klassischer Installer (optional, ohne
+     Administratorrechte; installiert nach `%LOCALAPPDATA%\Keystead`, ohne portablen Modus).
+   - `Keystead-<version>-browser-extension.zip` – nur die Browser-Erweiterung.
+2. Die EXE ist nicht signiert. Zeigt Windows SmartScreen „Der Computer wurde durch
+   Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
+3. Beim ersten Start einen Tresor anlegen und ein starkes Master-Passwort wählen.
+   Danach gleich einen **Wiederherstellungsschlüssel** erstellen und sicher
+   aufbewahren – ohne ihn ist ein vergessenes Master-Passwort nicht wiederherstellbar.
+
+Voraussetzung: Windows 10 oder 11 (die benötigte WebView2-Laufzeit ist dort in aller
+Regel schon installiert).
+
+### Browser-Erweiterung einrichten
+
+1. In Keystead: **Einstellungen → Browser-Integration** → beim Browser auf
+   **Aktivieren** klicken (registriert den Native-Messaging-Host `com.keystead.bridge`).
+2. Im Browser `chrome://extensions` (Edge: `edge://extensions`) öffnen, den
+   **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner
+   `browser-extension` auswählen. Die Erweiterungs-ID ist immer
+   `imfndemblnaalppnmdplagajjielnaok`.
+3. Auf das Keystead-Symbol in der Browserleiste klicken → **Mit Keystead verbinden**
+   und den angezeigten 6-stelligen Code in der App bestätigen.
+
+Den Ordner `browser-extension` danach nicht verschieben oder löschen – der Browser
+lädt die Erweiterung von dort. Wird `Keystead.exe` verschoben, einfach einmal
+starten; die Registrierung wird automatisch aktualisiert.
+
+Tastenkürzel: `Strg+Umschalt+Y` öffnet das Popup, `Strg+Umschalt+L` füllt das
+Login der Seite aus, `Strg+Umschalt+9` setzt ein neues Passwort ins aktive Feld.
+
+### Terminal-Version
+
+In der App unter **Einstellungen → Erweitert → Terminal öffnen**, mit
+`Keystead.exe --cli` oder direkt in einer Konsole:
+
+```text
+keystead-cli                      Vollbild-Oberfläche (Tresor wählen, entsperren, suchen, kopieren)
+keystead-cli vaults               alle Tresore auflisten
+keystead-cli list                 Einträge eines Tresors auflisten
+keystead-cli get github --copy    Passwort von „github“ kopieren (--field username|totp|notes|uri)
+keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Passphrase)
+```
+
+`--vault NAME` wählt den Tresor. Hilfe: `keystead-cli --help`.
+
+### Wo liegen meine Daten?
+
+| System | Ordner |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Keystead` |
+| Linux | `~/.local/share/keystead` |
+| macOS | `~/Library/Application Support/Keystead` |
+| Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
+
+Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
+Stand), `settings.json` (Einstellungen, nicht geheim) und `bridge-clients.json`
+(verbundene Browser, nur Hashes). Den portablen Modus schaltest du unter
+**Einstellungen → Erweitert** um – oder du legst den Ordner `Keystead-Data` selbst an.
+
+### Sicherheit in Kürze
+
+- Jeder Tresor hat einen zufälligen 256-Bit-Schlüssel, der die Daten mit
+  **XChaCha20-Poly1305** verschlüsselt. Das Master-Passwort wird mit **Argon2id**
+  (64 MiB, 3 Durchläufe) zu einem Schlüssel, der nur diesen Tresorschlüssel umhüllt.
+- Tresor-ID und Revision sind an den Geheimtext gebunden; Manipulationen fallen auf.
+- Der Wiederherstellungsschlüssel (125 Bit) umhüllt den Tresorschlüssel ein zweites Mal.
+- Keine Netzwerkverbindungen: Die Erweiterung spricht per Native Messaging mit der
+  App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem Unix-Socket, die
+  ausschließlich dem eigenen Benutzer zugänglich sind.
+- Ein Browser wird erst nach Bestätigung eines 6-stelligen Codes in der App
+  verbunden; gespeichert wird nur ein Hash seines Tokens.
+- Die Erweiterung füllt nur nach einer Aktion des Nutzers aus und nur Logins, die
+  zur tatsächlichen Adresse des Frames passen; `https`-Logins nie in `http`-Seiten.
+
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+### Alte VaultX-Tresore
+
+Tresore aus **VaultX 1.x** (der alten PowerShell-Version) übernimmst du beim
+ersten Start über **„Von VaultX umsteigen“** oder später unter
+**Einstellungen → Import & Export → Importieren**. Keystead findet sie automatisch unter
+`%LOCALAPPDATA%\VaultX` (`accounts.json` + `vault_*.json`); entsperrt wird mit dem
+alten Master- oder Wiederherstellungspasswort. Die frühere Zwei-Faktor-Sperre des
+Tresors wird nicht übernommen. VaultX 1.x selbst liegt zum Nachschlagen im Ordner
+[`legacy/`](legacy/).
+
+Aus dem Quellcode bauen: siehe [Build from source](#build-from-source).
+
+---
+
+<a id="english"></a>
+
+## What is Keystead?
+
+**Keystead** = *Key* + *Homestead*: your keys stay at home. Keystead is a password
+manager in the spirit of Bitwarden or 1Password – but **entirely local**. There is
+no server, no account and no cloud sync; your vaults are stored encrypted on your
+computer and never leave it.
+
+Keystead 2.0 is the successor of VaultX 1.x (PowerShell); old VaultX vaults can be
+imported (see [Legacy VaultX vaults](#legacy-vaultx-vaults)). The UI is German first
+and also available in English.
+
+> **Status:** beta. Keep an encrypted export as a backup.
+
+### Features
+
+- **Vaults** with logins, payment cards, identities and secure notes – folders,
+  favourites, trash, custom fields and password history.
+- **Generator** for passwords and passphrases (EFF word list), with history.
+- **One-time codes (TOTP/2FA)** inside items, compatible with Google Authenticator & co.
+- **Security report**: weak, reused and old passwords.
+- **Recovery key** in case the master password is forgotten.
+- **Auto-lock** after inactivity and when the computer is locked; copied secrets are
+  cleared from the clipboard.
+- **Browser extension** for Chrome, Edge, Brave, Chromium and Vivaldi: fill logins,
+  save new logins, generate passwords.
+- **Terminal version** (`keystead-cli`) with a full-screen UI and script-friendly commands.
+- **Import** from VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) and Keystead
+  exports; **export** as an encrypted `.keystead` file, CSV or Bitwarden JSON.
+- **Portable mode** (data next to the exe, e.g. on a USB stick), tray icon, light/dark theme.
+
+### Download & quick start
+
+1. Get the latest version from [Releases](../../releases):
+   - `Keystead-<version>-windows-portable.zip` – unzip and run `Keystead.exe`, no
+     installation needed. Also contains `keystead-cli.exe`, the `browser-extension`
+     folder and the German quick start `LIESMICH.txt`.
+   - `Keystead-<version>-windows-setup.exe` – classic installer (optional, no admin
+     rights needed; installs to `%LOCALAPPDATA%\Keystead`, no portable mode).
+   - `Keystead-<version>-browser-extension.zip` – the browser extension only.
+2. The exe is not code-signed. If Windows SmartScreen says "Windows protected your
+   PC", click "More info" → "Run anyway".
+3. Create a vault with a strong master password on first start, then create a
+   **recovery key** and keep it safe – without it a forgotten master password cannot
+   be recovered.
+
+Requires Windows 10 or 11 (the WebView2 runtime they need is normally already installed).
+
+### Browser extension setup
+
+1. In Keystead: **Einstellungen → Browser-Integration** (Settings → Browser
+   integration) → click **Aktivieren** (Enable) next to your browser. This registers
+   the native messaging host `com.keystead.bridge`.
+2. Open `chrome://extensions` (Edge: `edge://extensions`), enable **developer mode**,
+   click **Load unpacked** and select the `browser-extension` folder. The extension
+   ID is always `imfndemblnaalppnmdplagajjielnaok`.
+3. Click the Keystead toolbar icon → **Mit Keystead verbinden** (Connect to Keystead)
+   and confirm the 6-digit code in the app.
+
+Do not move or delete the `browser-extension` folder afterwards – the browser loads
+the extension from there. If you move `Keystead.exe`, start it once; the
+registration is updated automatically. More: [extension/chrome/README.md](extension/chrome/README.md).
+
+### Terminal version
+
+Open it from the app (**Settings → Advanced → Open terminal**), run
+`Keystead.exe --cli`, or use `keystead-cli` in a console:
+
+```text
+keystead-cli                      full-screen UI (pick vault, unlock, search, copy)
+keystead-cli vaults               list all vaults
+keystead-cli list                 list the items of a vault
+keystead-cli get github --copy    copy the password of "github" (--field username|totp|notes|uri)
+keystead-cli generate --length 24 generate a password (--passphrase for a passphrase)
+```
+
+`--vault NAME` selects the vault; see `keystead-cli --help`. For scripts the master
+password can be passed in `KEYSTEAD_MASTER_PASSWORD` (insecure – other programs and
+the shell history may see it).
+
+### Where is my data?
+
+| System | Folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Keystead` |
+| Linux | `~/.local/share/keystead` |
+| macOS | `~/Library/Application Support/Keystead` |
+| Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
+
+It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
+previous version), `settings.json` (non-secret settings) and `bridge-clients.json`
+(paired browsers, hashes only). `KEYSTEAD_DATA_DIR` overrides the location.
+
+### Security design
+
+- Every vault has a random 256-bit vault key that encrypts the data with
+  **XChaCha20-Poly1305**. The master password is stretched with **Argon2id**
+  (64 MiB, t = 3, p = 4) into a key that only wraps the vault key, so changing the
+  master password re-wraps the key without re-encrypting the data.
+- The vault id and revision are bound to the ciphertext as associated data; any
+  modification of the file is detected.
+- The optional recovery key (125 bits, Crockford base32) wraps the vault key a
+  second time.
+- No network access: the extension talks to the app via Native Messaging; the app
+  only listens on a local named pipe (Windows, restricted to the current user) or a
+  Unix socket (mode 0600, peer uid checked).
+- A browser is paired only after you confirm a 6-digit code in the app; the app
+  stores only a SHA-256 hash of the browser's token.
+- The extension fills only after a user action, only logins that match the real URL
+  of the frame, and never fills `https` logins into `http` pages.
+- Secrets are zeroized in memory where practical, never logged, and copied secrets
+  are excluded from the Windows clipboard history and cleared after a timeout.
+
+The full specification (file format, IPC protocol, commands) is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+### Build from source
+
+Requirements: Rust (stable), Node.js 22; on Windows the MSVC build tools; on Linux
+`libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`.
+
+```sh
+# Desktop app (Keystead / Keystead.exe, on Windows also the NSIS installer)
+cd apps/desktop
+npm ci
+npx tauri build
+cd ../..
+
+# Terminal version (keystead-cli / keystead-cli.exe)
+cargo build --release -p keystead-tui
+```
+
+Binaries end up in `target/release/`. The browser extension (`extension/chrome`)
+needs no build step.
+
+Development:
+
+```sh
+cd apps/desktop
+npm run dev          # UI in a normal browser with a mock backend (password: demo)
+npx tauri dev        # the real desktop app
+
+# checks (as in CI)
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+### Project layout
+
+| Path | Contents |
+|---|---|
+| `crates/keystead-core` | Crypto, vault file format, storage, generator, TOTP, import/export, URL matching, security report |
+| `crates/keystead-bridge` | Browser bridge: protocol, native messaging host, local socket server, host registration |
+| `crates/keystead-tui` | Terminal UI and the `keystead-cli` binary |
+| `apps/desktop` | Desktop app: React + TypeScript UI (`src/`) and Tauri 2 backend (`src-tauri/`) |
+| `extension/chrome` | Manifest V3 browser extension (plain JavaScript) |
+| `assets` | Logo and icons |
+| `docs` | Architecture & contracts, German quick start, screenshots |
+| `legacy` | The old PowerShell VaultX 1.x, kept for reference |
+
+### Legacy VaultX vaults
+
+Vaults of **VaultX 1.x** (the old PowerShell version) can be imported on first start
+(**"Von VaultX umsteigen"** / "Switch from VaultX") or later via
+**Settings → Import & export → Import**.
+Keystead finds them in `%LOCALAPPDATA%\VaultX` (`accounts.json` + `vault_*.json`)
+and decrypts them with the old master or recovery password; the old vault-unlock
+two-factor secret is not imported. The VaultX 1.x source stays in [`legacy/`](legacy/);
+`version.yml` is only read by its auto-updater.
+
+## License
+
+Proprietary – free for personal, educational and non-commercial use; see
+[LICENSE](LICENSE). © 2026 Cedrick Grabe.

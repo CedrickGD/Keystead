@@ -8,6 +8,7 @@ import {
   KeyRound,
   Layers,
   Lock,
+  LockOpen,
   Pencil,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -144,17 +145,21 @@ export function Sidebar({
   return (
     <aside className="sidebar" aria-label={t("sidebar.label")}>
       <div className="sidebar-header">
-        <Logo size={30} />
-        <div className="sidebar-vault">
-          <div className="sidebar-vault-name truncate" title={vaultName}>
-            {vaultName}
-          </div>
-          <div className="sidebar-vault-state">
-            <span className="status-dot on" aria-hidden />
-            {t("sidebar.unlocked")}
+        <Logo size={28} />
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-name">Keystead</div>
+          <div className="sidebar-vault-name truncate" title={t("sidebar.vaultTitle", { name: vaultName })}>
+            <LockOpen aria-hidden />
+            <span className="truncate">{vaultName}</span>
           </div>
         </div>
-        <button type="button" className="icon-btn" onClick={onLock} title={`${t("sidebar.lock")} (Ctrl+L)`} aria-label={t("sidebar.lock")}>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onLock}
+          title={`${t("sidebar.lock")} (Ctrl+L)`}
+          aria-label={t("sidebar.lock")}
+        >
           <Lock />
         </button>
       </div>

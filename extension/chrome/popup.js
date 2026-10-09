@@ -525,7 +525,9 @@ function showLocked() {
             input.select();
             input.focus();
           } else if (!routeError(err)) {
-            error.textContent = errorText(err?.code);
+            // The app answers `not_found` when it cannot tell which vault to open
+            // (several vaults, none used in the app yet).
+            error.textContent = err?.code === "not_found" ? t("unlockNoVault") : errorText(err?.code);
             error.hidden = false;
           }
         }

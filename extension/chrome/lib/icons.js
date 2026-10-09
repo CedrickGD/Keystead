@@ -72,14 +72,41 @@ export function icon(name, className = "ico") {
   return svg;
 }
 
-/** The Keystead mark (shield with keyhole on a rounded tile), as in the desktop app. */
+/** Shield with the keyhole cut out (even-odd) on the 512 × 512 grid of assets/keystead.svg. */
+const SHIELD_WITH_KEYHOLE =
+  "M256 100 388 150v104c0 82-56 136-132 164-76-28-132-82-132-164V150ZM242.61 265.06a32 32 0 1 1 26.78 0L278 336h-44Z";
+
+let logoCount = 0;
+
+function gradient(id, direction, stops) {
+  const node = svgElement("linearGradient", { id, ...direction });
+  for (const [offset, color, opacity] of stops) {
+    node.append(svgElement("stop", { offset, "stop-color": color, "stop-opacity": opacity }));
+  }
+  return node;
+}
+
+/** The Keystead mark (white shield with keyhole on a blue→violet rounded tile), as in the desktop app. */
 export function logo(size = 32) {
-  const svg = svgElement("svg", { viewBox: "0 0 32 32", width: size, height: size, class: "logo", "aria-hidden": "true" });
+  // Unique gradient ids: a reference to a gradient inside a hidden SVG does not render.
+  const id = `ks-logo-${++logoCount}`;
+  const svg = svgElement("svg", { viewBox: "0 0 512 512", width: size, height: size, class: "logo", "aria-hidden": "true" });
+  const defs = svgElement("defs", {});
+  defs.append(
+    gradient(`${id}-bg`, { x1: 0, y1: 0, x2: 1, y2: 1 }, [
+      [0, "#2f6fed", 1],
+      [1, "#7c4dff", 1],
+    ]),
+    gradient(`${id}-hl`, { x1: 0, y1: 0, x2: 0, y2: 1 }, [
+      [0, "#fff", 0.22],
+      [0.55, "#fff", 0],
+    ]),
+  );
   svg.append(
-    svgElement("rect", { class: "logo-tile", width: 32, height: 32, rx: 8 }),
-    svgElement("path", { class: "logo-shield", d: "M16 5.75 24 8.6v6.35c0 5.1-3.4 9.2-8 10.95-4.6-1.75-8-5.85-8-10.95V8.6z" }),
-    svgElement("circle", { class: "logo-hole", cx: 16, cy: 14, r: 2.4 }),
-    svgElement("path", { class: "logo-hole", d: "M14.85 15.3h2.3l.65 4.7h-3.6z" }),
+    defs,
+    svgElement("rect", { width: 512, height: 512, rx: 116, fill: `url(#${id}-bg)` }),
+    svgElement("rect", { width: 512, height: 512, rx: 116, fill: `url(#${id}-hl)` }),
+    svgElement("path", { fill: "#fff", "fill-rule": "evenodd", d: SHIELD_WITH_KEYHOLE }),
   );
   return svg;
 }

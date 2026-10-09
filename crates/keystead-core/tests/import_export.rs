@@ -4,13 +4,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
 use keystead_core::export::{
     export_bitwarden_json, export_csv, export_encrypted_with_params, export_to_file,
 };
 use keystead_core::format::VaultFile;
 use keystead_core::import::{
-    import_bitwarden_json, import_csv, import_into, import_legacy_file, import_keystead_export,
+    import_bitwarden_json, import_csv, import_into, import_keystead_export, import_legacy_file,
     legacy_scan_dir,
 };
 use keystead_core::model::{
@@ -18,6 +17,7 @@ use keystead_core::model::{
     LoginUri, PasswordHistoryEntry, UriMatch, VaultData, VaultItem,
 };
 use keystead_core::{Error, KdfParams, VaultStore};
+use serde_json::{json, Value};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

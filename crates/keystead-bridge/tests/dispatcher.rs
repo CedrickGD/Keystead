@@ -9,11 +9,11 @@ use std::thread;
 use std::time::Duration;
 
 use common::*;
-use serde_json::json;
 use keystead_bridge::protocol::{LoginSecret, PairData, StatusData};
 use keystead_bridge::{BridgeError, ClientStore, Dispatcher, DispatcherConfig, Response};
 use keystead_core::model::ItemSummary;
 use keystead_core::totp::TotpCode;
+use serde_json::json;
 
 struct Fixture {
     dispatcher: Arc<Dispatcher>,

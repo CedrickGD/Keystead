@@ -149,11 +149,13 @@ jobs:
           tag_name: v${{ needs.windows.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: Keystead ${{ needs.windows.outputs.version }}
-          # Pre-release: VaultX 1.x auto-update only follows "latest" and must not jump to 2.x betas.
+          # Pre-release: the old VaultX 1.x auto-update only follows "latest" and must not jump to Keystead betas.
           prerelease: true
           generate_release_notes: false
           body: |
             **Keystead – Testversion (Beta)**
+
+            Keystead ist der Nachfolger von VaultX 1.x – alte VaultX-Tresore lassen sich beim Einrichten importieren.
 
             * `Keystead-…-windows-portable.zip` – entpacken und `Keystead.exe` starten (keine Installation nötig). Enthält auch die Terminal-Version `keystead-cli.exe` und den Ordner `browser-extension`.
             * `Keystead-…-windows-setup.exe` – klassischer Installer (optional).

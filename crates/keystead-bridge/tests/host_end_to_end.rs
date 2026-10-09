@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{json, Value};
-use keystead_bridge::framing::{read_frame, write_frame, MAX_BROWSER_MESSAGE_SIZE, MAX_MESSAGE_SIZE};
+use keystead_bridge::framing::{
+    read_frame, write_frame, MAX_BROWSER_MESSAGE_SIZE, MAX_MESSAGE_SIZE,
+};
 use keystead_bridge::host::{self, LocalSocketConnector};
 use keystead_bridge::{
     start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, Response, VaultBackend,
@@ -21,6 +22,7 @@ use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
 use keystead_core::totp::{self, TotpCode};
 use keystead_core::{KdfParams, UnlockedVault, VaultStore};
+use serde_json::{json, Value};
 
 const MASTER: &str = "Tr0ub4dor&3 – lang genug";
 

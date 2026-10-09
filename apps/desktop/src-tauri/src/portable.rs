@@ -39,6 +39,38 @@ pub fn check_available() -> AppResult<PathBuf> {
     paths::portable_dir().ok_or_else(|| AppError::unsupported("portable_unavailable"))
 }
 
+/// True if `a` and `b` name the same directory (both canonicalised when
+/// they exist; otherwise compared textually, case-insensitively on Windows).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if let (Ok(a), Ok(b)) = (fs::canonicalize(a), fs::canonicalize(b)) {
+        return a == b;
+    }
+    if cfg!(windows) {
+        let norm = |p: &Path| {
+            p.to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_lowercase()
+        };
+        norm(a) == norm(b)
+    } else {
+        a == b
+    }
+}
+
+/// The per-user installer puts `Keystead.exe` into `%LOCALAPPDATA%\Keystead`,
+/// i.e. into the default data directory itself. Enabling portable mode
+/// there would nest `Keystead-Data` inside the data it moves and move the
+/// program files along, so it is refused (`unsupported:portable_installed`).
+fn check_not_inside_data_dir(portable: &Path, default: &Path) -> AppResult<()> {
+    match portable.parent() {
+        Some(exe_dir) if same_dir(exe_dir, default) => {
+            Err(AppError::unsupported("portable_installed"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Switches portable mode on or off and moves the data. Returns the new
 /// data directory. No-op if the mode is already as requested.
 pub fn set_portable(enabled: bool) -> AppResult<PathBuf> {
@@ -48,6 +80,7 @@ pub fn set_portable(enabled: bool) -> AppResult<PathBuf> {
     }
     let default = paths::default_data_dir();
     if enabled {
+        check_not_inside_data_dir(&portable, &default)?;
         enable(&default, &portable)?;
     } else {
         disable(&portable, &default)?;
@@ -310,5 +343,30 @@ mod tests {
             "other"
         );
         assert!(!default.join("settings.json.vxmove").exists());
+    }
+
+    #[test]
+    fn refuses_portable_mode_for_an_exe_inside_the_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("Keystead");
+        fs::create_dir_all(&default).unwrap();
+        // Installed copy: Keystead.exe lives in the data directory itself.
+        let err = check_not_inside_data_dir(&default.join("Keystead-Data"), &default).unwrap_err();
+        assert_eq!(err.code(), "unsupported:portable_installed");
+        // Also when the directory is spelled differently (trailing separator).
+        let mut spelled = default.clone().into_os_string();
+        spelled.push(std::path::MAIN_SEPARATOR_STR);
+        assert!(
+            check_not_inside_data_dir(&default.join("Keystead-Data"), Path::new(&spelled)).is_err()
+        );
+        // Portable ZIP somewhere else: allowed.
+        let usb = dir.path().join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        assert!(check_not_inside_data_dir(&usb.join("Keystead-Data"), &default).is_ok());
+        // A data directory that does not exist yet is compared by name.
+        assert!(
+            check_not_inside_data_dir(&usb.join("Keystead-Data"), &dir.path().join("missing"))
+                .is_ok()
+        );
     }
 }

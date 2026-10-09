@@ -197,13 +197,9 @@ code {
   flex: none;
 }
 
-.logo .logo-tile,
-.logo .logo-hole {
-  fill: var(--primary-bg);
-}
-
-.logo .logo-shield {
-  fill: #fff;
+.logo {
+  display: block;
+  flex: none;
 }
 
 .muted {
@@ -466,7 +462,7 @@ code {
 
 .art-logo {
   margin-bottom: 6px;
-  filter: drop-shadow(0 6px 14px rgba(47, 111, 237, 0.28));
+  filter: drop-shadow(0 6px 14px rgba(86, 94, 246, 0.3));
 }
 
 .art-logo.pulse {

@@ -9,8 +9,11 @@ use keystead_core::clipboard;
 pub trait Platform {
     /// Copies a secret (excluded from clipboard history), cleared after
     /// `clear_after` if the clipboard still holds it.
-    fn copy_secret(&mut self, text: &str, clear_after: Option<Duration>)
-        -> keystead_core::Result<()>;
+    fn copy_secret(
+        &mut self,
+        text: &str,
+        clear_after: Option<Duration>,
+    ) -> keystead_core::Result<()>;
     /// Copies non-secret text.
     fn copy_text(&mut self, text: &str) -> keystead_core::Result<()>;
     /// Clears a pending secret from the clipboard now (lock/quit).

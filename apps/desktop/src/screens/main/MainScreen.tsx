@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileUp, MousePointerClick } from "lucide-react";
 import { ApiError, api, events, subscribeEffect } from "../../lib/api";
 import type { Folder, ItemType, VaultItem } from "../../lib/types";
 import { cloneItem, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
@@ -8,11 +7,11 @@ import { useT, type MessageKey } from "../../i18n";
 import { useApp, useCopy } from "../../state/app";
 import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
-import { EmptyState } from "../../components/EmptyState";
 import { Sidebar } from "./Sidebar";
 import { ItemList } from "./ItemList";
 import { ItemView } from "./ItemView";
 import { ItemEditor } from "./ItemEditor";
+import { StartPanel } from "./StartPanel";
 import { countItems, filterItems, visibleItems, type Filter, type SortKey, type View } from "./model";
 import { GeneratorPage } from "../GeneratorPage";
 import { HealthPage } from "../HealthPage";
@@ -32,7 +31,7 @@ const folderCollator = new Intl.Collator(undefined, { sensitivity: "base", numer
 const byName = (a: Folder, b: Folder) => folderCollator.compare(a.name, b.name);
 
 export function MainScreen() {
-  const { t, errorText } = useT();
+  const { t, tp, errorText } = useT();
   const toast = useToast();
   const confirm = useConfirm();
   const copy = useCopy();
@@ -276,7 +275,7 @@ export function MainScreen() {
   const emptyTrash = async () => {
     const ok = await confirm({
       title: t("trash.emptyTitle"),
-      message: t("trash.emptyText", { count: counts.trash }),
+      message: tp("trash.emptyText", counts.trash),
       confirmLabel: t("trash.empty"),
       tone: "danger",
     });
@@ -285,7 +284,7 @@ export function MainScreen() {
       const removed = await api.emptyTrash();
       setItems((list) => (list ?? []).filter((i) => i.deletedAt === null));
       setSelectedId(null);
-      toast.success(t("trash.emptied", { count: removed }));
+      toast.success(tp("trash.emptied", removed));
     } catch (err) {
       toast.error(errorText(err));
     }
@@ -383,6 +382,10 @@ export function MainScreen() {
         cancelEdit();
       } else if (query && document.activeElement === searchRef.current) {
         setQuery("");
+      } else if (selectedId && view.kind === "vault" && !(document.activeElement instanceof HTMLInputElement)) {
+        // Back to the overview (quick actions & shortcuts) in the detail pane.
+        e.preventDefault();
+        setSelectedId(null);
       }
     }
   };
@@ -429,43 +432,14 @@ export function MainScreen() {
         />
       );
     }
-    if (items && counts.all === 0 && filter.kind !== "trash") {
-      return (
-        <EmptyState
-          icon={<FileUp />}
-          title={t("detail.firstTitle")}
-          hint={t("detail.firstHint")}
-          action={
-            <button type="button" className="btn btn-secondary" onClick={() => navigate({ kind: "settings", section: "data" })}>
-              <FileUp />
-              {t("detail.importCta")}
-            </button>
-          }
-        />
-      );
-    }
+    if (!items) return null;
     return (
-      <div className="detail-placeholder">
-        <EmptyState icon={<MousePointerClick />} title={t("detail.noneTitle")} hint={t("detail.noneHint")} />
-        <dl className="shortcut-list" aria-label={t("shortcuts.title")}>
-          {(
-            [
-              ["Ctrl F", "shortcuts.search"],
-              ["Ctrl N", "shortcuts.new"],
-              ["Ctrl ⇧ C", "shortcuts.copyPassword"],
-              ["Ctrl B", "shortcuts.copyUsername"],
-              ["Ctrl L", "shortcuts.lock"],
-            ] as [string, MessageKey][]
-          ).map(([keys, label]) => (
-            <div key={label}>
-              <dt>
-                <span className="kbd">{keys}</span>
-              </dt>
-              <dd>{t(label)}</dd>
-            </div>
-          ))}
-        </dl>
-      </div>
+      <StartPanel
+        empty={counts.all === 0}
+        onNewLogin={() => startNew("login")}
+        onGenerator={() => navigate({ kind: "generator" })}
+        onSettings={(section) => navigate({ kind: "settings", section })}
+      />
     );
   };
 

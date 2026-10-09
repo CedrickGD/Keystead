@@ -39,15 +39,15 @@ export interface CopyKind {
   sensitive: boolean;
 }
 
-/** Copies via the backend (`copy_text`) and shows a toast. */
-export function useCopy(): (text: string, kind: CopyKind) => Promise<void> {
+/** Copies via the backend (`copy_text`) and shows a toast; resolves to whether it worked. */
+export function useCopy(): (text: string, kind: CopyKind) => Promise<boolean> {
   const { t, errorText } = useT();
   const toast = useToast();
   const ctx = useContext(AppContext);
   const clearSeconds = ctx?.settings.clipboardClearSeconds ?? 0;
   return useCallback(
     async (text: string, kind: CopyKind) => {
-      if (!text) return;
+      if (!text) return false;
       try {
         await api.copyText(text, kind.sensitive);
         toast.success(
@@ -55,8 +55,10 @@ export function useCopy(): (text: string, kind: CopyKind) => Promise<void> {
             ? t("copy.copiedClears", { what: kind.label, seconds: clearSeconds })
             : t("copy.copied", { what: kind.label }),
         );
+        return true;
       } catch (err) {
         toast.error(errorText(err));
+        return false;
       }
     },
     [clearSeconds, errorText, t, toast],

@@ -12,11 +12,11 @@ pub mod generator;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::widgets::TableState;
 use keystead_core::model::{ItemSummary, ItemType, VaultInfo, VaultItem};
 use keystead_core::settings::Settings;
 use keystead_core::{totp, Error, KdfParams, UnlockedVault, VaultStore};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::widgets::TableState;
 use zeroize::Zeroizing;
 
 use crate::i18n::{Lang, M};

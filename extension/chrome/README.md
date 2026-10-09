@@ -7,7 +7,7 @@ nothing leaves the machine.
 ## Install
 
 1. Start the Keystead desktop app → *Einstellungen → Browser-Integration* →
-   click *Verbinden* next to your browser (registers the native host).
+   click *Aktivieren* next to your browser (registers the native host).
 2. Open `chrome://extensions` (Edge: `edge://extensions`), enable developer
    mode, *Load unpacked* → select this folder. The `key` in `manifest.json`
    pins the extension ID to `imfndemblnaalppnmdplagajjielnaok`.

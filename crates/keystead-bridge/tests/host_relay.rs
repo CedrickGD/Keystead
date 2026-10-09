@@ -7,16 +7,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::json;
-use keystead_bridge::framing::{read_frame, write_frame, MAX_BROWSER_MESSAGE_SIZE, MAX_MESSAGE_SIZE};
+use keystead_bridge::framing::{
+    read_frame, write_frame, MAX_BROWSER_MESSAGE_SIZE, MAX_MESSAGE_SIZE,
+};
 use keystead_bridge::host::{run_with, AppConnector, LocalSocketConnector};
 use keystead_bridge::server::BridgeHandler;
 use keystead_bridge::socket::Endpoint;
 use keystead_bridge::{start_server_at, BridgeError, Payload, Request, Response, ServerHandle};
+use serde_json::json;
 
 fn endpoint(dir: &tempfile::TempDir, name: &str) -> Endpoint {
     if cfg!(windows) {
-        Endpoint::Namespaced(format!("keystead-bridge-relay-{}-{name}", std::process::id()))
+        Endpoint::Namespaced(format!(
+            "keystead-bridge-relay-{}-{name}",
+            std::process::id()
+        ))
     } else {
         Endpoint::Path(dir.path().join(format!("{name}.sock")))
     }

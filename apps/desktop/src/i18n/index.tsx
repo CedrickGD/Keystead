@@ -81,8 +81,11 @@ function createI18n(lang: Language): I18n {
         return t("error.io", { detail });
       case "corrupt":
         return t("error.corrupt", { detail });
-      case "unsupported":
+      case "unsupported": {
+        const specific = `error.unsupported.${detail}`;
+        if (specific in messages) return messages[specific as MessageKey];
         return t("error.unsupported", { detail });
+      }
       default:
         return detail ? t("error.unknown_detail", { detail }) : t("error.unknown");
     }

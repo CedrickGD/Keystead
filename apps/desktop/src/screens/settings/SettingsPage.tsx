@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
+  Check,
   CircleCheck,
   Copy,
-  Database,
+  Download,
   ExternalLink,
   FileUp,
   FolderOpen,
@@ -12,15 +13,13 @@ import {
   LifeBuoy,
   Monitor,
   Moon,
-  Palette,
   Plug,
   ShieldCheck,
+  SlidersHorizontal,
   Sun,
-  Terminal,
-  TriangleAlert,
-  Unplug,
   Upload,
-  Download,
+  LockKeyhole,
+  Wrench,
   Zap,
 } from "lucide-react";
 import { ApiError, IS_MOCK, api, pickOpenFile } from "../../lib/api";
@@ -30,6 +29,7 @@ import { useApp, useCopy } from "../../state/app";
 import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
 import { Button, Field, PasswordInput, Segmented, Select, Switch } from "../../components/Controls";
+import { LegacySourcePicker } from "../../components/LegacySourcePicker";
 import { Logo } from "../../components/Logo";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
 
@@ -39,27 +39,20 @@ import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKe
 
 function SettingsSection({
   id,
-  icon,
   title,
   description,
   children,
-  danger,
 }: {
   id: string;
-  icon: ReactNode;
   title: string;
   description?: string;
   children: ReactNode;
-  danger?: boolean;
 }) {
   return (
-    <section id={`settings-${id}`} className={`settings-section ${danger ? "danger" : ""}`} aria-labelledby={`settings-${id}-title`}>
+    <section id={`settings-${id}`} className="settings-section" aria-labelledby={`settings-${id}-title`}>
       <div className="settings-section-head">
-        <span className="settings-section-icon">{icon}</span>
-        <div>
-          <h2 id={`settings-${id}-title`}>{title}</h2>
-          {description && <p>{description}</p>}
-        </div>
+        <h2 id={`settings-${id}-title`}>{title}</h2>
+        {description && <p>{description}</p>}
       </div>
       <div className="card settings-card">{children}</div>
     </section>
@@ -100,12 +93,12 @@ function SettingRow({
 // Sections
 // ---------------------------------------------------------------------------
 
-function AppearanceSection() {
+function GeneralSection() {
   const { t } = useT();
   const { settings, updateSettings } = useApp();
   const langId = useId();
   return (
-    <SettingsSection id="appearance" icon={<Palette />} title={t("settings.appearance")} description={t("settings.appearanceDesc")}>
+    <SettingsSection id="general" title={t("settings.general")} description={t("settings.generalDesc")}>
       <SettingRow title={t("settings.theme")} description={t("settings.themeDesc")}>
         <Segmented<ThemeSetting>
           ariaLabel={t("settings.theme")}
@@ -180,7 +173,7 @@ function SecuritySection() {
   };
 
   return (
-    <SettingsSection id="security" icon={<ShieldCheck />} title={t("settings.security")} description={t("settings.securityDesc")}>
+    <SettingsSection id="security" title={t("settings.security")} description={t("settings.securityDesc")}>
       <SettingRow title={t("settings.autoLock")} description={t("settings.autoLockDesc")} htmlFor={autoLockId}>
         <Select
           id={autoLockId}
@@ -249,6 +242,21 @@ function SecuritySection() {
   );
 }
 
+function GuideStep({ n, done, title, children }: { n: number; done: boolean; title: string; children: ReactNode }) {
+  const { t } = useT();
+  return (
+    <li className={`guide-step ${done ? "done" : ""}`}>
+      <span className="guide-num" aria-label={done ? t("browser.stepDone", { n }) : undefined}>
+        {done ? <Check /> : n}
+      </span>
+      <div className="guide-body">
+        <strong>{title}</strong>
+        {children}
+      </div>
+    </li>
+  );
+}
+
 function BrowserRow({ browser, busy, onToggle }: { browser: BrowserInfo; busy: boolean; onToggle: () => void }) {
   const { t } = useT();
   return (
@@ -260,7 +268,7 @@ function BrowserRow({ browser, busy, onToggle }: { browser: BrowserInfo; busy: b
         <div className="browser-name">{browser.name}</div>
         <div className="browser-status">
           {browser.registered ? (
-            <span className="chip success">
+            <span className="status-text ok">
               <CircleCheck />
               {t("browser.registered")}
             </span>
@@ -269,13 +277,7 @@ function BrowserRow({ browser, busy, onToggle }: { browser: BrowserInfo; busy: b
           )}
         </div>
       </div>
-      <Button
-        variant={browser.registered ? "secondary" : "primary"}
-        size="sm"
-        loading={busy}
-        icon={browser.registered ? <Unplug /> : <Plug />}
-        onClick={onToggle}
-      >
+      <Button variant={browser.registered ? "ghost" : "primary"} size="sm" loading={busy} onClick={onToggle}>
         {browser.registered ? t("browser.disconnect") : t("browser.connect")}
       </Button>
     </div>
@@ -342,9 +344,11 @@ function BrowserSection() {
   const missing = status?.browsers.filter((b) => !b.detected) ?? [];
   const extensionId = status?.extensionId || info.extensionId;
   const running = status?.serverRunning ?? false;
+  const anyRegistered = detected.some((b) => b.registered);
+  const clients = status?.clients ?? [];
 
   return (
-    <SettingsSection id="browser" icon={<Plug />} title={t("settings.browser")} description={t("settings.browserDesc")}>
+    <SettingsSection id="browser" title={t("settings.browser")} description={t("settings.browserDesc")}>
       <SettingRow
         title={t("browser.enable")}
         description={
@@ -357,109 +361,81 @@ function BrowserSection() {
         <Switch checked={settings.browserIntegration} onChange={(v) => void toggleIntegration(v)} label={t("browser.enable")} />
       </SettingRow>
 
-      <div className="setting-row stacked">
-        <div className="setting-text">
-          <div className="setting-title">{t("browser.browsers")}</div>
-          <div className="setting-desc">{t("browser.browsersDesc")}</div>
-        </div>
-        <div className="browser-list">
-          {status && detected.length === 0 && <div className="subtle">{t("browser.noneDetected")}</div>}
-          {detected.map((b) => (
-            <BrowserRow key={b.id} browser={b} busy={busy === b.id} onToggle={() => void toggleBrowser(b)} />
-          ))}
-          {missing.length > 0 && (
-            <div className="browser-missing">{t("browser.notInstalled", { names: missing.map((b) => b.name).join(", ") })}</div>
-          )}
-        </div>
-      </div>
-
-      <div className="setting-row stacked">
-        <div className="setting-text">
-          <div className="setting-title">{t("browser.guideTitle")}</div>
-        </div>
+      <div className={`setting-row stacked ${settings.browserIntegration ? "" : "dimmed"}`}>
         <ol className="guide-steps">
-          <li>
-            <span className="guide-num">1</span>
-            <div>
-              <strong>{t("browser.step1Title")}</strong>
-              <p>{t("browser.step1Text")}</p>
+          <GuideStep n={1} done={anyRegistered} title={t("browser.step1Title")}>
+            <p>{t("browser.step1Text")}</p>
+            <div className="browser-list">
+              {status && detected.length === 0 && <div className="browser-empty subtle">{t("browser.noneDetected")}</div>}
+              {detected.map((b) => (
+                <BrowserRow key={b.id} browser={b} busy={busy === b.id} onToggle={() => void toggleBrowser(b)} />
+              ))}
+              {missing.length > 0 && (
+                <div className="browser-missing">{t("browser.notInstalled", { names: missing.map((b) => b.name).join(", ") })}</div>
+              )}
             </div>
-          </li>
-          <li>
-            <span className="guide-num">2</span>
-            <div>
-              <strong>{t("browser.step2Title")}</strong>
-              <p>
-                {t("browser.step2TextA")} <code>chrome://extensions</code> {t("browser.step2TextB")} <code>edge://extensions</code>
-                {t("browser.step2TextC")} <code>extension/chrome</code> {t("browser.step2TextD")}
-              </p>
-              <div className="ext-id">
-                <span className="ext-id-label">{t("browser.extensionId")}</span>
-                <code className="selectable">{extensionId}</code>
-                <button
-                  type="button"
-                  className="icon-btn sm"
-                  onClick={() => void copy(extensionId, { label: t("browser.extensionId"), sensitive: false })}
-                  aria-label={t("common.copyNamed", { what: t("browser.extensionId") })}
-                  title={t("common.copy")}
-                >
-                  <Copy />
-                </button>
-              </div>
-            </div>
-          </li>
-          <li>
-            <span className="guide-num">3</span>
-            <div>
-              <strong>{t("browser.step3Title")}</strong>
-              <p>{t("browser.step3Text")}</p>
-            </div>
-          </li>
-        </ol>
-      </div>
+          </GuideStep>
 
-      <div className="setting-row stacked">
-        <div className="setting-text">
-          <div className="setting-title">{t("browser.clients")}</div>
-          <div className="setting-desc">{t("browser.clientsDesc")}</div>
-        </div>
-        {status && status.clients.length === 0 ? (
-          <div className="subtle">{t("browser.noClients")}</div>
-        ) : (
-          <ul className="client-list">
-            {(status?.clients ?? []).map((client) => (
-              <li key={client.id}>
-                <span className="browser-icon small">
-                  <Plug />
-                </span>
-                <div className="client-text">
-                  <div className="client-name">{client.name}</div>
-                  <div className="client-meta">
-                    {t("browser.pairedOn", { date: formatDate(client.createdAt) })} · {t("browser.lastSeen", { when: formatRelative(client.lastSeenAt) })}
-                  </div>
-                </div>
-                <Button variant="danger-ghost" size="sm" onClick={() => void revoke(client.id, client.name)}>
-                  {t("browser.revoke")}
+          <GuideStep n={2} done={clients.length > 0} title={t("browser.step2Title")}>
+            <p>
+              {t("browser.step2TextA")} <code>chrome://extensions</code> {t("browser.step2TextB")} <code>edge://extensions</code>
+              {t("browser.step2TextC")} <code>browser-extension</code> {t("browser.step2TextD")}
+            </p>
+            <div className="ext-id">
+              <span className="ext-id-label">{t("browser.extensionId")}</span>
+              <code className="selectable">{extensionId}</code>
+              <button
+                type="button"
+                className="icon-btn sm"
+                onClick={() => void copy(extensionId, { label: t("browser.extensionId"), sensitive: false })}
+                aria-label={t("common.copyNamed", { what: t("browser.extensionId") })}
+                title={t("common.copy")}
+              >
+                <Copy />
+              </button>
+            </div>
+          </GuideStep>
+
+          <GuideStep n={3} done={clients.length > 0} title={t("browser.step3Title")}>
+            <p>{t("browser.step3Text")}</p>
+            {clients.length > 0 && (
+              <ul className="client-list" aria-label={t("browser.clients")}>
+                {clients.map((client) => (
+                  <li key={client.id}>
+                    <span className="browser-icon small">
+                      <Plug />
+                    </span>
+                    <div className="client-text">
+                      <div className="client-name">{client.name}</div>
+                      <div className="client-meta">
+                        {t("browser.pairedOn", { date: formatDate(client.createdAt) })} ·{" "}
+                        {t("browser.lastSeen", { when: formatRelative(client.lastSeenAt) })}
+                      </div>
+                    </div>
+                    <Button variant="danger-ghost" size="sm" onClick={() => void revoke(client.id, client.name)}>
+                      {t("browser.revoke")}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {IS_MOCK && (
+              <div className="demo-tools">
+                <span className="chip accent">{t("settings.demo")}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Zap />}
+                  onClick={() => {
+                    void import("../../lib/mock").then((m) => m.mockTriggerPairing());
+                  }}
+                >
+                  {t("browser.simulatePairing")}
                 </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {IS_MOCK && (
-          <div className="demo-tools">
-            <span className="chip accent">{t("settings.demo")}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Zap />}
-              onClick={() => {
-                void import("../../lib/mock").then((m) => m.mockTriggerPairing());
-              }}
-            >
-              {t("browser.simulatePairing")}
-            </Button>
-          </div>
-        )}
+              </div>
+            )}
+          </GuideStep>
+        </ol>
       </div>
     </SettingsSection>
   );
@@ -468,17 +444,17 @@ function BrowserSection() {
 const IMPORT_FORMATS: { value: ImportFormat; label: MessageKey; ext: string[]; needsPassword: boolean }[] = [
   { value: "csv", label: "format.csv", ext: ["csv"], needsPassword: false },
   { value: "bitwarden_json", label: "format.bitwardenJson", ext: ["json"], needsPassword: false },
-  { value: "keystead", label: "format.keystead", ext: ["keystead"], needsPassword: true },
   { value: "legacy", label: "format.legacy", ext: ["json"], needsPassword: true },
+  { value: "keystead", label: "format.keystead", ext: ["keystead"], needsPassword: true },
 ];
 
-function DataSection() {
+function ImportExportSection() {
   const { t, tp, errorText } = useT();
   const toast = useToast();
-  const confirm = useConfirm();
-  const { info, setInfo, vault, showUnlock } = useApp();
+  const { vault } = useApp();
   const formatId = useId();
   const pwId = useId();
+  const sourceId = useId();
   const [format, setFormat] = useState<ImportFormat>("csv");
   const [path, setPath] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -486,8 +462,22 @@ function DataSection() {
   const [report, setReport] = useState<ImportReport | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
-  const [portableBusy, setPortableBusy] = useState(false);
   const spec = IMPORT_FORMATS.find((f) => f.value === format) ?? IMPORT_FORMATS[0];
+  const formatTouched = useRef(false);
+
+  // Coming from VaultX 1.x is the most likely import: preselect it when an old vault exists.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .legacyScan()
+      .then((found) => {
+        if (!cancelled && found.length > 0 && !formatTouched.current) setFormat("legacy");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const pick = async () => {
     try {
@@ -523,36 +513,8 @@ function DataSection() {
     }
   };
 
-  const togglePortable = async (enabled: boolean) => {
-    const ok = await confirm({
-      title: enabled ? t("data.portableOnTitle") : t("data.portableOffTitle"),
-      message: enabled ? t("data.portableOnText") : t("data.portableOffText"),
-      confirmLabel: enabled ? t("data.portableOn") : t("data.portableOff"),
-    });
-    if (!ok) return;
-    setPortableBusy(true);
-    try {
-      setInfo(await api.setPortableMode(enabled));
-      toast.success(enabled ? t("data.portableEnabled") : t("data.portableDisabled"));
-      const session = await api.sessionState();
-      if (!session.unlocked) showUnlock();
-    } catch (err) {
-      toast.error(errorText(err));
-    } finally {
-      setPortableBusy(false);
-    }
-  };
-
-  const openFolder = async () => {
-    try {
-      await api.openDataDir();
-    } catch (err) {
-      toast.error(errorText(err));
-    }
-  };
-
   return (
-    <SettingsSection id="data" icon={<Database />} title={t("settings.data")} description={t("settings.dataDesc")}>
+    <SettingsSection id="data" title={t("settings.data")} description={t("settings.dataDesc")}>
       <div className="setting-row stacked">
         <div className="setting-text">
           <div className="setting-title">
@@ -562,27 +524,35 @@ function DataSection() {
           <div className="setting-desc">{t("import.desc")}</div>
         </div>
         <div className="import-form">
-          <div className="import-grid">
-            <Field label={t("import.format")} htmlFor={formatId}>
-              <Select<ImportFormat>
-                id={formatId}
-                value={format}
-                onChange={(f) => {
-                  setFormat(f);
-                  setPath(null);
-                  setReport(null);
-                  setImportError(null);
-                }}
-                options={IMPORT_FORMATS.map((f) => ({ value: f.value, label: t(f.label) }))}
-              />
-            </Field>
+          <Field label={t("import.format")} htmlFor={formatId}>
+            <Select<ImportFormat>
+              id={formatId}
+              value={format}
+              onChange={(f) => {
+                formatTouched.current = true;
+                setFormat(f);
+                setPath(null);
+                setReport(null);
+                setImportError(null);
+              }}
+              options={IMPORT_FORMATS.map((f) => ({ value: f.value, label: t(f.label) }))}
+            />
+          </Field>
+          {format === "legacy" ? (
+            <div className="field">
+              <span className="field-label" id={sourceId}>
+                {t("import.source")}
+              </span>
+              <LegacySourcePicker path={path} onPath={setPath} onError={setImportError} labelledBy={sourceId} />
+            </div>
+          ) : (
             <Field label={t("import.file")}>
               <button type="button" className="file-pick" onClick={() => void pick()} title={path ?? undefined}>
                 <FileUp />
                 <span className="truncate">{path ?? t("import.chooseFile")}</span>
               </button>
             </Field>
-          </div>
+          )}
           {spec?.needsPassword && (
             <Field
               label={format === "legacy" ? t("import.legacyPassword") : t("import.filePassword")}
@@ -637,26 +607,56 @@ function DataSection() {
         </Button>
       </SettingRow>
 
-      <SettingRow title={t("data.folder")} description={<code className="path selectable">{info.dataDir}</code>}>
-        <Button variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
-          {t("data.openFolder")}
-        </Button>
-      </SettingRow>
-
-      <SettingRow title={t("data.portable")} description={t("data.portableDesc")}>
-        <Switch checked={info.portable} onChange={(v) => void togglePortable(v)} label={t("data.portable")} disabled={portableBusy} />
-      </SettingRow>
-
       {exportOpen && vault && <ExportDialog vaultName={vault.name} onClose={() => setExportOpen(false)} />}
     </SettingsSection>
   );
 }
 
-function TerminalSection() {
+function AdvancedSection() {
   const { t, errorText } = useT();
   const toast = useToast();
+  const confirm = useConfirm();
+  const { info, setInfo, showUnlock } = useApp();
+  const [portableBusy, setPortableBusy] = useState(false);
+
+  const togglePortable = async (enabled: boolean) => {
+    const ok = await confirm({
+      title: enabled ? t("data.portableOnTitle") : t("data.portableOffTitle"),
+      message: enabled ? t("data.portableOnText") : t("data.portableOffText"),
+      confirmLabel: enabled ? t("data.portableOn") : t("data.portableOff"),
+    });
+    if (!ok) return;
+    setPortableBusy(true);
+    try {
+      setInfo(await api.setPortableMode(enabled));
+      toast.success(enabled ? t("data.portableEnabled") : t("data.portableDisabled"));
+      const session = await api.sessionState();
+      if (!session.unlocked) showUnlock();
+    } catch (err) {
+      toast.error(errorText(err));
+    } finally {
+      setPortableBusy(false);
+    }
+  };
+
+  const openFolder = async () => {
+    try {
+      await api.openDataDir();
+    } catch (err) {
+      toast.error(errorText(err));
+    }
+  };
+
   return (
-    <SettingsSection id="terminal" icon={<Terminal />} title={t("settings.terminal")} description={t("settings.terminalDesc")}>
+    <SettingsSection id="advanced" title={t("settings.advanced")} description={t("settings.advancedDesc")}>
+      <SettingRow title={t("data.folder")} description={<code className="path selectable">{info.dataDir}</code>}>
+        <Button variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
+          {t("data.openFolder")}
+        </Button>
+      </SettingRow>
+      <SettingRow title={t("data.portable")} description={t("data.portableDesc")}>
+        <Switch checked={info.portable} onChange={(v) => void togglePortable(v)} label={t("data.portable")} disabled={portableBusy} />
+      </SettingRow>
       <SettingRow title={t("terminal.title")} description={t("terminal.desc")}>
         <Button
           variant="secondary"
@@ -672,7 +672,7 @@ function TerminalSection() {
   );
 }
 
-function DangerSection() {
+function VaultSection() {
   const { t, errorText } = useT();
   const toast = useToast();
   const { vault, setVault, refreshVaults, showUnlock } = useApp();
@@ -699,7 +699,7 @@ function DangerSection() {
   };
 
   return (
-    <SettingsSection id="danger" icon={<TriangleAlert />} title={t("settings.danger")} description={t("settings.dangerDesc")} danger>
+    <SettingsSection id="vault" title={t("settings.vault")} description={t("settings.vaultDesc", { name: vault?.name ?? "" })}>
       <SettingRow title={t("danger.rename")} description={t("danger.renameDesc")} htmlFor={nameId}>
         <form
           className="rename-form"
@@ -739,7 +739,7 @@ function AboutSection() {
   const { info } = useApp();
   const platform = info.platform === "windows" ? "Windows" : info.platform === "macos" ? "macOS" : "Linux";
   return (
-    <SettingsSection id="about" icon={<Info />} title={t("settings.about")}>
+    <SettingsSection id="about" title={t("settings.about")}>
       <div className="about">
         <Logo size={44} />
         <div>
@@ -761,31 +761,57 @@ function AboutSection() {
 // Page
 // ---------------------------------------------------------------------------
 
+/** Old section ids (deep links from elsewhere) → current ones. */
+const SECTION_ALIASES: Record<string, string> = { appearance: "general", terminal: "advanced", danger: "vault" };
+
 export function SettingsPage({ initialSection }: { initialSection?: string }) {
   const { t } = useT();
   const scrollRef = useRef<HTMLElement>(null);
-  const [active, setActive] = useState(initialSection ?? "appearance");
+  /** Section picked in the list: keeps it highlighted until the user scrolls by hand. */
+  const pinned = useRef<string | null>(null);
+  const initial = initialSection ? SECTION_ALIASES[initialSection] ?? initialSection : undefined;
+  const [active, setActive] = useState(initial ?? "general");
+
+  const sections: { id: string; label: string; icon: ReactNode }[] = [
+    { id: "general", label: t("settings.general"), icon: <SlidersHorizontal /> },
+    { id: "security", label: t("settings.security"), icon: <ShieldCheck /> },
+    { id: "browser", label: t("settings.browserShort"), icon: <Plug /> },
+    { id: "data", label: t("settings.data"), icon: <Upload /> },
+    { id: "advanced", label: t("settings.advanced"), icon: <Wrench /> },
+    { id: "vault", label: t("settings.vault"), icon: <LockKeyhole /> },
+    { id: "about", label: t("settings.aboutShort"), icon: <Info /> },
+  ];
+
+  const scrollTo = (id: string, smooth: boolean) => {
+    const root = scrollRef.current;
+    const el = document.getElementById(`settings-${id}`);
+    if (!root || !el) return;
+    // Leave room for the sticky section bar (narrow windows).
+    const toc = root.querySelector<HTMLElement>(".settings-toc");
+    const offset = toc && getComputedStyle(toc).flexDirection === "row" ? toc.offsetHeight + 16 : 24;
+    const top = el.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - offset;
+    root.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+  };
 
   useEffect(() => {
-    if (initialSection) document.getElementById(`settings-${initialSection}`)?.scrollIntoView({ block: "start" });
-  }, [initialSection]);
-  const sections: { id: string; label: string; icon: ReactNode }[] = [
-    { id: "appearance", label: t("settings.appearance"), icon: <Palette /> },
-    { id: "security", label: t("settings.security"), icon: <ShieldCheck /> },
-    { id: "browser", label: t("settings.browser"), icon: <Plug /> },
-    { id: "data", label: t("settings.data"), icon: <Database /> },
-    { id: "terminal", label: t("settings.terminal"), icon: <Terminal /> },
-    { id: "danger", label: t("settings.danger"), icon: <TriangleAlert /> },
-    { id: "about", label: t("settings.about"), icon: <Info /> },
-  ];
+    if (initial) {
+      scrollTo(initial, false);
+      setActive(initial);
+      pinned.current = initial;
+    }
+  }, [initial]);
 
   // Highlight the section currently at the top of the scroll area.
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
+    const unpin = () => {
+      pinned.current = null;
+    };
     const onScroll = () => {
+      if (pinned.current) return;
       const top = root.getBoundingClientRect().top;
-      let current = "appearance";
+      let current = "general";
       for (const el of root.querySelectorAll<HTMLElement>(".settings-section")) {
         if (el.getBoundingClientRect().top - top <= 160) current = el.id.replace("settings-", "");
       }
@@ -793,22 +819,50 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
       setActive(current);
     };
     root.addEventListener("scroll", onScroll, { passive: true });
-    return () => root.removeEventListener("scroll", onScroll);
+    root.addEventListener("wheel", unpin, { passive: true });
+    root.addEventListener("pointerdown", unpin);
+    root.addEventListener("keydown", unpin);
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      root.removeEventListener("wheel", unpin);
+      root.removeEventListener("pointerdown", unpin);
+      root.removeEventListener("keydown", unpin);
+    };
   }, []);
+
+  // Keep the active tab visible in the horizontal section bar.
+  useEffect(() => {
+    const tab = scrollRef.current?.querySelector<HTMLElement>(`.settings-toc-item[data-id="${active}"]`);
+    const bar = tab?.parentElement;
+    if (!tab || !bar || bar.scrollWidth <= bar.clientWidth) return;
+    const left = tab.offsetLeft - bar.offsetLeft;
+    if (left < bar.scrollLeft || left + tab.offsetWidth > bar.scrollLeft + bar.clientWidth) {
+      bar.scrollTo({ left: Math.max(0, left - 24), behavior: "smooth" });
+    }
+  }, [active]);
 
   return (
     <main className="page settings-page" ref={scrollRef} aria-labelledby="settings-title">
       <div className="settings-layout">
+        <header className="page-header settings-header">
+          <h1 id="settings-title">{t("settings.title")}</h1>
+          <p>{t("settings.subtitle")}</p>
+        </header>
         <nav className="settings-toc" aria-label={t("settings.sections")}>
           {sections.map((s) => (
             <button
               key={s.id}
               type="button"
-              className={`settings-toc-item ${active === s.id ? "active" : ""} ${s.id === "danger" ? "danger" : ""}`}
-              onClick={() => {
-                document.getElementById(`settings-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+              data-id={s.id}
+              className={`settings-toc-item ${active === s.id ? "active" : ""}`}
+              aria-current={active === s.id ? "true" : undefined}
+              onClick={(e) => {
+                e.stopPropagation();
+                scrollTo(s.id, true);
                 setActive(s.id);
+                pinned.current = s.id;
               }}
+              onPointerDown={(e) => e.stopPropagation()}
             >
               {s.icon}
               {s.label}
@@ -816,16 +870,12 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
           ))}
         </nav>
         <div className="settings-content">
-          <header className="page-header">
-            <h1 id="settings-title">{t("settings.title")}</h1>
-            <p>{t("settings.subtitle")}</p>
-          </header>
-          <AppearanceSection />
+          <GeneralSection />
           <SecuritySection />
           <BrowserSection />
-          <DataSection />
-          <TerminalSection />
-          <DangerSection />
+          <ImportExportSection />
+          <AdvancedSection />
+          <VaultSection />
           <AboutSection />
         </div>
       </div>

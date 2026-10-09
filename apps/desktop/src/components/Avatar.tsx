@@ -2,27 +2,30 @@ import { CreditCard, IdCard, StickyNote } from "lucide-react";
 import type { ItemType } from "../lib/types";
 import { avatarHue, avatarLetter } from "../lib/utils";
 
-const TYPE_BADGE: Partial<Record<ItemType, typeof CreditCard>> = {
+const TYPE_ICON: Partial<Record<ItemType, typeof CreditCard>> = {
   card: CreditCard,
   identity: IdCard,
   note: StickyNote,
 };
 
-/** Letter avatar tinted by a hash of the name; non-login items get a small type badge. */
+/**
+ * Item avatar. Logins get a softly tinted letter tile (the site's initial);
+ * cards, identities and notes get a neutral tile with their type icon, so the
+ * list reads at a glance without extra badges.
+ */
 export function Avatar({ name, type, size = "md" }: { name: string; type?: ItemType; size?: "sm" | "md" | "lg" }) {
-  const Badge = type ? TYPE_BADGE[type] : undefined;
+  const Icon = type ? TYPE_ICON[type] : undefined;
+  const sizeClass = size === "md" ? "" : size;
+  if (Icon) {
+    return (
+      <div className={`avatar avatar-icon ${sizeClass}`} aria-hidden>
+        <Icon />
+      </div>
+    );
+  }
   return (
-    <div
-      className={`avatar ${size === "md" ? "" : size}`}
-      style={{ ["--h" as string]: avatarHue(name) }}
-      aria-hidden
-    >
+    <div className={`avatar ${sizeClass}`} style={{ ["--h" as string]: avatarHue(name) }} aria-hidden>
       {avatarLetter(name)}
-      {Badge && size !== "sm" && (
-        <span className="avatar-badge">
-          <Badge />
-        </span>
-      )}
     </div>
   );
 }

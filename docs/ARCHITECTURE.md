@@ -1,6 +1,7 @@
 # Keystead – Architecture & Contracts
 
-Keystead is a local-only password manager in the spirit of Bitwarden:
+Keystead (*Key* + *Homestead* – your keys stay at home) is a local-only
+password manager in the spirit of Bitwarden:
 a desktop app (Tauri 2: Rust backend + React UI), a terminal UI, and a
 Chromium browser extension that talks to the desktop app via Native
 Messaging. **Nothing ever leaves the machine** – there is no server and no
@@ -10,16 +11,16 @@ This document is the binding contract between the components. If you change
 an interface here, change every side.
 
 ```
-┌────────────────────┐  native messaging   ┌──────────────────┐  local socket   ┌──────────────────────────┐
+┌────────────────────┐  native messaging    ┌────────────────────┐  local socket   ┌────────────────────────────┐
 │ Chrome/Edge/Brave  │ ─── stdin/stdout ──▶ │ Keystead.exe       │ ── named pipe ─▶│ Keystead.exe (desktop app, │
-│ extension (MV3)    │ ◀── length-prefixed ─│ (native host mode)│ ◀─ len-prefix ─ │ tray, holds unlocked     │
-└────────────────────┘     JSON             └──────────────────┘    JSON         │ vault in memory)         │
-                                                                                 └──────────┬───────────────┘
-                                                                                            │ keystead-core
-                                                 ┌──────────────────────┐                   ▼
-                                                 │ keystead-cli / --cli   │──── keystead-core ──▶ encrypted *.keystead files
-                                                 │ (ratatui TUI)        │
-                                                 └──────────────────────┘
+│ extension (MV3)    │ ◀── length-prefixed ─│ (native host mode) │ ◀─ len-prefix ─ │ tray, holds unlocked       │
+└────────────────────┘     JSON             └────────────────────┘    JSON         │ vault in memory)           │
+                                                                                   └─────────────┬──────────────┘
+                                                                                                 │ keystead-core
+                                               ┌────────────────────────┐                        ▼
+                                               │ keystead-cli / --cli   │── keystead-core ──▶ encrypted *.keystead files
+                                               │ (ratatui TUI)          │
+                                               └────────────────────────┘
 ```
 
 ## Repository layout
@@ -32,6 +33,7 @@ an interface here, change every side.
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). |
+| `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `legacy/` | The old PowerShell VaultX 1.x, kept for reference. |
 | `docs/` | This file + user docs. |
 
@@ -50,7 +52,9 @@ One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
    binary `keystead-cli(.exe)` from `crates/keystead-tui` runs the same TUI inside
    an existing terminal.
 3. **GUI mode** – everything else. `--background` starts hidden in the tray
-   (used when the native host has to launch the app). Uses
+   (used when the native host has to launch the app); such an instance exits
+   right away if its bridge server is not running (browser integration off,
+   or the endpoint is served elsewhere), so it never lingers invisibly. Uses
    `tauri-plugin-single-instance`: a second GUI launch focuses the first
    window (and a second `--background` launch does nothing).
 
@@ -84,7 +88,7 @@ returned code: `0` success, `1` error, `2` invalid usage.
   2. **Portable mode**: a folder named `Keystead-Data` next to the running
      executable, if it exists (the user creates it, or Settings → "Portabler
      Modus" creates it and moves the vaults).
-  3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead\v2`,
+  3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead`,
      Linux `~/.local/share/keystead`, macOS `~/Library/Application Support/Keystead`.
 * Vault files: `<data_dir>/vaults/<vault-id>.keystead` (+ `<vault-id>.keystead.bak`
   = previous good version, written before each save; `<vault-id>.keystead.lock`
@@ -96,14 +100,14 @@ returned code: `0` success, `1` error, `2` invalid usage.
   `vault_*.json` (Linux/macOS: none – only manual file import).
   `$KEYSTEAD_LEGACY_DIR` overrides this directory on every OS (tests).
 
-## Vault file format (version 3) – `keystead_core::format`
+## Vault file format (version 1) – `keystead_core::format`
 
 UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 
 ```json
 {
   "format": "keystead",
-  "version": 3,
+  "version": 1,
   "id": "uuid-v4",
   "name": "Privat",
   "createdAt": 1700000000000,
@@ -118,14 +122,14 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 
 * A random 32-byte **vault key** encrypts the payload (`VaultData` as JSON)
   with **XChaCha20-Poly1305**. AAD for the payload = UTF-8 bytes of
-  `"keystead:v3:payload:" + id + ":" + revision`.
+  `"keystead:v1:payload:" + id + ":" + revision`.
 * The master password → Argon2id (params above, salt 16 B) → 32-byte KEK →
-  wraps the vault key (XChaCha20-Poly1305, AAD `"keystead:v3:key:" + id`).
+  wraps the vault key (XChaCha20-Poly1305, AAD `"keystead:v1:key:" + id`).
   Changing the master password re-wraps only the key.
 * Optional **recovery key**: random 25 chars of Crockford base32 shown as
   `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 bit). KEK_r = Argon2id(recovery code
   normalised to uppercase without dashes, own salt, same params) wraps the
-  vault key (AAD `"keystead:v3:recovery:" + id`).
+  vault key (AAD `"keystead:v1:recovery:" + id`).
 * `revision` increments on every save; saving checks the on-disk revision
   equals the loaded one, otherwise `Error::Conflict` (another process – TUI or
   app – changed it). Callers reload and retry.
@@ -241,7 +245,7 @@ pub fn import_csv(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String
 pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)>; // unencrypted Bitwarden export
 pub fn import_keystead_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)>;
 // export
-pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v3 file (own random key/salt), trash excluded
+pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v1 file (own random key/salt), trash excluded
 pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded
 pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded
 ```
@@ -294,7 +298,7 @@ Behaviour notes:
   Crockford look-alikes are accepted (`O`→`0`, `I`/`L`→`1`). A malformed
   code → `invalid_input:recovery_key_format`; a vault without recovery key →
   `not_found`.
-* Legacy import: an HMAC mismatch is reported as `wrong_password` (Keystead
+* Legacy import: an HMAC mismatch is reported as `wrong_password` (VaultX
   1.x could not distinguish either). Importers keep the source ids;
   `import_items` replaces them and merges imported folders into existing
   folders of the same name (case-insensitive).
@@ -407,6 +411,10 @@ the JS side (Tauri converts to snake_case).
 * `vault://locked` – payload `{ reason: "manual"|"timeout"|"system" }`
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
+* `bridge://pairing-closed` – payload `{ requestId }` – that request ended
+  without a decision (cancelled in the browser / browser closed, replaced by
+  a newer request of the same browser, timed out): the UI closes its modal.
+  `respond_pairing` for it answers `not_found`.
 * `bridge://unlock-request` – payload `{}` – extension asked to open the app; UI focuses the unlock screen.
 * `vault://unlocked` – payload `VaultInfo` – the vault was unlocked outside
   the UI (extension `unlock`); the UI switches to the unlocked view. Not
@@ -467,12 +475,16 @@ Frontend integration requirements for `src-tauri`:
   directory (copy, commit by creating/renaming `Keystead-Data`, then delete
   the old copy; `*.lock`/`*.tmp` are skipped), re-registers the native host
   and restarts the bridge. Errors: `unsupported:data_dir_override` (with
-  `$KEYSTEAD_DATA_DIR`), `invalid_input:target_exists` (a vault file with the
-  same id already exists at the destination), `io:…`.
+  `$KEYSTEAD_DATA_DIR`), `unsupported:portable_installed` (enabling while the
+  exe lives in the default data directory itself – the per-user NSIS setup
+  installs to `%LOCALAPPDATA%\Keystead`), `invalid_input:target_exists` (a
+  vault file with the same id already exists at the destination), `io:…`.
 * Pairing requests that arrived before the page subscribed (app launched
   hidden by the native host) are re-sent ~1 s after the first
   `session_state` call of each page load; the UI de-duplicates by
-  `requestId`.
+  `requestId`. If the lock state changed in that second (the extension
+  unlocked or locked the vault while the page booted), `vault://unlocked`
+  resp. `vault://locked {manual}` is sent again at that point.
 * Debug builds only: `KEYSTEAD_TEST_AUTO_APPROVE_PAIRING=1` approves pairing
   requests automatically (no dialog) for automated end-to-end tests.
 * Window: links/`window.open` and any navigation away from the app open in
@@ -558,7 +570,11 @@ Behaviour (additive to the table above):
 * `pair`: `clientName` trimmed, 1–100 chars; `code` exactly 6 ASCII digits,
   else `invalid_request` (the app is not asked). A new `pair` with the same
   `clientName` supersedes a pending one (the older gets `pairing_denied`); at
-  most 4 pending requests; deny/timeout → `pairing_denied`.
+  most 4 pending requests; deny/timeout → `pairing_denied`. While a `pair`
+  waits, the app polls its connection (every 250 ms): if the requester hung
+  up (the extension cancelled, the browser ended the host), the request is
+  withdrawn and can no longer be approved. Withdrawn, superseded and
+  timed-out requests are reported via `VaultBackend::pairing_closed`.
 * `unlock`: after 5 wrong passwords in a row it answers `wrong_password` for
   30 s without trying; every further failure restarts the 30 s, a success
   resets the counter. Attempts are serialised.
@@ -591,6 +607,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn lock(&self);
     fn focus_app(&self);
     fn request_pairing(&self, request_id: &str, client_name: &str, code: &str); // emit bridge://pairing-request, don't block
+    fn pairing_closed(&self, request_id: &str) {}                                // emit bridge://pairing-closed
     fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError>;
     fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError>;     // capped to 50 by the dispatcher
     fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError>;
@@ -603,6 +620,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
 impl From<keystead_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal
 let dispatcher = Arc::new(Dispatcher::new(backend, ClientStore::open_default()?));
 let server: ServerHandle = start_server(dispatcher.clone())?;  // Err(Error::AlreadyRunning(_)) if another instance serves
+// BridgeHandler { fn handle(&self, Request) -> Response; fn handle_for_peer(&self, Request, peer_gone: &dyn Fn() -> bool) -> Response }
 server.is_running(); server.stop();                            // Drop stops too
 dispatcher.respond_pairing(&request_id, approve) -> bool;      // false: unknown/expired
 dispatcher.pending_pairings() -> Vec<PairingRequest>;          // { requestId, clientName, code }
@@ -624,6 +642,11 @@ register::registered_browsers() -> Vec<BrowserId>;            // re-register the
   fallback), 8-px spacing grid, 1 accent colour (blue `#3b82f6`-ish), soft
   borders, no gradients, light + dark theme via CSS variables, follows
   system theme by default.
+* Branding: the Keystead mark (white shield with keyhole on a blue→violet
+  rounded tile, `assets/keystead.svg`) is the only gradient. Desktop:
+  `src/components/Logo.tsx` (`variant="glyph"` = shield in `currentColor`);
+  extension: `logo()` in `lib/icons.js` and `content.js`. Inline SVGs use
+  per-instance gradient ids (a reference into a hidden SVG does not render).
 * Everything important is one click away: copy buttons next to every field,
   "eye" toggle for secrets, a generate button in every password field,
   keyboard shortcuts (Ctrl+F search, Ctrl+N new, Ctrl+L lock,

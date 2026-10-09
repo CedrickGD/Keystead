@@ -144,6 +144,12 @@ impl VaultBackend for Backend {
         core.show_main_window();
     }
 
+    fn pairing_closed(&self, request_id: &str) {
+        if let Some(core) = self.core.upgrade() {
+            core.emit_pairing_closed(request_id);
+        }
+    }
+
     fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError> {
         Ok(self.core()?.read(|v| v.logins_for_url(url))?)
     }
@@ -253,7 +259,7 @@ impl VaultBackend for Backend {
 /// `io:bridge_already_running` if another Keystead instance serves the
 /// endpoint.
 pub fn start(core: &Arc<Core>) -> AppResult<()> {
-    if core.state().bridge.as_ref().is_some_and(|b| b.is_running()) {
+    if is_running(core) {
         return Ok(());
     }
     // Drop a stale (stopped) handle first.
@@ -268,6 +274,11 @@ pub fn start(core: &Arc<Core>) -> AppResult<()> {
     st.bridge = Some(handle);
     st.dispatcher = Some(dispatcher);
     Ok(())
+}
+
+/// True while this instance serves the bridge endpoint.
+pub fn is_running(core: &Core) -> bool {
+    core.state().bridge.as_ref().is_some_and(|b| b.is_running())
 }
 
 /// Stops the bridge server (no-op if it is not running). Pending pairing

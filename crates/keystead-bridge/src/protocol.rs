@@ -10,11 +10,11 @@
 use std::fmt;
 use std::time::Duration;
 
+use keystead_core::generator::GeneratorOptions;
+use keystead_core::totp::TotpCode;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use keystead_core::generator::GeneratorOptions;
-use keystead_core::totp::TotpCode;
 
 /// How long a `pair` request waits for the user's decision in the app.
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
