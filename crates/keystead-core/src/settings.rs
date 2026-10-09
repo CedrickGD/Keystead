@@ -49,6 +49,18 @@ impl Default for Language {
     }
 }
 
+/// Which releases the in-app updater offers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// Test versions (pre-releases) and stable releases – the default
+    /// during the beta phase.
+    #[default]
+    Beta,
+    /// Stable releases only.
+    Stable,
+}
+
 /// Upper bounds applied when loading/saving.
 const MAX_AUTO_LOCK_MINUTES: u32 = 7 * 24 * 60;
 const MAX_CLIPBOARD_CLEAR_SECONDS: u32 = 24 * 60 * 60;
@@ -70,6 +82,9 @@ pub struct Settings {
     pub browser_integration: bool,
     pub last_vault_id: Option<String>,
     pub show_icons: bool,
+    /// Look for app updates in the background (at start and every 6 h).
+    pub update_check: bool,
+    pub update_channel: UpdateChannel,
 }
 
 impl Default for Settings {
@@ -85,6 +100,8 @@ impl Default for Settings {
             browser_integration: true,
             last_vault_id: None,
             show_icons: false,
+            update_check: true,
+            update_channel: UpdateChannel::Beta,
         }
     }
 }
@@ -140,6 +157,8 @@ impl Settings {
         take(&obj, "browserIntegration", &mut s.browser_integration);
         take(&obj, "lastVaultId", &mut s.last_vault_id);
         take(&obj, "showIcons", &mut s.show_icons);
+        take(&obj, "updateCheck", &mut s.update_check);
+        take(&obj, "updateChannel", &mut s.update_channel);
         s.normalized()
     }
 
@@ -199,6 +218,39 @@ mod tests {
         assert!(s.browser_integration);
         assert_eq!(s.last_vault_id, None);
         assert!(!s.show_icons);
+        assert!(s.update_check);
+        assert_eq!(s.update_channel, UpdateChannel::Beta);
+    }
+
+    #[test]
+    fn settings_of_older_versions_get_update_defaults() {
+        // A settings.json written before the updater existed.
+        let old = r#"{
+          "theme": "dark", "language": "en", "autoLockMinutes": 5,
+          "lockOnSystemLock": false, "clipboardClearSeconds": 10,
+          "minimizeToTray": false, "startInTray": true,
+          "browserIntegration": false, "lastVaultId": "v-1", "showIcons": true
+        }"#;
+        let s = Settings::from_json_lenient(old);
+        assert_eq!(s.theme, Theme::Dark);
+        assert_eq!(s.auto_lock_minutes, 5);
+        assert_eq!(s.last_vault_id.as_deref(), Some("v-1"));
+        assert!(s.update_check);
+        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        // The strict deserializer (Tauri `save_settings` argument) as well.
+        let strict: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(strict, s);
+    }
+
+    #[test]
+    fn update_fields_parse_and_fall_back() {
+        let s = Settings::from_json_lenient(r#"{"updateCheck":false,"updateChannel":"stable"}"#);
+        assert!(!s.update_check);
+        assert_eq!(s.update_channel, UpdateChannel::Stable);
+        let s = Settings::from_json_lenient(r#"{"updateCheck":"no","updateChannel":"nightly"}"#);
+        assert!(s.update_check);
+        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        assert!(serde_json::from_str::<Settings>(r#"{"updateChannel":"nightly"}"#).is_err());
     }
 
     #[test]
@@ -225,7 +277,9 @@ mod tests {
         assert_eq!(v["clipboardClearSeconds"], 30);
         assert_eq!(v["lastVaultId"], "abc");
         assert_eq!(v["showIcons"], false);
-        assert_eq!(v.as_object().unwrap().len(), 10);
+        assert_eq!(v["updateCheck"], true);
+        assert_eq!(v["updateChannel"], "beta");
+        assert_eq!(v.as_object().unwrap().len(), 12);
     }
 
     #[test]
@@ -259,6 +313,8 @@ mod tests {
             browser_integration: false,
             last_vault_id: Some("id-1".into()),
             show_icons: true,
+            update_check: false,
+            update_channel: UpdateChannel::Stable,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

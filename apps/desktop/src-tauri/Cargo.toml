@@ -19,6 +19,13 @@ keystead-tui = { path = "../../../crates/keystead-tui" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# In-app updates: signed (minisign) NSIS setup / AppImage from GitHub
+# releases, see "In-app updates" in docs/ARCHITECTURE.md. No `zip` feature:
+# the update is the signed setup.exe itself, not an archive.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
+tauri-plugin-process = "2"
+semver = "1"
+time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Opens websites and the data folder with the system handler (ShellExecuteW
@@ -34,6 +41,8 @@ zeroize = "1.9.1"
 libloading = "0.7"
 
 [target.'cfg(windows)'.dependencies]
+# Reads the installer's uninstall entry (installed vs. portable copy).
+winreg = "0.56.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",

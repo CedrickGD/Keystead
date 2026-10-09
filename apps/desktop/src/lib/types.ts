@@ -209,6 +209,34 @@ export interface Settings {
   browserIntegration: boolean;
   lastVaultId: string | null;
   showIcons: boolean;
+  /** Look for app updates in the background (at start and every 6 h). Default true. */
+  updateCheck: boolean;
+  /** "beta" = test versions and stable releases (default during the beta phase), "stable" = stable releases only. */
+  updateChannel: UpdateChannel;
+}
+
+export type UpdateChannel = "beta" | "stable";
+
+/** Result of `check_update`, payload of `update://available`. */
+export interface UpdateInfo {
+  available: boolean;
+  currentVersion: string;
+  /** The newest version on the channel (null if none could be determined). */
+  version: string | null;
+  /** Release notes (Markdown/plain text) of that version. */
+  notes: string | null;
+  /** Release date (RFC 3339). */
+  date: string | null;
+  /** False for the portable build (and Linux/macOS except an AppImage): offer `releaseUrl` instead. */
+  canInstall: boolean;
+  /** Release page in the system browser. */
+  releaseUrl: string;
+}
+
+/** Payload of `update://progress`. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
 }
 
 export type BrowserId = "chrome" | "edge" | "brave" | "chromium" | "vivaldi";

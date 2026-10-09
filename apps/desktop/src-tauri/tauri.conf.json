@@ -37,6 +37,7 @@
     "targets": [
       "nsis"
     ],
+    "createUpdaterArtifacts": true,
     "category": "Utility",
     "shortDescription": "Lokaler Passwort-Manager",
     "longDescription": "Keystead – ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf diesem Gerät.",
@@ -57,6 +58,14 @@
           "English"
         ],
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBERkUzQTNCRDE4MzRENTMKUldSVFRZUFJPenIrRFhYMW5GOHg1cTJpZ0hBMWZTa3YvaGppOEpzZlFuU0lscHh0OUVXc2drakQK",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
