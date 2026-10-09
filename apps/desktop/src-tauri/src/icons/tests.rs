@@ -855,14 +855,10 @@ fn locking_cancels_a_run() {
 fn real_sites() {
     let fetcher = Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, true).unwrap();
     let out_dir = std::env::var_os("KEYSTEAD_ICON_OUT").map(std::path::PathBuf::from);
-    for host in [
-        "github.com",
-        "wikipedia.org",
-        "amazon.de",
-        "paypal.com",
-        "spiegel.de",
-        "mozilla.org",
-    ] {
+    let hosts = std::env::var("KEYSTEAD_ICON_HOSTS").unwrap_or_else(|_| {
+        "github.com wikipedia.org amazon.de paypal.com spiegel.de mozilla.org".into()
+    });
+    for host in hosts.split_whitespace() {
         let started = Instant::now();
         match block_on(fetcher.fetch(host)) {
             Ok(png) => {
