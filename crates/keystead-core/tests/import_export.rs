@@ -979,8 +979,17 @@ fn import_into_vault_and_export_files() {
     ));
     let json_text = fs::read_to_string(out.join("x.json")).unwrap();
     assert_eq!(import_bitwarden_json(&json_text).unwrap().0.len(), total);
+    // Importing the vault's own export again adds nothing: every item is a
+    // duplicate, and nothing is written.
+    let revision = vault.revision();
     let report = import_into(&mut vault, "bitwarden_json", &out.join("x.json"), None).unwrap();
-    assert_eq!(report.imported, total);
+    assert_eq!(report.imported, 0);
+    assert_eq!(report.duplicates.len(), total, "{:?}", report.duplicates);
+    assert!(report.conflicts_skipped.is_empty());
+    assert_eq!(vault.items().len(), total);
+    assert_eq!(vault.revision(), revision);
+    let report = import_into(&mut vault, "csv", &out.join("x.csv"), None).unwrap();
+    assert_eq!(report.imported, 0, "{:?}", report);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

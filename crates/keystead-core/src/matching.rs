@@ -78,7 +78,7 @@ pub fn uri_matches(stored: &LoginUri, page_url: &str) -> bool {
     }
 }
 
-fn is_web(u: &Url) -> bool {
+pub(crate) fn is_web(u: &Url) -> bool {
     matches!(u.scheme(), "http" | "https")
 }
 
@@ -87,7 +87,7 @@ fn has_scheme(raw: &str) -> bool {
 }
 
 /// Parses a stored URI; scheme-less input is read as `https://<input>`.
-fn parse_stored(raw: &str) -> Option<Url> {
+pub(crate) fn parse_stored(raw: &str) -> Option<Url> {
     if has_scheme(raw) {
         Url::parse(raw).ok()
     } else {

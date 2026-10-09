@@ -17,6 +17,7 @@ use zeroize::Zeroize;
 use crate::crypto::{self, SecretKey};
 use crate::error::{Error, Result};
 use crate::format::{self, VaultFile};
+use crate::import::{self, ConflictMode, ImportPlan, ImportReport};
 use crate::matching;
 use crate::model::{
     now_ms, Folder, GeneratedPassword, ItemSummary, ItemType, PasswordHistoryEntry, VaultData,
@@ -70,50 +71,60 @@ impl Drop for UnlockedVault {
 }
 
 /// Overwrites the secret strings of the vault data before the memory is freed.
-fn wipe_data(data: &mut VaultData) {
-    for item in &mut data.items {
-        item.name.zeroize();
-        item.notes.zeroize();
-        if let Some(l) = item.login.as_mut() {
-            l.username.zeroize();
-            l.password.zeroize();
-            l.totp.zeroize();
-            for u in &mut l.uris {
-                u.uri.zeroize();
-            }
-        }
-        if let Some(c) = item.card.as_mut() {
-            c.cardholder_name.zeroize();
-            c.number.zeroize();
-            c.code.zeroize();
-            c.exp_month.zeroize();
-            c.exp_year.zeroize();
-        }
-        if let Some(i) = item.identity.as_mut() {
-            for s in [
-                &mut i.first_name,
-                &mut i.last_name,
-                &mut i.email,
-                &mut i.phone,
-                &mut i.address1,
-                &mut i.address2,
-                &mut i.postal_code,
-                &mut i.city,
-                &mut i.username,
-            ] {
-                s.zeroize();
-            }
-        }
-        for f in &mut item.fields {
-            f.name.zeroize();
-            f.value.zeroize();
-        }
-        for h in &mut item.password_history {
-            h.password.zeroize();
-        }
-    }
+pub(crate) fn wipe_data(data: &mut VaultData) {
+    wipe_items(&mut data.items);
     for g in &mut data.generator_history {
         g.password.zeroize();
+    }
+}
+
+/// Overwrites the secret strings of items before the memory is freed.
+pub(crate) fn wipe_items(items: &mut [VaultItem]) {
+    for item in items {
+        wipe_item(item);
+    }
+}
+
+/// Overwrites the secret strings of one item.
+pub(crate) fn wipe_item(item: &mut VaultItem) {
+    item.name.zeroize();
+    item.notes.zeroize();
+    if let Some(l) = item.login.as_mut() {
+        l.username.zeroize();
+        l.password.zeroize();
+        l.totp.zeroize();
+        for u in &mut l.uris {
+            u.uri.zeroize();
+        }
+    }
+    if let Some(c) = item.card.as_mut() {
+        c.cardholder_name.zeroize();
+        c.number.zeroize();
+        c.code.zeroize();
+        c.exp_month.zeroize();
+        c.exp_year.zeroize();
+    }
+    if let Some(i) = item.identity.as_mut() {
+        for s in [
+            &mut i.first_name,
+            &mut i.last_name,
+            &mut i.email,
+            &mut i.phone,
+            &mut i.address1,
+            &mut i.address2,
+            &mut i.postal_code,
+            &mut i.city,
+            &mut i.username,
+        ] {
+            s.zeroize();
+        }
+    }
+    for f in &mut item.fields {
+        f.name.zeroize();
+        f.value.zeroize();
+    }
+    for h in &mut item.password_history {
+        h.password.zeroize();
     }
 }
 
@@ -241,57 +252,7 @@ impl UnlockedVault {
         item.name = validate_name(&item.name, "name")?;
         item.normalize();
         let now = now_ms();
-        self.mutate(move |data| {
-            if let Some(fid) = item.folder_id.as_deref() {
-                if !data.folders.iter().any(|f| f.id == fid) {
-                    item.folder_id = None;
-                }
-            }
-            let existing = if item.id.is_empty() {
-                None
-            } else {
-                data.items.iter().position(|i| i.id == item.id)
-            };
-            match existing {
-                Some(pos) => {
-                    let old = &data.items[pos];
-                    item.created_at = old.created_at;
-                    item.deleted_at = old.deleted_at;
-                    let old_password = zeroize::Zeroizing::new(old.password().to_owned());
-                    let old_revised = old.login.as_ref().and_then(|l| l.password_revised_at);
-                    if let Some(login) = item.login.as_mut() {
-                        if !old_password.is_empty() && *old_password != login.password {
-                            item.password_history.insert(
-                                0,
-                                PasswordHistoryEntry {
-                                    password: old_password.to_string(),
-                                    replaced_at: now,
-                                },
-                            );
-                            login.password_revised_at = Some(now);
-                        } else {
-                            // Maintained by the core only.
-                            login.password_revised_at = old_revised;
-                        }
-                    }
-                    item.password_history.truncate(PASSWORD_HISTORY_MAX);
-                    item.updated_at = now;
-                    data.items[pos] = item.clone();
-                }
-                None => {
-                    item.id = util::new_id();
-                    item.created_at = now;
-                    item.updated_at = now;
-                    item.deleted_at = None;
-                    if let Some(login) = item.login.as_mut() {
-                        login.password_revised_at = None;
-                    }
-                    item.password_history.truncate(PASSWORD_HISTORY_MAX);
-                    data.items.push(item.clone());
-                }
-            }
-            Ok(item)
-        })
+        self.mutate(move |data| Ok(store_item(data, item, now)))
     }
 
     /// Moves an item to the trash.
@@ -412,51 +373,86 @@ impl UnlockedVault {
             return Ok(0);
         }
         let now = now_ms();
-        self.mutate(move |data| {
-            let mut id_map = std::collections::HashMap::new();
-            for folder in folders {
-                let name = folder.name.trim();
-                if name.is_empty() {
-                    continue;
-                }
-                let target = match data
-                    .folders
-                    .iter()
-                    .find(|f| f.name.trim().to_lowercase() == name.to_lowercase())
-                {
-                    Some(existing) => existing.id.clone(),
-                    None => {
-                        let f = Folder {
-                            id: util::new_id(),
-                            name: truncate_chars(name, NAME_MAX_CHARS),
-                        };
-                        let id = f.id.clone();
-                        data.folders.push(f);
-                        id
+        self.mutate(move |data| Ok(add_imported(data, items, folders, now)))
+    }
+
+    /// Applies an import plan from [`import::plan_import`] in one save (one
+    /// revision; nothing is written if nothing changes).
+    ///
+    /// The incoming items are classified again against the *current* data –
+    /// the vault may have changed since the plan was made: an item that
+    /// became a duplicate is skipped (reported in `duplicates`), a conflict
+    /// whose existing login is gone (deleted or trashed) is added as a new
+    /// item, and an item planned as new that now conflicts follows `mode`.
+    ///
+    /// * New items get fresh ids; folders of the file are merged by name
+    ///   into existing folders or created – only those an added item uses.
+    /// * Conflicts: [`ConflictMode::Skip`] leaves them out
+    ///   (`conflictsSkipped`); [`ConflictMode::KeepBoth`] adds the incoming
+    ///   login as a new item; [`ConflictMode::Update`] takes the incoming
+    ///   password over into the existing login through the normal save path
+    ///   (the old password goes into the password history,
+    ///   `passwordRevisedAt` is set) and its TOTP seed if the existing login
+    ///   has none. An existing TOTP seed is never replaced and an empty
+    ///   incoming password never clears one; a conflict with nothing to take
+    ///   over is reported in `conflictsSkipped`.
+    /// * Conflicts the caller removed from `plan.conflicts` are left out.
+    ///
+    /// The plan is dropped (and its secrets overwritten) either way; use
+    /// [`Self::commit_import_ref`] to keep it for a retry after an error
+    /// such as `Error::Conflict`.
+    pub fn commit_import(&mut self, plan: ImportPlan, mode: ConflictMode) -> Result<ImportReport> {
+        self.commit_import_ref(&plan, mode)
+    }
+
+    /// [`Self::commit_import`] without consuming the plan: on an error
+    /// (`conflict` → `reload_if_changed()`, then retry) nothing has changed
+    /// and the same plan can be committed again. Committing a plan a second
+    /// time after success adds nothing – its items are duplicates by then.
+    pub fn commit_import_ref(
+        &mut self,
+        plan: &ImportPlan,
+        mode: ConflictMode,
+    ) -> Result<ImportReport> {
+        let now = now_ms();
+        let incoming = plan.incoming();
+        let folders = plan.folders.clone();
+        let mut report = ImportReport {
+            skipped: plan.invalid,
+            duplicates: plan.duplicates.clone(),
+            warnings: plan.warnings.clone(),
+            ..Default::default()
+        };
+        self.mutate_if_changed(move |data| {
+            let resolved = import::resolve_import(&data.items, incoming, mode);
+            report.duplicates.extend(resolved.duplicates);
+            report.conflicts_skipped = resolved.conflicts_skipped;
+            for update in resolved.updates {
+                let import::PendingUpdate {
+                    position,
+                    mut incoming,
+                    matched,
+                } = update;
+                match import::take_over(&data.items[position], &incoming) {
+                    Some(item) => {
+                        let mut saved = store_item(data, item, now);
+                        wipe_item(&mut saved);
+                        report.updated += 1;
                     }
-                };
-                id_map.insert(folder.id, target);
+                    None => report.conflicts_skipped.push(matched),
+                }
+                wipe_item(&mut incoming);
             }
-            let count = items.len();
-            for mut item in items {
-                item.id = util::new_id();
-                item.normalize();
-                item.name = truncate_chars(item.name.trim(), NAME_MAX_CHARS);
-                if item.name.is_empty() {
-                    item.name = "?".to_owned();
-                }
-                item.folder_id = item.folder_id.and_then(|f| id_map.get(&f).cloned());
-                item.deleted_at = None;
-                if item.created_at <= 0 {
-                    item.created_at = now;
-                }
-                if item.updated_at <= 0 {
-                    item.updated_at = now;
-                }
-                item.password_history.truncate(PASSWORD_HISTORY_MAX);
-                data.items.push(item);
-            }
-            Ok(count)
+            let to_add = resolved.to_add;
+            let mut folders = folders;
+            folders.retain(|f| {
+                to_add
+                    .iter()
+                    .any(|i| i.folder_id.as_deref() == Some(f.id.as_str()))
+            });
+            report.imported = add_imported(data, to_add, folders, now);
+            let changed = report.imported > 0 || report.updated > 0;
+            Ok((report, changed))
         })
     }
 
@@ -625,14 +621,27 @@ impl UnlockedVault {
     /// Applies `f` to a copy of the data, persists it and commits it to
     /// memory only on success.
     fn mutate<R>(&mut self, f: impl FnOnce(&mut VaultData) -> Result<R>) -> Result<R> {
+        self.mutate_if_changed(|data| f(data).map(|r| (r, true)))
+    }
+
+    /// Like [`Self::mutate`], but `f` also reports whether it changed
+    /// anything; if not, nothing is written (no new revision).
+    fn mutate_if_changed<R>(
+        &mut self,
+        f: impl FnOnce(&mut VaultData) -> Result<(R, bool)>,
+    ) -> Result<R> {
         let mut data = self.data.clone();
-        let result = match f(&mut data) {
+        let (result, changed) = match f(&mut data) {
             Ok(r) => r,
             Err(e) => {
                 wipe_data(&mut data);
                 return Err(e);
             }
         };
+        if !changed {
+            wipe_data(&mut data);
+            return Ok(result);
+        }
         let header = self.file.clone();
         self.write(header, data)?;
         Ok(result)
@@ -703,6 +712,117 @@ impl UnlockedVault {
             }
         }
     }
+}
+
+/// The data part of [`UnlockedVault::save_item`] (name validated and item
+/// normalised by the caller): creates or replaces the item, maintains the
+/// password history. Returns the stored item.
+fn store_item(data: &mut VaultData, mut item: VaultItem, now: i64) -> VaultItem {
+    if let Some(fid) = item.folder_id.as_deref() {
+        if !data.folders.iter().any(|f| f.id == fid) {
+            item.folder_id = None;
+        }
+    }
+    let existing = if item.id.is_empty() {
+        None
+    } else {
+        data.items.iter().position(|i| i.id == item.id)
+    };
+    match existing {
+        Some(pos) => {
+            let old = &data.items[pos];
+            item.created_at = old.created_at;
+            item.deleted_at = old.deleted_at;
+            let old_password = zeroize::Zeroizing::new(old.password().to_owned());
+            let old_revised = old.login.as_ref().and_then(|l| l.password_revised_at);
+            if let Some(login) = item.login.as_mut() {
+                if !old_password.is_empty() && *old_password != login.password {
+                    item.password_history.insert(
+                        0,
+                        PasswordHistoryEntry {
+                            password: old_password.to_string(),
+                            replaced_at: now,
+                        },
+                    );
+                    login.password_revised_at = Some(now);
+                } else {
+                    // Maintained by the core only.
+                    login.password_revised_at = old_revised;
+                }
+            }
+            item.password_history.truncate(PASSWORD_HISTORY_MAX);
+            item.updated_at = now;
+            let mut old = std::mem::replace(&mut data.items[pos], item.clone());
+            wipe_item(&mut old);
+        }
+        None => {
+            item.id = util::new_id();
+            item.created_at = now;
+            item.updated_at = now;
+            item.deleted_at = None;
+            if let Some(login) = item.login.as_mut() {
+                login.password_revised_at = None;
+            }
+            item.password_history.truncate(PASSWORD_HISTORY_MAX);
+            data.items.push(item.clone());
+        }
+    }
+    item
+}
+
+/// The data part of [`UnlockedVault::import_items`]: adds the items with
+/// fresh ids, merges or creates the folders and maps the folder references.
+/// Returns the number of added items.
+fn add_imported(
+    data: &mut VaultData,
+    items: Vec<VaultItem>,
+    folders: Vec<Folder>,
+    now: i64,
+) -> usize {
+    let mut id_map = std::collections::HashMap::new();
+    for folder in folders {
+        let name = folder.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let target = match data
+            .folders
+            .iter()
+            .find(|f| f.name.trim().to_lowercase() == name.to_lowercase())
+        {
+            Some(existing) => existing.id.clone(),
+            None => {
+                let f = Folder {
+                    id: util::new_id(),
+                    name: truncate_chars(name, NAME_MAX_CHARS),
+                };
+                let id = f.id.clone();
+                data.folders.push(f);
+                id
+            }
+        };
+        id_map.insert(folder.id, target);
+    }
+    let count = items.len();
+    for mut item in items {
+        item.id = util::new_id();
+        item.normalize();
+        item.name = truncate_chars(item.name.trim(), NAME_MAX_CHARS);
+        if item.name.is_empty() {
+            item.name = "?".to_owned();
+        }
+        item.folder_id = item.folder_id.and_then(|f| id_map.get(&f).cloned());
+        item.deleted_at = None;
+        if item.created_at <= 0 {
+            item.created_at = now;
+        }
+        if item.updated_at <= 0 {
+            item.updated_at = now;
+        }
+        item.password_history.truncate(PASSWORD_HISTORY_MAX);
+        data.items.push(item);
+    }
+    count
 }
 
 fn find_item_mut<'a>(data: &'a mut VaultData, id: &str) -> Result<&'a mut VaultItem> {

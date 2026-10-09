@@ -5,8 +5,15 @@
 //! Importers return items with their *source* ids; folder references point
 //! to the returned folders' ids. [`crate::vault::UnlockedVault::import_items`]
 //! assigns fresh ids and maps the folder references.
+//!
+//! Drag & drop flow: [`detect_import`] recognises the file by its content,
+//! [`read_import`] parses it, [`plan_import`] sorts the items into new
+//! items, duplicates and conflicts, and
+//! [`crate::vault::UnlockedVault::commit_import`] applies the plan.
+//! [`import_into`] does all of it in one call (conflicts are skipped).
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
@@ -25,15 +32,97 @@ use crate::model::{
 };
 use crate::paths;
 use crate::util;
-use crate::vault::UnlockedVault;
+use crate::vault::{self, UnlockedVault};
+
+mod detect;
+mod plan;
+
+pub use detect::{detect_import, DetectedImport};
+pub use plan::{
+    plan_import, ConflictMode, ConflictReason, ImportConflict, ImportMatch, ImportPlan,
+    ImportPreview,
+};
+pub(crate) use plan::{resolve_import, take_over, PendingUpdate};
+
+/// Largest file [`detect_import`] / [`read_import`] accept (50 MiB):
+/// larger files are refused with `unsupported:file_too_large` before they
+/// are read.
+pub const IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Result of an import into a vault (returned to the UI).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ImportReport {
+    /// Items added as new items (including conflicts kept with
+    /// [`ConflictMode::KeepBoth`]).
     pub imported: usize,
+    /// Existing logins whose password (or missing TOTP seed) was taken over
+    /// from the file ([`ConflictMode::Update`]).
+    pub updated: usize,
+    /// Invalid rows/entries of the file (see `warnings`).
     pub skipped: usize,
+    /// Items not imported because they already exist (or appear twice in
+    /// the file: `existingId` is empty then).
+    pub duplicates: Vec<ImportMatch>,
+    /// Conflicts that were not imported.
+    pub conflicts_skipped: Vec<ImportMatch>,
     pub warnings: Vec<String>,
+}
+
+/// A supported import file format (the `import_data` command values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportFormat {
+    /// VaultX 1.x vault file (`"legacy"`), needs its master or recovery
+    /// password.
+    Legacy,
+    /// CSV of Chrome/Edge, Firefox, Bitwarden, legacy VaultX or a generic
+    /// layout (`"csv"`).
+    Csv,
+    /// Unencrypted Bitwarden JSON export (`"bitwarden_json"`).
+    BitwardenJson,
+    /// Encrypted Keystead export or vault file (`"keystead"`), needs its
+    /// password.
+    Keystead,
+}
+
+impl ImportFormat {
+    /// The serialised name (`"legacy"`, `"csv"`, `"bitwarden_json"`,
+    /// `"keystead"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImportFormat::Legacy => "legacy",
+            ImportFormat::Csv => "csv",
+            ImportFormat::BitwardenJson => "bitwarden_json",
+            ImportFormat::Keystead => "keystead",
+        }
+    }
+
+    /// True for the encrypted formats (legacy, keystead).
+    pub fn needs_password(self) -> bool {
+        matches!(self, ImportFormat::Legacy | ImportFormat::Keystead)
+    }
+}
+
+impl std::fmt::Display for ImportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ImportFormat {
+    type Err = Error;
+
+    /// `invalid_input:format <x>` for an unknown name.
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "legacy" => Ok(ImportFormat::Legacy),
+            "csv" => Ok(ImportFormat::Csv),
+            "bitwarden_json" => Ok(ImportFormat::BitwardenJson),
+            "keystead" => Ok(ImportFormat::Keystead),
+            other => Err(Error::invalid(format!("format {other}"))),
+        }
+    }
 }
 
 /// A VaultX 1.x vault found on this machine.
@@ -44,20 +133,105 @@ pub struct LegacyVaultInfo {
     pub path: String,
 }
 
-/// Parsed import data before it is added to a vault.
-#[derive(Debug, Default)]
-struct Parsed {
-    items: Vec<VaultItem>,
-    folders: Vec<Folder>,
-    warnings: Vec<String>,
-    skipped: usize,
+/// A parsed import file before it is checked against a vault
+/// ([`plan_import`]). Items keep their source ids; `folder_id`s refer to
+/// `folders`. The secret strings are overwritten when it is dropped (use
+/// `std::mem::take` to move the vectors out).
+#[derive(Default)]
+pub struct ParsedImport {
+    pub items: Vec<VaultItem>,
+    pub folders: Vec<Folder>,
+    /// English, one per skipped entry or lossy conversion.
+    pub warnings: Vec<String>,
+    /// Rows/entries that could not be imported (each has a warning).
+    pub invalid: usize,
 }
 
-impl Parsed {
+impl ParsedImport {
     fn skip(&mut self, warning: String) {
-        self.skipped += 1;
+        self.invalid += 1;
         self.warnings.push(warning);
     }
+
+    fn into_parts(mut self) -> (Vec<VaultItem>, Vec<Folder>, Vec<String>) {
+        (
+            std::mem::take(&mut self.items),
+            std::mem::take(&mut self.folders),
+            std::mem::take(&mut self.warnings),
+        )
+    }
+}
+
+impl std::fmt::Debug for ParsedImport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the items.
+        f.debug_struct("ParsedImport")
+            .field("items", &self.items.len())
+            .field("folders", &self.folders.len())
+            .field("warnings", &self.warnings.len())
+            .field("invalid", &self.invalid)
+            .finish()
+    }
+}
+
+impl Drop for ParsedImport {
+    fn drop(&mut self) {
+        vault::wipe_items(&mut self.items);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reading files
+// ---------------------------------------------------------------------------
+
+/// Reads an import file of at most [`IMPORT_MAX_BYTES`].
+///
+/// * missing → `Error::NotFound`; a directory or another non-regular file
+///   (FIFO, device) → `Error::Io`, without opening it;
+/// * larger than the limit → `unsupported:file_too_large` without reading
+///   it (also if it grows while being read).
+fn read_file_limited(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    let open_err = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::NotFound(format!("file {}", path.display()))
+        } else {
+            Error::io_at(path, e)
+        }
+    };
+    let meta = std::fs::metadata(path).map_err(open_err)?;
+    if meta.is_dir() {
+        return Err(Error::io_at(
+            path,
+            std::io::Error::from(std::io::ErrorKind::IsADirectory),
+        ));
+    }
+    if !meta.is_file() {
+        return Err(Error::io_at(
+            path,
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"),
+        ));
+    }
+    if meta.len() > IMPORT_MAX_BYTES {
+        return Err(Error::Unsupported("file_too_large".into()));
+    }
+    let file = std::fs::File::open(path).map_err(open_err)?;
+    // Room for one byte more than the limit, so that the buffer never
+    // reallocates (and leaves copies of the content behind).
+    let capacity = usize::try_from(meta.len().saturating_add(1)).unwrap_or(0);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+    file.take(IMPORT_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::io_at(path, e))?;
+    if bytes.len() as u64 > IMPORT_MAX_BYTES {
+        return Err(Error::Unsupported("file_too_large".into()));
+    }
+    Ok(bytes)
+}
+
+/// [`read_file_limited`] decoded as text (UTF-8, UTF-16 with BOM or
+/// Windows-1252).
+fn read_text_limited(path: &Path) -> Result<Zeroizing<String>> {
+    Ok(Zeroizing::new(util::decode_text(&read_file_limited(path)?)))
 }
 
 // ---------------------------------------------------------------------------
@@ -407,17 +581,10 @@ fn legacy_entry_to_item(entry: &Map<String, Value>) -> Option<VaultItem> {
     Some(item)
 }
 
-fn parse_legacy_file(path: &Path, password: &str) -> Result<Parsed> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Error::NotFound(format!("file {}", path.display()))
-        } else {
-            Error::io_at(path, e)
-        }
-    })?;
-    let meta = parse_legacy_meta(&bytes)?;
+fn parse_legacy_bytes(bytes: &[u8], password: &str) -> Result<ParsedImport> {
+    let meta = parse_legacy_meta(bytes)?;
     let plain = legacy_unlock(&meta, password)?;
-    let mut out = Parsed::default();
+    let mut out = ParsedImport::default();
     let Some(obj) = plain.as_object() else {
         return Err(Error::corrupt("legacy vault: payload is not an object"));
     };
@@ -445,8 +612,9 @@ fn parse_legacy_file(path: &Path, password: &str) -> Result<Parsed> {
 /// Decrypts a VaultX 1.x vault file with its master password or its
 /// recovery password. Returns the items and warnings.
 pub fn import_legacy_file(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<String>)> {
-    let parsed = parse_legacy_file(path, password)?;
-    Ok((parsed.items, parsed.warnings))
+    let (items, _, warnings) =
+        parse_legacy_bytes(&read_file_limited(path)?, password)?.into_parts();
+    Ok((items, warnings))
 }
 
 /// Display name of a legacy vault file `vault_<name>_<8 hex>.json`.
@@ -921,7 +1089,10 @@ fn split_uris_single(url: &str) -> Vec<LoginUri> {
     }
 }
 
-fn parse_csv(text: &str) -> Result<Parsed> {
+/// A CSV reader positioned after an optional Excel `sep=` hint line, with
+/// the delimiter given there or detected from the header line.
+/// `csv_empty` if there is no header line.
+fn csv_reader(text: &str) -> Result<csv::Reader<&[u8]>> {
     let mut text = util::strip_bom(text);
     let mut first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     // Excel's "sep=;" hint line.
@@ -938,11 +1109,34 @@ fn parse_csv(text: &str) -> Result<Parsed> {
         return Err(Error::invalid("csv_empty"));
     }
     let delimiter = delimiter.unwrap_or_else(|| detect_delimiter(first_line));
-    let mut reader = csv::ReaderBuilder::new()
+    Ok(csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .flexible(true)
         .has_headers(true)
-        .from_reader(text.as_bytes());
+        .from_reader(text.as_bytes()))
+}
+
+/// Generic-layout columns that make a header row recognisable.
+const KNOWN_GENERIC: [&[&str]; 6] = [
+    ALIAS_TITLE,
+    ALIAS_URL,
+    ALIAS_USERNAME,
+    ALIAS_PASSWORD,
+    ALIAS_EMAIL,
+    ALIAS_NOTES,
+];
+
+/// Number of header columns the generic importer understands.
+fn known_generic_columns(headers: &[String]) -> usize {
+    headers
+        .iter()
+        .filter(|h| KNOWN_GENERIC.iter().any(|list| list.contains(&h.as_str())))
+        .count()
+}
+
+/// Reads the (normalised) header row and the CSV dialect;
+/// `csv_unknown_columns` if no column is recognised.
+fn csv_headers(reader: &mut csv::Reader<&[u8]>) -> Result<(Vec<String>, CsvFormat)> {
     let headers: Vec<String> = reader
         .headers()
         .map_err(|e| Error::invalid(format!("csv: {e}")))?
@@ -950,24 +1144,32 @@ fn parse_csv(text: &str) -> Result<Parsed> {
         .map(normalize_header)
         .collect();
     let format = detect_csv_format(&headers);
-    if format == CsvFormat::Generic {
-        let known = [
-            ALIAS_TITLE,
-            ALIAS_URL,
-            ALIAS_USERNAME,
-            ALIAS_PASSWORD,
-            ALIAS_EMAIL,
-            ALIAS_NOTES,
-        ];
-        if !headers
-            .iter()
-            .any(|h| known.iter().any(|list| list.contains(&h.as_str())))
-        {
-            return Err(Error::invalid("csv_unknown_columns"));
-        }
+    if format == CsvFormat::Generic && known_generic_columns(&headers) == 0 {
+        return Err(Error::invalid("csv_unknown_columns"));
     }
+    Ok((headers, format))
+}
 
-    let mut out = Parsed::default();
+/// True if `text` starts with the header row of a CSV export Keystead can
+/// import (used by [`detect_import`]). Stricter than [`parse_csv`] for the
+/// generic layout: at least two recognised columns, so that a text file
+/// whose first line happens to be "Notes" is not taken for a CSV export.
+fn looks_like_csv(text: &str) -> bool {
+    let Ok(mut reader) = csv_reader(text) else {
+        return false;
+    };
+    match csv_headers(&mut reader) {
+        Ok((_, CsvFormat::Bitwarden | CsvFormat::Firefox)) => true,
+        Ok((headers, CsvFormat::Generic)) => known_generic_columns(&headers) >= 2,
+        Err(_) => false,
+    }
+}
+
+fn parse_csv(text: &str) -> Result<ParsedImport> {
+    let mut reader = csv_reader(text)?;
+    let (headers, format) = csv_headers(&mut reader)?;
+
+    let mut out = ParsedImport::default();
     let mut folders = FolderSet::default();
     for (index, result) in reader.records().enumerate() {
         let line = index + 2;
@@ -1005,8 +1207,7 @@ fn parse_csv(text: &str) -> Result<Parsed> {
 /// legacy-VaultX/generic column layouts; ',' ';' or tab separated; a UTF-8
 /// BOM is ignored. Returns items, folders and warnings.
 pub fn import_csv(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)> {
-    let p = parse_csv(text)?;
-    Ok((p.items, p.folders, p.warnings))
+    Ok(parse_csv(text)?.into_parts())
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,7 +1247,7 @@ fn bw_year(s: &str) -> String {
     }
 }
 
-fn bw_item(obj: &Map<String, Value>, out: &mut Parsed) {
+fn bw_item(obj: &Map<String, Value>, out: &mut ParsedImport) {
     let name = get_str(obj, "name");
     let label = if name.trim().is_empty() {
         "(unnamed)".to_owned()
@@ -1248,7 +1449,7 @@ fn bw_item(obj: &Map<String, Value>, out: &mut Parsed) {
     out.items.push(item);
 }
 
-fn parse_bitwarden_json(text: &str) -> Result<Parsed> {
+fn parse_bitwarden_json(text: &str) -> Result<ParsedImport> {
     let value: Value = serde_json::from_str(util::strip_bom(text))
         .map_err(|e| Error::invalid(format!("json: {e}")))?;
     let obj = value
@@ -1263,7 +1464,7 @@ fn parse_bitwarden_json(text: &str) -> Result<Parsed> {
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| Error::invalid("bitwarden_json"))?;
-    let mut out = Parsed::default();
+    let mut out = ParsedImport::default();
     // Organisation exports use "collections" instead of "folders".
     for key in ["folders", "collections"] {
         if let Some(folders) = obj.get(key).and_then(Value::as_array) {
@@ -1287,8 +1488,7 @@ fn parse_bitwarden_json(text: &str) -> Result<Parsed> {
 
 /// Imports an unencrypted Bitwarden JSON export.
 pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)> {
-    let p = parse_bitwarden_json(text)?;
-    Ok((p.items, p.folders, p.warnings))
+    Ok(parse_bitwarden_json(text)?.into_parts())
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,66 +1501,75 @@ pub fn import_keystead_export(
     path: &Path,
     password: &str,
 ) -> Result<(Vec<VaultItem>, Vec<Folder>)> {
-    let file = VaultFile::read(path)?;
+    let (items, folders, _) =
+        parse_keystead_bytes(&read_file_limited(path)?, password)?.into_parts();
+    Ok((items, folders))
+}
+
+fn parse_keystead_bytes(bytes: &[u8], password: &str) -> Result<ParsedImport> {
+    let file = VaultFile::parse(bytes)?;
     let key = file.unwrap_key(password)?;
-    let data = file.decrypt_payload(&key)?;
-    let items = data
-        .items
-        .iter()
-        .filter(|i| !i.is_trashed())
-        .cloned()
-        .collect();
-    Ok((items, data.folders.clone()))
+    let mut data = file.decrypt_payload(&key)?;
+    let mut out = ParsedImport::default();
+    for mut item in std::mem::take(&mut data.items) {
+        if item.is_trashed() {
+            vault::wipe_item(&mut item);
+        } else {
+            out.items.push(item);
+        }
+    }
+    out.folders = std::mem::take(&mut data.folders);
+    vault::wipe_data(&mut data);
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
 // Convenience for the frontends
 // ---------------------------------------------------------------------------
 
-fn read_text_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Error::NotFound(format!("file {}", path.display()))
-        } else {
-            Error::io_at(path, e)
-        }
-    })?;
-    Ok(util::decode_text(&bytes))
+/// Reads and parses an import file of a known format (see
+/// [`detect_import`]). `password` is required for `legacy` and `keystead`
+/// (`invalid_input:password_required` if missing or empty, checked before
+/// the file is read); a wrong one gives `wrong_password`. Text files may be
+/// UTF-8, UTF-16 (with BOM) or Windows-1252; files larger than
+/// [`IMPORT_MAX_BYTES`] → `unsupported:file_too_large`.
+pub fn read_import(
+    path: &Path,
+    format: ImportFormat,
+    password: Option<&str>,
+) -> Result<ParsedImport> {
+    let password = if format.needs_password() {
+        password
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| Error::invalid("password_required"))?
+    } else {
+        ""
+    };
+    match format {
+        ImportFormat::Legacy => parse_legacy_bytes(&read_file_limited(path)?, password),
+        ImportFormat::Csv => parse_csv(&read_text_limited(path)?),
+        ImportFormat::BitwardenJson => parse_bitwarden_json(&read_text_limited(path)?),
+        ImportFormat::Keystead => parse_keystead_bytes(&read_file_limited(path)?, password),
+    }
 }
 
 /// Imports a file into an unlocked vault. `format` is one of `"legacy"`,
 /// `"csv"`, `"bitwarden_json"`, `"keystead"` (the `import_data` command
-/// values); `password` is required for `legacy` and `keystead`.
-/// Text files may be UTF-8, UTF-16 (with BOM) or Windows-1252.
+/// values; `invalid_input:format <x>` otherwise); `password` is required for
+/// `legacy` and `keystead`.
+///
+/// Same as [`read_import`] + [`plan_import`] +
+/// [`UnlockedVault::commit_import`] with [`ConflictMode::Skip`]: items that
+/// already exist are not imported again (listed in `duplicates`), existing
+/// logins with a different password are left alone (`conflictsSkipped`).
 pub fn import_into(
     vault: &mut UnlockedVault,
     format: &str,
     path: &Path,
     password: Option<&str>,
 ) -> Result<ImportReport> {
-    let need_password = || -> Result<&str> {
-        password
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| Error::invalid("password_required"))
-    };
-    let parsed = match format {
-        "legacy" => parse_legacy_file(path, need_password()?)?,
-        "csv" => parse_csv(&read_text_file(path)?)?,
-        "bitwarden_json" => parse_bitwarden_json(&read_text_file(path)?)?,
-        "keystead" => {
-            let (items, folders) = import_keystead_export(path, need_password()?)?;
-            Parsed {
-                items,
-                folders,
-                ..Default::default()
-            }
-        }
-        other => return Err(Error::invalid(format!("format {other}"))),
-    };
-    let imported = vault.import_items(parsed.items, parsed.folders)?;
-    Ok(ImportReport {
-        imported,
-        skipped: parsed.skipped,
-        warnings: parsed.warnings,
-    })
+    let format: ImportFormat = format.parse()?;
+    let parsed = read_import(path, format, password)?;
+    let plan = plan_import(vault.data(), parsed);
+    vault.commit_import(plan, ConflictMode::Skip)
 }
