@@ -12,7 +12,9 @@ use std::thread;
 use std::time::Duration;
 
 use keystead_bridge::server::handle_frame;
-use keystead_bridge::{BridgeError, ClientStore, Dispatcher, LoginSecret, Response, VaultBackend};
+use keystead_bridge::{
+    BridgeError, ClientStore, Dispatcher, LoginSecret, Response, VaultBackend, VaultSummary,
+};
 use keystead_core::clipboard;
 use keystead_core::generator::GeneratorOptions;
 use keystead_core::model::ItemSummary;
@@ -28,11 +30,21 @@ impl VaultBackend for DefaultCopyBackend {
     fn app_version(&self) -> String {
         "test".into()
     }
-    fn unlocked_vault_name(&self) -> Option<String> {
-        Some("V".into())
+    fn unlocked_vault(&self) -> Option<VaultSummary> {
+        Some(VaultSummary {
+            id: "v".into(),
+            name: "V".into(),
+        })
     }
-    fn unlock(&self, _password: &str) -> Result<String, BridgeError> {
-        Ok("V".into())
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError> {
+        Ok((self.unlocked_vault().into_iter().collect(), None))
+    }
+    fn unlock(
+        &self,
+        _vault_id: Option<&str>,
+        _password: &str,
+    ) -> Result<VaultSummary, BridgeError> {
+        self.unlocked_vault().ok_or(BridgeError::Internal)
     }
     fn lock(&self) {}
     fn focus_app(&self) {}

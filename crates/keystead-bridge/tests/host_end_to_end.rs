@@ -17,6 +17,7 @@ use keystead_bridge::framing::{
 use keystead_bridge::host::{self, LocalSocketConnector};
 use keystead_bridge::{
     start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, Response, VaultBackend,
+    VaultSummary,
 };
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
@@ -59,19 +60,36 @@ impl VaultBackend for CoreBackend {
         "2.0.0".into()
     }
 
-    fn unlocked_vault_name(&self) -> Option<String> {
-        self.vault
-            .lock()
-            .ok()?
-            .as_ref()
-            .map(|v| v.name().to_owned())
+    fn unlocked_vault(&self) -> Option<VaultSummary> {
+        self.vault.lock().ok()?.as_ref().map(|v| VaultSummary {
+            id: v.id().to_owned(),
+            name: v.name().to_owned(),
+        })
     }
 
-    fn unlock(&self, password: &str) -> Result<String, BridgeError> {
-        let vault = self.store.unlock(&self.vault_id, password)?;
-        let name = vault.name().to_owned();
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError> {
+        let vaults = self
+            .store
+            .list_vaults()?
+            .into_iter()
+            .map(|v| VaultSummary {
+                id: v.id,
+                name: v.name,
+            })
+            .collect();
+        Ok((vaults, Some(self.vault_id.clone())))
+    }
+
+    fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError> {
+        let vault = self
+            .store
+            .unlock(vault_id.unwrap_or(&self.vault_id), password)?;
+        let summary = VaultSummary {
+            id: vault.id().to_owned(),
+            name: vault.name().to_owned(),
+        };
         *self.vault.lock().map_err(|_| BridgeError::Internal)? = Some(vault);
-        Ok(name)
+        Ok(summary)
     }
 
     fn lock(&self) {
@@ -286,7 +304,8 @@ fn browser_to_vault_through_host_and_socket() {
     assert_eq!(r.len(), 6);
     assert_eq!(
         r[0].data,
-        json!({"appVersion": "2.0.0", "paired": false, "unlocked": false, "vaultName": null})
+        json!({"appVersion": "2.0.0", "paired": false, "unlocked": false, "vaultName": null,
+            "vaultId": null})
     );
     assert_eq!(r[1], Response::null("a2"));
     assert_eq!(r[2], Response::error("a3", BridgeError::NotPaired));
@@ -317,6 +336,17 @@ fn browser_to_vault_through_host_and_socket() {
         json!({"id": "b1", "type": "logins_for_url", "url": "https://github.com"}),
     ));
     assert_eq!(r.error_code(), Some(BridgeError::Locked));
+    let vault_id = backend.vault_id.clone();
+    let r = browser.send(auth(json!({"id": "b1b", "type": "list_vaults"})));
+    assert_eq!(
+        r.data,
+        json!({"vaults": [{"id": vault_id, "name": "Privat"}], "currentVaultId": null,
+            "lastVaultId": vault_id})
+    );
+    let r = browser.send(auth(
+        json!({"id": "b1c", "type": "unlock", "password": MASTER, "vaultId": "no-such-vault"}),
+    ));
+    assert_eq!(r.error_code(), Some(BridgeError::NotFound));
     let r = browser.send(auth(
         json!({"id": "b2", "type": "unlock", "password": "wrong"}),
     ));
@@ -324,11 +354,12 @@ fn browser_to_vault_through_host_and_socket() {
     let r = browser.send(auth(
         json!({"id": "b3", "type": "unlock", "password": MASTER}),
     ));
-    assert_eq!(r.data, json!({"vaultName": "Privat"}));
+    assert_eq!(r.data, json!({"vaultName": "Privat", "vaultId": vault_id}));
     let r = browser.send(auth(json!({"id": "b4", "type": "status"})));
     assert_eq!(
         r.data,
-        json!({"appVersion": "2.0.0", "paired": true, "unlocked": true, "vaultName": "Privat"})
+        json!({"appVersion": "2.0.0", "paired": true, "unlocked": true, "vaultName": "Privat",
+            "vaultId": vault_id})
     );
 
     let r = browser.send(auth(

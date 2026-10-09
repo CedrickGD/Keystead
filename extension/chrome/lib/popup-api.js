@@ -41,7 +41,10 @@ export function createApi() {
       return () => chrome.storage.onChanged.removeListener(handler);
     },
 
-    unlock: (password) => call("popup:unlock", { password }),
+    /** { vaults: [{ id, name }] (sorted by name), currentVaultId, lastVaultId } */
+    listVaults: () => call("popup:list-vaults"),
+    /** Unlocks `vaultId` (null: the app picks its last used vault); resolves to { vaultName, vaultId }. */
+    unlock: (password, vaultId = null) => call("popup:unlock", { password, vaultId }),
     lock: () => call("popup:lock"),
     focusApp: () => call("popup:focus-app"),
 
@@ -67,6 +70,23 @@ export function createApi() {
         await chrome.storage.local.set({ generatorOptions: options });
       } catch {
         // Options are a convenience; generation still works with the current values.
+      }
+    },
+    /** Id of the vault last unlocked from this browser (preselected when locked), or null. */
+    async loadChosenVault() {
+      try {
+        const { chosenVaultId } = await chrome.storage.local.get("chosenVaultId");
+        return typeof chosenVaultId === "string" && chosenVaultId ? chosenVaultId : null;
+      } catch {
+        return null;
+      }
+    },
+    /** Only the id is stored (no vault name). */
+    async saveChosenVault(vaultId) {
+      try {
+        await chrome.storage.local.set({ chosenVaultId: vaultId });
+      } catch {
+        // A convenience only: the selector then falls back to the app's last vault.
       }
     },
     /**

@@ -3,7 +3,9 @@
 // MV3 service workers are stopped when idle, so nothing essential may live
 // only in memory:
 // * chrome.storage.local   – pairing credentials, "never save" sites, last
-//                            used login per site, generator options.
+//                            used login per site, generator options, the id
+//                            of the vault last unlocked from this browser
+//                            (written by the popup, lib/popup-api.js).
 // * chrome.storage.session – cached status, pairing progress, pending save
 //                            prompts (contain a password; in memory only and
 //                            not readable by content scripts), per-tab hints.

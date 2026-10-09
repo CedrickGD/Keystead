@@ -19,16 +19,23 @@ popup, `Ctrl+Shift+L` fill the login for the current page, `Ctrl+Shift+9`
 generate a password into the focused field. Right-click on an input field:
 *Passwort generieren und einfügen*, *Keystead öffnen*.
 
+Several vaults: the locked popup shows a *Tresor* selector above the master
+password (preselected: the vault last unlocked in this browser, else the
+app's last used one). While unlocked, the vault name in the header opens a
+menu of all vaults; picking one asks for its master password and switches
+the app to it – the open vault stays unlocked until the new password was
+accepted (*Zurück* returns to it).
+
 ## Files
 
 | File | Role |
 |---|---|
 | `background.js` | Service worker: native port (`lib/bridge.js`), status cache, pairing, badge, context menu, commands, credential release to content scripts, save/update prompts. |
 | `lib/bridge.js` | Native messaging client: lazy port, reconnect, per-request timeouts (10 s; 12 s while the host may still launch the app; `pair` 125 s on its own port). |
-| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options. `session`: status, pairing progress, pending save prompts. |
+| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options, the id of the vault last unlocked here (`chosenVaultId`, written by the popup). `session`: status (incl. the open vault's name and id), pairing progress, pending save prompts. |
 | `content.js` | Inline icon + dropdown, autofill, capture of submitted logins, save bar – UI in a closed shadow root. |
 | `lib/forms.js` | Pure DOM helpers for form detection and filling (`globalThis.KeysteadForms`); loadable on its own in a test page. |
-| `popup.html/.css/.js` | Popup (setup guide, pairing, unlock, *Diese Seite* / *Suche* / *Generator*, add login). `popup.html?demo=<state>` renders fake data only (no storage, no native host) for design work and screenshots; states: `host_missing`, `app_unavailable`, `not_paired`, `pairing`, `paired`, `denied`, `locked`, `unlocked`, `unlocked_empty`, `not_web`, `insecure`. |
+| `popup.html/.css/.js` | Popup (setup guide, pairing, unlock, *Diese Seite* / *Suche* / *Generator*, add login). `popup.html?demo=<state>` renders fake data only (no storage, no native host) for design work and screenshots; states: `host_missing`, `app_unavailable`, `not_paired`, `pairing`, `paired`, `denied`, `locked`, `locked_single`, `unlocked`, `unlocked_single`, `unlocked_empty`, `not_web`, `insecure` (`_single`: one vault, else three; password `demo`). |
 | `_locales/de`, `_locales/en` | All UI strings. |
 
 ## Security model

@@ -69,6 +69,16 @@
 
   "lockedTitle": { "message": "Vault locked" },
   "lockedText": { "message": "Enter your master password to unlock Keystead." },
+  "lockedTextChoose": { "message": "Choose the vault and enter its master password." },
+  "vault": { "message": "Vault" },
+  "vaults": { "message": "Vaults" },
+  "switchVault": { "message": "Switch vault" },
+  "switchVaultLabel": { "message": "Switch vault (open: $NAME$)", "placeholders": { "name": { "content": "$1" } } },
+  "switchText": {
+    "message": "Enter the master password of “$TARGET$”. “$CURRENT$” stays unlocked until then.",
+    "placeholders": { "target": { "content": "$1" }, "current": { "content": "$2" } }
+  },
+  "vaultGone": { "message": "This vault no longer exists." },
   "masterPassword": { "message": "Master password" },
   "unlock": { "message": "Unlock" },
   "wrongPassword": { "message": "Wrong master password. Please try again." },

@@ -21,13 +21,15 @@ let reloading = false;
 /**
  * Reloads the page to drop the vault data the UI held. Waits (at most 3 s)
  * for commands still in flight so their outcome is not lost; `notices` is
- * read right before the reload and shown again afterwards.
+ * read right before the reload and shown again afterwards. Returns whether
+ * a reload is coming (also if one was already scheduled).
  *
- * Outside Tauri (mock backend) this does nothing: the mock keeps its demo
- * data in this same page and would only start over.
+ * Outside Tauri (mock backend) this does nothing and returns false: the mock
+ * keeps its demo data in this same page and would only start over.
  */
-export function discardPageData(notices: () => CarriedNotice[]): void {
-  if (!IN_TAURI || reloading) return;
+export function discardPageData(notices: () => CarriedNotice[]): boolean {
+  if (!IN_TAURI) return false;
+  if (reloading) return true;
   reloading = true;
   const deadline = Date.now() + MAX_WAIT_MS;
   let quietPolls = 0;
@@ -45,6 +47,7 @@ export function discardPageData(notices: () => CarriedNotice[]): void {
     window.location.reload();
   };
   window.setTimeout(poll, POLL_MS);
+  return true;
 }
 
 function isNotice(value: unknown): value is CarriedNotice {

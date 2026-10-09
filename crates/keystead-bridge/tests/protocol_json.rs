@@ -2,10 +2,10 @@
 //! ("Browser bridge protocol"), checked against literal JSON strings.
 
 use keystead_bridge::protocol::{
-    extract_id, CopyData, CopyField, IdData, PairData, StatusData, UnlockData, PAIRING_TIMEOUT,
-    SEARCH_LIMIT,
+    extract_id, CopyData, CopyField, IdData, ListVaultsData, PairData, StatusData, UnlockData,
+    PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
-use keystead_bridge::{BridgeError, LoginSecret, Payload, Request, Response};
+use keystead_bridge::{BridgeError, LoginSecret, Payload, Request, Response, VaultSummary};
 use keystead_core::generator::{GeneratorKind, GeneratorOptions};
 use keystead_core::totp::TotpCode;
 use serde_json::{json, Value};
@@ -38,10 +38,19 @@ fn every_request_type_parses() {
                 code: "042137".into(),
             },
         ),
+        (r#"{"id":"1","type":"list_vaults"}"#, Payload::ListVaults),
         (
             r#"{"id":"1","type":"unlock","password":"pw"}"#,
             Payload::Unlock {
                 password: Zeroizing::new("pw".into()),
+                vault_id: None,
+            },
+        ),
+        (
+            r#"{"id":"1","type":"unlock","password":"pw","vaultId":"6f1c2a9e-3b7d"}"#,
+            Payload::Unlock {
+                password: Zeroizing::new("pw".into()),
+                vault_id: Some("6f1c2a9e-3b7d".into()),
             },
         ),
         (r#"{"id":"1","type":"lock"}"#, Payload::Lock),
@@ -199,6 +208,11 @@ fn invalid_requests_yield_invalid_request_with_id_when_possible() {
             "a7",
         ),
         (r#"{"id":"a8","type":"status","token":7}"#, "a8"),
+        (
+            r#"{"id":"a10","type":"unlock","password":"pw","vaultId":["x"]}"#,
+            "a10",
+        ),
+        (r#"{"id":"a11","type":"unlock","vaultId":"v"}"#, "a11"),
         (r#"{"id":"a9","type":"status""#, ""),
     ];
     for (input, id) in cases {
@@ -265,8 +279,37 @@ fn data_shapes() {
             paired: true,
             unlocked: false,
             vault_name: None,
+            vault_id: None,
         },
-        r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null}"#,
+        r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null,"vaultId":null}"#,
+    );
+    same_json(
+        &StatusData {
+            app_version: "2.0.0".into(),
+            paired: true,
+            unlocked: true,
+            vault_name: Some("Privat".into()),
+            vault_id: Some("v-1".into()),
+        },
+        r#"{"appVersion":"2.0.0","paired":true,"unlocked":true,"vaultName":"Privat","vaultId":"v-1"}"#,
+    );
+    same_json(
+        &ListVaultsData {
+            vaults: vec![
+                VaultSummary {
+                    id: "v-2".into(),
+                    name: "Arbeit".into(),
+                },
+                VaultSummary {
+                    id: "v-1".into(),
+                    name: "Privat".into(),
+                },
+            ],
+            current_vault_id: None,
+            last_vault_id: Some("v-1".into()),
+        },
+        r#"{"vaults":[{"id":"v-2","name":"Arbeit"},{"id":"v-1","name":"Privat"}],
+            "currentVaultId":null,"lastVaultId":"v-1"}"#,
     );
     same_json(
         &PairData {
@@ -278,8 +321,9 @@ fn data_shapes() {
     same_json(
         &UnlockData {
             vault_name: "Privat".into(),
+            vault_id: "v-1".into(),
         },
-        r#"{"vaultName":"Privat"}"#,
+        r#"{"vaultName":"Privat","vaultId":"v-1"}"#,
     );
     same_json(&IdData { id: "i".into() }, r#"{"id":"i"}"#);
     same_json(

@@ -90,6 +90,7 @@ export const de = {
   // Lock
   "lock.timeoutToast": "Tresor nach {minutes} min Inaktivität gesperrt",
   "lock.systemToast": "Tresor gesperrt, weil der Computer gesperrt wurde",
+  "lock.switchedToast": "In der Browser-Erweiterung wurde ein anderer Tresor geöffnet",
 
   // Welcome & wizard
   "welcome.title": "Willkommen bei Keystead",

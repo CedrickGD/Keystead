@@ -110,13 +110,42 @@ impl AppState {
         self.vault.as_mut().ok_or(AppError::Locked)
     }
 
+    /// The open vault if it is `page_vault_id`, the vault the UI page works
+    /// on (see [`Core::mutate_for_page`]); `locked` otherwise.
+    pub fn page_vault(&self, page_vault_id: Option<&str>) -> AppResult<&UnlockedVault> {
+        self.vault
+            .as_ref()
+            .filter(|v| Some(v.id()) == page_vault_id)
+            .ok_or(AppError::Locked)
+    }
+
+    fn page_vault_mut(&mut self, page_vault_id: Option<&str>) -> AppResult<&mut UnlockedVault> {
+        self.vault
+            .as_mut()
+            .filter(|v| Some(v.id()) == page_vault_id)
+            .ok_or(AppError::Locked)
+    }
+
     /// Remembers `vault_id` as the last used vault (persisted).
     fn remember_vault(&mut self, vault_id: &str) {
         if self.settings.last_vault_id.as_deref() == Some(vault_id) {
             return;
         }
         self.settings.last_vault_id = Some(vault_id.to_owned());
-        if let Err(e) = self.settings.save() {
+        self.save_settings();
+    }
+
+    /// Persists `settings` (`<data_dir>/settings.json`), logging failures.
+    pub fn save_settings(&self) {
+        // Unit tests keep it next to their temporary store, never in the
+        // real data directory.
+        #[cfg(test)]
+        let result = self
+            .settings
+            .save_to(&self.store.root().join("settings.json"));
+        #[cfg(not(test))]
+        let result = self.settings.save();
+        if let Err(e) = result {
             log(format_args!("could not save the settings: {}", e.code()));
         }
     }
@@ -374,8 +403,11 @@ impl Core {
         }
     }
 
-    /// Makes `vault` the open vault (replacing another one), resets the
-    /// auto-lock timer and remembers it as the last used vault.
+    /// Makes `vault` the open vault, resets the auto-lock timer and
+    /// remembers it as the last used vault. A vault that was open before
+    /// (the browser extension switched vaults) is closed like on lock – its
+    /// data wiped, a secret it copied cleared from the clipboard – without a
+    /// `vault://locked` event (the caller announces the new vault).
     pub fn install_vault(&self, vault: UnlockedVault) -> VaultInfo {
         let info = vault.info();
         let previous = {
@@ -385,7 +417,7 @@ impl Core {
             st.remember_vault(&info.id);
             previous
         };
-        drop(previous);
+        self.finish_lock(previous, None);
         info
     }
 
@@ -418,11 +450,34 @@ impl Core {
     /// reloaded and `f` retried once; the UI then gets `vault://changed`.
     pub fn mutate<T>(
         &self,
+        f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
+    ) -> AppResult<T> {
+        self.mutate_with(AppState::vault_mut, f)
+    }
+
+    /// [`Core::mutate`] for a command of the UI page that works on
+    /// `page_vault_id`. Any other open vault is `locked` for it: the browser
+    /// extension may have replaced the page's vault with another one
+    /// (`install_vault`) a moment before the page learns of it and reloads,
+    /// and an edit meant for the old vault (an item saved under an id the
+    /// new vault does not know becomes a new item) must not land in the new
+    /// one. Checked under the same state lock as the operation itself.
+    pub fn mutate_for_page<T>(
+        &self,
+        page_vault_id: Option<&str>,
+        f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
+    ) -> AppResult<T> {
+        self.mutate_with(|st| st.page_vault_mut(page_vault_id), f)
+    }
+
+    fn mutate_with<T>(
+        &self,
+        select: impl FnOnce(&mut AppState) -> AppResult<&mut UnlockedVault>,
         mut f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
     ) -> AppResult<T> {
         let (result, reloaded) = {
             let mut st = self.state();
-            let vault = st.vault_mut()?;
+            let vault = select(&mut st)?;
             match f(vault) {
                 Err(CoreError::Conflict) => {
                     let reloaded = vault.reload_if_changed()?;

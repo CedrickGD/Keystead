@@ -16,8 +16,8 @@ use zeroize::Zeroizing;
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
 use crate::protocol::{
-    BridgeError, CopyData, CopyField, IdData, LoginSecret, PairData, Payload, Request, Response,
-    StatusData, UnlockData, PAIRING_TIMEOUT, SEARCH_LIMIT,
+    BridgeError, CopyData, CopyField, IdData, ListVaultsData, LoginSecret, PairData, Payload,
+    Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;
 use crate::util::{lock, log};
@@ -35,11 +35,23 @@ const MAX_PENDING_PAIRINGS: usize = 4;
 pub trait VaultBackend: Send + Sync + 'static {
     /// The app version, e.g. `"2.0.0"`.
     fn app_version(&self) -> String;
-    /// Name of the unlocked vault, `None` while locked.
-    fn unlocked_vault_name(&self) -> Option<String>;
-    /// Unlocks the vault the app would unlock (last used) with `password`;
-    /// returns its name. `WrongPassword` on a bad password.
-    fn unlock(&self, password: &str) -> std::result::Result<String, BridgeError>;
+    /// The unlocked vault, `None` while locked.
+    fn unlocked_vault(&self) -> Option<VaultSummary>;
+    /// All vaults (any order; the dispatcher sorts them) and the id of the
+    /// vault used last, if the app remembers one.
+    fn list_vaults(&self) -> std::result::Result<(Vec<VaultSummary>, Option<String>), BridgeError>;
+    /// Unlocks `vault_id` – or, if `None`, the vault the app would unlock
+    /// (the last used one, else the only one) – with `password` and returns
+    /// it. `NotFound` for an unknown id (or no vault to pick),
+    /// `WrongPassword` on a bad password. If another vault is open, a
+    /// successful unlock replaces it (closed like on lock); a failed one
+    /// leaves it open. Unlocking the open vault again only checks the
+    /// password.
+    fn unlock(
+        &self,
+        vault_id: Option<&str>,
+        password: &str,
+    ) -> std::result::Result<VaultSummary, BridgeError>;
     /// Locks the vault (no-op if locked).
     fn lock(&self);
     /// Shows and raises the app window.
@@ -260,26 +272,38 @@ impl Dispatcher {
         if payload.needs_pairing() && !paired {
             return Err(BridgeError::NotPaired);
         }
-        if payload.needs_unlocked() && self.backend.unlocked_vault_name().is_none() {
+        if payload.needs_unlocked() && self.backend.unlocked_vault().is_none() {
             return Err(BridgeError::Locked);
         }
         let backend = &self.backend;
         match payload {
             Payload::Status => {
-                let vault_name = backend.unlocked_vault_name();
+                let vault = backend.unlocked_vault();
+                let unlocked = vault.is_some();
+                let (vault_id, vault_name) =
+                    vault.filter(|_| paired).map(|v| (v.id, v.name)).unzip();
                 json(&StatusData {
                     app_version: backend.app_version(),
                     paired,
-                    unlocked: vault_name.is_some(),
-                    vault_name: vault_name.filter(|_| paired),
+                    unlocked,
+                    vault_name,
+                    vault_id,
                 })
             }
             Payload::Pair { client_name, code } => {
                 json(&self.pair(&client_name, &code, peer_gone)?)
             }
-            Payload::Unlock { password } => json(&UnlockData {
-                vault_name: self.unlock(&password)?,
-            }),
+            Payload::ListVaults => json(&self.list_vaults()?),
+            Payload::Unlock { password, vault_id } => {
+                if vault_id.as_deref() == Some("") {
+                    return Err(BridgeError::InvalidRequest);
+                }
+                let vault = self.unlock(vault_id.as_deref(), &password)?;
+                json(&UnlockData {
+                    vault_name: vault.name,
+                    vault_id: vault.id,
+                })
+            }
             Payload::Lock => {
                 backend.lock();
                 Ok(Value::Null)
@@ -374,7 +398,25 @@ impl Dispatcher {
         })
     }
 
-    fn unlock(&self, password: &str) -> std::result::Result<String, BridgeError> {
+    /// The vaults sorted by name (case-insensitive), the open one and the
+    /// last used one (only if it still exists).
+    fn list_vaults(&self) -> std::result::Result<ListVaultsData, BridgeError> {
+        let (mut vaults, last_vault_id) = self.backend.list_vaults()?;
+        vaults.sort_by_cached_key(|v| (v.name.to_lowercase(), v.id.clone()));
+        let current_vault_id = self.backend.unlocked_vault().map(|v| v.id);
+        let last_vault_id = last_vault_id.filter(|id| vaults.iter().any(|v| &v.id == id));
+        Ok(ListVaultsData {
+            vaults,
+            current_vault_id,
+            last_vault_id,
+        })
+    }
+
+    fn unlock(
+        &self,
+        vault_id: Option<&str>,
+        password: &str,
+    ) -> std::result::Result<VaultSummary, BridgeError> {
         let mut limiter = lock(&self.unlock_limiter);
         if limiter
             .blocked_until
@@ -382,7 +424,7 @@ impl Dispatcher {
         {
             return Err(BridgeError::WrongPassword);
         }
-        let result = self.backend.unlock(password);
+        let result = self.backend.unlock(vault_id, password);
         match &result {
             Ok(_) => *limiter = UnlockLimiter::default(),
             Err(BridgeError::WrongPassword) => {

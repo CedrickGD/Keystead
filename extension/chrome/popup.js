@@ -206,6 +206,9 @@ let pairingPoll = 0;
 let shownPairing = "";
 const pairingKey = (pairing) => (pairing ? `${pairing.state}:${pairing.code}` : "");
 
+/** Counts mounted screens (except the loading screen), so async screen builders can tell they were overtaken. */
+let mountSeq = 0;
+
 function mount(node, name) {
   if (name !== "pairing") {
     stopPairingWatch?.();
@@ -213,6 +216,7 @@ function mount(node, name) {
     clearInterval(pairingPoll);
     pairingPoll = 0;
   }
+  if (name !== "loading") mountSeq += 1;
   app.dataset.screen = name;
   app.replaceChildren(node);
 }
@@ -485,18 +489,94 @@ function showPairing(pairing) {
 }
 
 // ---------------------------------------------------------------------------
-// Locked
+// Vaults & unlocking (locked screen, switching vaults)
 // ---------------------------------------------------------------------------
 
-function showLocked() {
+const CONNECTION_ERRORS = new Set(["not_paired", "host_missing", "host_forbidden", "app_unavailable", "timeout"]);
+
+/**
+ * The app's vaults ({ vaults: [{ id, name }], currentVaultId, lastVaultId }), or null if it
+ * cannot list them (an app without `list_vaults` answers invalid_request): the popup then
+ * unlocks the app's last used vault as before. Pairing and connection errors are thrown.
+ */
+async function loadVaults() {
+  try {
+    const list = await api.listVaults();
+    return list && Array.isArray(list.vaults) && list.vaults.length ? list : null;
+  } catch (err) {
+    if (CONNECTION_ERRORS.has(err?.code)) throw err;
+    return null;
+  }
+}
+
+/** The open vault, else the one last unlocked in this browser, else the app's last used one, else the first. */
+async function preselectedVault(list) {
+  const known = (id) => list.vaults.find((v) => v.id === id) ?? null;
+  return known(list.currentVaultId) ?? known(await api.loadChosenVault()) ?? known(list.lastVaultId) ?? list.vaults[0];
+}
+
+function vaultChip(name) {
+  return h("div", { class: "vault-chip", title: name }, icon("vault"), h("span", { text: name }));
+}
+
+/** Locked: the master password form, with a vault selector if the app has several vaults. */
+async function showLocked(error = null) {
+  const seq = mountSeq;
+  let list;
+  try {
+    list = await loadVaults();
+  } catch (err) {
+    if (seq === mountSeq && !routeError(err)) showAppUnavailable();
+    return;
+  }
+  const selected = list ? await preselectedVault(list) : null;
+  if (seq !== mountSeq) return; // another screen was shown meanwhile
+  const open = list?.vaults.find((v) => v.id === list.currentVaultId);
+  if (open) {
+    // Unlocked in the meantime (e.g. in the app).
+    showUnlocked({ state: "unlocked", vaultName: open.name, vaultId: open.id });
+    return;
+  }
+  renderUnlock({ vaults: list?.vaults ?? [], selected, error });
+}
+
+/**
+ * The master password form.
+ * Locked: several `vaults` → a selector (preselected with `selected`); one → its name as
+ * subtitle; none known → the app picks its last used vault.
+ * Switching (`switching` = { from, back }): unlocks `selected` while the vault `from` stays
+ * open until the app accepted the password; "Zurück" (`back`) returns to it.
+ */
+function renderUnlock({ vaults, selected, error = null, switching = null }) {
   const { input, wrap } = secretInput({
     id: "master",
     autocomplete: "current-password",
     placeholder: t("masterPassword"),
     "aria-label": t("masterPassword"),
   });
-  const error = h("p", { class: "field-error", role: "alert", hidden: true });
+  const errorNode = h("p", { class: "field-error", role: "alert", hidden: !error, text: error || "" });
   const submit = button(t("unlock"), { kind: "primary", type: "submit", wide: true });
+  const showError = (text, invalid = false) => {
+    errorNode.textContent = text;
+    errorNode.hidden = false;
+    input.classList.toggle("invalid", invalid);
+  };
+
+  let select = null;
+  if (!switching && vaults.length > 1) {
+    select = h(
+      "select",
+      { id: "vault", class: "input" },
+      vaults.map((v) => h("option", { value: v.id, text: v.name })),
+    );
+    select.value = selected?.id ?? vaults[0].id;
+    select.addEventListener("change", () => {
+      errorNode.hidden = true;
+      input.classList.remove("invalid");
+    });
+  }
+  const vaultId = () => (select ? select.value : selected?.id ?? null);
+  const vaultName = () => (select ? select.selectedOptions[0]?.textContent : selected?.name) || null;
 
   const form = h(
     "form",
@@ -510,52 +590,77 @@ function showLocked() {
           return;
         }
         setBusy(submit, true);
-        error.hidden = true;
+        if (select) select.disabled = true;
+        errorNode.hidden = true;
         input.classList.remove("invalid");
         try {
-          const result = await api.unlock(password);
+          const result = await api.unlock(password, vaultId());
           input.value = "";
-          showUnlocked({ state: "unlocked", vaultName: result?.vaultName || null });
+          if (result?.vaultId) await api.saveChosenVault(result.vaultId);
+          showUnlocked({ state: "unlocked", vaultName: result?.vaultName || vaultName(), vaultId: result?.vaultId ?? null });
         } catch (err) {
           setBusy(submit, false);
+          if (select) select.disabled = false;
           if (err?.code === "wrong_password") {
-            error.textContent = t("wrongPassword");
-            error.hidden = false;
-            input.classList.add("invalid");
+            // The selection stays; with a switch the open vault stays unlocked.
+            showError(t("wrongPassword"), true);
             input.select();
             input.focus();
+          } else if (err?.code === "not_found" && vaultId()) {
+            // Deleted meanwhile (in the app or the terminal UI).
+            if (switching) {
+              switching.back();
+              toast(t("vaultGone"), "error");
+            } else {
+              showLocked(t("vaultGone"));
+            }
           } else if (!routeError(err)) {
-            // The app answers `not_found` when it cannot tell which vault to open
-            // (several vaults, none used in the app yet).
-            error.textContent = err?.code === "not_found" ? t("unlockNoVault") : errorText(err?.code);
-            error.hidden = false;
+            // Without a vault id the app answers `not_found` when it cannot tell which vault
+            // to open (an app without `list_vaults`, several vaults, none used yet).
+            showError(err?.code === "not_found" ? t("unlockNoVault") : errorText(err?.code));
           }
         }
       },
     },
-    wrap,
-    error,
+    select
+      ? [
+          h(
+            "div",
+            { class: "field" },
+            h("label", { for: "vault", text: t("vault") }),
+            h("div", { class: "select-wrap" }, icon("vault"), select, icon("chevron", "ico chevron")),
+          ),
+          h("div", { class: "field" }, h("label", { for: "master", text: t("masterPassword") }), wrap),
+        ]
+      : wrap,
+    errorNode,
     submit,
+    switching ? button(t("back"), { kind: "ghost", wide: true, onclick: switching.back }) : null,
   );
 
+  const subtitle = switching || !select ? (selected ? vaultChip(selected.name) : null) : null;
+  let lead = t("lockedText");
+  if (switching) lead = t("switchText", [selected.name, switching.from.name]);
+  else if (select) lead = t("lockedTextChoose");
   mount(
     centered({
-      artwork: brandArt(),
-      title: t("lockedTitle"),
-      text: t("lockedText"),
-      body: form,
-      footer: h(
-        "div",
-        { class: "center-links" },
-        h(
-          "button",
-          { class: "link-btn", type: "button", onclick: () => guarded(() => api.focusApp()) },
-          icon("external"),
-          h("span", { text: t("openInApp") }),
-        ),
-      ),
+      artwork: switching ? art("vault", "accent") : brandArt(),
+      title: switching ? t("switchVault") : t("lockedTitle"),
+      body: [subtitle, h("p", { class: "lead", text: lead }), form],
+      footer: switching
+        ? null
+        : h(
+            "div",
+            { class: "center-links" },
+            h(
+              "button",
+              { class: "link-btn", type: "button", onclick: () => guarded(() => api.focusApp()) },
+              icon("external"),
+              h("span", { text: t("openInApp") }),
+            ),
+          ),
     }),
-    "locked",
+    switching ? "switch" : "locked",
   );
   requestAnimationFrame(() => input.focus());
 }
@@ -567,6 +672,7 @@ function showLocked() {
 function showUnlocked(status, initialTab = "page") {
   const ctx = {
     vaultName: status?.vaultName || "Keystead",
+    vaultId: status?.vaultId ?? null,
     tab: initialTab,
     tabInfo: null,
     matches: null,
@@ -574,6 +680,8 @@ function showUnlocked(status, initialTab = "page") {
     query: "",
   };
 
+  // Becomes a vault switcher once the app reports more than one vault (setupVaultSwitcher).
+  const vaultNameNode = h("div", { class: "vault-name", text: ctx.vaultName, title: ctx.vaultName });
   const header = h(
     "header",
     { class: "topbar" },
@@ -584,7 +692,7 @@ function showUnlocked(status, initialTab = "page") {
       h(
         "div",
         { class: "brand-text" },
-        h("div", { class: "vault-name", text: ctx.vaultName, title: ctx.vaultName }),
+        vaultNameNode,
         h("div", { class: "vault-state" }, h("span", { class: "dot", "aria-hidden": "true" }), t("unlocked")),
       ),
     ),
@@ -1015,8 +1123,133 @@ function showUnlocked(status, initialTab = "page") {
     }
   }
 
+  // --- Switching vaults ----------------------------------------------------------
+
+  async function setupVaultSwitcher() {
+    let list;
+    try {
+      list = await loadVaults();
+    } catch {
+      return; // the page data requests route to the right screen
+    }
+    const open = list?.vaults.find((v) => v.id === list.currentVaultId);
+    if (!open || !screen.isConnected) return;
+    ctx.vaultId = open.id;
+    ctx.vaultName = open.name;
+    if (list.vaults.length < 2) {
+      vaultNameNode.textContent = open.name;
+      vaultNameNode.title = open.name;
+      return;
+    }
+    vaultNameNode.replaceWith(vaultSwitcher(list.vaults, open, showSwitch));
+  }
+
+  /** The unlock form for `target`; the open vault stays unlocked until it succeeds. */
+  function showSwitch(target) {
+    const from = { id: ctx.vaultId, name: ctx.vaultName };
+    renderUnlock({
+      vaults: [],
+      selected: target,
+      switching: { from, back: () => showUnlocked({ state: "unlocked", vaultName: from.name, vaultId: from.id }, ctx.tab) },
+    });
+  }
+
   select(initialTab);
   loadPageData();
+  setupVaultSwitcher();
+}
+
+/**
+ * The vault name in the header as a menu button: lists all vaults with the open one
+ * checked; picking another calls `onPick(vault)`. Keyboard: Enter/Space/↓ open, ↑/↓/Home/End
+ * move, Esc closes.
+ */
+function vaultSwitcher(vaults, open, onPick) {
+  const trigger = h(
+    "button",
+    {
+      class: "vault-switch",
+      type: "button",
+      title: t("switchVault"),
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      "aria-label": t("switchVaultLabel", open.name),
+    },
+    h("span", { class: "vault-name", text: open.name }),
+    icon("chevron", "ico chevron"),
+  );
+  const wrap = h("div", { class: "vault-switcher" }, trigger);
+  let menu = null;
+
+  const items = () => [...menu.querySelectorAll('[role="menuitemradio"]')];
+  const onOutside = (ev) => {
+    if (!wrap.contains(ev.target)) close();
+  };
+  function close(focusTrigger = false) {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    trigger.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", onOutside, true);
+    if (focusTrigger) trigger.focus();
+  }
+  function openMenu(focusLast = false) {
+    if (menu) return;
+    menu = h(
+      "div",
+      { class: "menu", role: "menu", "aria-label": t("switchVault") },
+      h("div", { class: "menu-caption", "aria-hidden": "true", text: t("vaults") }),
+      vaults.map((vault) => {
+        const checked = vault.id === open.id;
+        return h(
+          "button",
+          {
+            class: "menu-item",
+            type: "button",
+            role: "menuitemradio",
+            "aria-checked": String(checked),
+            tabindex: "-1",
+            title: vault.name,
+            onclick: () => {
+              close(checked);
+              if (!checked) onPick(vault);
+            },
+          },
+          h("span", { class: "menu-check", "aria-hidden": "true" }, checked ? icon("check") : null),
+          h("span", { class: "menu-text", text: vault.name }),
+        );
+      }),
+    );
+    menu.addEventListener("keydown", (ev) => {
+      const list = items();
+      const index = list.indexOf(document.activeElement);
+      const focus = (i) => list[(i + list.length) % list.length].focus();
+      if (ev.key === "ArrowDown") focus(index + 1);
+      else if (ev.key === "ArrowUp") focus(index - 1);
+      else if (ev.key === "Home") focus(0);
+      else if (ev.key === "End") focus(list.length - 1);
+      else if (ev.key === "Escape") close(true);
+      else if (ev.key === "Tab") {
+        close();
+        return;
+      } else return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    wrap.append(menu);
+    trigger.setAttribute("aria-expanded", "true");
+    document.addEventListener("pointerdown", onOutside, true);
+    const list = items();
+    (focusLast ? list[list.length - 1] : list.find((n) => n.getAttribute("aria-checked") === "true") || list[0]).focus();
+  }
+
+  trigger.addEventListener("click", () => (menu ? close() : openMenu()));
+  trigger.addEventListener("keydown", (ev) => {
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    ev.preventDefault();
+    openMenu(ev.key === "ArrowUp");
+  });
+  return wrap;
 }
 
 function clamp(value, min, max) {
@@ -1068,7 +1301,7 @@ function showAddLogin(ctx) {
   passwordInput = secret.input;
   const error = h("p", { class: "field-error", role: "alert", hidden: true });
 
-  const back = () => showUnlocked({ state: "unlocked", vaultName: ctx.vaultName }, "page");
+  const back = () => showUnlocked({ state: "unlocked", vaultName: ctx.vaultName, vaultId: ctx.vaultId }, "page");
   const saveButton = button(t("save"), { kind: "primary", type: "submit" });
   const form = h(
     "form",

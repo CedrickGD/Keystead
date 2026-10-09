@@ -7,12 +7,12 @@ use std::sync::{Arc, Weak};
 
 use keystead_bridge::{
     register, start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, PairedClient,
-    PairingRequest, VaultBackend,
+    PairingRequest, VaultBackend, VaultSummary,
 };
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
 use keystead_core::totp::{self, TotpCode};
-use keystead_core::{matching, Error as CoreError};
+use keystead_core::{matching, Error as CoreError, UnlockedVault};
 
 use crate::error::{AppError, AppResult};
 use crate::state::{log, Core, LockReason};
@@ -33,8 +33,15 @@ impl Backend {
     }
 }
 
-/// Picks the vault the bridge unlocks: the last used one if it still
-/// exists, otherwise the only vault.
+fn summary_of(vault: &UnlockedVault) -> VaultSummary {
+    VaultSummary {
+        id: vault.id().to_owned(),
+        name: vault.name().to_owned(),
+    }
+}
+
+/// Picks the vault the bridge unlocks when the extension names none: the
+/// last used one if it still exists, otherwise the only vault.
 fn bridge_vault_id(core: &Core) -> AppResult<String> {
     let (store, last) = {
         let st = core.state();
@@ -75,21 +82,45 @@ impl VaultBackend for Backend {
         env!("CARGO_PKG_VERSION").to_owned()
     }
 
-    fn unlocked_vault_name(&self) -> Option<String> {
+    fn unlocked_vault(&self) -> Option<VaultSummary> {
         let core = self.core.upgrade()?;
         let st = core.state();
-        st.vault.as_ref().map(|v| v.name().to_owned())
+        st.vault.as_ref().map(summary_of)
     }
 
-    fn unlock(&self, password: &str) -> Result<String, BridgeError> {
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError> {
         let core = self.core()?;
-        let vault_id = bridge_vault_id(&core)?;
+        let (store, last) = {
+            let st = core.state();
+            (st.store.clone(), st.settings.last_vault_id.clone())
+        };
+        let vaults = store
+            .list_vaults()?
+            .into_iter()
+            .map(|v| VaultSummary {
+                id: v.id,
+                name: v.name,
+            })
+            .collect();
+        Ok((vaults, last))
+    }
+
+    /// Opening another vault than the open one switches: the new vault is
+    /// unlocked (key derivation) while the open one stays usable, and only
+    /// replaces it on success (`Core::install_vault` closes the old one like
+    /// a lock). The UI follows via `vault://unlocked`.
+    fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError> {
+        let core = self.core()?;
+        let vault_id = match vault_id {
+            Some(id) => id.to_owned(),
+            None => bridge_vault_id(&core)?,
+        };
         {
             // Already open: just check the password.
             let st = core.state();
             if let Some(vault) = st.vault.as_ref().filter(|v| v.id() == vault_id) {
                 return if vault.verify_master_password(password) {
-                    Ok(vault.name().to_owned())
+                    Ok(summary_of(vault))
                 } else {
                     Err(BridgeError::WrongPassword)
                 };
@@ -97,7 +128,10 @@ impl VaultBackend for Backend {
         }
         let info = core.unlock(&vault_id, password)?;
         core.emit_unlocked(&info);
-        Ok(info.name)
+        Ok(VaultSummary {
+            id: info.id,
+            name: info.name,
+        })
     }
 
     fn lock(&self) {
@@ -390,7 +424,212 @@ pub fn pending_pairings(core: &Core) -> Vec<PairingRequest> {
 
 #[cfg(test)]
 mod tests {
-    use super::name_from_url;
+    use std::path::Path;
+
+    use keystead_core::settings::Settings;
+    use keystead_core::KdfParams;
+
+    use super::*;
+    use crate::state::test_support::core_with_open_vault;
+    use crate::state::EVENT_UNLOCKED;
+
+    /// A core with "Test" (master password "master") open and a second,
+    /// locked vault "Arbeit" ("work"); returns their ids.
+    fn two_vaults(dir: &Path) -> (Arc<Core>, Backend, String, String) {
+        let core = core_with_open_vault(dir, Settings::default());
+        let test_id = core.read(|v| v.id().to_owned()).unwrap();
+        let work_id = core
+            .store()
+            .create_vault_with_params("Arbeit", "work", KdfParams::insecure_for_tests())
+            .unwrap()
+            .id()
+            .to_owned();
+        let backend = Backend {
+            core: Arc::downgrade(&core),
+        };
+        (core, backend, test_id, work_id)
+    }
+
+    fn open_id(core: &Core) -> Option<String> {
+        core.read(|v| v.id().to_owned()).ok()
+    }
+
+    fn unlocked_events(core: &Core) -> Vec<serde_json::Value> {
+        core.emitted()
+            .into_iter()
+            .filter(|(name, _)| name == EVENT_UNLOCKED)
+            .map(|(_, payload)| payload)
+            .collect()
+    }
+
+    fn stored_last_vault(core: &Core) -> Option<String> {
+        Settings::load_from(&core.data_dir().join("settings.json")).last_vault_id
+    }
+
+    #[test]
+    fn failed_switch_keeps_the_open_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, test_id, work_id) = two_vaults(dir.path());
+
+        assert_eq!(
+            backend.unlock(Some(&work_id), "master"),
+            Err(BridgeError::WrongPassword)
+        );
+        assert_eq!(
+            backend.unlock(Some("no-such-vault"), "work"),
+            Err(BridgeError::NotFound)
+        );
+        assert_eq!(open_id(&core).as_deref(), Some(test_id.as_str()));
+        assert_eq!(backend.unlocked_vault().unwrap().id, test_id);
+        assert!(core.read(|v| v.items().len()).is_ok(), "still usable");
+        assert!(unlocked_events(&core).is_empty());
+        assert_eq!(core.state().settings.last_vault_id, None);
+    }
+
+    #[test]
+    fn switch_replaces_the_open_vault_and_remembers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, _test_id, work_id) = two_vaults(dir.path());
+
+        let opened = backend.unlock(Some(&work_id), "work").unwrap();
+        assert_eq!(
+            opened,
+            VaultSummary {
+                id: work_id.clone(),
+                name: "Arbeit".into()
+            }
+        );
+        assert_eq!(open_id(&core).as_deref(), Some(work_id.as_str()));
+        // The UI is told to show the new vault; no lock event in between.
+        let events = unlocked_events(&core);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["id"], work_id.as_str());
+        assert_eq!(events[0]["name"], "Arbeit");
+        assert!(core
+            .emitted()
+            .iter()
+            .all(|(name, _)| name == EVENT_UNLOCKED));
+        // lastVaultId follows, in memory and on disk (the app's unlock
+        // screen preselects it after the next lock).
+        assert_eq!(
+            core.state().settings.last_vault_id.as_deref(),
+            Some(work_id.as_str())
+        );
+        assert_eq!(stored_last_vault(&core).as_deref(), Some(work_id.as_str()));
+
+        // Unlocking the open vault again only checks the password.
+        assert_eq!(backend.unlock(Some(&work_id), "work").unwrap().id, work_id);
+        assert_eq!(
+            backend.unlock(Some(&work_id), "master"),
+            Err(BridgeError::WrongPassword)
+        );
+        assert_eq!(open_id(&core).as_deref(), Some(work_id.as_str()));
+        assert_eq!(unlocked_events(&core).len(), 1);
+    }
+
+    fn code<T>(result: AppResult<T>) -> Result<(), String> {
+        result.map(|_| ()).map_err(|e| e.code())
+    }
+
+    /// The extension replaced the page's vault; the page has not reloaded yet
+    /// (the `vault://unlocked` event is still on its way) and sends an edit
+    /// meant for the old vault. It must not land in the new one.
+    #[test]
+    fn page_commands_for_a_replaced_vault_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, test_id, work_id) = two_vaults(dir.path());
+        let mut item = VaultItem::new(ItemType::Login, "Alt");
+        item.login.as_mut().unwrap().password = "old-vault-secret".into();
+        let saved = core
+            .mutate_for_page(Some(&test_id), |v| v.save_item(item.clone()))
+            .unwrap();
+
+        backend.unlock(Some(&work_id), "work").unwrap();
+
+        // Saving under an id "Arbeit" does not know would create the item there.
+        let save = core.mutate_for_page(Some(&test_id), |v| v.save_item(saved.clone()));
+        assert_eq!(code(save), Err("locked".to_owned()));
+        let rename = core.mutate_for_page(Some(&test_id), |v| v.rename("Umbenannt"));
+        assert_eq!(code(rename), Err("locked".to_owned()));
+        assert_eq!(
+            code(core.state().page_vault(Some(&test_id))),
+            Err("locked".to_owned()),
+            "export_data"
+        );
+        // A page that names no vault never changes one.
+        let unnamed = core.mutate_for_page(None, |v| v.empty_trash());
+        assert_eq!(code(unnamed), Err("locked".to_owned()));
+        let (items, name) = core
+            .read(|v| (v.items().len(), v.name().to_owned()))
+            .unwrap();
+        assert_eq!((items, name.as_str()), (0, "Arbeit"), "new vault untouched");
+
+        // The reloaded page works on the new vault; the bridge's own writes
+        // (for the vault it just opened) are not affected.
+        core.mutate_for_page(Some(&work_id), |v| v.save_item(item.clone()))
+            .unwrap();
+        backend
+            .save_login("", "https://example.org/login", "bob", "pw")
+            .unwrap();
+        assert_eq!(core.read(|v| v.items().len()).unwrap(), 2);
+
+        core.lock(None);
+        let locked = core.mutate_for_page(Some(&work_id), |v| v.empty_trash());
+        assert_eq!(code(locked), Err("locked".to_owned()));
+    }
+
+    #[test]
+    fn list_vaults_and_unlock_without_an_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, test_id, work_id) = two_vaults(dir.path());
+
+        let (vaults, last) = backend.list_vaults().unwrap();
+        let mut names: Vec<_> = vaults.iter().map(|v| v.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Arbeit", "Test"]);
+        assert_eq!(last, None);
+        // Two vaults, none used yet: the bridge cannot pick one.
+        core.lock(None);
+        assert_eq!(backend.unlock(None, "master"), Err(BridgeError::NotFound));
+
+        // Without an id the last used vault opens.
+        assert_eq!(
+            backend.unlock(Some(&test_id), "master").unwrap().id,
+            test_id
+        );
+        assert_eq!(
+            backend.list_vaults().unwrap().1.as_deref(),
+            Some(test_id.as_str())
+        );
+        core.lock(None);
+        assert_eq!(backend.unlock(None, "master").unwrap().id, test_id);
+        assert_eq!(backend.unlock(Some(&work_id), "work").unwrap().id, work_id);
+        assert_eq!(
+            backend.list_vaults().unwrap().1.as_deref(),
+            Some(work_id.as_str())
+        );
+    }
+
+    /// `xvfb-run cargo test -p keystead-desktop -- --ignored clipboard --test-threads=1`
+    /// (the clipboard tests share the system clipboard).
+    #[test]
+    #[ignore = "needs a clipboard (X11 display or Windows desktop)"]
+    fn clipboard_secret_of_the_old_vault_is_cleared_on_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, _test_id, work_id) = two_vaults(dir.path());
+        core.copy_to_clipboard("copied-from-test", true).unwrap();
+        // A failed switch leaves it alone.
+        assert!(backend.unlock(Some(&work_id), "wrong").is_err());
+        assert_eq!(
+            keystead_core::clipboard::read_text().unwrap().as_deref(),
+            Some("copied-from-test")
+        );
+        backend.unlock(Some(&work_id), "work").unwrap();
+        assert_ne!(
+            keystead_core::clipboard::read_text().unwrap().as_deref(),
+            Some("copied-from-test")
+        );
+    }
 
     #[test]
     fn names_from_urls() {

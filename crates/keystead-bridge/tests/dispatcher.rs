@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::*;
-use keystead_bridge::protocol::{LoginSecret, PairData, StatusData};
+use keystead_bridge::protocol::{ListVaultsData, LoginSecret, PairData, StatusData};
 use keystead_bridge::{BridgeError, ClientStore, Dispatcher, DispatcherConfig, Response};
 use keystead_core::model::ItemSummary;
 use keystead_core::totp::TotpCode;
@@ -83,6 +83,7 @@ fn status_without_pairing() {
             unlocked: true,
             // Not revealed to unpaired callers.
             vault_name: None,
+            vault_id: None,
         }
     );
     // Wrong credentials are just "not paired" for status.
@@ -110,6 +111,8 @@ fn everything_but_status_pair_focus_needs_pairing() {
         json!({"id": "10", "type": "check_login_password", "itemId": GITHUB_ID, "password": "y"}),
         json!({"id": "11", "type": "copy_field", "itemId": GITHUB_ID, "field": "password"}),
         json!({"id": "12", "type": "copy_secret", "text": "y"}),
+        json!({"id": "13", "type": "list_vaults"}),
+        json!({"id": "14", "type": "unlock", "password": WORK_PASSWORD, "vaultId": WORK_VAULT_ID}),
     ];
     for req in requests {
         let r = call(f.dispatcher.as_ref(), req.clone());
@@ -310,13 +313,19 @@ fn locked_vault_and_unlock_flow() {
         d,
         c(json!({"id": "u", "type": "unlock", "password": PASSWORD})),
     );
-    assert_eq!(r.data, json!({"vaultName": VAULT_NAME}));
+    assert_eq!(
+        r.data,
+        json!({"vaultName": VAULT_NAME, "vaultId": VAULT_ID})
+    );
+    // Without `vaultId` the backend picks the vault.
+    assert_eq!(*f.backend.unlock_targets.lock().unwrap(), vec![None, None]);
 
     let status: StatusData = call(d, c(json!({"id": "s", "type": "status"})))
         .data_as()
         .unwrap();
     assert!(status.unlocked && status.paired);
     assert_eq!(status.vault_name.as_deref(), Some(VAULT_NAME));
+    assert_eq!(status.vault_id.as_deref(), Some(VAULT_ID));
 
     let r = call(d, c(json!({"id": "l", "type": "lock"})));
     assert_eq!(r, Response::null("l"));
@@ -325,6 +334,177 @@ fn locked_vault_and_unlock_flow() {
         c(json!({"id": "x", "type": "get_login", "itemId": GITHUB_ID})),
     );
     assert_eq!(err(&r), BridgeError::Locked);
+}
+
+#[test]
+fn list_vaults_needs_pairing_and_works_locked_and_unlocked() {
+    let f = default_fixture();
+    let d = f.dispatcher.as_ref();
+    let list = json!({"id": "v", "type": "list_vaults"});
+    assert_eq!(err(&call(d, list.clone())), BridgeError::NotPaired);
+
+    let (cid, tok) = paired(&f);
+    let c = |v| with_creds(v, &cid, &tok);
+    let r = call(d, c(list.clone()));
+    assert_eq!(r.id, "v");
+    // Sorted by name, ignoring case ("arbeit" before "Privat").
+    assert_eq!(
+        r.data,
+        json!({
+            "vaults": [
+                {"id": WORK_VAULT_ID, "name": WORK_VAULT_NAME},
+                {"id": VAULT_ID, "name": VAULT_NAME},
+            ],
+            "currentVaultId": null,
+            "lastVaultId": VAULT_ID,
+        })
+    );
+
+    f.backend.set_unlocked(true);
+    let data: ListVaultsData = call(d, c(list.clone())).data_as().unwrap();
+    assert_eq!(data.current_vault_id.as_deref(), Some(VAULT_ID));
+
+    // A remembered vault that no longer exists is not reported.
+    *f.backend.last_vault.lock().unwrap() = Some("vault-deleted");
+    let data: ListVaultsData = call(d, c(list)).data_as().unwrap();
+    assert_eq!(data.last_vault_id, None);
+    assert_eq!(data.vaults.len(), 2);
+    // Listing is no user activity (the popup lists the vaults on every open).
+    assert_eq!(f.backend.activity.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unlock_with_vault_id_opens_that_vault() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+
+    let r = call(
+        d,
+        c(
+            json!({"id": "u", "type": "unlock", "password": WORK_PASSWORD, "vaultId": WORK_VAULT_ID}),
+        ),
+    );
+    assert_eq!(
+        r,
+        Response::success(
+            "u",
+            &json!({"vaultName": WORK_VAULT_NAME, "vaultId": WORK_VAULT_ID})
+        )
+    );
+    assert_eq!(
+        *f.backend.unlock_targets.lock().unwrap(),
+        vec![Some(WORK_VAULT_ID.to_owned())]
+    );
+    let status: StatusData = call(d, c(json!({"id": "s", "type": "status"})))
+        .data_as()
+        .unwrap();
+    assert_eq!(status.vault_id.as_deref(), Some(WORK_VAULT_ID));
+    assert_eq!(status.vault_name.as_deref(), Some(WORK_VAULT_NAME));
+    // The id is only revealed to paired clients, like the name.
+    let status: StatusData = call(d, json!({"id": "s", "type": "status"}))
+        .data_as()
+        .unwrap();
+    assert!(status.unlocked && status.vault_id.is_none() && status.vault_name.is_none());
+    let data: ListVaultsData = call(d, c(json!({"id": "v", "type": "list_vaults"})))
+        .data_as()
+        .unwrap();
+    assert_eq!(data.current_vault_id.as_deref(), Some(WORK_VAULT_ID));
+    assert_eq!(data.last_vault_id.as_deref(), Some(WORK_VAULT_ID));
+
+    // Unknown ids: not_found; an empty id is malformed (the app is not asked).
+    let r = call(
+        d,
+        c(json!({"id": "x", "type": "unlock", "password": PASSWORD, "vaultId": "vault-unknown"})),
+    );
+    assert_eq!(err(&r), BridgeError::NotFound);
+    let calls = f.backend.unlock_calls.load(Ordering::SeqCst);
+    let r = call(
+        d,
+        c(json!({"id": "y", "type": "unlock", "password": PASSWORD, "vaultId": ""})),
+    );
+    assert_eq!(err(&r), BridgeError::InvalidRequest);
+    assert_eq!(f.backend.unlock_calls.load(Ordering::SeqCst), calls);
+    assert_eq!(f.backend.unlocked_id(), Some(WORK_VAULT_ID));
+}
+
+#[test]
+fn failed_switch_keeps_the_open_vault() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+    let r = call(
+        d,
+        c(json!({"id": "u", "type": "unlock", "password": PASSWORD, "vaultId": VAULT_ID})),
+    );
+    assert!(r.ok, "{r:?}");
+
+    // The password of "Privat" does not open "arbeit": "Privat" stays open.
+    let r = call(
+        d,
+        c(json!({"id": "w", "type": "unlock", "password": PASSWORD, "vaultId": WORK_VAULT_ID})),
+    );
+    assert_eq!(err(&r), BridgeError::WrongPassword);
+    assert_eq!(f.backend.unlocked_id(), Some(VAULT_ID));
+    let status: StatusData = call(d, c(json!({"id": "s", "type": "status"})))
+        .data_as()
+        .unwrap();
+    assert!(status.unlocked);
+    assert_eq!(status.vault_id.as_deref(), Some(VAULT_ID));
+    let r = call(
+        d,
+        c(json!({"id": "l", "type": "logins_for_url", "url": "https://github.com"})),
+    );
+    assert!(r.ok, "the open vault keeps working: {r:?}");
+
+    // Failed switches count towards the rate limit like any wrong password.
+    for _ in 0..4 {
+        let r = call(
+            d,
+            c(json!({"id": "w", "type": "unlock", "password": "nope", "vaultId": WORK_VAULT_ID})),
+        );
+        assert_eq!(err(&r), BridgeError::WrongPassword);
+    }
+    let calls = f.backend.unlock_calls.load(Ordering::SeqCst);
+    let r = call(
+        d,
+        c(
+            json!({"id": "w", "type": "unlock", "password": WORK_PASSWORD, "vaultId": WORK_VAULT_ID}),
+        ),
+    );
+    assert_eq!(err(&r), BridgeError::WrongPassword, "locked out");
+    assert_eq!(f.backend.unlock_calls.load(Ordering::SeqCst), calls);
+    assert_eq!(f.backend.unlocked_id(), Some(VAULT_ID));
+}
+
+#[test]
+fn successful_switch_replaces_the_open_vault() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+    f.backend.set_unlocked(true);
+
+    let r = call(
+        d,
+        c(
+            json!({"id": "w", "type": "unlock", "password": WORK_PASSWORD, "vaultId": WORK_VAULT_ID}),
+        ),
+    );
+    assert_eq!(r.data["vaultId"], WORK_VAULT_ID);
+    assert_eq!(f.backend.unlocked_id(), Some(WORK_VAULT_ID));
+    assert_eq!(
+        f.backend.lock_calls.load(Ordering::SeqCst),
+        0,
+        "no lock in between"
+    );
+    assert_eq!(
+        f.backend.activity.load(Ordering::SeqCst),
+        1,
+        "unlock is a user action"
+    );
 }
 
 #[test]

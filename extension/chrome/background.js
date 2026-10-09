@@ -64,10 +64,24 @@ function stateForError(code) {
 
 async function updateStatus(patch) {
   const previous = (await store.getStatus()) || {};
-  const status = { state: "unknown", vaultName: null, appVersion: "", error: null, ...previous, ...patch, ts: Date.now() };
+  const status = { state: "unknown", vaultName: null, vaultId: null, appVersion: "", error: null, ...previous, ...patch, ts: Date.now() };
   await store.setStatus(status);
-  if (status.state !== "unlocked" && previous.state === "unlocked") await clearAllBadges();
+  const wasUnlocked = previous.state === "unlocked";
+  // Badge counts belong to the vault that was open: drop them when it is
+  // locked or another vault replaced it (the active tab is counted again by
+  // the popup / refreshActiveTab).
+  const switched = wasUnlocked && status.state === "unlocked" && previous.vaultId && status.vaultId && previous.vaultId !== status.vaultId;
+  if ((wasUnlocked && status.state !== "unlocked") || switched) await clearAllBadges();
   return status;
+}
+
+/** The app's vault list with only well-formed entries ({ id, name } strings; ids it does not list → null). */
+function vaultList(data) {
+  const vaults = (Array.isArray(data?.vaults) ? data.vaults : [])
+    .filter((v) => v && typeof v.id === "string" && v.id && typeof v.name === "string")
+    .map((v) => ({ id: v.id, name: v.name }));
+  const known = (id) => (typeof id === "string" && vaults.some((v) => v.id === id) ? id : null);
+  return { vaults, currentVaultId: known(data?.currentVaultId), lastVaultId: known(data?.lastVaultId) };
 }
 
 async function clearCredentialsIfCurrent(used) {
@@ -79,11 +93,27 @@ async function clearCredentialsIfCurrent(used) {
 
 async function noteSuccess(type, data) {
   if (type === "unlock") {
-    await updateStatus({ state: "unlocked", vaultName: typeof data?.vaultName === "string" ? data.vaultName : null, error: null });
+    await updateStatus({
+      state: "unlocked",
+      vaultName: typeof data?.vaultName === "string" ? data.vaultName : null,
+      vaultId: typeof data?.vaultId === "string" ? data.vaultId : null,
+      error: null,
+    });
     return;
   }
   if (type === "lock") {
-    await updateStatus({ state: "locked", vaultName: null, error: null });
+    await updateStatus({ state: "locked", vaultName: null, vaultId: null, error: null });
+    return;
+  }
+  if (type === "list_vaults") {
+    // The list tells which vault is open (if any): keep the cache in step.
+    const list = vaultList(data);
+    const open = list.vaults.find((v) => v.id === list.currentVaultId);
+    await updateStatus(
+      open
+        ? { state: "unlocked", vaultName: open.name, vaultId: open.id, error: null }
+        : { state: "locked", vaultName: null, vaultId: null, error: null },
+    );
     return;
   }
   const cached = await store.getStatus();
@@ -91,7 +121,7 @@ async function noteSuccess(type, data) {
     if (cached?.state !== "unlocked" || cached.error) {
       await updateStatus({ state: "unlocked", error: null });
       // Learn the vault name in the background; failures only affect the header text.
-      if (!cached?.vaultName) refreshStatus().catch(() => undefined);
+      if (!cached?.vaultName || !cached?.vaultId) refreshStatus().catch(() => undefined);
     }
   } else if (cached?.error) {
     await updateStatus({ error: null });
@@ -104,15 +134,15 @@ async function noteFailure(code, credentials) {
     case "host_forbidden":
     case "app_unavailable":
     case "timeout":
-      await updateStatus({ state: stateForError(code), error: code, vaultName: null });
+      await updateStatus({ state: stateForError(code), error: code, vaultName: null, vaultId: null });
       break;
     case "locked":
-      await updateStatus({ state: "locked", error: null, vaultName: null });
+      await updateStatus({ state: "locked", error: null, vaultName: null, vaultId: null });
       break;
     case "not_paired":
       // The app no longer knows this client (revoked in the app): pair again.
       await clearCredentialsIfCurrent(credentials);
-      await updateStatus({ state: "not_paired", error: null, vaultName: null });
+      await updateStatus({ state: "not_paired", error: null, vaultName: null, vaultId: null });
       break;
     default:
       break;
@@ -156,11 +186,12 @@ async function refreshStatus() {
       state,
       error: null,
       vaultName: state === "unlocked" && typeof data.vaultName === "string" ? data.vaultName : null,
+      vaultId: state === "unlocked" && typeof data.vaultId === "string" ? data.vaultId : null,
       appVersion: typeof data?.appVersion === "string" ? data.appVersion : "",
     });
   } catch (err) {
     const code = errorCode(err);
-    return updateStatus({ state: stateForError(code), error: code, vaultName: null });
+    return updateStatus({ state: stateForError(code), error: code, vaultName: null, vaultId: null });
   }
 }
 
@@ -168,6 +199,7 @@ function publicStatus(status) {
   return {
     state: status?.state ?? "unknown",
     vaultName: status?.vaultName ?? null,
+    vaultId: status?.vaultId ?? null,
     appVersion: status?.appVersion ?? "",
     error: status?.error ?? null,
   };
@@ -294,7 +326,7 @@ async function startPairing(code, clientName) {
       if (pairingConnection !== connection) return;
       const failure = errorCode(err);
       if (failure === "host_missing" || failure === "host_forbidden" || failure === "app_unavailable") {
-        await updateStatus({ state: stateForError(failure), error: failure });
+        await updateStatus({ state: stateForError(failure), error: failure, vaultName: null, vaultId: null });
       }
       await store.setPairing({ ...pairing, state: failure === "pairing_denied" ? "denied" : "error", error: failure });
     })
@@ -647,10 +679,18 @@ const popupHandlers = {
     return null;
   },
   "popup:pair-cancel": () => cancelPairing(),
+  "popup:list-vaults": async () => vaultList(await call("list_vaults")),
   "popup:unlock": async (msg) => {
-    const data = await call("unlock", { password: requireString(msg.password) });
+    const payload = { password: requireString(msg.password) };
+    // Without a vault id the app opens its last used vault (older popups, older apps).
+    if (msg.vaultId !== undefined && msg.vaultId !== null) payload.vaultId = requireString(msg.vaultId, 200);
+    const data = await call("unlock", payload);
+    // Badge and inline icons now show the logins of the (possibly other) vault.
     refreshActiveTab().catch(() => undefined);
-    return { vaultName: typeof data?.vaultName === "string" ? data.vaultName : "" };
+    return {
+      vaultName: typeof data?.vaultName === "string" ? data.vaultName : "",
+      vaultId: typeof data?.vaultId === "string" ? data.vaultId : null,
+    };
   },
   "popup:lock": async () => {
     await call("lock");

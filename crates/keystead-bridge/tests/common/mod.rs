@@ -7,7 +7,9 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use keystead_bridge::server::{handle_frame, BridgeHandler};
-use keystead_bridge::{BridgeError, LoginSecret, PairingRequest, Response, VaultBackend};
+use keystead_bridge::{
+    BridgeError, LoginSecret, PairingRequest, Response, VaultBackend, VaultSummary,
+};
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::matching;
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
@@ -16,14 +18,25 @@ use serde_json::Value;
 
 pub const PASSWORD: &str = "correct horse battery staple";
 pub const VAULT_NAME: &str = "Privat";
+pub const VAULT_ID: &str = "vault-privat";
+/// A second vault (lowercase name: sorts before "Privat" case-insensitively).
+pub const WORK_VAULT_NAME: &str = "arbeit";
+pub const WORK_VAULT_ID: &str = "vault-arbeit";
+pub const WORK_PASSWORD: &str = "work work work";
 pub const TOTP_SEED: &str = "JBSWY3DPEHPK3PXP";
 pub const GITHUB_ID: &str = "item-github";
 pub const EXAMPLE_ID: &str = "item-example";
 pub const NOTE_ID: &str = "item-note";
 
-/// In-memory backend with three items; records calls.
+/// In-memory backend with two vaults ("Privat" – the last used one – and
+/// "arbeit") sharing three items; records calls.
 pub struct FakeBackend {
-    unlocked: Mutex<bool>,
+    /// Id of the unlocked vault.
+    unlocked: Mutex<Option<&'static str>>,
+    /// The vault unlocked last (`lastVaultId`).
+    pub last_vault: Mutex<Option<&'static str>>,
+    /// `vaultId` of every `unlock` call that reached the backend.
+    pub unlock_targets: Mutex<Vec<Option<String>>>,
     items: Mutex<Vec<VaultItem>>,
     pairings: Mutex<VecDeque<PairingRequest>>,
     pairing_cv: Condvar,
@@ -57,7 +70,9 @@ impl FakeBackend {
         let mut note = VaultItem::new(ItemType::Note, "Notiz");
         note.id = NOTE_ID.to_owned();
         FakeBackend {
-            unlocked: Mutex::new(false),
+            unlocked: Mutex::new(None),
+            last_vault: Mutex::new(Some(VAULT_ID)),
+            unlock_targets: Mutex::new(Vec::new()),
             items: Mutex::new(vec![
                 login(
                     GITHUB_ID,
@@ -88,8 +103,30 @@ impl FakeBackend {
         }
     }
 
+    /// Opens "Privat" (`true`) or locks (`false`).
     pub fn set_unlocked(&self, unlocked: bool) {
-        *self.unlocked.lock().unwrap() = unlocked;
+        *self.unlocked.lock().unwrap() = unlocked.then_some(VAULT_ID);
+    }
+
+    /// Id of the unlocked vault.
+    pub fn unlocked_id(&self) -> Option<&'static str> {
+        *self.unlocked.lock().unwrap()
+    }
+
+    /// (id, name, password) of the vaults.
+    const VAULTS: [(&'static str, &'static str, &'static str); 2] = [
+        (VAULT_ID, VAULT_NAME, PASSWORD),
+        (WORK_VAULT_ID, WORK_VAULT_NAME, WORK_PASSWORD),
+    ];
+
+    fn summary(id: &str) -> Option<VaultSummary> {
+        Self::VAULTS
+            .iter()
+            .find(|(vid, _, _)| *vid == id)
+            .map(|(id, name, _)| VaultSummary {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+            })
     }
 
     /// Waits for the next `request_pairing` call.
@@ -121,23 +158,53 @@ impl VaultBackend for FakeBackend {
         "2.0.0-test".to_owned()
     }
 
-    fn unlocked_vault_name(&self) -> Option<String> {
-        (*self.unlocked.lock().unwrap()).then(|| VAULT_NAME.to_owned())
+    fn unlocked_vault(&self) -> Option<VaultSummary> {
+        self.unlocked_id().and_then(Self::summary)
     }
 
-    fn unlock(&self, password: &str) -> Result<String, BridgeError> {
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError> {
+        let vaults = Self::VAULTS
+            .iter()
+            .filter_map(|(id, _, _)| Self::summary(id))
+            .collect();
+        let last = self.last_vault.lock().unwrap().map(str::to_owned);
+        Ok((vaults, last))
+    }
+
+    fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError> {
         self.unlock_calls.fetch_add(1, Ordering::SeqCst);
-        if password == PASSWORD {
-            self.set_unlocked(true);
-            Ok(VAULT_NAME.to_owned())
-        } else {
-            Err(BridgeError::WrongPassword)
+        self.unlock_targets
+            .lock()
+            .unwrap()
+            .push(vault_id.map(str::to_owned));
+        let wanted = match vault_id {
+            Some(id) => id.to_owned(),
+            None => self
+                .last_vault
+                .lock()
+                .unwrap()
+                .ok_or(BridgeError::NotFound)?
+                .to_owned(),
+        };
+        let &(id, name, expected) = Self::VAULTS
+            .iter()
+            .find(|(id, _, _)| *id == wanted)
+            .ok_or(BridgeError::NotFound)?;
+        if password != expected {
+            // A failed unlock leaves the open vault (if any) open.
+            return Err(BridgeError::WrongPassword);
         }
+        *self.unlocked.lock().unwrap() = Some(id);
+        *self.last_vault.lock().unwrap() = Some(id);
+        Ok(VaultSummary {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
     }
 
     fn lock(&self) {
         self.lock_calls.fetch_add(1, Ordering::SeqCst);
-        self.set_unlocked(false);
+        *self.unlocked.lock().unwrap() = None;
     }
 
     fn focus_app(&self) {

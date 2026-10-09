@@ -410,6 +410,18 @@ a **stable error code** the UI translates: `wrong_password`, `locked`,
 the session has to unlock again); `corrupt:rollback` = `Error::Rollback`.
 Argument names are camelCase on the JS side (Tauri converts to snake_case).
 
+Commands marked † change or export the open vault and also take
+`pageVaultId: string | null`: the vault the UI page works on (`api.ts` adds
+it – the vault the page shows, or the one it has just created or unlocked
+itself, e.g. for the setup wizard's import and recovery key). If that is not
+the open vault, they answer `locked` and change nothing (checked under the
+same state lock as the change, `Core::mutate_for_page`): the browser
+extension can replace the open vault a moment before the page learns of it
+(`vault://unlocked`) and reloads, and an edit meant for the old vault must not
+land in the new one – `save_item` with an id the new vault does not know
+would create the item there. `generate_password` then only skips the
+history. The bridge's own writes are not affected.
+
 | Command | Args | Returns |
 |---|---|---|
 | `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos", extensionId }` |
@@ -422,26 +434,26 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case).
 | `touch_activity` | – | `null` (resets auto-lock timer; UI calls it throttled to ≤1/30 s on input – mouse move/click, key, wheel – while its window is focused and visible) |
 | `list_items` | – | `VaultItem[]` (all, incl. trash; UI filters) |
 | `list_folders` | – | `Folder[]` |
-| `save_item` | `item: VaultItem` | `VaultItem` |
-| `trash_item` / `restore_item` / `delete_item` | `id` | `null` |
-| `empty_trash` | – | `number` |
-| `save_folder` | `folder: Folder` | `Folder` |
-| `delete_folder` | `id` | `null` |
-| `generate_password` | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
+| `save_item` † | `item: VaultItem` | `VaultItem` |
+| `trash_item` / `restore_item` / `delete_item` † | `id` | `null` |
+| `empty_trash` † | – | `number` |
+| `save_folder` † | `folder: Folder` | `Folder` |
+| `delete_folder` † | `id` | `null` |
+| `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
 | `generator_history` | – | `GeneratedPassword[]` |
-| `clear_generator_history` | – | `null` |
+| `clear_generator_history` † | – | `null` |
 | `password_strength` | `password` | `Strength` |
 | `totp_code` | `seed` | `TotpCode` |
 | `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies passwords, TOTP codes, card number/code, hidden fields, notes of every item type, generated passwords and the recovery key as sensitive) |
 | `health_report` | – | `HealthReport` |
-| `change_master_password` | `current, newPassword` | `null` |
-| `create_recovery_key` | – | `string` |
-| `remove_recovery_key` | – | `null` |
-| `rename_vault` | `name` | `VaultInfo` |
+| `change_master_password` † | `current, newPassword` | `null` |
+| `create_recovery_key` † | – | `string` |
+| `remove_recovery_key` † | – | `null` |
+| `rename_vault` † | `name` | `VaultInfo` |
 | `delete_vault` | `vaultId, masterPassword` | `null` (locks if it was the open vault) |
 | `legacy_scan` | – | `LegacyVaultInfo[]` |
-| `import_data` | `format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", path, password: string \| null` | `ImportReport` (into the unlocked vault) |
-| `export_data` | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
+| `import_data` † | `format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", path, password: string \| null` | `ImportReport` (into the unlocked vault) |
+| `export_data` † | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, browsers: BrowserInfo[], clients: PairedClient[] }` |
@@ -466,8 +478,12 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case).
   `respond_pairing` for it answers `not_found`.
 * `bridge://unlock-request` – payload `{}` – extension asked to open the app; UI focuses the unlock screen.
 * `vault://unlocked` – payload `VaultInfo` – the vault was unlocked outside
-  the UI (extension `unlock`); the UI switches to the unlocked view. Not
-  sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
+  the UI (extension `unlock`); the UI switches to the unlocked view. Also
+  sent when the extension switched to another vault while one was open: the
+  UI then leaves the old vault like on lock (page reload, see below; an info
+  toast `lock.switchedToast` is carried over) and the boot shows the new one.
+  Until then the old view's commands marked † answer `locked`.
+  Not sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
 
 The frontend's `src/lib/api.ts` wraps every command with typed functions and
 falls back to an in-memory **mock backend** (`src/lib/mock.ts`, realistic
@@ -490,12 +506,14 @@ Frontend integration requirements for `src-tauri`:
 * Build: `devUrl` `http://localhost:1420`, `frontendDist` `../dist`,
   `beforeDevCommand` `npm run dev`, `beforeBuildCommand` `npm run build`.
 * Leaving an open vault (any lock, `delete_vault` of the open vault, the
-  vault closed by `set_portable_mode`) reloads the page (`src/lib/discard.ts`)
+  vault closed by `set_portable_mode`, the extension switching to another
+  vault – the splash is shown until the reload) reloads the page (`src/lib/discard.ts`)
   once the commands in flight have answered (≤ 3 s), so the decrypted items,
   generator history etc. do not linger in the renderer's JS heap – hygiene:
   unreachable, not overwritten. Visible toasts marked `carry` (lock reason,
   portable-mode result; never vault data) survive the reload via
-  `sessionStorage`. Not with the mock backend (it lives in the same page).
+  `sessionStorage`. Not with the mock backend (it lives in the same page; a
+  vault switch remounts the main screen, which is keyed by the vault id).
 * A `locked` answer to the main screen's `list_items`/`list_folders` also
   returns to the unlock screen (not only `vault://locked`).
 
@@ -524,9 +542,18 @@ Frontend integration requirements for `src-tauri`:
 * `list_items`, `save_item` and `generator_history` overwrite the strings of
   their cloned result once Tauri has serialized it (`src/wipe.rs`); the
   serialized IPC message itself is out of reach.
-* Every unlock/create stores the vault as `lastVaultId`. The extension's
-  `unlock` opens `lastVaultId` if it exists, else the only vault (else
-  `not_found`).
+* Every unlock/create stores the vault as `lastVaultId` (also an
+  extension unlock, so the app's unlock screen preselects that vault after
+  the next lock). The extension's `unlock` opens its `vaultId`; without one
+  `lastVaultId` if it exists, else the only vault (else `not_found`). If
+  another vault is open, the new one is unlocked (key derivation) while the
+  old one stays open and usable; only on success it replaces it
+  (`Core::install_vault`): the old vault is dropped (wiped) and a secret it
+  copied is cleared from the clipboard like on lock, without
+  `vault://locked`; then `vault://unlocked` with the new `VaultInfo`. A failed
+  attempt (wrong password, rate limit, unknown id) leaves the open vault
+  open. Unlocking the vault that is already open only checks the password
+  (no event).
 * `import_data` emits `vault://changed` after a successful import.
 * `delete_vault` / `respond_pairing` / `revoke_client`: unknown ids →
   `not_found`.
@@ -551,9 +578,10 @@ Frontend integration requirements for `src-tauri`:
 * Pairing requests that arrived before the page subscribed (app launched
   hidden by the native host) are re-sent ~1 s after the first
   `session_state` call of each page load; the UI de-duplicates by
-  `requestId`. If the lock state changed in that second (the extension
-  unlocked or locked the vault while the page booted), `vault://unlocked`
-  resp. `vault://locked {manual}` is sent again at that point.
+  `requestId`. If the lock state or the open vault changed in that second
+  (the extension unlocked, switched or locked the vault while the page
+  booted), `vault://unlocked` resp. `vault://locked {manual}` is sent again at
+  that point.
 * Debug builds only: `KEYSTEAD_TEST_AUTO_APPROVE_PAIRING=1` approves pairing
   requests automatically (no dialog) for automated end-to-end tests.
 * Window: links/`window.open` and any navigation away from the app open in
@@ -602,9 +630,10 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 
 | type | needs pairing | payload | data |
 |---|---|---|---|
-| `status` | no | – | `{ appVersion, paired: bool, unlocked: bool, vaultName: string\|null }` |
+| `status` | no | – | `{ appVersion, paired: bool, unlocked: bool, vaultName: string\|null, vaultId: string\|null }` |
 | `pair` | no | `clientName` (e.g. "Chrome – DESKTOP-1"), `code` (6 digits shown in the popup) | `{ clientId, token }` once the user approved in the app (the request blocks up to 120 s) |
-| `unlock` | yes | `password` | `{ vaultName }` |
+| `list_vaults` | yes (locked or unlocked) | – | `{ vaults: { id, name }[], currentVaultId: string\|null, lastVaultId: string\|null }` – sorted by name (case-insensitive); `currentVaultId` = the unlocked vault |
+| `unlock` | yes | `password`, `vaultId?` | `{ vaultName, vaultId }` – opens `vaultId` (switching if another vault is open), without it the app's last used vault |
 | `lock` | yes | – | `null` |
 | `focus_app` | no | – | `null` (shows/raises the window) |
 | `logins_for_url` | yes, unlocked | `url` | `ItemSummary[]` |
@@ -654,8 +683,11 @@ Behaviour (additive to the table above):
   `locked`). Unknown fields are ignored; missing/mistyped fields, an unknown
   `type` or a non-object → `invalid_request` (with the request's `id` if it
   is a string, else `""`).
-* `status`: `vaultName` is only revealed to paired clients (else `null`);
-  invalid credentials just give `paired: false`.
+* `status`: `vaultName` and `vaultId` are only revealed to paired clients
+  (else `null`); invalid credentials just give `paired: false`.
+* `list_vaults`: `VaultBackend::list_vaults` sorted by name (lowercase, then
+  id); `lastVaultId` only if that vault is listed. Not a user action (the
+  popup lists the vaults whenever it opens).
 * `pair`: `clientName` trimmed, 1–100 chars; `code` exactly 6 ASCII digits,
   else `invalid_request` (the app is not asked). A new `pair` with the same
   `clientName` supersedes a pending one (the older gets `pairing_denied`); at
@@ -666,7 +698,11 @@ Behaviour (additive to the table above):
   timed-out requests are reported via `VaultBackend::pairing_closed`.
 * `unlock`: after 5 wrong passwords in a row it answers `wrong_password` for
   30 s without trying; every further failure restarts the 30 s, a success
-  resets the counter. Attempts are serialised.
+  resets the counter. Attempts are serialised. The limit is shared by all
+  vaults (a wrong password while switching counts too). `vaultId` absent or
+  `null` = the backend picks the vault (previous behaviour); `""` →
+  `invalid_request`; an unknown id → `not_found` (does not count as a
+  failure). A failed unlock never closes the open vault.
 * `VaultBackend::on_activity` runs after successful *user actions* only
   (`unlock`, `search`, `get_login`, `get_totp`, `generate_password`,
   `save_login`, `update_password`, `copy_field`, `copy_secret`) – `status`
@@ -715,8 +751,9 @@ Behaviour (additive to the table above):
 ```rust
 pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop app
     fn app_version(&self) -> String;
-    fn unlocked_vault_name(&self) -> Option<String>;
-    fn unlock(&self, password: &str) -> Result<String, BridgeError>;            // → vault name
+    fn unlocked_vault(&self) -> Option<VaultSummary>;                            // { id, name } of the open vault
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError>; // all vaults (any order) + lastVaultId
+    fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError>; // None: last used / only vault; replaces an open vault only on success
     fn lock(&self);
     fn focus_app(&self);
     fn request_pairing(&self, request_id: &str, client_name: &str, code: &str); // emit bridge://pairing-request, don't block

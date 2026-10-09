@@ -69,6 +69,16 @@
 
   "lockedTitle": { "message": "Tresor gesperrt" },
   "lockedText": { "message": "Gib dein Master-Passwort ein, um Keystead zu entsperren." },
+  "lockedTextChoose": { "message": "Wähle den Tresor und gib sein Master-Passwort ein." },
+  "vault": { "message": "Tresor" },
+  "vaults": { "message": "Tresore" },
+  "switchVault": { "message": "Tresor wechseln" },
+  "switchVaultLabel": { "message": "Tresor wechseln (geöffnet: $NAME$)", "placeholders": { "name": { "content": "$1" } } },
+  "switchText": {
+    "message": "Gib das Master-Passwort von „$TARGET$“ ein. „$CURRENT$“ bleibt so lange entsperrt.",
+    "placeholders": { "target": { "content": "$1" }, "current": { "content": "$2" } }
+  },
+  "vaultGone": { "message": "Diesen Tresor gibt es nicht mehr." },
   "masterPassword": { "message": "Master-Passwort" },
   "unlock": { "message": "Entsperren" },
   "wrongPassword": { "message": "Falsches Master-Passwort. Bitte versuche es erneut." },

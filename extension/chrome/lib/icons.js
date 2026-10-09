@@ -48,6 +48,13 @@ const ICONS = {
   ],
   shield: [["path", { d: "M12 3.5 19 6v5.5c0 4.4-2.9 7.9-7 9.5-4.1-1.6-7-5.1-7-9.5V6l7-2.5z" }]],
   wand: [["path", { d: "m4 20 10-10M14 4v3M12.5 5.5h3M19 9v3M17.5 10.5h3M18 3.5l.01.01" }]],
+  chevron: [["path", { d: "m6 9 6 6 6-6" }]],
+  // A safe (body, dial, handle, feet) – stays legible at 14–16 px.
+  vault: [
+    ["rect", { x: 3.5, y: 4, width: 17, height: 14.5, rx: 2.5 }],
+    ["circle", { cx: 11, cy: 11.25, r: 3.25 }],
+    ["path", { d: "M16.75 9.5v3.5M7.5 18.5v2M16.5 18.5v2" }],
+  ],
 };
 
 function svgElement(tag, attrs) {

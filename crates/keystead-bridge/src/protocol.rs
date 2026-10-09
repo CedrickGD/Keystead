@@ -160,9 +160,15 @@ pub enum Payload {
         client_name: String,
         code: String,
     },
+    /// The vaults the app knows (works locked and unlocked).
+    ListVaults,
     Unlock {
         #[serde(with = "secret_string")]
         password: Zeroizing<String>,
+        /// The vault to unlock; without it the app picks the last used one
+        /// (or the only one). Switches vaults if another one is open.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault_id: Option<String>,
     },
     Lock,
     FocusApp,
@@ -249,6 +255,7 @@ impl Payload {
         match self {
             Payload::Status => "status",
             Payload::Pair { .. } => "pair",
+            Payload::ListVaults => "list_vaults",
             Payload::Unlock { .. } => "unlock",
             Payload::Lock => "lock",
             Payload::FocusApp => "focus_app",
@@ -315,15 +322,18 @@ impl Payload {
 impl fmt::Debug for Payload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Payload::Status | Payload::Lock | Payload::FocusApp => f.write_str(self.type_name()),
+            Payload::Status | Payload::ListVaults | Payload::Lock | Payload::FocusApp => {
+                f.write_str(self.type_name())
+            }
             Payload::Pair { client_name, code } => f
                 .debug_struct("pair")
                 .field("client_name", client_name)
                 .field("code", code)
                 .finish(),
-            Payload::Unlock { .. } => f
+            Payload::Unlock { vault_id, .. } => f
                 .debug_struct("unlock")
                 .field("password", &REDACTED)
+                .field("vault_id", vault_id)
                 .finish(),
             Payload::LoginsForUrl { url } => {
                 f.debug_struct("logins_for_url").field("url", url).finish()
@@ -596,6 +606,28 @@ pub struct StatusData {
     pub unlocked: bool,
     /// Name of the unlocked vault; only revealed to paired clients.
     pub vault_name: Option<String>,
+    /// Id of the unlocked vault; only revealed to paired clients.
+    pub vault_id: Option<String>,
+}
+
+/// A vault as the bridge shows it (`list_vaults`, `unlock`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultSummary {
+    pub id: String,
+    pub name: String,
+}
+
+/// `data` of `list_vaults`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListVaultsData {
+    /// All vaults, sorted by name (case-insensitive).
+    pub vaults: Vec<VaultSummary>,
+    /// The unlocked vault, `null` while locked.
+    pub current_vault_id: Option<String>,
+    /// The vault the app used last (one of `vaults`), if any.
+    pub last_vault_id: Option<String>,
 }
 
 /// `data` of `pair`.
@@ -620,6 +652,7 @@ impl fmt::Debug for PairData {
 #[serde(rename_all = "camelCase")]
 pub struct UnlockData {
     pub vault_name: String,
+    pub vault_id: String,
 }
 
 /// `data` of `save_login` and `update_password`.
@@ -727,11 +760,12 @@ mod tests {
             Request::new(
                 "1",
                 Payload::Unlock {
-                    password: Zeroizing::new("hunter2".into())
+                    password: Zeroizing::new("hunter2".into()),
+                    vault_id: Some("vault-1".into()),
                 }
             )
         );
-        assert!(!s.contains("hunter2"), "{s}");
+        assert!(!s.contains("hunter2") && s.contains("vault-1"), "{s}");
         for payload in [
             Payload::CheckLoginPassword {
                 item_id: "i".into(),
@@ -775,8 +809,13 @@ mod tests {
         assert!(!Payload::FocusApp.needs_pairing());
         let p = Payload::Unlock {
             password: Zeroizing::default(),
+            vault_id: None,
         };
-        assert!(p.needs_pairing() && !p.needs_unlocked());
+        assert!(p.needs_pairing() && !p.needs_unlocked() && p.is_user_action());
+        // Listing the vaults works locked, but only for paired clients, and
+        // is no user activity (the popup lists them whenever it opens).
+        let p = Payload::ListVaults;
+        assert!(p.needs_pairing() && !p.needs_unlocked() && !p.is_user_action());
         assert!(Payload::Lock.needs_pairing() && !Payload::Lock.needs_unlocked());
         let p = Payload::GeneratePassword { options: None };
         assert!(p.needs_pairing() && !p.needs_unlocked());
@@ -810,6 +849,14 @@ mod tests {
                 r#"{"id":"1","type":"unlock","password":"pw \"1\""}"#,
                 Payload::Unlock {
                     password: Zeroizing::new("pw \"1\"".into()),
+                    vault_id: None,
+                },
+            ),
+            (
+                r#"{"id":"1","type":"unlock","password":"pw","vaultId":"v-2"}"#,
+                Payload::Unlock {
+                    password: Zeroizing::new("pw".into()),
+                    vault_id: Some("v-2".into()),
                 },
             ),
             (
@@ -867,6 +914,7 @@ mod tests {
             r#"{"id":"1","type":"copy_field","itemId":"i"}"#,
             r#"{"id":"1","type":"check_login_password","itemId":"i","password":7}"#,
             r#"{"id":"1","type":"copy_secret"}"#,
+            r#"{"id":"1","type":"unlock","password":"pw","vaultId":7}"#,
         ] {
             assert_eq!(
                 Request::parse(bad.as_bytes()).unwrap_err(),

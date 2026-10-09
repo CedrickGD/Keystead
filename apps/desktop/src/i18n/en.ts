@@ -86,6 +86,7 @@ export const en: Record<MessageKey, string> = {
 
   "lock.timeoutToast": "Vault locked after {minutes} min of inactivity",
   "lock.systemToast": "Vault locked because the computer was locked",
+  "lock.switchedToast": "Another vault was opened from the browser extension",
 
   "welcome.title": "Welcome to Keystead",
   "welcome.titleAnother": "Add another vault",

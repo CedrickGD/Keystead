@@ -70,6 +70,26 @@ export function pendingCalls(): number {
   return callsInFlight;
 }
 
+// The vault this page works on: the one it shows, or the one it has just
+// created or unlocked itself (the setup wizard imports into a new vault before
+// showing it). Sent as `pageVaultId` with every command that changes or
+// exports the open vault: if the browser extension has switched to another
+// vault and this page has not reloaded yet, the backend answers `locked`
+// instead of applying an edit meant for the old vault to the new one.
+let pageVaultId: string | null = null;
+
+/** Sets the vault this page works on (see `pageVaultId`). */
+export function setPageVault(id: string): void {
+  pageVaultId = id;
+}
+
+/** A vault this page opened itself: it works on that one from now on. */
+async function opened(info: Promise<VaultInfo>): Promise<VaultInfo> {
+  const vault = await info;
+  pageVaultId = vault.id;
+  return vault;
+}
+
 async function call<T>(command: string, args?: Args): Promise<T> {
   callsInFlight += 1;
   try {
@@ -95,46 +115,46 @@ export const api = {
   listVaults: () => call<VaultInfo[]>("list_vaults"),
   sessionState: () => call<SessionState>("session_state"),
   createVault: (name: string, masterPassword: string) =>
-    call<VaultInfo>("create_vault", { name, masterPassword }),
+    opened(call<VaultInfo>("create_vault", { name, masterPassword })),
   unlockVault: (vaultId: string, masterPassword: string) =>
-    call<VaultInfo>("unlock_vault", { vaultId, masterPassword }),
+    opened(call<VaultInfo>("unlock_vault", { vaultId, masterPassword })),
   unlockWithRecovery: (vaultId: string, recoveryKey: string, newMasterPassword: string) =>
-    call<VaultInfo>("unlock_with_recovery", { vaultId, recoveryKey, newMasterPassword }),
+    opened(call<VaultInfo>("unlock_with_recovery", { vaultId, recoveryKey, newMasterPassword })),
   lockVault: () => call<null>("lock_vault"),
   touchActivity: () => call<null>("touch_activity"),
 
   listItems: () => call<VaultItem[]>("list_items"),
   listFolders: () => call<Folder[]>("list_folders"),
-  saveItem: (item: VaultItem) => call<VaultItem>("save_item", { item }),
-  trashItem: (id: string) => call<null>("trash_item", { id }),
-  restoreItem: (id: string) => call<null>("restore_item", { id }),
-  deleteItem: (id: string) => call<null>("delete_item", { id }),
-  emptyTrash: () => call<number>("empty_trash"),
-  saveFolder: (folder: Folder) => call<Folder>("save_folder", { folder }),
-  deleteFolder: (id: string) => call<null>("delete_folder", { id }),
+  saveItem: (item: VaultItem) => call<VaultItem>("save_item", { item, pageVaultId }),
+  trashItem: (id: string) => call<null>("trash_item", { id, pageVaultId }),
+  restoreItem: (id: string) => call<null>("restore_item", { id, pageVaultId }),
+  deleteItem: (id: string) => call<null>("delete_item", { id, pageVaultId }),
+  emptyTrash: () => call<number>("empty_trash", { pageVaultId }),
+  saveFolder: (folder: Folder) => call<Folder>("save_folder", { folder, pageVaultId }),
+  deleteFolder: (id: string) => call<null>("delete_folder", { id, pageVaultId }),
 
   generatePassword: (options: GeneratorOptions, remember: boolean) =>
-    call<string>("generate_password", { options, remember }),
+    call<string>("generate_password", { options, remember, pageVaultId }),
   generatorHistory: () => call<GeneratedPassword[]>("generator_history"),
-  clearGeneratorHistory: () => call<null>("clear_generator_history"),
+  clearGeneratorHistory: () => call<null>("clear_generator_history", { pageVaultId }),
   passwordStrength: (password: string) => call<Strength>("password_strength", { password }),
   totpCode: (seed: string) => call<TotpCode>("totp_code", { seed }),
   copyText: (text: string, sensitive: boolean) => call<null>("copy_text", { text, sensitive }),
   healthReport: () => call<HealthReport>("health_report"),
 
   changeMasterPassword: (current: string, newPassword: string) =>
-    call<null>("change_master_password", { current, newPassword }),
-  createRecoveryKey: () => call<string>("create_recovery_key"),
-  removeRecoveryKey: () => call<null>("remove_recovery_key"),
-  renameVault: (name: string) => call<VaultInfo>("rename_vault", { name }),
+    call<null>("change_master_password", { current, newPassword, pageVaultId }),
+  createRecoveryKey: () => call<string>("create_recovery_key", { pageVaultId }),
+  removeRecoveryKey: () => call<null>("remove_recovery_key", { pageVaultId }),
+  renameVault: (name: string) => call<VaultInfo>("rename_vault", { name, pageVaultId }),
   deleteVault: (vaultId: string, masterPassword: string) =>
     call<null>("delete_vault", { vaultId, masterPassword }),
 
   legacyScan: () => call<LegacyVaultInfo[]>("legacy_scan"),
   importData: (format: ImportFormat, path: string, password: string | null) =>
-    call<ImportReport>("import_data", { format, path, password }),
+    call<ImportReport>("import_data", { format, path, password, pageVaultId }),
   exportData: (format: ExportFormat, path: string, password: string | null, masterPassword: string) =>
-    call<null>("export_data", { format, path, password, masterPassword }),
+    call<null>("export_data", { format, path, password, masterPassword, pageVaultId }),
 
   getSettings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),

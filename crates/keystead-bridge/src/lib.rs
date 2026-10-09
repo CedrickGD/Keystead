@@ -27,7 +27,7 @@ mod util;
 pub use clients::{ClientStore, PairedClient};
 pub use dispatcher::{Dispatcher, DispatcherConfig, PairingRequest, VaultBackend};
 pub use error::{Error, Result};
-pub use protocol::{BridgeError, LoginSecret, Payload, Request, Response};
+pub use protocol::{BridgeError, LoginSecret, Payload, Request, Response, VaultSummary};
 pub use register::{BrowserId, BrowserInfo, EXTENSION_ID, HOST_NAME};
 pub use server::{start_server, start_server_at, BridgeHandler, ServerHandle};
 pub use socket::Endpoint;

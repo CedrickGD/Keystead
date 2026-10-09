@@ -146,7 +146,7 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
     run(&core, false, |c| {
         let vault = c.read(|v| v.info()).ok();
         if c.take_page_loaded() {
-            let answered_unlocked = vault.is_some();
+            let answered_vault = vault.as_ref().map(|v| v.id.clone());
             let c = Arc::clone(c);
             std::thread::spawn(move || {
                 std::thread::sleep(BOOT_RESEND_DELAY);
@@ -154,12 +154,14 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
                 for request in bridge::pending_pairings(&c) {
                     c.emit_pairing_request(request);
                 }
-                // The extension may have unlocked (or locked) the vault while
-                // the page booted: its event got lost, or the boot overwrote it
-                // with this (by then stale) answer.
-                match (answered_unlocked, c.read(|v| v.info()).ok()) {
-                    (false, Some(info)) => c.emit_unlocked(&info),
-                    (true, None) => c.emit_locked(LockReason::Manual),
+                // The extension may have unlocked, switched or locked the
+                // vault while the page booted: its event got lost, or the boot
+                // overwrote it with this (by then stale) answer.
+                match (answered_vault, c.read(|v| v.info()).ok()) {
+                    (answered, Some(info)) if answered.as_deref() != Some(info.id.as_str()) => {
+                        c.emit_unlocked(&info)
+                    }
+                    (Some(_), None) => c.emit_locked(LockReason::Manual),
                     _ => {}
                 }
             });
@@ -246,47 +248,92 @@ pub async fn list_folders(core: Shared<'_>) -> CmdResult<Vec<Folder>> {
     .await
 }
 
+// The commands that change or export the open vault also take
+// `page_vault_id`: the vault the UI page works on. Another open vault (the
+// browser extension switched vaults, the page has not reloaded yet) answers
+// `locked` – see `Core::mutate_for_page`.
+
 #[tauri::command]
-pub async fn save_item(core: Shared<'_>, item: Value) -> CmdResult<Wiped<VaultItem>> {
+pub async fn save_item(
+    core: Shared<'_>,
+    item: Value,
+    page_vault_id: Option<String>,
+) -> CmdResult<Wiped<VaultItem>> {
     run(&core, true, move |c| {
         let item = Wiped(parse::<VaultItem>(item, "item")?);
-        c.mutate(|v| v.save_item(item.0.clone())).map(Wiped)
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.save_item(item.0.clone()))
+            .map(Wiped)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn trash_item(core: Shared<'_>, id: String) -> CmdResult<()> {
-    run(&core, true, move |c| c.mutate(|v| v.trash_item(&id))).await
+pub async fn trash_item(
+    core: Shared<'_>,
+    id: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.trash_item(&id))
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn restore_item(core: Shared<'_>, id: String) -> CmdResult<()> {
-    run(&core, true, move |c| c.mutate(|v| v.restore_item(&id))).await
+pub async fn restore_item(
+    core: Shared<'_>,
+    id: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.restore_item(&id))
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn delete_item(core: Shared<'_>, id: String) -> CmdResult<()> {
-    run(&core, true, move |c| c.mutate(|v| v.delete_item(&id))).await
+pub async fn delete_item(
+    core: Shared<'_>,
+    id: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.delete_item(&id))
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn empty_trash(core: Shared<'_>) -> CmdResult<usize> {
-    run(&core, true, |c| c.mutate(|v| v.empty_trash())).await
+pub async fn empty_trash(core: Shared<'_>, page_vault_id: Option<String>) -> CmdResult<usize> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.empty_trash())
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn save_folder(core: Shared<'_>, folder: Value) -> CmdResult<Folder> {
+pub async fn save_folder(
+    core: Shared<'_>,
+    folder: Value,
+    page_vault_id: Option<String>,
+) -> CmdResult<Folder> {
     run(&core, true, move |c| {
         let folder: Folder = parse(folder, "folder")?;
-        c.mutate(|v| v.save_folder(folder.clone()))
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.save_folder(folder.clone()))
     })
     .await
 }
 
 #[tauri::command]
-pub async fn delete_folder(core: Shared<'_>, id: String) -> CmdResult<()> {
-    run(&core, true, move |c| c.mutate(|v| v.delete_folder(&id))).await
+pub async fn delete_folder(
+    core: Shared<'_>,
+    id: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.delete_folder(&id))
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -298,13 +345,16 @@ pub async fn generate_password(
     core: Shared<'_>,
     options: Value,
     remember: bool,
+    page_vault_id: Option<String>,
 ) -> CmdResult<String> {
     run(&core, true, move |c| {
         let options: GeneratorOptions = parse(options, "options")?;
         let password = generator::generate(&options)?;
         if remember {
             // Only an unlocked vault has a history; generating works anyway.
-            match c.mutate(|v| v.add_generated_password(&password)) {
+            match c.mutate_for_page(page_vault_id.as_deref(), |v| {
+                v.add_generated_password(&password)
+            }) {
                 Ok(()) | Err(AppError::Locked) => {}
                 Err(e) => return Err(e),
             }
@@ -323,8 +373,14 @@ pub async fn generator_history(core: Shared<'_>) -> CmdResult<Wiped<Vec<Generate
 }
 
 #[tauri::command]
-pub async fn clear_generator_history(core: Shared<'_>) -> CmdResult<()> {
-    run(&core, true, |c| c.mutate(|v| v.clear_generator_history())).await
+pub async fn clear_generator_history(
+    core: Shared<'_>,
+    page_vault_id: Option<String>,
+) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.clear_generator_history())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -361,28 +417,47 @@ pub async fn change_master_password(
     core: Shared<'_>,
     current: String,
     new_password: String,
+    page_vault_id: Option<String>,
 ) -> CmdResult<()> {
     run(&core, true, move |c| {
-        c.mutate(|v| v.change_master_password(&current, &new_password))
+        c.mutate_for_page(page_vault_id.as_deref(), |v| {
+            v.change_master_password(&current, &new_password)
+        })
     })
     .await
 }
 
 #[tauri::command]
-pub async fn create_recovery_key(core: Shared<'_>) -> CmdResult<String> {
-    run(&core, true, |c| c.mutate(|v| v.create_recovery_key())).await
-}
-
-#[tauri::command]
-pub async fn remove_recovery_key(core: Shared<'_>) -> CmdResult<()> {
-    run(&core, true, |c| c.mutate(|v| v.remove_recovery_key())).await
-}
-
-#[tauri::command]
-pub async fn rename_vault(core: Shared<'_>, name: String) -> CmdResult<VaultInfo> {
+pub async fn create_recovery_key(
+    core: Shared<'_>,
+    page_vault_id: Option<String>,
+) -> CmdResult<String> {
     run(&core, true, move |c| {
-        c.mutate(|v| v.rename(&name))?;
-        c.read(|v| v.info())
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.create_recovery_key())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_recovery_key(core: Shared<'_>, page_vault_id: Option<String>) -> CmdResult<()> {
+    run(&core, true, move |c| {
+        c.mutate_for_page(page_vault_id.as_deref(), |v| v.remove_recovery_key())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_vault(
+    core: Shared<'_>,
+    name: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<VaultInfo> {
+    run(&core, true, move |c| {
+        // The info of the renamed vault itself, not of one opened meanwhile.
+        c.mutate_for_page(page_vault_id.as_deref(), |v| {
+            v.rename(&name)?;
+            Ok(v.info())
+        })
     })
     .await
 }
@@ -405,9 +480,7 @@ pub async fn delete_vault(
             };
             if st.settings.last_vault_id.as_deref() == Some(vault_id.as_str()) {
                 st.settings.last_vault_id = None;
-                if let Err(e) = st.settings.save() {
-                    log(format_args!("could not save the settings: {}", e.code()));
-                }
+                st.save_settings();
             }
             closed
         };
@@ -433,13 +506,15 @@ pub async fn import_data(
     format: String,
     path: String,
     password: Option<String>,
+    page_vault_id: Option<String>,
 ) -> CmdResult<ImportReport> {
     run(&core, true, move |c| {
         if path.trim().is_empty() {
             return Err(AppError::invalid("path_required"));
         }
-        let report =
-            c.mutate(|v| import::import_into(v, &format, Path::new(&path), password.as_deref()))?;
+        let report = c.mutate_for_page(page_vault_id.as_deref(), |v| {
+            import::import_into(v, &format, Path::new(&path), password.as_deref())
+        })?;
         c.emit_changed();
         Ok(report)
     })
@@ -453,13 +528,14 @@ pub async fn export_data(
     path: String,
     password: Option<String>,
     master_password: String,
+    page_vault_id: Option<String>,
 ) -> CmdResult<()> {
     run(&core, true, move |c| {
         if path.trim().is_empty() {
             return Err(AppError::invalid("path_required"));
         }
         let st = c.state();
-        let vault = st.vault()?;
+        let vault = st.page_vault(page_vault_id.as_deref())?;
         if !vault.verify_master_password(&master_password) {
             return Err(CoreError::WrongPassword.into());
         }

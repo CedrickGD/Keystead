@@ -3,7 +3,8 @@
 // worker or the native messaging host.
 //
 // States: host_missing, app_unavailable, not_paired, pairing, paired, denied,
-// locked, unlocked (default), unlocked_empty, not_web, insecure.
+// locked, locked_single, unlocked (default), unlocked_single, unlocked_empty,
+// not_web, insecure. "_single": the app has only one vault (else three).
 
 import { ApiError } from "./popup-api.js";
 
@@ -20,6 +21,12 @@ const ALL = [
   { id: "d6", type: "login", name: "Sparkasse Online-Banking", subtitle: "12345678", uri: "https://sparkasse.de", favorite: true, hasTotp: true, folderId: null },
   { id: "d7", type: "login", name: "Netflix", subtitle: "familie@example.com", uri: "https://netflix.com", favorite: false, hasTotp: false, folderId: null },
   { id: "d8", type: "login", name: "Gmail", subtitle: "max.mustermann@gmail.com", uri: "https://mail.google.com", favorite: false, hasTotp: true, folderId: null },
+];
+
+const VAULTS = [
+  { id: "demo-arbeit", name: "Arbeit" },
+  { id: "demo-familie", name: "Familie" },
+  { id: "demo-privat", name: "Privat" },
 ];
 
 const WORDS = ["anker", "birke", "dachs", "eule", "fjord", "gipfel", "hafen", "insel", "jolle", "kompass", "lerche", "mond", "nebel", "otter", "pfad", "quelle", "regen", "sturm", "tanne", "ufer", "vogel", "welle", "zeder"];
@@ -53,8 +60,13 @@ function fakeGenerate(options) {
 }
 
 export function createDemoApi(state) {
-  const unlockedStates = new Set(["unlocked", "unlocked_empty", "not_web", "insecure"]);
-  let current = unlockedStates.has(state) ? "unlocked" : state;
+  const unlockedStates = new Set(["unlocked", "unlocked_single", "unlocked_empty", "not_web", "insecure"]);
+  const lockedStates = new Set(["locked", "locked_single"]);
+  let current = unlockedStates.has(state) ? "unlocked" : lockedStates.has(state) ? "locked" : state;
+  const vaults = state.endsWith("_single") ? VAULTS.filter((v) => v.id === "demo-privat") : VAULTS;
+  let openVault = current === "unlocked" ? "demo-privat" : null;
+  let chosenVault = null;
+  const vaultName = (id) => vaults.find((v) => v.id === id)?.name ?? null;
   let pairing = null;
   if (state === "pairing") pairing = { state: "pending", code: "482913", clientName: "Chrome – Windows", startedAt: Date.now() };
   if (state === "paired") pairing = { state: "success", code: "482913", clientName: "Chrome – Windows", startedAt: Date.now() };
@@ -74,7 +86,18 @@ export function createDemoApi(state) {
       await delay(120);
       const known = ["host_missing", "app_unavailable", "not_paired", "locked", "unlocked"];
       const shown = known.includes(current) ? current : "not_paired";
-      return { state: shown, vaultName: shown === "unlocked" ? "Privat" : null, appVersion: "2.0.0", error: null };
+      const open = shown === "unlocked" ? openVault : null;
+      return { state: shown, vaultName: vaultName(open), vaultId: open, appVersion: "2.0.0", error: null };
+    },
+    async listVaults() {
+      await delay(60);
+      return { vaults, currentVaultId: current === "unlocked" ? openVault : null, lastVaultId: "demo-privat" };
+    },
+    async loadChosenVault() {
+      return chosenVault;
+    },
+    async saveChosenVault(id) {
+      chosenVault = id;
     },
     async pairStart(code, clientName) {
       pairing = { state: "pending", code, clientName, startedAt: Date.now() };
@@ -96,14 +119,18 @@ export function createDemoApi(state) {
       return () => undefined;
     },
 
-    async unlock(password) {
+    async unlock(password, vaultId = null) {
       await delay(250);
+      const id = vaultId ?? "demo-privat";
+      if (!vaultName(id)) throw new ApiError("not_found");
       if (password !== "demo") throw new ApiError("wrong_password");
       current = "unlocked";
-      return { vaultName: "Privat" };
+      openVault = id;
+      return { vaultName: vaultName(id), vaultId: id };
     },
     async lock() {
       current = "locked";
+      openVault = null;
       return null;
     },
     async focusApp() {
@@ -127,7 +154,8 @@ export function createDemoApi(state) {
     async matches() {
       requireUnlocked();
       await delay(80);
-      return state === "unlocked_empty" || state === "not_web" ? [] : LOGINS;
+      if (state === "unlocked_empty" || state === "not_web" || openVault === "demo-familie") return [];
+      return openVault === "demo-arbeit" ? LOGINS.filter((l) => l.id === "d2") : LOGINS;
     },
     async search(query) {
       requireUnlocked();

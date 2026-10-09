@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, ServerCrash } from "lucide-react";
-import { api, events, subscribeEffect } from "./lib/api";
+import { api, events, setPageVault, subscribeEffect } from "./lib/api";
 import { discardPageData } from "./lib/discard";
 import type { AppInfo, PairingRequest, Settings, ThemeSetting, VaultInfo } from "./lib/types";
 import { localPrefs } from "./lib/utils";
@@ -70,6 +70,10 @@ function AppRoot({
   const [bootError, setBootError] = useState<string | null>(null);
   const [boot, setBoot] = useState<Boot | null>(null);
   const [vault, setVault] = useState<VaultInfo | null>(null);
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
   const [pairings, setPairings] = useState<PairingRequest[]>([]);
   const pairingsRef = useRef(pairings);
   pairingsRef.current = pairings;
@@ -189,6 +193,19 @@ function AppRoot({
   const enterVault = useCallback(
     (info: VaultInfo) => {
       enterSeq.current += 1;
+      const shown = screenRef.current === "main" ? vaultRef.current : null;
+      if (shown && shown.id !== info.id) {
+        // Another vault replaced the open one (the browser extension switched
+        // vaults). Leave the old one like on lock: reload the page so its items
+        // do not linger in the JS heap; the boot then shows the new vault (the
+        // backend already remembered it as the last vault). Until then nothing
+        // of either vault is shown. The mock backend has no reload: remount.
+        toast.show({ kind: "info", message: t("lock.switchedToast"), carry: true });
+        if (discardPageData(toast.carried)) {
+          setScreen("loading");
+          return;
+        }
+      }
       setVault(info);
       setScreen("main");
       void refreshVaults().catch(() => undefined);
@@ -196,7 +213,7 @@ function AppRoot({
         void updateSettings({ lastVaultId: info.id });
       }
     },
-    [refreshVaults, updateSettings],
+    [refreshVaults, updateSettings, t, toast],
   );
 
   // The browser extension unlocked the vault: leave the unlock screen.
@@ -204,6 +221,15 @@ function AppRoot({
   const enterVaultRef = useRef(enterVault);
   enterVaultRef.current = enterVault;
   useEffect(() => subscribeEffect(events.onVaultUnlocked((info) => enterVaultRef.current(info))), []);
+
+  // Commands that change the vault carry the id of the vault this page shows
+  // (`pageVaultId`). Never reset: after leaving a vault the page reloads, and
+  // until then a late command of the old view must not reach a vault the
+  // extension opened meanwhile.
+  const shownVaultId = screen === "main" ? vault?.id : undefined;
+  useLayoutEffect(() => {
+    if (shownVaultId) setPageVault(shownVaultId);
+  }, [shownVaultId]);
 
   // Leaving an open vault (lock of any kind, vault deleted, portable switch):
   // reload the page so the decrypted items etc. do not linger in the JS heap.
