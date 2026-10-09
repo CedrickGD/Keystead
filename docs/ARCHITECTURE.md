@@ -4,8 +4,10 @@ Keystead (*Key* + *Homestead* – your keys stay at home) is a local-only
 password manager in the spirit of Bitwarden:
 a desktop app (Tauri 2: Rust backend + React UI), a terminal UI, and a
 Chromium browser extension that talks to the desktop app via Native
-Messaging. **Nothing ever leaves the machine** – there is no server and no
-cloud sync.
+Messaging. **No vault data ever leaves the machine** – there is no server and
+no cloud sync. The app itself only goes online for the update check and,
+unless turned off, to load website icons directly from the websites (see
+"Website icons").
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -190,6 +192,7 @@ pub mod generator;// GeneratorOptions, generate()
 pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
+pub mod icons;    // website icons: host keys, due/fetchable hosts, prune (no networking – the desktop app fetches)
 pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export; format detection, duplicate/conflict check
 pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
@@ -234,6 +237,11 @@ impl UnlockedVault {
     pub fn delete_folder(&mut self, id: &str) -> Result<()>;   // items in it get folder_id = None
     pub fn add_generated_password(&mut self, password: &str) -> Result<()>; // history max 50, persists
     pub fn clear_generator_history(&mut self) -> Result<()>;
+    pub fn icon_hosts_needing_fetch(&self, now: i64) -> Vec<String>; // website icons due (see "Website icons"): none yet, 30 days old, failure 7 days old; fetchable hosts only
+    pub fn set_icons(&mut self, results: &[(String, Option<Vec<u8>>)], now: i64) -> Result<usize>; // one save; None = failed; hosts of no login ignored; Conflict → reload + retry
+    pub fn icon_for_host(&self, host: &str) -> Option<&str>;      // base64 PNG
+    pub fn icon_for_item(&self, item: &VaultItem) -> Option<&str>;
+    pub fn clear_icons(&mut self) -> Result<usize>;              // one save
     pub fn import_items(&mut self, items: Vec<VaultItem>, folders: Vec<Folder>) -> Result<usize>; // assigns fresh ids, maps folder ids, persists once (no duplicate check)
     pub fn commit_import(&mut self, plan: ImportPlan, mode: ConflictMode) -> Result<ImportReport>;      // applies an import plan in one save, see "Import: detection, duplicates, conflicts"
     pub fn commit_import_ref(&mut self, plan: &ImportPlan, mode: ConflictMode) -> Result<ImportReport>; // same, keeps the plan (retry after `conflict` + reload_if_changed)
@@ -358,6 +366,9 @@ Behaviour notes:
   so after `conflict` the in-memory state is unchanged: call
   `reload_if_changed()` and retry. A save never recreates a deleted vault
   file (`not_found`).
+* Every save that changes the data also drops website icons whose host no
+  longer belongs to a non-trashed login (deleted, trashed, address
+  changed), so the vault keeps no list of sites the user no longer has.
 * Recovery codes are normalised to uppercase without dashes/whitespace;
   Crockford look-alikes are accepted (`O`→`0`, `I`/`L`→`1`). A malformed
   code → `invalid_input:recovery_key_format`; a vault without recovery key →
@@ -534,7 +545,8 @@ interface Settings {
   startInTray: boolean;                      // default false
   browserIntegration: boolean;               // bridge server on/off; default true
   lastVaultId: string | null;
-  showIcons: boolean;                        // website favicons – false by default: offline, letter avatars instead
+  websiteIcons: boolean;                     // load missing website icons in the background, directly from the websites; default true.
+                                             // false = no icon requests (stored icons stay visible). The old `showIcons` (never in the UI) is ignored.
   updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
   updateChannel: "beta" | "stable";          // default "beta" (betas + stable releases); "stable" = stable releases only
 }
@@ -594,8 +606,14 @@ history. The bridge's own writes are not affected.
 | `rename_vault` † | `name` | `VaultInfo` |
 | `delete_vault` | `vaultId, masterPassword` | `null` (locks if it was the open vault) |
 | `legacy_scan` | – | `LegacyVaultInfo[]` |
-| `import_data` † | `format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", path, password: string \| null` | `ImportReport` (into the unlocked vault) |
+| `import_data` † | `format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", path, password: string \| null` | `ImportReport` (into the unlocked vault; one step, conflicts skipped – kept for compatibility, the UI uses the three commands below) |
+| `analyze_import` † | `path, password: string \| null` | `ImportAnalysis { importId: string\|null, fileName, format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", needsPassword: boolean, preview: ImportPreview\|null }` – see "Import with preview" |
+| `commit_import` † | `importId, conflictMode: "skip"\|"update"\|"keepBoth"` | `ImportReport` |
+| `cancel_import` | `importId` | `null` (unknown ids are ignored) |
 | `export_data` † | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
+| `show_export` | – | `null` – shows the file the last successful `export_data` wrote in the file manager (Windows: Explorer with the file selected; elsewhere its folder); `not_found` if nothing was exported since the start or the file is gone. Never a path the page names. |
+| `get_icons` | `pageVaultId` | `{ [host]: "data:image/png;base64,…" }` – the stored website icons of the page's vault (`locked` if another vault is open); hosts as in "Website icons" |
+| `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
@@ -623,6 +641,7 @@ or `…/releases` without a version).
 **Events** (backend → frontend, `app.emit`):
 * `vault://locked` – payload `{ reason: "manual"|"timeout"|"system" }`
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
+* `vault://icons` – payload `{}` – the icon fetcher stored new website icons; the UI calls `get_icons` again.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
 * `bridge://pairing-closed` – payload `{ requestId }` – that request ended
   without a decision (cancelled in the browser / browser closed, replaced by
@@ -657,8 +676,21 @@ check find nothing (default: only the manual check finds the fake update; the
 stable channel has no release), `&updateSpeed=slow` keeps the download progress
 on screen (a normal install "restarts" by reloading with the new version), and
 `window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
-`simulateExternalChange()`, `simulateUnlockRequest()` and
-`simulateUpdate(portable?)`.
+`simulateExternalChange()`, `simulateUnlockRequest()`,
+`simulateUpdate(portable?)` and, for drag & drop, `dragFile(path?)` (the
+overlay stays until `dropFile` / `cancelDrag()`), `dropFile(path?)` (a string
+or an array of paths; default `C:\Users\Demo\Downloads\Chrome-Passwörter.csv`)
+and `cancelDrag()`. The mock recognises import files by name
+(`src/lib/demo/importFiles.ts`): `*.csv` = a Chrome export with duplicates,
+two changed passwords, new logins and one invalid row (against "Privat"),
+`*encrypted*.json` = refused encrypted Bitwarden export, other `*.json` =
+Bitwarden JSON, `vault_*.json` / paths containing `VaultX` = VaultX 1.x and
+`*.keystead` (both password `demo`), anything else = unknown format.
+Website icons: "Privat" starts with a few stored sample icons
+(`src/lib/demo/sampleIcons.ts` – original abstract drawings, not the sites'
+real icons); ~1.5 s after an unlock, a save or turning `websiteIcons` on, a
+simulated fetch adds the sample icon of hosts that have none and emits
+`vault://icons`.
 
 Frontend integration requirements for `src-tauri`:
 * File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
@@ -682,6 +714,76 @@ Frontend integration requirements for `src-tauri`:
   vault switch remounts the main screen, which is keyed by the vault id).
 * A `locked` answer to the main screen's `list_items`/`list_folders` also
   returns to the unlock screen (not only `vault://locked`).
+* Drag & drop of files uses Tauri's webview drag-drop events
+  (`getCurrentWebview().onDragDropEvent`: `enter`/`over`/`drop`/`leave` with
+  file paths; `dragDropEnabled` stays at its default `true`, the events need
+  only `core:event:default`). On Windows this disables HTML5 drag & drop in
+  the webview – the UI uses none.
+
+### Import with preview (`src-tauri/src/import_flow.rs`, `src/components/import/`)
+* **Flow**: `analyze_import(path, password)` → `detect_import` (by content)
+  → if the format needs a password (`legacy`, `keystead`) and none (or "")
+  was given: `{ needsPassword: true, preview: null, importId: null }`, no
+  error and no plan → else `read_import` (key derivation without the state
+  lock; a wrong password → `wrong_password`) → `plan_import` against the page's
+  vault (`pageVaultId`, checked under the state lock together with storing
+  the plan) → `{ importId, preview: plan.preview() }`. The user decides →
+  `commit_import(importId, conflictMode)` (`commit_import_ref` through
+  `Core::mutate_for_page`: on `conflict` reload and commit the same plan once
+  more) → `ImportReport`, `vault://changed`. `cancel_import` drops the plan.
+  Errors of `analyze_import`: `locked`, `invalid_input:path_required`, the
+  detection/reading codes of the core (`unsupported:unknown_format`,
+  `unsupported:bitwarden_encrypted`, `unsupported:file_too_large`,
+  `not_found`, `io:…`, `wrong_password`, `unsupported:vault format version N`,
+  `corrupt:…`).
+* **The waiting plan** holds the file's decrypted items, so it is kept as
+  briefly as possible, in one slot (`Core::import_slot`; lock order: state
+  before slot): a new analysis replaces it (also when that analysis fails or
+  only asks for a password); it is dropped – `ImportPlan`'s `Drop` overwrites
+  the secrets – after every commit attempt (success or error: the UI analyses
+  again), on `cancel_import`, 15 minutes after the analysis (the monitor
+  checks every 5 s, and a commit after that answers `not_found`), and when its
+  vault closes (`Core::finish_lock`: any lock, a vault switch through the
+  extension, `delete_vault`, the portable-mode move, an update).
+  `commit_import` answers `not_found` for an unknown, replaced, cancelled,
+  committed or expired id and `locked` (dropping the plan) when `pageVaultId`
+  is not the plan's vault or not the open one.
+* **UI** (`ImportFlow`: as a dialog – `ImportDialog` – in the main window and
+  inline as the setup wizard's import step): (1) "Datei wählen": a large drop
+  zone ("Datei hierher ziehen oder klicken zum Auswählen", file picker with
+  all supported extensions and "Alle Dateien"), the VaultX 1.x vaults
+  `legacy_scan` finds as one-click choices (first in the wizard), the
+  supported sources; no format choice. (2) Only for encrypted files: the
+  password ("Master-Passwort des alten Tresors" with the recovery-password
+  hint for VaultX 1.x, "Passwort der Exportdatei" for Keystead) with the
+  wrong-password error inline. (3) Preview: file name + detected format
+  chip, summary cards (new – always; already there, different password,
+  invalid rows – when not 0), for conflicts a list (name, username, site,
+  "gespeichert als …") and the choice "Überspringen" (default) / "Passwort
+  aktualisieren (altes kommt in den Verlauf)" / "Beide behalten", the
+  duplicates and the file's warnings collapsed; "N Elemente importieren"
+  (new items + conflicts unless skipped); nothing to do → "Alles ist schon in
+  deinem Tresor" and only "Schließen". (4) Result: "N importiert ·
+  N aktualisiert · N übersprungen" with the skipped entries (already there /
+  different password) collapsed. Lists show at most 40 rows ("… und N
+  weitere"). Errors get friendly texts (`error.unsupported.unknown_format`
+  lists the supported formats, `bitwarden_encrypted` explains how to export
+  unencrypted, `file_too_large`, `io`, a missing file, an expired preview);
+  "Erneut prüfen" only where checking the same file again can help. Leaving
+  the dialog cancels a waiting plan.
+* **Entry points**: the start panel's "Passwörter importieren", Settings →
+  Import & Export → "Importieren …", the welcome screen's "Von VaultX
+  umsteigen" (wizard step "Import", skippable) and drag & drop.
+* **Drag & drop** (`FileDropProvider` around the whole app): while files are
+  dragged over the window a full-window overlay shows "Datei hier ablegen, um
+  sie zu importieren" with the supported sources; the drop goes to the newest
+  registered target – the open import dialog (a new file restarts its
+  analysis; while it commits: "Bitte warte …"), else the main window (opens
+  the dialog with the file), else the wizard's import step. Several files:
+  the first is used, a toast says so. Without a target (unlock screen,
+  welcome screen) the overlay says "Zum Importieren zuerst den Tresor
+  entsperren" ("… einen Tresor anlegen" while no vault exists) and the drop
+  does nothing but show that hint.
 
 ### Desktop backend behaviour details (implemented in `src-tauri`)
 * Commands run on the blocking thread pool; complex arguments (`item`,
@@ -691,7 +793,7 @@ Frontend integration requirements for `src-tauri`:
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
   mutations, `copy_text`, generator, import/export, settings, …) and bridge
   user actions. Polled/passive commands (`totp_code`, `browser_status`,
-  `session_state`, `app_info`, `list_*`, `get_settings`) do **not** reset
+  `session_state`, `app_info`, `list_*`, `get_settings`, `get_icons`) do **not** reset
   the timer. The monitor checks every 5 s (idle time includes sleep).
 * `lockOnSystemLock`: Windows uses session notifications
   (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`) and `PBT_APMSUSPEND`; on every
@@ -720,7 +822,8 @@ Frontend integration requirements for `src-tauri`:
   attempt (wrong password, rate limit, unknown id) leaves the open vault
   open. Unlocking the vault that is already open only checks the password
   (no event).
-* `import_data` emits `vault://changed` after a successful import.
+* `import_data` and `commit_import` emit `vault://changed` after a
+  successful import.
 * `delete_vault` / `respond_pairing` / `revoke_client`: unknown ids →
   `not_found`.
 * `open_terminal`: Windows `CREATE_NEW_CONSOLE`; Linux tries `$TERMINAL`,
@@ -760,6 +863,94 @@ Frontend integration requirements for `src-tauri`:
   `WDA_EXCLUDEFROMCAPTURE` – screenshots, recordings, screen sharing and
   Windows Recall see it black or not at all; before Windows 10 2004 it is
   shown black; macOS `NSWindowSharingNone`; no effect on Linux).
+
+## Website icons (`keystead_core::icons`, `src-tauri/src/icons.rs`)
+
+Logins show their website's icon. The desktop app loads missing icons
+itself, **directly from the websites** (no icon service, no proxy), in the
+background, and keeps them **inside the encrypted vault** – loose files would
+reveal which sites the user has accounts with. `Settings.websiteIcons`
+(default on) switches the loading off; stored icons are still shown.
+
+* **Model** (`VaultData.icons`, `#[serde(default)]` – older vaults open
+  unchanged): `{ [host]: IconEntry { png: string|null /* base64, 64×64 PNG */,
+  fetchedAt: number /* last attempt */, failedAt: number|null /* last failed
+  attempt, null after a success */ } }`. A failed refresh keeps the older
+  icon. `IconEntry`'s `Debug` prints only the image length.
+* **Host key** (`icons::site_host` / `icon_host`, same as the import's
+  "site"; the UI has the same function in `src/lib/icons.ts`): the
+  lower-case host of a login's first http(s) URI (scheme-less URIs count as
+  `https://`), without a trailing dot and a leading `www.`, port ignored
+  (`https://www.GitHub.com:443/login` → `github.com`). Logins only.
+* **Due** (`icon_hosts_needing_fetch(now)`): hosts of non-trashed logins
+  without an entry, whose last attempt is ≥ 30 days old, or whose last
+  failure is ≥ 7 days old – missing ones first, each group alphabetical.
+  Never due: hosts that must not be contacted (`is_fetchable_host`): IP
+  literals (also `127.1`-style), `localhost`, names ending in `.localhost`,
+  `.local`, `.localdomain`, `.internal`, `.intranet`, `.lan`, `.home`,
+  `.home.arpa`, `.corp`, `.private`, `.test`, `.invalid`, `.example`,
+  `.onion`, single-label names and anything but `[a-z0-9-]` labels.
+* **Stored** with `set_icons` (one save per batch; `None` = failed → only
+  `fetchedAt`/`failedAt` change; results for hosts no login has any more are
+  ignored; not a PNG or > 48 KiB → failure). Every save also prunes icons of
+  hosts no non-trashed login uses. Exports (Keystead, CSV, Bitwarden JSON)
+  never contain icons and imports never bring any.
+* **When** (one background thread, `IconTracker` in `Core`): 5 s after a
+  vault is opened (unlock, new vault, switch – also by the extension), ~2 s
+  after any successful change through the app or the browser bridge (e.g. a
+  login with a new website; debounced), right away when `websiteIcons` is
+  turned on, and every 24 h while the vault stays open. A run handles at most
+  200 sites, 4 at a time; if more are due the next run follows 1 min later.
+  Locking, switching the vault, turning the setting off or quitting cancels
+  a run (generation counter); results are written only into the vault the
+  run started for (`mutate_for_page` with its id, checked under the state
+  lock – never into another vault), in batches of up to 16 or every 5 s, each
+  followed by `vault://icons`. Writes use the normal `conflict` → reload →
+  retry path.
+* **Fetch** (per site, ≤ 15 s): `GET https://<host>/` (HTML read up to
+  512 KiB), the best icon link of its head (`<link rel>` with the token
+  `icon` – incl. `shortcut icon` – or `apple-touch-icon[-precomposed]`,
+  relative to `<base href>`/the final page URL; comments, `script`, `style`
+  etc. skipped; ranking: declared size ≥ 64 px first (closest to 64), then
+  32–63, then unknown, then < 32; within each PNG before ICO before others;
+  `apple-touch-icon` without `sizes` = 180; SVG – by `type` or `.svg` path –
+  and `data:` links other than `data:image/png;base64` are ignored), up to 3
+  links tried, then `https://<host>/favicon.ico`. Every request: https only,
+  default port, no credentials in the URL, ≤ 3 redirects – each again
+  checked like the first URL –, 5 s timeout, body ≤ 512 KiB (an image above
+  that is refused), no cookies, no `Referer`, user agent
+  `Keystead/<version> (icon fetcher)`, `Accept` for HTML resp. images only.
+  Nothing from the vault is ever sent – only the host name in the URL.
+* **Address guard (SSRF)**: besides `is_fetchable_host` for the site and
+  every link/redirect host, the HTTP client resolves names through
+  `PublicResolver`, which drops every address that is not public (loopback,
+  RFC 1918, link-local incl. `169.254.169.254`, CGNAT `100.64/10`,
+  documentation/benchmark ranges, multicast/reserved, `::`, `::1`, `fc00::/7`,
+  `fe80::/10`, `fec0::/10`, NAT64/6to4/IPv4-mapped forms of those, Teredo,
+  ORCHID); a name with only such addresses is refused. The client connects
+  only to what the resolver returns – also after a redirect – and uses no
+  proxy (otherwise the proxy would resolve the name), so a website cannot
+  make the app talk to the local network.
+* **Image**: recognised by content (PNG, ICO – its largest frame –, JPEG,
+  GIF – first frame –, WebP; SVG and BMP are refused), decoder limits 4096 px
+  per side and 64 MiB; smaller than 8 px or fully transparent = no icon.
+  Scaled into 64×64 keeping the aspect ratio (Lanczos down, Catmull-Rom up),
+  centred on a transparent square, stored as PNG.
+* **Failures are silent**: a site without a usable icon gets `failedAt`
+  (retried after 7 days) and keeps the letter avatar; the log only counts
+  (`website icons: 12 loaded, 3 not available`, never host names). A run in
+  which no site answered at all (only connection errors) counts as offline
+  and records nothing; it is retried after 1 h, doubling up to 24 h.
+* **UI**: `get_icons` → `{ host: data URL }`; avatars in the list, the detail
+  and editor header and the security report show the icon of
+  `iconHost(item)` on a light tile (letter avatar while missing or if the
+  image does not decode). Settings → Allgemein: "Website-Icons automatisch
+  laden" (hint: loaded directly from the websites; off = no requests for
+  this) and "Gespeicherte Icons löschen" (`clear_icons`).
+* **Browser extension**: `logins_for_url` and `search` rows carry the stored
+  icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
+  (see the bridge protocol); the popup shows it, else the letter. The
+  extension never loads icons itself.
 
 ## In-app updates (`src-tauri/src/update.rs`)
 
@@ -891,6 +1082,17 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   load it once); while the reload is pending it says so.
 * Settings → Browser-Integration, step 2: load the extension unpacked from
   that folder, with "Ordner öffnen" (`open_extension_dir`) and "Pfad kopieren".
+  Just in case the folder does not work, a link "Browser-Erweiterung
+  herunterladen" opens the release's ZIP in the system browser:
+  `https://github.com/CedrickGD/Keystead/releases/download/v<version>/Keystead-<version>-browser-extension.zip`
+  for release versions (`x.y.z`, `x.y.z-beta.N`, `-rc.N`, `-alpha.N`;
+  `src/lib/links.ts`), `…/releases` for development builds (Vite dev server
+  or any other version string).
+* The setup wizard's last step ("Dein Tresor ist bereit") shows an optional,
+  compact card "Browser-Erweiterung einrichten" below the recovery-key offer:
+  the folder path, "Ordner öffnen" and "Anleitung" – a toggle; once the
+  wizard is finished the main window opens on Settings → Browser-Integration
+  (`src/lib/startView.ts`).
 
 ## Releases & in-app updates (CI, `.github/workflows/build.yml`)
 
@@ -982,8 +1184,8 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 | `unlock` | yes | `password`, `vaultId?` | `{ vaultName, vaultId }` – opens `vaultId` (switching if another vault is open), without it the app's last used vault |
 | `lock` | yes | – | `null` |
 | `focus_app` | no | – | `null` (shows/raises the window) |
-| `logins_for_url` | yes, unlocked | `url` | `ItemSummary[]` |
-| `search` | yes, unlocked | `query` | `ItemSummary[]` (max 50) |
+| `logins_for_url` | yes, unlocked | `url` | `ItemSummary[]` (optional `icon`, see below) |
+| `search` | yes, unlocked | `query` | `ItemSummary[]` (max 50; optional `icon`) |
 | `get_login` | yes, unlocked | `itemId` | `{ id, name, username, password, totp: TotpCode\|null, uris: string[] }` |
 | `get_totp` | yes, unlocked | `itemId` | `TotpCode` |
 | `generate_password` | yes | `options?` (GeneratorOptions partial) | `string` (uses defaults + stored in generator history if unlocked) |
@@ -1029,6 +1231,15 @@ Behaviour (additive to the table above):
   `locked`). Unknown fields are ignored; missing/mistyped fields, an unknown
   `type` or a non-object → `invalid_request` (with the request's `id` if it
   is a string, else `""`).
+* `ItemSummary` = `{ id, type, name, subtitle, uri, favorite, hasTotp,
+  folderId, icon? }` (`keystead_core::model::ItemSummary`). `icon` is the
+  stored website icon as `data:image/png;base64,…`; the desktop app adds it
+  only to the first 20 rows of a `logins_for_url` / `search` reply and only
+  if it is ≤ 16 KiB (the reply to the browser is capped at 1 MiB). Without an
+  icon the key is absent; older apps never send it and clients treat it as
+  optional (the popup then shows the letter avatar). The extension popup's
+  CSP (`script-src 'self'; object-src 'self'; base-uri 'none'`, no
+  `img-src`) allows `data:` images.
 * `status`: `vaultName` and `vaultId` are only revealed to paired clients
   (else `null`); invalid credentials just give `paired: false`.
   `extensionVersion` (manifest version of the extension the app delivers)
@@ -1156,4 +1367,17 @@ register::registered_browsers() -> Vec<BrowserId>;            // re-register the
   Ctrl+Shift+C on a selected item copies its password, Ctrl+B the username,
   Ctrl+S saves while editing, Esc cancels editing / closes dialogs).
 * German first, English second (`src/i18n/de.ts`, `src/i18n/en.ts`).
+* Logins show their website's icon (see "Website icons") on a light rounded
+  tile, otherwise a tinted letter tile; cards, identities and notes a type
+  icon. Same in the extension popup.
 * No hidden options: settings is one page with clear sections.
+* Import: drop a file anywhere or pick one – the format is detected, nothing
+  is written before the preview is confirmed, and existing entries are never
+  imported twice (see "Import with preview"). Export: one dialog – a format
+  card (Keystead encrypted, recommended / CSV / Bitwarden JSON), the export
+  password twice or a clear warning for unencrypted formats, the master
+  password, "Speichern unter …" with `Keystead-<vault>-<YYYY-MM-DD>.<ext>` as
+  the suggested name; the success toast offers "Im Ordner anzeigen"
+  (`show_export`).
+* While a dialog is open, toasts appear at the top so they never cover its
+  buttons.

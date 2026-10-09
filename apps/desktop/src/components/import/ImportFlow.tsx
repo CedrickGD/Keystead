@@ -87,7 +87,8 @@ export function ImportFlow({
   const [analysis, setAnalysis] = useState<ImportAnalysis | null>(null);
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** `retry`: checking the same file again may help (I/O, expired preview). */
+  const [error, setError] = useState<{ text: string; retry: boolean } | null>(null);
   const [busy, setBusy] = useState<"analyze" | "commit" | null>(null);
   const [mode, setMode] = useState<ConflictMode>("skip");
   const [report, setReport] = useState<ImportReport | null>(null);
@@ -172,7 +173,7 @@ export function ImportFlow({
           setPasswordError(legacyFile ? t("importFlow.legacyWrongPassword") : t("import.wrongPassword"));
           setStep("password");
         } else {
-          setError(importErrorText(err));
+          setError({ text: importErrorText(err), retry: isRetryable(err) });
           setStep("choose");
         }
       } finally {
@@ -209,7 +210,7 @@ export function ImportFlow({
       });
       if (picked) void analyze(picked, null);
     } catch (err) {
-      setError(errorText(err));
+      setError({ text: errorText(err), retry: false });
     }
   };
 
@@ -234,7 +235,8 @@ export function ImportFlow({
       setStep("result");
       setPassword("");
     } catch (err) {
-      setError(err instanceof ApiError && err.code === "not_found" ? t("importFlow.errExpired") : importErrorText(err));
+      const expired = err instanceof ApiError && err.code === "not_found";
+      setError({ text: expired ? t("importFlow.errExpired") : importErrorText(err), retry: true });
       setAnalysis(null);
       setStep("choose");
     } finally {
@@ -252,6 +254,20 @@ export function ImportFlow({
     setError(null);
     setStep("choose");
   };
+
+  // A new step replaces the content: focus its main control (the dialog only
+  // focuses on mount, and React may keep focus on a reused footer button).
+  const firstStep = useRef(true);
+  useEffect(() => {
+    if (firstStep.current) {
+      firstStep.current = false;
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("[data-import-focus]")?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [step]);
 
   const finishLabel = variant === "wizard" ? t("common.continue") : t("common.done");
   const leaveLabel = variant === "wizard" ? t("common.skip") : t("common.cancel");
@@ -292,6 +308,7 @@ export function ImportFlow({
         <button
           type="button"
           className={`import-drop ${busy === "analyze" ? "busy" : ""}`}
+          data-import-focus
           onClick={() => void pick()}
           disabled={busy !== null}
           aria-describedby={hintId}
@@ -310,8 +327,9 @@ export function ImportFlow({
           <div className="callout callout-danger" role="alert">
             <CircleAlert />
             <div className="import-error">
-              <span>{error}</span>
-              {file && busy === null && (
+              {file && <strong>{file.name}</strong>}
+              <span>{error.text}</span>
+              {file && error.retry && busy === null && (
                 <button type="button" className="btn-link" onClick={() => void analyze(file.path, password || null)}>
                   {t("importFlow.retry")}
                 </button>
@@ -376,6 +394,7 @@ export function ImportFlow({
             size={variant === "wizard" ? "lg" : "md"}
             autoFocus
             data-autofocus
+            data-import-focus
           />
         </Field>
       </div>
@@ -412,27 +431,34 @@ export function ImportFlow({
         <FileRow name={analysis.fileName} format={t(FORMAT_LABEL[analysis.format])} />
         <div className="import-stats">
           <Stat tone="new" icon={<Plus />} n={preview.newCount} label={t("importFlow.statNew")} hint={t("importFlow.statNewHint")} />
-          <Stat
-            tone="same"
-            icon={<CopyCheck />}
-            n={preview.duplicates.length}
-            label={t("importFlow.statDuplicates")}
-            hint={t("importFlow.statSkippedHint")}
-          />
-          <Stat
-            tone="conflict"
-            icon={<KeyRound />}
-            n={conflicts.length}
-            label={t("importFlow.statConflicts")}
-            hint={t("importFlow.statConflictsHint")}
-          />
-          <Stat
-            tone="invalid"
-            icon={<Ban />}
-            n={preview.invalid}
-            label={tp("importFlow.statInvalid", preview.invalid)}
-            hint={t("importFlow.statSkippedHint")}
-          />
+          {/* Only what the file contains; "neu" always (also 0). */}
+          {preview.duplicates.length > 0 && (
+            <Stat
+              tone="same"
+              icon={<CopyCheck />}
+              n={preview.duplicates.length}
+              label={t("importFlow.statDuplicates")}
+              hint={t("importFlow.statSkippedHint")}
+            />
+          )}
+          {conflicts.length > 0 && (
+            <Stat
+              tone="conflict"
+              icon={<KeyRound />}
+              n={conflicts.length}
+              label={t("importFlow.statConflicts")}
+              hint={t("importFlow.statConflictsHint")}
+            />
+          )}
+          {preview.invalid > 0 && (
+            <Stat
+              tone="invalid"
+              icon={<Ban />}
+              n={preview.invalid}
+              label={tp("importFlow.statInvalid", preview.invalid)}
+              hint={t("importFlow.statSkippedHint")}
+            />
+          )}
         </div>
 
         {nothingToDo && (
@@ -455,8 +481,11 @@ export function ImportFlow({
               <strong>{tp("importFlow.conflictsList", conflicts.length)}</strong>
               <p>{t("importFlow.conflictsQuestion")}</p>
             </div>
-            <MatchList items={conflicts} />
             <ModeChoice value={mode} onChange={setMode} disabled={busy !== null} />
+            <details className="import-details inset" open={conflicts.length <= 3}>
+              <summary>{t("importFlow.showEntries", { n: conflicts.length })}</summary>
+              <MatchList items={conflicts} />
+            </details>
           </section>
         )}
 
@@ -471,7 +500,7 @@ export function ImportFlow({
         {error && (
           <div className="callout callout-danger" role="alert">
             <CircleAlert />
-            <span>{error}</span>
+            <span>{error.text}</span>
           </div>
         )}
       </div>
@@ -487,7 +516,7 @@ export function ImportFlow({
           <Button variant="ghost" className="footer-start" onClick={backToChoose}>
             {t("importFlow.otherFile")}
           </Button>
-          <Button variant="primary" onClick={onFinish} size={variant === "wizard" ? "lg" : "md"} data-autofocus>
+          <Button variant="primary" onClick={onFinish} size={variant === "wizard" ? "lg" : "md"} data-autofocus data-import-focus>
             {variant === "wizard" ? t("common.continue") : t("common.close")}
           </Button>
         </>
@@ -509,6 +538,7 @@ export function ImportFlow({
             title={toImport === 0 ? t("importFlow.nothingSelectedHint") : undefined}
             onClick={() => void commit()}
             size={variant === "wizard" ? "lg" : "md"}
+            data-import-focus
           >
             {toImport === 0 ? t("importFlow.nothingSelected") : tp("importFlow.importN", toImport)}
           </Button>
@@ -558,7 +588,7 @@ export function ImportFlow({
     icon: <CircleCheck />,
     body,
     footer: (
-      <Button variant="primary" onClick={onFinish} size={variant === "wizard" ? "lg" : "md"} data-autofocus>
+      <Button variant="primary" onClick={onFinish} size={variant === "wizard" ? "lg" : "md"} data-autofocus data-import-focus>
         {finishLabel}
       </Button>
     ),
@@ -570,6 +600,11 @@ export function ImportFlow({
 // ---------------------------------------------------------------------------
 // Pieces
 // ---------------------------------------------------------------------------
+
+/** Errors where checking the same file again can help (unlike an unknown format). */
+function isRetryable(err: unknown): boolean {
+  return !(err instanceof ApiError) || !["unsupported", "corrupt", "invalid_input"].includes(err.code);
+}
 
 function SourceItem({ icon, title, desc }: { icon: ReactNode; title: string; desc: string }) {
   return (

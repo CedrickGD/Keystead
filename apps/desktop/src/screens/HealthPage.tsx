@@ -6,6 +6,7 @@ import { itemSubtitle } from "../lib/utils";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { Avatar } from "../components/Avatar";
+import { iconHost } from "../lib/icons";
 import { Button } from "../components/Controls";
 
 function ScoreGauge({ score }: { score: number }) {
@@ -55,7 +56,7 @@ function ItemRows({
         return (
           <li key={id}>
             <button type="button" className="health-item" onClick={() => onOpen(id)}>
-              <Avatar name={item.name} type={item.type} size="sm" />
+              <Avatar name={item.name} type={item.type} size="sm" site={iconHost(item)} />
               <span className="health-item-text">
                 <span className="health-item-name truncate">{item.name}</span>
                 <span className="health-item-sub truncate">{itemSubtitle(item)}</span>

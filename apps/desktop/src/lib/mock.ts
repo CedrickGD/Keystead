@@ -38,6 +38,7 @@ import { estimateStrength } from "./demo/strength";
 import { generate } from "./demo/generator";
 import { legacyImportItems, privateVault, workVault, type SampleVault } from "./demo/sampleData";
 import { describe, mockImportFile, mockPreview, planMockImport, type MockImportFile, type MockPlan } from "./demo/importFiles";
+import { mockClearIcons, mockFetchIcons, mockGetIcons, seedSampleIcons } from "./demo/mockIcons";
 
 const DEMO_PASSWORD = "demo";
 const DEMO_RECOVERY_KEY = "VXDMO-2K7QF-9MZ4T-H8WRC-31PNA";
@@ -157,6 +158,8 @@ function initState(): MockState {
     const priv = vaultFromSample(privateVault(now), "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d", now);
     const work = vaultFromSample(workVault(now), "a83e7b10-55c2-4f6e-b1d9-7c8e9f0a1b2c", now);
     vaults.set(priv.info.id, priv);
+    // Website icons as if the app had loaded them before (sample icons).
+    seedSampleIcons(priv.info.id, priv.data.items);
     vaults.set(work.info.id, work);
   }
   const lang = params.get("lang") === "en" ? "en" : "de";
@@ -953,6 +956,18 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return null;
     }
 
+    case "get_icons": {
+      const vault = openVault();
+      if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      return mockGetIcons(vault.info.id, vault.data.items);
+    }
+
+    case "clear_icons": {
+      const vault = openVault();
+      if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      return mockClearIcons(vault.info.id);
+    }
+
     case "get_settings":
       return clone(s.settings);
 
@@ -1036,7 +1051,32 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
 export async function mockInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
   // Simulate IPC latency so loading states are exercised.
   await sleep(20 + Math.random() * 60);
-  return (await dispatch(command, args)) as T;
+  const result = (await dispatch(command, args)) as T;
+  if (ICON_FETCH_TRIGGERS.has(command)) scheduleIconFetch();
+  return result;
+}
+
+/** Commands after which the real app may load website icons. */
+const ICON_FETCH_TRIGGERS = new Set([
+  "unlock_vault",
+  "unlock_with_recovery",
+  "create_vault",
+  "save_item",
+  "restore_item",
+  "save_settings",
+  "commit_import",
+  "import_data",
+  "clear_icons",
+]);
+
+/** The background icon fetch: sample icons for new hosts after ~1.5 s. */
+function scheduleIconFetch(): void {
+  window.setTimeout(() => {
+    const s = getState();
+    const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+    if (!vault || !s.settings.websiteIcons) return;
+    if (mockFetchIcons(vault.info.id, vault.data.items)) emit("vault://icons", {});
+  }, 1_500);
 }
 
 export async function mockPickOpenFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null> {

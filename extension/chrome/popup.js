@@ -78,7 +78,23 @@ function setBusy(btn, busy) {
   }
 }
 
-function avatar(name, size = "") {
+/** A website icon from the app: a PNG data URL of reasonable size. */
+function isIconUrl(value) {
+  return typeof value === "string" && value.startsWith("data:image/png;base64,") && value.length <= 32 * 1024;
+}
+
+/**
+ * Row avatar: the website icon the app sent (`iconUrl`), else – also if it
+ * does not decode – a tinted letter tile.
+ */
+function avatar(name, size = "", iconUrl = null) {
+  if (isIconUrl(iconUrl)) {
+    const node = h("span", { class: `avatar site ${size}`.trim(), "aria-hidden": "true" });
+    const img = h("img", { src: iconUrl, alt: "", draggable: "false" });
+    img.addEventListener("error", () => node.replaceWith(avatar(name, size)), { once: true });
+    node.append(img);
+    return node;
+  }
   const text = String(name || "").trim();
   let hash = 0;
   for (const ch of text.toLowerCase()) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
@@ -878,7 +894,7 @@ function showUnlocked(status, initialTab = "page") {
     return h(
       "div",
       { class: canFill ? "row with-fill" : "row" },
-      avatar(item.name),
+      avatar(item.name, "", item.icon),
       h(
         "div",
         { class: "row-text" },
@@ -911,7 +927,7 @@ function showUnlocked(status, initialTab = "page") {
       h(
         "div",
         { class: "site" },
-        avatar(info.host, "sm"),
+        avatar(info.host, "sm", ctx.matches?.find((m) => isIconUrl(m.icon))?.icon),
         h(
           "div",
           { class: "site-text" },

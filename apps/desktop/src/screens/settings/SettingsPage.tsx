@@ -46,6 +46,7 @@ import { Logo } from "../../components/Logo";
 import { useUpdateErrorText } from "../../components/UpdateBanner";
 import { useUpdate } from "../../state/update";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
+import { WebsiteIconsSetting } from "./WebsiteIconsSetting";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -73,7 +74,7 @@ function SettingsSection({
   );
 }
 
-function SettingRow({
+export function SettingRow({
   title,
   description,
   children,
@@ -147,6 +148,7 @@ function GeneralSection() {
       <SettingRow title={t("settings.startInTray")} description={t("settings.startInTrayDesc")}>
         <Switch checked={settings.startInTray} onChange={(startInTray) => void updateSettings({ startInTray })} label={t("settings.startInTray")} />
       </SettingRow>
+      <WebsiteIconsSetting />
     </SettingsSection>
   );
 }

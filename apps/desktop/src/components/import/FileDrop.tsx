@@ -103,7 +103,15 @@ function DropOverlay({ withTarget, noTarget }: { withTarget: boolean; noTarget: 
           {withTarget ? (
             <>
               <div className="drop-title">{t("drop.title")}</div>
-              <div className="drop-formats">{t("drop.formats")}</div>
+              <ul className="drop-formats">
+                {t("drop.formats")
+                  .split(" · ")
+                  .map((format) => (
+                    <li key={format} className="chip">
+                      {format}
+                    </li>
+                  ))}
+              </ul>
               <div className="drop-hint">{t("importFlow.dropHint")}</div>
             </>
           ) : (

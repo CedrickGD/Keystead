@@ -1,0 +1,36 @@
+/* Website icons in avatars (components/Avatar.tsx). Icons sit on a light
+   tile in both themes: many favicons are dark glyphs on transparency. */
+
+:root {
+  --avatar-site-bg: #ffffff;
+  --avatar-site-edge: rgba(15, 23, 42, 0.1);
+}
+
+:root[data-theme="dark"] {
+  --avatar-site-bg: #eef0f4;
+  --avatar-site-edge: rgba(255, 255, 255, 0.08);
+}
+
+.avatar.avatar-site {
+  background: var(--avatar-site-bg);
+  overflow: hidden;
+}
+
+.avatar.avatar-site img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* A hairline on top of the image, so white icons keep an edge on white. */
+.avatar.avatar-site::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--avatar-site-edge);
+  pointer-events: none;
+}

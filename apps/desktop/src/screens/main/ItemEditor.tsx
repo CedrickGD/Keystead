@@ -4,6 +4,7 @@ import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatc
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { Avatar } from "../../components/Avatar";
+import { iconHost } from "../../lib/icons";
 import { Button, Field, PasswordInput, Select, Switch } from "../../components/Controls";
 import { GeneratorPopover } from "../../components/GeneratorPopover";
 import { StrengthMeter } from "../../components/StrengthMeter";
@@ -449,7 +450,7 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
       noValidate
     >
       <header className="detail-header">
-        <Avatar name={draft.name || "?"} type={draft.type} size="lg" />
+        <Avatar name={draft.name || "?"} type={draft.type} size="lg" site={iconHost(draft)} />
         <div className="detail-title">
           <input
             ref={nameRef}

@@ -1140,6 +1140,41 @@ code {
   font-size: 13px;
 }
 
+/* Website icon from the app: on a light tile in both themes (many favicons
+   are dark glyphs on transparency), with a hairline on top. */
+.avatar.site {
+  position: relative;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.avatar.site img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.avatar.site::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.1);
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .avatar.site {
+    background: #eef0f4;
+  }
+
+  .avatar.site::after {
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+}
+
 .row-text {
   flex: 1;
   min-width: 0;

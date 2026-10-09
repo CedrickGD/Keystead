@@ -375,3 +375,40 @@ fn data_shapes() {
         r#"{"id":"i","name":"n","username":"","password":"","totp":null,"uris":[]}"#,
     );
 }
+
+#[test]
+fn item_summary_icon_is_optional() {
+    use keystead_core::model::{ItemSummary, ItemType};
+    let mut row = ItemSummary {
+        id: "i".into(),
+        item_type: ItemType::Login,
+        name: "GitHub".into(),
+        subtitle: "octocat".into(),
+        uri: "https://github.com".into(),
+        favorite: false,
+        has_totp: true,
+        folder_id: None,
+        icon: None,
+    };
+    // Without a stored icon the key is left out (older extensions see the
+    // same rows as before).
+    same_json(
+        &row,
+        r#"{"id":"i","type":"login","name":"GitHub","subtitle":"octocat",
+            "uri":"https://github.com","favorite":false,"hasTotp":true,"folderId":null}"#,
+    );
+    row.icon = Some("data:image/png;base64,iVBORw0KGgo=".into());
+    same_json(
+        &row,
+        r#"{"id":"i","type":"login","name":"GitHub","subtitle":"octocat",
+            "uri":"https://github.com","favorite":false,"hasTotp":true,"folderId":null,
+            "icon":"data:image/png;base64,iVBORw0KGgo="}"#,
+    );
+    // Rows of older apps (no `icon`) still parse.
+    let parsed: ItemSummary = serde_json::from_str(
+        r#"{"id":"i","type":"login","name":"n","subtitle":"","uri":"","favorite":false,
+            "hasTotp":false,"folderId":null}"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.icon, None);
+}

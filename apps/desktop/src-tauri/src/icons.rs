@@ -199,21 +199,29 @@ enum RunOutcome {
 
 /// Starts the scheduler thread (GUI mode).
 pub fn spawn_scheduler(core: &Arc<Core>) {
-    let fetcher = match Fetcher::new(core.app_version()) {
-        Ok(f) => f,
-        Err(e) => {
-            log(format_args!("website icons disabled: {e}"));
-            return;
+    match Fetcher::new(core.app_version()) {
+        Ok(fetcher) => {
+            start_scheduler(core, fetcher);
         }
-    };
+        Err(e) => log(format_args!("website icons disabled: {e}")),
+    }
+}
+
+/// Starts the scheduler thread with `fetcher`; it ends when the core is
+/// gone or [`IconTracker::stop`] disconnects it.
+fn start_scheduler(core: &Arc<Core>, fetcher: Fetcher) -> Option<std::thread::JoinHandle<()>> {
     let (tx, rx) = mpsc::channel();
     *lock(&core.icons().wake) = Some(tx);
     let weak = Arc::downgrade(core);
     let spawned = std::thread::Builder::new()
         .name("keystead-icons".into())
         .spawn(move || scheduler_loop(&weak, &rx, &fetcher));
-    if let Err(e) = spawned {
-        log(format_args!("could not start the icon fetcher: {e}"));
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            log(format_args!("could not start the icon fetcher: {e}"));
+            None
+        }
     }
 }
 
@@ -285,7 +293,10 @@ fn run_once(core: &Arc<Core>, fetcher: &Fetcher) -> RunOutcome {
         let Some(vault) = st.vault.as_ref() else {
             return RunOutcome::Locked;
         };
-        (vault.id().to_owned(), vault.icon_hosts_needing_fetch(now_ms()))
+        (
+            vault.id().to_owned(),
+            vault.icon_hosts_needing_fetch(now_ms()),
+        )
     };
     if hosts.is_empty() {
         return RunOutcome::Idle;
@@ -456,7 +467,9 @@ fn icon_map(vault: &UnlockedVault) -> BTreeMap<String, String> {
         .data()
         .icons
         .iter()
-        .filter_map(|(host, entry)| Some((host.clone(), core_icons::data_url(entry.png.as_deref()?))))
+        .filter_map(|(host, entry)| {
+            Some((host.clone(), core_icons::data_url(entry.png.as_deref()?)))
+        })
         .collect()
 }
 
@@ -613,9 +626,8 @@ pub(crate) fn is_public_ip(ip: IpAddr) -> bool {
                 return is_public_v4(v4);
             }
             let s = v6.segments();
-            let embedded_v4 = |hi: u16, lo: u16| {
-                Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo))
-            };
+            let embedded_v4 =
+                |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
             if s[..6] == [0; 6] {
                 // ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d.
                 return false;
@@ -777,7 +789,12 @@ impl Fetcher {
     /// GET `url` (allowed by the policy; redirects are checked too) and
     /// read at most [`MAX_BYTES`]: `truncate` cuts a longer body, otherwise
     /// it is refused. Returns the final URL and the body.
-    async fn get(&self, url: &Url, accept: &str, truncate: bool) -> Result<(Url, Vec<u8>), FetchError> {
+    async fn get(
+        &self,
+        url: &Url,
+        accept: &str,
+        truncate: bool,
+    ) -> Result<(Url, Vec<u8>), FetchError> {
         if !self.policy.url_allowed(url) {
             return Err(FetchError::Refused("url".into()));
         }
@@ -793,7 +810,11 @@ impl Fetcher {
             return Err(FetchError::failed(format!("HTTP {status}")));
         }
         let final_url = response.url().clone();
-        if !truncate && response.content_length().is_some_and(|n| n > MAX_BYTES as u64) {
+        if !truncate
+            && response
+                .content_length()
+                .is_some_and(|n| n > MAX_BYTES as u64)
+        {
             return Err(FetchError::failed("too large"));
         }
         let mut body = Vec::new();
@@ -905,7 +926,10 @@ pub(crate) fn icon_candidates(html: &str, page: &Url) -> Vec<Candidate> {
             continue;
         }
         let size = parse_sizes(tag.attr("sizes").unwrap_or("")).or(apple.then_some(180));
-        let (source, kind) = if href.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:")) {
+        let (source, kind) = if href
+            .get(..5)
+            .is_some_and(|p| p.eq_ignore_ascii_case("data:"))
+        {
             match decode_png_data_url(href) {
                 Some(bytes) => (Source::Png(bytes), Kind::Png),
                 None => continue,
@@ -945,7 +969,10 @@ fn parse_sizes(sizes: &str) -> Option<u32> {
     sizes
         .split_ascii_whitespace()
         .filter_map(|s| {
-            let (w, h) = s.to_ascii_lowercase().split_once('x').map(|(w, h)| (w.to_owned(), h.to_owned()))?;
+            let (w, h) = s
+                .to_ascii_lowercase()
+                .split_once('x')
+                .map(|(w, h)| (w.to_owned(), h.to_owned()))?;
             Some(w.parse::<u32>().ok()?.max(h.parse::<u32>().ok()?))
         })
         .max()
@@ -1102,24 +1129,24 @@ fn decode_entities(s: &str) -> String {
             .take(11)
             .position(|&c| c == b';')
             .and_then(|semi| {
-            let entity = &rest[1..1 + semi];
-            let c = match entity {
-                "amp" => '&',
-                "lt" => '<',
-                "gt" => '>',
-                "quot" => '"',
-                "apos" => '\'',
-                _ => {
-                    let num = entity.strip_prefix('#')?;
-                    let code = match num.strip_prefix(['x', 'X']) {
-                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                        None => num.parse::<u32>().ok()?,
-                    };
-                    char::from_u32(code)?
-                }
-            };
-            Some((c, semi + 2))
-        });
+                let entity = &rest[1..1 + semi];
+                let c = match entity {
+                    "amp" => '&',
+                    "lt" => '<',
+                    "gt" => '>',
+                    "quot" => '"',
+                    "apos" => '\'',
+                    _ => {
+                        let num = entity.strip_prefix('#')?;
+                        let code = match num.strip_prefix(['x', 'X']) {
+                            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                            None => num.parse::<u32>().ok()?,
+                        };
+                        char::from_u32(code)?
+                    }
+                };
+                Some((c, semi + 2))
+            });
         match decoded {
             Some((c, consumed)) => {
                 out.push(c);
@@ -1156,7 +1183,11 @@ pub(crate) fn process_icon(bytes: &[u8]) -> Result<Vec<u8>, FetchError> {
     let format = image::guess_format(bytes).map_err(|_| FetchError::failed("not an image"))?;
     if !matches!(
         format,
-        ImageFormat::Png | ImageFormat::Ico | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
+        ImageFormat::Png
+            | ImageFormat::Ico
+            | ImageFormat::Jpeg
+            | ImageFormat::Gif
+            | ImageFormat::WebP
     ) {
         return Err(FetchError::failed("unsupported image format"));
     }
@@ -1202,7 +1233,12 @@ pub(crate) fn process_icon(bytes: &[u8]) -> Result<Vec<u8>, FetchError> {
     );
     let mut png = Vec::new();
     PngEncoder::new_with_quality(&mut png, CompressionType::Best, PngFilter::Adaptive)
-        .write_image(canvas.as_raw(), ICON_SIZE, ICON_SIZE, ExtendedColorType::Rgba8)
+        .write_image(
+            canvas.as_raw(),
+            ICON_SIZE,
+            ICON_SIZE,
+            ExtendedColorType::Rgba8,
+        )
         .map_err(|_| FetchError::failed("encoding failed"))?;
     Ok(png)
 }

@@ -10,7 +10,9 @@ use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
-use crate::{bridge, commands, extension, import_flow, monitor, platform, tray, update, BACKGROUND_ARG};
+use crate::{
+    bridge, commands, extension, import_flow, monitor, platform, tray, update, BACKGROUND_ARG,
+};
 
 /// Runs the desktop app; returns the process exit code.
 pub fn run(background: bool) -> i32 {

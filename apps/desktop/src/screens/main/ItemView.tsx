@@ -19,6 +19,7 @@ import { formatCardNumber, identityFullName } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { CopyButton } from "../../components/CopyButton";
 import { Avatar } from "../../components/Avatar";
+import { iconHost } from "../../lib/icons";
 import { Menu, MenuItem } from "../../components/Menu";
 import { TotpValue, useTotp } from "../../components/Totp";
 import { PasswordText } from "../../components/PasswordText";
@@ -258,7 +259,7 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
   return (
     <div className="detail" tabIndex={-1} data-detail-root>
       <header className="detail-header">
-        <Avatar name={item.name} type={item.type} size="lg" />
+        <Avatar name={item.name} type={item.type} size="lg" site={iconHost(item)} />
         <div className="detail-title">
           <h1 className="selectable" title={item.name}>
             {item.name}

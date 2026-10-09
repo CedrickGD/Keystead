@@ -21,9 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use zeroize::Zeroizing;
 
 use crate::error::{AppError, AppResult};
+use crate::import_flow::ImportSlot;
 use crate::monitor::MonitorSignal;
 use crate::tray::TrayMenu;
-use crate::import_flow::ImportSlot;
 use crate::update::UpdateInfo;
 
 /// `vault://locked` – payload `{ reason }`.

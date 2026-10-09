@@ -88,6 +88,18 @@ export interface VaultData {
   items: VaultItem[];
   folders: Folder[];
   generatorHistory: GeneratedPassword[];
+  /** Website icons by host (`lib/icons.ts`); the UI reads them via `get_icons`. */
+  icons?: Record<string, IconEntry>;
+}
+
+/** A stored website icon (inside the encrypted vault). */
+export interface IconEntry {
+  /** Base64 of a 64×64 PNG; null until a fetch succeeded. */
+  png: string | null;
+  /** Unix ms of the last fetch attempt. */
+  fetchedAt: number;
+  /** Unix ms of the last failed attempt; null after a success. */
+  failedAt: number | null;
 }
 
 export interface VaultInfo {

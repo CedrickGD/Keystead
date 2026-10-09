@@ -20,6 +20,7 @@ import { itemSubtitle } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { useCopy } from "../../state/app";
 import { Avatar } from "../../components/Avatar";
+import { iconHost } from "../../lib/icons";
 import { EmptyState, Highlight } from "../../components/EmptyState";
 import { Menu, MenuItem } from "../../components/Menu";
 import type { Filter, SortKey } from "./model";
@@ -258,7 +259,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
               onClick={() => onSelect(item.id)}
               onDoubleClick={onOpen}
             >
-              <Avatar name={item.name} type={item.type} />
+              <Avatar name={item.name} type={item.type} site={iconHost(item)} />
               <div className="row-main">
                 <div className="row-name truncate">
                   <Highlight text={item.name} terms={terms} />

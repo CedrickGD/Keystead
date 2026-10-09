@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { CreditCard, IdCard, StickyNote } from "lucide-react";
 import type { ItemType } from "../lib/types";
 import { avatarHue, avatarLetter } from "../lib/utils";
+import { useSiteIcon } from "../state/icons";
+import "../styles/icons.css";
 
 const TYPE_ICON: Partial<Record<ItemType, typeof CreditCard>> = {
   card: CreditCard,
@@ -9,17 +12,38 @@ const TYPE_ICON: Partial<Record<ItemType, typeof CreditCard>> = {
 };
 
 /**
- * Item avatar. Logins get a softly tinted letter tile (the site's initial);
- * cards, identities and notes get a neutral tile with their type icon, so the
- * list reads at a glance without extra badges.
+ * Item avatar. Logins show their website's icon once the app has loaded it
+ * (`site` = the item's icon host, see `lib/icons.ts`), otherwise a softly
+ * tinted letter tile (the site's initial) – also while the icon is missing
+ * or cannot be decoded. Cards, identities and notes get a neutral tile with
+ * their type icon, so the list reads at a glance without extra badges.
  */
-export function Avatar({ name, type, size = "md" }: { name: string; type?: ItemType; size?: "sm" | "md" | "lg" }) {
+export function Avatar({
+  name,
+  type,
+  size = "md",
+  site,
+}: {
+  name: string;
+  type?: ItemType;
+  size?: "sm" | "md" | "lg";
+  site?: string | null;
+}) {
   const Icon = type ? TYPE_ICON[type] : undefined;
+  const icon = useSiteIcon(Icon ? null : site);
+  const [broken, setBroken] = useState<string | null>(null);
   const sizeClass = size === "md" ? "" : size;
   if (Icon) {
     return (
       <div className={`avatar avatar-icon ${sizeClass}`} aria-hidden>
         <Icon />
+      </div>
+    );
+  }
+  if (icon && icon !== broken) {
+    return (
+      <div className={`avatar avatar-site ${sizeClass}`} aria-hidden>
+        <img src={icon} alt="" draggable={false} decoding="async" onError={() => setBroken(icon)} />
       </div>
     );
   }

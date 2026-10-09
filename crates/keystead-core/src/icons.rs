@@ -276,10 +276,27 @@ mod tests {
             Some("github.com")
         );
         assert_eq!(host("github.com").as_deref(), Some("github.com"));
-        assert_eq!(host("http://Example.com.:8080/x").as_deref(), Some("example.com"));
-        assert_eq!(host("https://www2.example.com").as_deref(), Some("www2.example.com"));
+        assert_eq!(
+            host("http://Example.com.:8080/x").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            host("https://www2.example.com").as_deref(),
+            Some("www2.example.com")
+        );
         assert_eq!(host("münchen.de").as_deref(), Some("xn--mnchen-3ya.de"));
         assert_eq!(host("192.168.0.1").as_deref(), Some("192.168.0.1"));
+        // The same cases as the UI's `siteHost` (apps/desktop/src/lib/icons.ts).
+        assert_eq!(host("http://[::1]:8080/").as_deref(), Some("[::1]"));
+        assert_eq!(
+            host("https://user:pw@www.example.org/").as_deref(),
+            Some("example.org")
+        );
+        assert_eq!(
+            host("https://EXAMPLE.COM./").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(host("  www.example.com  ").as_deref(), Some("example.com"));
         assert_eq!(host("ftp://example.com"), None);
         assert_eq!(host("androidapp://com.example"), None);
         assert_eq!(host(""), None);
@@ -435,7 +452,10 @@ mod tests {
         );
         assert_eq!(written, 2);
         let a = &data.icons["a.example.com"];
-        assert_eq!(a.png.as_deref(), Some(crate::crypto::b64_encode(&png()).as_str()));
+        assert_eq!(
+            a.png.as_deref(),
+            Some(crate::crypto::b64_encode(&png()).as_str())
+        );
         assert_eq!((a.fetched_at, a.failed_at), (now, None));
         let b = &data.icons["b.example.com"];
         assert_eq!((b.png.as_deref(), b.failed_at), (None, Some(now)));
@@ -460,10 +480,7 @@ mod tests {
         // Trashing B's login drops its icon.
         data.items[1].deleted_at = Some(5);
         assert_eq!(prune_icons(&mut data), 1);
-        assert_eq!(
-            data.icons.keys().collect::<Vec<_>>(),
-            vec!["a.example.com"]
-        );
+        assert_eq!(data.icons.keys().collect::<Vec<_>>(), vec!["a.example.com"]);
         assert_eq!(prune_icons(&mut data), 0);
     }
 

@@ -8,6 +8,7 @@
 // `&ext=notice` / `&ext=reloading` adds the "new extension version" notice.
 
 import { ApiError } from "./popup-api.js";
+import { DEMO_ICONS } from "./demo-icons.js";
 
 const LOGINS = [
   { id: "d1", type: "login", name: "GitHub", subtitle: "max.mustermann@example.com", uri: "https://github.com", favorite: true, hasTotp: true, folderId: null },
@@ -23,6 +24,13 @@ const ALL = [
   { id: "d7", type: "login", name: "Netflix", subtitle: "familie@example.com", uri: "https://netflix.com", favorite: false, hasTotp: false, folderId: null },
   { id: "d8", type: "login", name: "Gmail", subtitle: "max.mustermann@gmail.com", uri: "https://mail.google.com", favorite: false, hasTotp: true, folderId: null },
 ];
+
+// Rows carry the website icon the app stored (`icon`); "Deutsche Bahn" has
+// none yet and shows the letter.
+for (const item of ALL) {
+  const icon = DEMO_ICONS[new URL(item.uri).hostname];
+  if (icon && item.id !== "d5") item.icon = icon;
+}
 
 const VAULTS = [
   { id: "demo-arbeit", name: "Arbeit" },

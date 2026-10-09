@@ -246,7 +246,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
       await api.exportData(format, path, encrypted ? exportPassword : null, master);
       toast.show({
         kind: "success",
-        message: t("export.done", { path }),
+        message: t("export.done", { path: path.split(/[\\/]/).pop() ?? path }),
         duration: 8000,
         action: {
           label: t("export.showInFolder"),
@@ -271,7 +271,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
       icon={<FileDown />}
       onClose={onClose}
       dismissable={!busy}
-      wide
+      className="export-dialog"
       onSubmit={() => void submit()}
       footer={
         <>

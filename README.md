@@ -44,6 +44,9 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 
 - **Tresore** für Logins, Zahlungskarten, Identitäten und sichere Notizen – mit
   Ordnern, Favoriten, Papierkorb, eigenen Feldern und Passwortverlauf.
+- **Website-Icons**: Logins zeigen automatisch das Icon ihrer Website – die App
+  lädt es selbst direkt von der Website (kein Icon-Dienst) und speichert es
+  verschlüsselt im Tresor; abschaltbar unter Einstellungen → Allgemein.
 - **Generator** für Passwörter und Passphrasen (EFF-Wortliste) mit Verlauf.
 - **Einmalcodes (TOTP/2FA)** direkt im Eintrag, kompatibel mit Google Authenticator & Co.
 - **Sicherheitsbericht**: schwache, mehrfach verwendete und alte Passwörter.
@@ -54,8 +57,10 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
   ausfüllen, neue Logins speichern, Passwörter generieren.
 - **Terminal-Version** (`keystead-cli`) mit Vollbild-Oberfläche und Befehlen für Skripte.
 - **Import** aus VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) und
-  Keystead-Exporten; **Export** als verschlüsselte `.keystead`-Datei, CSV oder
-  Bitwarden-JSON.
+  Keystead-Exporten – Datei einfach ins Fenster ziehen, das Format wird erkannt.
+  Eine Vorschau zeigt vorher, was neu ist; vorhandene Einträge werden nicht doppelt
+  übernommen, bei geändertem Passwort entscheidest du. **Export** als verschlüsselte
+  `.keystead`-Datei, CSV oder Bitwarden-JSON.
 - **Portabler Modus** (Daten neben der EXE, z. B. auf einem USB-Stick),
   Infobereich-Symbol, helles/dunkles Design, Deutsch und Englisch.
 
@@ -160,7 +165,12 @@ von der App verwaltet). Den portablen Modus schaltest du unter
 - Keine Netzwerkverbindungen für deine Daten: Die Erweiterung spricht per Native
   Messaging mit der App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem
   Unix-Socket, die ausschließlich dem eigenen Benutzer zugänglich sind. Ins Internet
-  geht nur die (abschaltbare) Update-Prüfung bei GitHub.
+  gehen nur die (abschaltbare) Update-Prüfung bei GitHub und – ebenfalls abschaltbar –
+  das Laden der Website-Icons.
+- Website-Icons werden direkt bei der jeweiligen Website abgerufen (nur `https`,
+  ohne Cookies, ohne Tresordaten); die Website sieht dabei wie bei jedem Besuch
+  deine IP-Adresse. Adressen im lokalen Netz (Router, NAS, `localhost`) werden nie
+  angefragt. Die Icons liegen verschlüsselt im Tresor, nicht als lose Dateien.
 - Updates sind signiert (minisign/Ed25519); die App installiert nur Dateien mit
   gültiger Signatur für genau die angekündigte Version.
 - Ein Browser wird erst nach Bestätigung eines 6-stelligen Codes in der App
@@ -203,6 +213,9 @@ and also available in English.
 
 - **Vaults** with logins, payment cards, identities and secure notes – folders,
   favourites, trash, custom fields and password history.
+- **Website icons**: logins show their website's icon automatically – the app loads
+  it itself, directly from the website (no icon service), and stores it encrypted in
+  the vault; can be switched off in Settings → General.
 - **Generator** for passwords and passphrases (EFF word list), with history.
 - **One-time codes (TOTP/2FA)** inside items, compatible with Google Authenticator & co.
 - **Security report**: weak, reused and old passwords.
@@ -213,7 +226,9 @@ and also available in English.
   save new logins, generate passwords.
 - **Terminal version** (`keystead-cli`) with a full-screen UI and script-friendly commands.
 - **Import** from VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) and Keystead
-  exports; **export** as an encrypted `.keystead` file, CSV or Bitwarden JSON.
+  exports – just drag the file into the window, the format is detected. A preview shows
+  what is new first; existing entries are never imported twice, and you decide about
+  changed passwords. **Export** as an encrypted `.keystead` file, CSV or Bitwarden JSON.
 - **Portable mode** (data next to the exe, e.g. on a USB stick), tray icon, light/dark theme.
 
 ### Download & quick start
@@ -316,7 +331,12 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 - No network access for your data: the extension talks to the app via Native
   Messaging; the app only listens on a local named pipe (Windows, restricted to the
   current user) or a Unix socket (mode 0600, peer uid checked). The only internet
-  access is the update check against GitHub (can be switched off).
+  access is the update check against GitHub and loading website icons (both can be
+  switched off).
+- Website icons are fetched directly from each website (`https` only, no cookies, no
+  vault data); like any visit, the site sees your IP address. Addresses in the local
+  network (router, NAS, `localhost`) are never contacted. The icons are stored
+  encrypted inside the vault, not as loose files.
 - Updates are signed (minisign/Ed25519): the app installs only files with a valid
   signature for exactly the announced version.
 - A browser is paired only after you confirm a 6-digit code in the app; the app

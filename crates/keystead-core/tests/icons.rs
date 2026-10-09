@@ -52,8 +52,10 @@ fn fetch_results_are_stored_in_one_save_and_survive_unlock() {
     v.save_item(login("GitHub", "https://www.github.com/login"))
         .unwrap();
     v.save_item(login("GitHub 2", "github.com")).unwrap();
-    v.save_item(login("Bank", "https://bank.example.com")).unwrap();
-    v.save_item(login("Router", "http://192.168.178.1")).unwrap();
+    v.save_item(login("Bank", "https://bank.example.com"))
+        .unwrap();
+    v.save_item(login("Router", "http://192.168.178.1"))
+        .unwrap();
     assert_eq!(
         v.icon_hosts_needing_fetch(now),
         vec!["bank.example.com", "github.com"]
@@ -126,7 +128,7 @@ fn icons_leave_with_their_last_login() {
     v.trash_item(&a.id).unwrap();
     assert!(v.icon_for_host("a.example.com").is_some());
     v.delete_item(&a2.id).unwrap();
-    assert!(v.data().icons.get("a.example.com").is_none());
+    assert!(!v.data().icons.contains_key("a.example.com"));
 
     // Changing the address drops the old host's icon.
     let mut moved = v.item(&b.id).unwrap().clone();

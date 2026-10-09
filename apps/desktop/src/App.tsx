@@ -15,6 +15,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
+import { IconsProvider } from "./state/icons";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
 
@@ -309,7 +310,11 @@ function AppRoot({
           <div className="app-frame-body">
             {screen === "welcome" && <WelcomeScreen />}
             {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
-            {screen === "main" && vault && <MainScreen key={vault.id} />}
+            {screen === "main" && vault && (
+              <IconsProvider key={vault.id}>
+                <MainScreen key={vault.id} />
+              </IconsProvider>
+            )}
           </div>
         </div>
         {currentPairing && (

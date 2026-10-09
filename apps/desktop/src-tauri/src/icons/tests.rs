@@ -323,7 +323,10 @@ fn production_policy_allows_only_https_to_public_names() {
     assert!(!ok("file:///etc/passwd"));
     assert!(!ok("data:image/png;base64,AA=="));
     assert_eq!(
-        policy.site_url("github.com", "favicon.ico").unwrap().as_str(),
+        policy
+            .site_url("github.com", "favicon.ico")
+            .unwrap()
+            .as_str(),
         "https://github.com/favicon.ico"
     );
 }
@@ -344,8 +347,8 @@ fn the_resolver_hides_local_addresses() {
     // The production client uses it for every connection: even a URL the
     // policy would refuse up front never reaches a local address.
     let fetcher = Fetcher::new("test").unwrap();
-    let err = block_on(async { fetcher.client.get("https://localhost:9/").send().await })
-        .unwrap_err();
+    let err =
+        block_on(async { fetcher.client.get("https://localhost:9/").send().await }).unwrap_err();
     assert!(
         matches!(FetchError::from_reqwest(&err), FetchError::Refused(_)),
         "{err:?}"
@@ -375,7 +378,10 @@ fn icons_are_fitted_into_64_by_64() {
     ] {
         let out = process_icon(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(keystead_core::icons::is_png(&out), "{name}");
-        assert!(out.len() <= keystead_core::icons::ICON_MAX_PNG_BYTES, "{name}");
+        assert!(
+            out.len() <= keystead_core::icons::ICON_MAX_PNG_BYTES,
+            "{name}"
+        );
         let img = decode(&out);
         assert_eq!(img.dimensions(), (64, 64), "{name}");
         // Left red, right blue (the ICO's largest frame was used).
@@ -410,7 +416,10 @@ fn unusable_images_are_refused() {
     };
     for (name, bytes) in [
         ("empty", Vec::new()),
-        ("html", b"<!DOCTYPE html><html><body>Not found</body></html>".to_vec()),
+        (
+            "html",
+            b"<!DOCTYPE html><html><body>Not found</body></html>".to_vec(),
+        ),
         (
             "svg",
             br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>"#.to_vec(),
@@ -473,7 +482,12 @@ struct Server {
 
 impl Server {
     fn paths(&self) -> Vec<String> {
-        self.seen.lock().unwrap().iter().map(|s| s.path.clone()).collect()
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.path.clone())
+            .collect()
     }
 }
 
@@ -724,7 +738,10 @@ fn a_run_stores_icons_in_one_go_and_tells_the_ui() {
     let fetcher = local_fetcher(&server);
     let rev = core.state().vault.as_ref().unwrap().revision();
 
-    assert_eq!(run_once(&core, &fetcher), RunOutcome::Done { more_due: false });
+    assert_eq!(
+        run_once(&core, &fetcher),
+        RunOutcome::Done { more_due: false }
+    );
     {
         let st = core.state();
         let vault = st.vault.as_ref().unwrap();
@@ -807,7 +824,9 @@ fn a_vault_switch_during_a_run_writes_nothing_into_the_new_vault() {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             let mut other = other;
-            other.save_item(login("A", "https://a.example.com")).unwrap();
+            other
+                .save_item(login("A", "https://a.example.com"))
+                .unwrap();
             core.install_vault(other).unwrap();
         })
     };
@@ -847,13 +866,76 @@ fn locking_cancels_a_run() {
     assert!(core.state().vault.as_ref().unwrap().data().icons.is_empty());
 }
 
+#[test]
+fn the_scheduler_follows_the_vault_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = core_with_open_vault(dir.path(), Settings::default());
+    let server = icon_server(Duration::ZERO);
+    let scheduler = start_scheduler(&core, local_fetcher(&server)).unwrap();
+    let icons_of = |core: &Arc<Core>| {
+        core.state()
+            .vault
+            .as_ref()
+            .map(|v| v.data().icons.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let wait_for = |core: &Arc<Core>, want: &[&str], what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while icons_of(core) != want {
+            assert!(Instant::now() < deadline, "{what}: {:?}", icons_of(core));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    // A login with a new website: fetched ~2 s after the save.
+    let started = Instant::now();
+    core.mutate(|v| v.save_item(login("A", "https://a.example.com")))
+        .unwrap();
+    wait_for(&core, &["a.example.com"], "after a save");
+    assert!(started.elapsed() >= CHANGE_DELAY);
+    assert!(core.emitted().iter().any(|(e, _)| e == EVENT_ICONS));
+
+    // Another vault opened (switch): its sites follow ~5 s later.
+    let mut other = core
+        .store()
+        .create_vault_with_params("Other", "pw", KdfParams::insecure_for_tests())
+        .unwrap();
+    other.save_item(login("C", "c.example.com")).unwrap();
+    let started = Instant::now();
+    core.install_vault(other).unwrap();
+    wait_for(&core, &["c.example.com"], "after opening a vault");
+    assert!(started.elapsed() >= OPEN_DELAY);
+
+    // Setting off: a new site is not fetched.
+    core.state().settings.website_icons = false;
+    core.icons().setting_changed(false);
+    core.mutate(|v| v.save_item(login("A", "https://a.example.com")))
+        .unwrap();
+    std::thread::sleep(CHANGE_DELAY + Duration::from_secs(1));
+    assert_eq!(icons_of(&core), vec!["c.example.com"]);
+    // On again: fetched right away.
+    core.state().settings.website_icons = true;
+    core.icons().setting_changed(true);
+    wait_for(
+        &core,
+        &["a.example.com", "c.example.com"],
+        "after turning it on",
+    );
+
+    // Quitting disconnects the thread.
+    core.shutdown();
+    scheduler.join().unwrap();
+}
+
 /// Fetches the icons of a few popular sites through this machine's network
-/// (the environment's proxy, if any – production uses none):
+/// with the production fetcher (no proxy, public addresses only);
+/// `KEYSTEAD_ICON_PROXY=1` goes through the environment's proxy instead:
 /// `cargo test -p keystead-desktop -- --ignored --nocapture real_sites`
 #[test]
 #[ignore = "needs the internet"]
 fn real_sites() {
-    let fetcher = Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, true).unwrap();
+    let via_proxy = std::env::var_os("KEYSTEAD_ICON_PROXY").is_some();
+    let fetcher = Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, via_proxy).unwrap();
     let out_dir = std::env::var_os("KEYSTEAD_ICON_OUT").map(std::path::PathBuf::from);
     let hosts = std::env::var("KEYSTEAD_ICON_HOSTS").unwrap_or_else(|_| {
         "github.com wikipedia.org amazon.de paypal.com spiegel.de mozilla.org".into()

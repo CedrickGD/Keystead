@@ -176,6 +176,11 @@ export const api = {
   getSettings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
 
+  /** Stored website icons of the page's vault: { [host]: "data:image/png;base64,…" } (see lib/icons.ts). */
+  getIcons: () => call<Record<string, string>>("get_icons", { pageVaultId }),
+  /** Deletes the stored website icons; returns how many. */
+  clearIcons: () => call<number>("clear_icons", { pageVaultId }),
+
   browserStatus: () => call<BrowserStatus>("browser_status"),
   registerBrowsers: (browsers: BrowserId[]) => call<BrowserStatus>("register_browsers", { browsers }),
   unregisterBrowsers: (browsers: BrowserId[]) => call<BrowserStatus>("unregister_browsers", { browsers }),
@@ -224,6 +229,8 @@ export const events = {
   onVaultLocked: (handler: (payload: LockedPayload) => void) =>
     subscribe<LockedPayload>("vault://locked", handler),
   onVaultChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://changed", () => handler()),
+  /** New website icons were stored (the background fetcher): re-read them. */
+  onIconsChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://icons", () => handler()),
   /** The vault was unlocked outside the UI (browser extension). */
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
   onPairingRequest: (handler: (payload: PairingRequest) => void) =>

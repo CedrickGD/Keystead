@@ -605,6 +605,8 @@ fn unlocked_operations() {
     assert_eq!(r.data[0]["type"], "login");
     assert_eq!(r.data[0]["hasTotp"], true);
     assert_eq!(r.data[0]["subtitle"], "octocat");
+    // No icon from this backend: the optional key is left out.
+    assert!(r.data[0].get("icon").is_none());
 
     let r = call(d, c(json!({"id": "2", "type": "search", "query": "many"})));
     assert_eq!(

@@ -73,9 +73,13 @@
 }
 
 .drop-formats {
-  font-size: 13px;
-  color: var(--text-2);
-  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 0;
+  list-style: none;
 }
 
 .drop-hint {
@@ -86,7 +90,13 @@
 /* ---------- Import dialog / wizard step ---------- */
 
 .modal.import-dialog {
-  width: min(600px, 100%);
+  width: min(640px, 100%);
+}
+
+/* Toasts must not cover a dialog's buttons: above it while one is open. */
+body:has(.modal-overlay) .toast-region {
+  top: 20px;
+  bottom: auto;
 }
 
 .import-flow {
@@ -168,7 +178,12 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-error strong {
+  overflow-wrap: anywhere;
 }
 
 .import-error .btn-link {
@@ -338,12 +353,8 @@
 /* Summary cards */
 .import-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 8px;
-}
-
-.wizard .import-stats {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .import-stat {
@@ -603,6 +614,10 @@
   color: var(--text-3);
 }
 
+.import-details.inset {
+  background: var(--bg-panel);
+}
+
 .import-details.subtle > summary {
   font-weight: 500;
   color: var(--text-2);
@@ -661,13 +676,16 @@
 }
 
 @media (max-width: 640px) {
-  .import-stats,
   .import-sources ul {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 /* ---------- Export dialog: format cards ---------- */
+
+.modal.export-dialog {
+  width: min(600px, 100%);
+}
 
 .export-formats {
   display: grid;

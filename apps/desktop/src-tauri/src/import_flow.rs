@@ -102,7 +102,11 @@ impl ImportSlot {
 
     /// Drops a plan made for `vault_id` (that vault was closed).
     pub fn drop_for_vault(&mut self, vault_id: &str) -> bool {
-        if self.pending.as_ref().is_some_and(|p| p.vault_id == vault_id) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.vault_id == vault_id)
+        {
             self.pending = None;
             true
         } else {
@@ -213,8 +217,7 @@ pub(crate) fn commit(
     if page_vault_id != Some(pending.vault_id.as_str()) {
         return Err(AppError::Locked);
     }
-    let report =
-        c.mutate_for_page(page_vault_id, |v| v.commit_import_ref(&pending.plan, mode))?;
+    let report = c.mutate_for_page(page_vault_id, |v| v.commit_import_ref(&pending.plan, mode))?;
     drop(pending);
     c.emit_changed();
     Ok(report)
@@ -331,8 +334,7 @@ fn reveal(file: &Path) -> AppResult<()> {
 #[tauri::command]
 pub async fn show_export(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |_| {
-        let file =
-            last_export().ok_or_else(|| keystead_core::Error::NotFound("export".into()))?;
+        let file = last_export().ok_or_else(|| keystead_core::Error::NotFound("export".into()))?;
         reveal(&file)
     })
     .await
@@ -488,7 +490,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = core_with_open_vault(dir.path(), Settings::default());
         let id = vault_id(&c);
-        let text = write(dir.path(), "notes.txt", "just some text\nnothing to import\n");
+        let text = write(
+            dir.path(),
+            "notes.txt",
+            "just some text\nnothing to import\n",
+        );
         let err = analyze(&c, text.to_str().unwrap(), None, Some(&id)).unwrap_err();
         assert_eq!(err.code(), "unsupported:unknown_format");
         let encrypted = write(
@@ -642,7 +648,10 @@ mod tests {
             ("update", ConflictMode::Update),
             ("keepBoth", ConflictMode::KeepBoth),
         ] {
-            assert_eq!(parse::<ConflictMode>(Value::from(raw), "conflictMode").unwrap(), mode);
+            assert_eq!(
+                parse::<ConflictMode>(Value::from(raw), "conflictMode").unwrap(),
+                mode
+            );
         }
         let err = parse::<ConflictMode>(Value::from("merge"), "conflictMode").unwrap_err();
         assert_eq!(err.code(), "invalid_input:conflictMode");
