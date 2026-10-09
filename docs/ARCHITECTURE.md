@@ -185,7 +185,7 @@ pub mod generator;// GeneratorOptions, generate()
 pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
-pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export
+pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export; format detection, duplicate/conflict check
 pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
 pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>) using arboard (shared by app & TUI)
@@ -229,7 +229,9 @@ impl UnlockedVault {
     pub fn delete_folder(&mut self, id: &str) -> Result<()>;   // items in it get folder_id = None
     pub fn add_generated_password(&mut self, password: &str) -> Result<()>; // history max 50, persists
     pub fn clear_generator_history(&mut self) -> Result<()>;
-    pub fn import_items(&mut self, items: Vec<VaultItem>, folders: Vec<Folder>) -> Result<usize>; // assigns fresh ids, maps folder ids, persists once
+    pub fn import_items(&mut self, items: Vec<VaultItem>, folders: Vec<Folder>) -> Result<usize>; // assigns fresh ids, maps folder ids, persists once (no duplicate check)
+    pub fn commit_import(&mut self, plan: ImportPlan, mode: ConflictMode) -> Result<ImportReport>;      // applies an import plan in one save, see "Import: detection, duplicates, conflicts"
+    pub fn commit_import_ref(&mut self, plan: &ImportPlan, mode: ConflictMode) -> Result<ImportReport>; // same, keeps the plan (retry after `conflict` + reload_if_changed)
     pub fn rename(&mut self, name: &str) -> Result<()>;
     pub fn verify_master_password(&self, password: &str) -> bool;
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()>; // rotates the vault key unless a recovery key exists (see "Key rotation")
@@ -270,8 +272,30 @@ pub struct Strength { pub score: u8 /*0..=4*/, pub crack_time: String, pub warni
 pub fn strength(password: &str, user_inputs: &[&str]) -> Strength;
 pub struct HealthReport { pub total_logins: usize, pub weak: Vec<String> /*item ids*/, pub reused: Vec<Vec<String>> /*groups of item ids*/, pub old: Vec<String> /* >365 days */, pub missing_totp_count: usize, pub score: u8 /*0..=100*/ }
 pub fn health_report(data: &VaultData) -> HealthReport;
-// import
-pub struct ImportReport { pub imported: usize, pub skipped: usize, pub warnings: Vec<String> }  // camelCase
+// import (drag & drop flow: detect_import → read_import → plan_import → UnlockedVault::commit_import)
+pub struct ImportReport {          // camelCase
+    pub imported: usize,           // items added as new items (incl. conflicts kept with keepBoth)
+    pub updated: usize,            // existing logins updated from the file (mode update)
+    pub skipped: usize,            // invalid rows/entries of the file (each has a warning)
+    pub duplicates: Vec<ImportMatch>,        // not imported: already present (existingId "" = twice in the file)
+    pub conflicts_skipped: Vec<ImportMatch>, // "conflictsSkipped": conflicts not imported
+    pub warnings: Vec<String>,
+}
+pub enum ImportFormat { Legacy, Csv, BitwardenJson, Keystead } // serde "legacy" | "csv" | "bitwarden_json" | "keystead"; FromStr/Display/as_str(), needs_password()
+pub struct DetectedImport { pub format: ImportFormat, pub needs_password: bool, pub file_name: String } // camelCase
+pub fn detect_import(path: &Path) -> Result<DetectedImport>;        // by content, see below
+pub struct ParsedImport { pub items: Vec<VaultItem>, pub folders: Vec<Folder>, pub warnings: Vec<String>, pub invalid: usize } // Debug without secrets, wiped on drop
+pub fn read_import(path: &Path, format: ImportFormat, password: Option<&str>) -> Result<ParsedImport>;
+pub fn plan_import(existing: &VaultData, parsed: ParsedImport) -> ImportPlan;
+pub struct ImportPlan { pub new_items: Vec<VaultItem>, pub folders: Vec<Folder>, pub duplicates: Vec<ImportMatch>,
+                        pub conflicts: Vec<ImportConflict>, pub invalid: usize, pub warnings: Vec<String>, /* + incoming conflict items (private) */ }
+impl ImportPlan { pub fn preview(&self) -> ImportPreview }          // Debug prints counts only; items wiped on drop; not Clone/Serialize
+pub struct ImportPreview { pub new_count: usize, pub duplicates: Vec<ImportMatch>, pub conflicts: Vec<ImportConflict>, pub invalid: usize, pub warnings: Vec<String> } // camelCase, secret-free
+pub struct ImportMatch { pub incoming_name: String, pub username: String, pub site: String, pub item_type: ItemType, pub existing_id: String, pub existing_name: String } // camelCase, no passwords
+pub struct ImportConflict { pub conflict_id: String /*"conflict-1", …*/, pub reason: ConflictReason, #[serde(flatten)] pub entry: ImportMatch } // camelCase, flat JSON
+pub enum ConflictReason { Password, Totp }                         // serde "password" | "totp"
+pub enum ConflictMode { #[default] Skip, Update, KeepBoth }        // serde "skip" | "update" | "keepBoth"
+pub const IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 pub struct LegacyVaultInfo { pub name: String, pub path: String } // camelCase
 pub fn legacy_scan() -> Vec<LegacyVaultInfo>;                       // reads %LOCALAPPDATA%\VaultX\accounts.json + vault_*.json
 pub fn import_legacy_file(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<String> /*warnings*/)>; // VaultX 1.x format, master OR recovery password
@@ -302,7 +326,7 @@ impl UnlockedVault { pub fn id(&self) -> &str; pub fn name(&self) -> &str; pub f
                      pub fn folders(&self) -> &[Folder]; pub fn generator_history(&self) -> &[GeneratedPassword] }
 // import / export: one call per Tauri `import_data` / `export_data` format string
 pub fn import::import_into(vault: &mut UnlockedVault, format: &str /*legacy|csv|bitwarden_json|keystead*/,
-                           path: &Path, password: Option<&str>) -> Result<ImportReport>; // reads UTF-8/UTF-16/Windows-1252 text
+                           path: &Path, password: Option<&str>) -> Result<ImportReport>; // = read_import + plan_import + commit_import(Skip): never imports duplicates
 pub fn import::legacy_scan_dir(dir: &Path) -> Vec<LegacyVaultInfo>;
 pub fn export::export_to_file(data: &VaultData, format: &str /*keystead|csv|bitwarden_json*/,
                               path: &Path, password: Option<&str>) -> Result<()>;
@@ -355,8 +379,95 @@ Behaviour notes:
   `minimums_exceed_length`, `totp_secret`, `totp_secret_empty`, `totp_uri`,
   `totp_digits`, `totp_period`, `csv_empty`, `csv_unknown_columns`,
   `bitwarden_json`, `json: …`, `csv: …`, `format <x>`.
+* `unsupported` details of the import meant for the UI: `unknown_format`,
+  `bitwarden_encrypted`, `file_too_large` (others are English free text, e.g.
+  `vault format version 2`, `not a Keystead vault file`).
 * Strength texts (`crackTime`, `warning`, `suggestions`) and import warnings
   are English.
+
+### Import: detection, duplicates, conflicts (`import`)
+Drag & drop: `detect_import(path)` → ask for a password if `needsPassword` →
+`read_import(path, format, password)` → `plan_import(vault.data(), parsed)` →
+show `plan.preview()` → `vault.commit_import(plan, mode)`. The plan holds the
+incoming secrets in memory until it is committed or dropped (wiped on drop,
+`Debug` prints counts only). `import_into` runs the same steps with
+`ConflictMode::Skip`, so every import route skips items that already exist.
+
+* **Reading** (`detect_import`, `read_import`, and the older `import_*`
+  helpers that take a path): files over `IMPORT_MAX_BYTES` (50 MiB) →
+  `unsupported:file_too_large` without reading them; missing → `not_found`;
+  directories, other non-regular files (FIFO, device – never opened) and
+  unreadable files → `io:…`. Text is UTF-8 (BOM optional), UTF-16 with BOM or
+  Windows-1252. `read_import` checks `password_required` (missing/empty
+  password for `legacy`/`keystead`) before touching the file; a wrong one →
+  `wrong_password`. Keystead files: trash and generator history are never
+  imported.
+* **Detection by content** (`detect_import`); the extension only decides
+  which reading is tried first (`.csv`/`.tsv`/`.txt` → CSV first):
+  1. JSON object with `"format": "keystead"` → `keystead`, needs password
+     (header validated like a vault file, e.g.
+     `unsupported:vault format version 2`);
+  2. `"encrypted": true` → `unsupported:bitwarden_encrypted` (password- or
+     account-protected Bitwarden export);
+  3. `items` array and `"encrypted": false` (or a `folders`/`collections`
+     array) → `bitwarden_json`;
+  4. `Salt` + `Iterations` + `IV`/`Data` (keys case-insensitive, `Mac`
+     optional) → `legacy`, needs password (header validated);
+  5. a CSV header row of a supported dialect (Bitwarden, Firefox, or the
+     generic/Chrome/legacy aliases with at least two recognised columns;
+     `,` `;` or tab, Excel `sep=` line) → `csv`;
+  6. anything else (other JSON, plain text, binary, empty) →
+     `unsupported:unknown_format`.
+  JSON is scanned shallowly (top-level keys only, values skipped), so
+  detection builds no tree of the file and keeps none of its secrets.
+* **Matching** (`plan_import`; only non-trashed vault items count):
+  * login: key (site, username) – site = lower-case host of the first
+    http(s) URI (scheme-less URIs count as `https://`), trailing dot and a
+    leading `www.` removed, port ignored; without a usable URI the name
+    (trimmed, lower case, inner whitespace collapsed). Username trimmed,
+    case-insensitive. Same key + same password (+ same TOTP seed if both have
+    one; a bare secret equals an `otpauth://` URI with that secret) =
+    **duplicate**, even if the incoming item has extra data (TOTP, notes).
+    Same key + different password (also empty vs. set) = **conflict**
+    (`reason: "password"`); same password but different TOTP seeds =
+    conflict (`reason: "totp"`). With several existing logins for the key,
+    the conflict names the most recently updated one.
+  * card: the digits of the number (cards without digits are always new) →
+    duplicate; cards never conflict.
+  * identity: (first name, last name, e-mail), case-insensitive; if all are
+    empty, the normalised name → duplicate only.
+  * secure note: (normalised name, note text with `\r\n` → `\n` and
+    surrounding whitespace ignored) → duplicate; same name with another text
+    is a new item.
+  * Items of different types never match. An item equal to an earlier item
+    of the same file is a duplicate of that one (`existingId` empty,
+    `existingName` = the earlier item's name).
+  * `ImportMatch`: `incomingName`; `username` = login username (trimmed), for
+    other types the list subtitle (card `•••• 1234`, identity name/e-mail,
+    empty for notes); `site` = the login host (empty without URI / for other
+    types); `itemType`; `existingId`, `existingName`. Never a password, card
+    number or note text.
+* **Commit** (`commit_import`, `commit_import_ref`): one save = one revision;
+  nothing is written when nothing changes. The incoming items are
+  classified again against the current vault: an item that became a
+  duplicate meanwhile is skipped (`duplicates`), a conflict whose login was
+  deleted or trashed is added as a new item, an item planned as new that now
+  conflicts follows the mode. Conflicts removed from `plan.conflicts` by the
+  caller are left out.
+  * `skip` (default): conflicts are not imported (`conflictsSkipped`).
+  * `update`: the incoming password replaces the existing one through the
+    normal save path (old password → `passwordHistory`, `passwordRevisedAt`
+    and `updatedAt` set); the incoming TOTP seed is added if the existing
+    login has none. An existing TOTP seed is never replaced and an empty
+    incoming password never clears one – such a conflict with nothing to take
+    over goes to `conflictsSkipped`. Name, URIs, notes, folder stay.
+  * `keepBoth`: the incoming login is added as a new item.
+  * New items get fresh ids (like `import_items`); the file's folders are
+    merged by name into existing folders or created – only folders used by
+    an added item (a re-import leaves no empty folders behind).
+  * `commit_import_ref` leaves the plan intact: after `conflict`,
+    `reload_if_changed()` and commit the same plan again. Committing a plan
+    a second time adds nothing (its items are duplicates by then).
 
 ### Legacy VaultX 1.x format (for `import_legacy_file`)
 JSON object with `Version` (1|2), `Salt` (b64, 16 B), `Iterations` (int,

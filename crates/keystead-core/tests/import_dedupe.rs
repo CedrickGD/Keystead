@@ -107,7 +107,7 @@ fn note(name: &str, text: &str) -> VaultItem {
 
 fn parsed(items: Vec<VaultItem>) -> ParsedImport {
     let mut p = ParsedImport::default();
-    p.items = items;
+    p.items.extend(items);
     p
 }
 
@@ -214,7 +214,12 @@ fn incoming() -> Vec<VaultItem> {
         ),
         // 4 conflict: same password, different TOTP seed.
         with_totp(
-            login("Mail", "https://mail.example.com", "max@example.com", "mail-pass"),
+            login(
+                "Mail",
+                "https://mail.example.com",
+                "max@example.com",
+                "mail-pass",
+            ),
             "KRSXG5CTMVRXEZLU",
         ),
         // 5 conflict: empty password vs. a set one (site from the name).
@@ -343,8 +348,12 @@ fn detects_bitwarden_json() {
         detected(&write(d, "export.csv", &text)),
         ImportFormat::BitwardenJson
     );
-    let parsed = read_import(&write(d, "x.json", &text), ImportFormat::BitwardenJson, None)
-        .unwrap();
+    let parsed = read_import(
+        &write(d, "x.json", &text),
+        ImportFormat::BitwardenJson,
+        None,
+    )
+    .unwrap();
     assert_eq!(parsed.items.len(), 2);
     assert_eq!(parsed.folders.len(), 1);
 }
@@ -560,7 +569,11 @@ fn read_import_passwords_and_trash() {
         }
     }
     assert!(matches!(
-        read_import(&fixture("legacy_v2.json"), ImportFormat::Legacy, Some("wrong")),
+        read_import(
+            &fixture("legacy_v2.json"),
+            ImportFormat::Legacy,
+            Some("wrong")
+        ),
         Err(Error::WrongPassword)
     ));
     let p = read_import(
@@ -572,25 +585,28 @@ fn read_import_passwords_and_trash() {
     assert_eq!(p.items.len(), 3);
     assert_eq!(p.warnings.len(), 1);
 
-    let mut trashed = note("Trash", "x");
-    trashed.deleted_at = Some(1);
-    let data = VaultData {
-        items: vec![login("A", "a.example", "u", "p"), trashed],
-        folders: vec![Folder {
-            id: "f".into(),
+    // A vault file (unlike an export) contains its trash and generator
+    // history: neither is imported.
+    let (_store, mut vault) = new_vault(d);
+    vault
+        .save_folder(Folder {
+            id: String::new(),
             name: "F".into(),
-        }],
-        ..Default::default()
-    };
-    let export = d.join("e.keystead");
-    export_encrypted_with_params(&data, &export, "pw", KdfParams::insecure_for_tests()).unwrap();
+        })
+        .unwrap();
+    vault.save_item(login("A", "a.example", "u", "p")).unwrap();
+    let trashed = vault.save_item(note("Trash", "x")).unwrap();
+    vault.trash_item(&trashed.id).unwrap();
+    vault.add_generated_password("generated").unwrap();
     assert!(matches!(
-        read_import(&export, ImportFormat::Keystead, Some("nope")),
+        read_import(vault.path(), ImportFormat::Keystead, Some("nope")),
         Err(Error::WrongPassword)
     ));
-    let p = read_import(&export, ImportFormat::Keystead, Some("pw")).unwrap();
+    let p = read_import(vault.path(), ImportFormat::Keystead, Some("pw")).unwrap();
     assert_eq!(p.items.len(), 1, "trash is never imported");
+    assert_eq!(p.items[0].name, "A");
     assert_eq!(p.folders.len(), 1);
+    assert_eq!(p.invalid, 0);
 
     // Invalid rows are counted.
     let csv = write(
@@ -874,10 +890,16 @@ fn commit_update_uses_the_save_path() {
     assert_eq!(gh.password_history.len(), 1);
     assert_eq!(gh.password_history[0].password, "gh-pass");
     assert!(gh.password_history[0].replaced_at > 0);
-    assert_eq!(l.password_revised_at, Some(gh.password_history[0].replaced_at));
+    assert_eq!(
+        l.password_revised_at,
+        Some(gh.password_history[0].replaced_at)
+    );
     assert_eq!(gh.updated_at, gh.password_history[0].replaced_at);
     assert_eq!(gh.name, "GitHub");
-    assert_eq!(l.uris[0].uri, "https://github.com/login", "only secrets change");
+    assert_eq!(
+        l.uris[0].uri, "https://github.com/login",
+        "only secrets change"
+    );
 
     let mail = vault.item(&ids.mail).unwrap().login.as_ref().unwrap();
     assert_eq!(mail.totp, "JBSWY3DPEHPK3PXP");
@@ -1190,7 +1212,9 @@ fn drag_and_drop_flow_between_vaults() {
     source
         .save_item(login("Shop", "shop.example", "me", "s"))
         .unwrap();
-    source.save_item(card("Visa", "4111111111111111", "")).unwrap();
+    source
+        .save_item(card("Visa", "4111111111111111", ""))
+        .unwrap();
     let mut target = store
         .create_vault_with_params("Ziel", "dst-pw", KdfParams::insecure_for_tests())
         .unwrap();
