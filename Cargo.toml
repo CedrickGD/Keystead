@@ -20,3 +20,29 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Key derivation, ciphers and the strength estimator are unbearably slow
+# without optimisation; keep debug builds and tests usable.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.aes]
+opt-level = 3
+
+[profile.dev.package.zxcvbn]
+opt-level = 3

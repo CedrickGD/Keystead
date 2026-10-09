@@ -1,0 +1,17 @@
+﻿[
+    {
+        "Name":  "Privat",
+        "File":  "vault_Privat_1A2B3C4D.json",
+        "CreatedAt":  "2024-01-01T12:00:00"
+    },
+    {
+        "Name":  "Kaputt",
+        "File":  "vault_Kaputt_00000000.json",
+        "CreatedAt":  "2024-01-02T12:00:00"
+    },
+    {
+        "Name":  "Ausbruch",
+        "File":  "..\\..\\evil.json",
+        "CreatedAt":  "2024-01-03T12:00:00"
+    }
+]

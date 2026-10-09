@@ -1,0 +1,10 @@
+﻿{
+    "Version":  2,
+    "VaultId":  "6f1c2b9e-3d4a-4f5b-8c7d-0e1f2a3b4c5d",
+    "AccountName":  "Einzel",
+    "Salt":  "cK/VGOjFOVrUlFcEI2caeQ==",
+    "Iterations":  1000,
+    "IV":  "yH9qUVCfAE/ub2YPIJTm/g==",
+    "Data":  "il7df8BvmfGRoQHWgfHxvNfU1IUNygbs6P7cKKJWaVAZNtkdMAIhXJQtoqgKybcVA5Q39ABTbLrIdAHVeZ6c59uUyjV2O9PpQX2iwhydoPlgv+LUla2pbVvAvWKu5ChVk+PQI9maX28OKdy6I3BXx3d4IxXLaqTtdZEbg30SCNvl4dq3F/btaam7gtZhTT6n7NS+w/hrf3ceBciVf+AwmblTETH4+qKn6FE03+99q59B0xG8V0pjGK0bvtO+/WvUxnAE1iJiduwmrZ7Ktp93ZAmpRHSisuqpaVOfTnNNY7N5g26yRWRkNfsn8VWk47hzJwsi9pWEhmeYbb4Y1diFwg8mSNYax1/I9321tISTG5TKdQSGe20dpuTcXKdHbMU7tzqe/tJ09b1L2X8y/KisJkSYKb1im9LvmX0aLaEQ/r+tnynhQenVdWq+RD19t8ddYMTiL88yU052r7edSjcQY1Z8CHh7sqUYbi2TsZuwXfsCY0LjQ5gnpCYU62mDgO9SBQGbAZqKut1QtaNO9OmakJgWxJ+zfHSkUVCBr5WSdz2ac4toVHL2/QgLaiOqT7mYbTvk+kH45sFouasmnD61c1DkQbM42YjPYhSkwjz+ujjeFw9aKgYWG7nxJf/SGFmQQU/9pP0N/2xQXhIdQsqgXJL3X9nbHu8A9RRIWRF2w5NgpWyUM9t+v8/VFlOth5J/",
+    "Mac":  "z1YxZoDsNLZ0cdlJm+BYK52iDsN0wLNfakXU39G8x50="
+}

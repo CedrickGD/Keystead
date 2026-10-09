@@ -202,3 +202,212 @@ pub fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Helper methods (no change to the serialised shape above).
+// ---------------------------------------------------------------------------
+
+impl VaultItem {
+    /// An empty item of the given type with the matching type-specific part.
+    pub fn new(item_type: ItemType, name: impl Into<String>) -> Self {
+        let mut item = VaultItem {
+            item_type,
+            name: name.into(),
+            ..Default::default()
+        };
+        item.normalize();
+        item
+    }
+
+    /// True if the item is in the trash.
+    pub fn is_trashed(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
+    /// Makes `login`/`card`/`identity` match `item_type` (Some for the
+    /// matching one, None for the others) and drops the password history of
+    /// non-login items.
+    pub fn normalize(&mut self) {
+        match self.item_type {
+            ItemType::Login => {
+                self.login.get_or_insert_with(LoginData::default);
+                self.card = None;
+                self.identity = None;
+            }
+            ItemType::Card => {
+                self.card.get_or_insert_with(CardData::default);
+                self.login = None;
+                self.identity = None;
+            }
+            ItemType::Identity => {
+                self.identity.get_or_insert_with(IdentityData::default);
+                self.login = None;
+                self.card = None;
+            }
+            ItemType::Note => {
+                self.login = None;
+                self.card = None;
+                self.identity = None;
+            }
+        }
+        if self.item_type != ItemType::Login {
+            self.password_history.clear();
+        }
+    }
+
+    /// Login username (empty for other types).
+    pub fn username(&self) -> &str {
+        self.login.as_ref().map_or("", |l| l.username.as_str())
+    }
+
+    /// Login password (empty for other types).
+    pub fn password(&self) -> &str {
+        self.login.as_ref().map_or("", |l| l.password.as_str())
+    }
+
+    /// Secret-free summary for lists.
+    pub fn summary(&self) -> ItemSummary {
+        let (subtitle, uri, has_totp) = match self.item_type {
+            ItemType::Login => {
+                let login = self.login.as_ref();
+                (
+                    login.map(|l| l.username.clone()).unwrap_or_default(),
+                    login
+                        .and_then(|l| l.uris.first())
+                        .map(|u| u.uri.clone())
+                        .unwrap_or_default(),
+                    login.is_some_and(|l| !l.totp.trim().is_empty()),
+                )
+            }
+            ItemType::Card => (
+                self.card.as_ref().map(card_subtitle).unwrap_or_default(),
+                String::new(),
+                false,
+            ),
+            ItemType::Identity => (
+                self.identity
+                    .as_ref()
+                    .map(identity_subtitle)
+                    .unwrap_or_default(),
+                String::new(),
+                false,
+            ),
+            ItemType::Note => (String::new(), String::new(), false),
+        };
+        ItemSummary {
+            id: self.id.clone(),
+            item_type: self.item_type,
+            name: self.name.clone(),
+            subtitle,
+            uri,
+            favorite: self.favorite,
+            has_totp,
+            folder_id: self.folder_id.clone(),
+        }
+    }
+}
+
+fn card_subtitle(card: &CardData) -> String {
+    let digits: Vec<char> = card.number.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() >= 4 {
+        let last4: String = digits[digits.len() - 4..].iter().collect();
+        format!("•••• {last4}")
+    } else {
+        card.brand.trim().to_owned()
+    }
+}
+
+fn identity_subtitle(id: &IdentityData) -> String {
+    let full = format!("{} {}", id.first_name.trim(), id.last_name.trim());
+    let full = full.trim();
+    if full.is_empty() {
+        id.email.trim().to_owned()
+    } else {
+        full.to_owned()
+    }
+}
+
+impl From<&VaultItem> for ItemSummary {
+    fn from(item: &VaultItem) -> Self {
+        item.summary()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_json_shape() {
+        let mut item = VaultItem::new(ItemType::Login, "GitHub");
+        item.id = "x".into();
+        let v = serde_json::to_value(&item).unwrap();
+        assert_eq!(v["type"], "login");
+        assert_eq!(v["folderId"], serde_json::Value::Null);
+        assert_eq!(v["login"]["passwordRevisedAt"], serde_json::Value::Null);
+        assert_eq!(v["card"], serde_json::Value::Null);
+        assert_eq!(v["deletedAt"], serde_json::Value::Null);
+        assert!(v["passwordHistory"].is_array());
+        let uri = LoginUri {
+            uri: "https://a".into(),
+            match_type: UriMatch::StartsWith,
+        };
+        assert_eq!(serde_json::to_value(&uri).unwrap()["match"], "startsWith");
+        // Partial JSON from the UI fills in defaults.
+        let parsed: VaultItem = serde_json::from_str(r#"{"type":"note","name":"n"}"#).unwrap();
+        assert_eq!(parsed.item_type, ItemType::Note);
+        assert!(parsed.login.is_none());
+    }
+
+    #[test]
+    fn normalize_matches_type() {
+        let mut item = VaultItem::new(ItemType::Login, "x");
+        item.password_history.push(PasswordHistoryEntry::default());
+        item.item_type = ItemType::Card;
+        item.normalize();
+        assert!(item.login.is_none() && item.card.is_some() && item.identity.is_none());
+        assert!(item.password_history.is_empty());
+        item.item_type = ItemType::Note;
+        item.normalize();
+        assert!(item.login.is_none() && item.card.is_none() && item.identity.is_none());
+        item.item_type = ItemType::Identity;
+        item.normalize();
+        assert!(item.identity.is_some());
+    }
+
+    #[test]
+    fn summaries() {
+        let mut login = VaultItem::new(ItemType::Login, "Mail");
+        if let Some(l) = login.login.as_mut() {
+            l.username = "me@example.com".into();
+            l.uris.push(LoginUri {
+                uri: "https://mail.example.com".into(),
+                match_type: UriMatch::Domain,
+            });
+            l.totp = "JBSWY3DPEHPK3PXP".into();
+        }
+        let s = login.summary();
+        assert_eq!(s.subtitle, "me@example.com");
+        assert_eq!(s.uri, "https://mail.example.com");
+        assert!(s.has_totp);
+
+        let mut card = VaultItem::new(ItemType::Card, "Visa");
+        if let Some(c) = card.card.as_mut() {
+            c.number = "4111 1111 1111 1234".into();
+        }
+        assert_eq!(card.summary().subtitle, "•••• 1234");
+        if let Some(c) = card.card.as_mut() {
+            c.number = "12".into();
+            c.brand = "Visa".into();
+        }
+        assert_eq!(card.summary().subtitle, "Visa");
+
+        let mut ident = VaultItem::new(ItemType::Identity, "Me");
+        if let Some(i) = ident.identity.as_mut() {
+            i.first_name = "Max".into();
+            i.last_name = "Muster".into();
+        }
+        assert_eq!(ident.summary().subtitle, "Max Muster");
+        assert_eq!(VaultItem::new(ItemType::Note, "n").summary().subtitle, "");
+    }
+}

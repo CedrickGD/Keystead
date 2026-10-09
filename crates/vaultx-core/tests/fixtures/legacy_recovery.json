@@ -1,0 +1,14 @@
+﻿{
+    "Version":  2,
+    "VaultId":  "6f1c2b9e-3d4a-4f5b-8c7d-0e1f2a3b4c5d",
+    "AccountName":  "Familie",
+    "Salt":  "muRliHxU1DVCUQAHaOPVXA==",
+    "Iterations":  2000,
+    "IV":  "4qkIZWrN17p1ApUIpOoRmA==",
+    "Data":  "DdqxwKsIHeA4TZYJtlPoGryzgFEPuNJGNl/4PvwwkOp13ef+qDsHdURsSyn1+i8tcWJjoquWlGTAZLq+DHLaZIm149ipLWCq09lONodOlt2xso18i9p5FkzcWdUtoZ9UsaYZ3gCVn1FFZoOlT/zYLZjZr07MzEFFHQMyyt96j9lvE+NBaBKA6IpwRGz7t1rksN5Ow8d2o+GXhQWBejaKXXv3PLLu2GJ+P93BQkEdgkUm9RC8uT8ZbeFm4QRve1pTU5jKTmtFMCq+7RjjQ91Th6TyKj/vg5LFItro9DghKqPP65rcxQyYHO8NhuVaykL7HBI9vyLnn5n79aakWXoIfsiuTTpgFv6wZUp4KsPtlEeb9baoEE/CP/Vb8htV2H3HsOr444hTRDGtfUM6saLkHF1tEXp6KElJV3fLilmMQ6Gvl9GxL1EPaLoYQGyMnmWk3NBtx6coB9MznfOQfRBgad82AfRXmRCVZqVT2d1tWOLzVP++e1UL0jKl3sY5RyUK33KYnwyMTcirY1fm9R91eLvU+tU35WQG662nnTIZ1mkn0kdBxuPc+jRohS52GU/Sg23BeATOZJkrKeku3FDbUMQWqi9qYJYmmJiFAUc8uIH8V2gocdyzI2rG53Nz6PzGUI+QmsoH3xNlqMt86u6FbAQpZ9X8n1oCdI02uNDcHhi+E04W7zeFfgTd020N2V8ENUH9oafGRgUkBAwWqdf1nfvqqdf+awSZbi6fHHZwtNZOuiWdvUCC8yfwkYlEuGy/M/kkibkqEiGFFE3pn+JNvkwOEEParYXzfje7XOYL3yw=",
+    "RecoverySalt":  "x6H1uMt49ZVtUPzxDWIxOg==",
+    "RecoveryIterations":  2000,
+    "RecoveryKeyIV":  "JhxtMLh0rMKc0Waanoa5lg==",
+    "RecoveryKeyData":  "ntZ3lvna5dSts06o9aq6/cl0et4UFWo7grwenbQ0jtr6NPVUlkkVAwJPb3JpKNr+pkJypaQMeqAdVqgmLf5Mc5HGls8HdAZd3B1guyTQugc=",
+    "Mac":  "SJv1OBYsQmYOJektBx0IXMRgN1BoJUsJM4fwT2ZS8H0="
+}
