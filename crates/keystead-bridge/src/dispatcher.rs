@@ -16,8 +16,9 @@ use zeroize::Zeroizing;
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
 use crate::protocol::{
-    BridgeError, CopyData, CopyField, IdData, ListVaultsData, LoginSecret, PairData, Payload,
-    Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT, SEARCH_LIMIT,
+    BridgeError, CopyData, CopyField, ExtensionInfo, IdData, ListVaultsData, LoginSecret,
+    PairData, Payload, Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT,
+    SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;
 use crate::util::{lock, log};
@@ -37,6 +38,11 @@ pub trait VaultBackend: Send + Sync + 'static {
     fn app_version(&self) -> String;
     /// The unlocked vault, `None` while locked.
     fn unlocked_vault(&self) -> Option<VaultSummary>;
+    /// The browser extension the app delivers (version and folder), shown
+    /// to paired clients in `status`. Default: none.
+    fn extension_info(&self) -> Option<ExtensionInfo> {
+        None
+    }
     /// All vaults (any order; the dispatcher sorts them) and the id of the
     /// vault used last, if the app remembers one.
     fn list_vaults(&self) -> std::result::Result<(Vec<VaultSummary>, Option<String>), BridgeError>;
@@ -282,12 +288,19 @@ impl Dispatcher {
                 let unlocked = vault.is_some();
                 let (vault_id, vault_name) =
                     vault.filter(|_| paired).map(|v| (v.id, v.name)).unzip();
+                let (extension_version, extension_dir) = paired
+                    .then(|| backend.extension_info())
+                    .flatten()
+                    .map(|e| (e.version, e.dir))
+                    .unzip();
                 json(&StatusData {
                     app_version: backend.app_version(),
                     paired,
                     unlocked,
                     vault_name,
                     vault_id,
+                    extension_version,
+                    extension_dir,
                 })
             }
             Payload::Pair { client_name, code } => {

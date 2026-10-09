@@ -371,11 +371,22 @@ fn encrypted_bitwarden_export_is_unsupported() {
         "folders": [ { "id": "f", "name": "2.x|y|z" } ],
         "items": [ { "type": 1, "name": "2.x|y|z", "login": { "password": "2.p|q|r" } } ]
     });
+    let dir2 = tempfile::tempdir().unwrap();
+    let (_store, mut vault) = new_vault(dir2.path());
     for (name, doc) in [("pp.json", password_protected), ("acc.json", account)] {
-        let path = write(d, name, serde_json::to_vec(&doc).unwrap());
+        let text = serde_json::to_string(&doc).unwrap();
+        let path = write(d, name, &text);
         let err = detect_import(&path).unwrap_err();
         assert_eq!(err.code(), "unsupported:bitwarden_encrypted", "{name}");
+        // Reading it as Bitwarden JSON anyway gives the same stable code.
+        let err = read_import(&path, ImportFormat::BitwardenJson, None).unwrap_err();
+        assert_eq!(err.code(), "unsupported:bitwarden_encrypted", "{name}");
+        let err = import_into(&mut vault, "bitwarden_json", &path, None).unwrap_err();
+        assert_eq!(err.code(), "unsupported:bitwarden_encrypted", "{name}");
+        let err = keystead_core::import::import_bitwarden_json(&text).unwrap_err();
+        assert_eq!(err.code(), "unsupported:bitwarden_encrypted", "{name}");
     }
+    assert!(vault.items().is_empty());
 }
 
 #[test]
@@ -417,6 +428,20 @@ fn detects_csv_dialects() {
             "excel.csv",
             b"sep=;\nWebsite;Login;Pass\nexcel.example;u;p\n".to_vec(),
             "excel.example",
+        ),
+        // Excel hint line with a tab as separator (once taken for an
+        // empty hint by trimming it away).
+        (
+            "excel-tab.txt",
+            b"sep=\t\nname\turl\tusername\tpassword\nTabSep\tt.example\tu\tp\n".to_vec(),
+            "TabSep",
+        ),
+        (
+            "excel-tab-bom.csv",
+            "\u{feff}sep=\t \r\nname\turl\tusername\tpassword\r\nTabBom\tb.example\tu\tp, with comma\r\n"
+                .as_bytes()
+                .to_vec(),
+            "TabBom",
         ),
         (
             "utf16le.csv",
@@ -909,30 +934,93 @@ fn commit_update_uses_the_save_path() {
 }
 
 #[test]
-fn commit_update_twice_keeps_both_in_history() {
+fn several_rows_for_one_login_form_one_conflict() {
+    // Two rows of the file for the same site and username, each with
+    // another password than the vault: one conflict, never two updates.
+    let rows = |first_changed: i64, second_changed: i64| {
+        parsed(vec![
+            VaultItem {
+                updated_at: first_changed,
+                ..login("GitHub", "github.com", "octo", "n1")
+            },
+            VaultItem {
+                updated_at: second_changed,
+                ..login("GitHub 2", "https://www.github.com/", "OCTO ", "n2")
+            },
+        ])
+    };
+
+    // Without timestamps (e.g. Chrome CSV) the last row is kept.
     let dir = tempfile::tempdir().unwrap();
     let (_store, mut vault) = new_vault(dir.path());
     let gh = vault
-        .save_item(login("GitHub", "github.com", "octocat", "one"))
+        .save_item(login("GitHub", "github.com", "octo", "old"))
         .unwrap();
-    let plan = plan_import(
-        vault.data(),
-        parsed(vec![
-            login("GitHub", "github.com", "octocat", "two"),
-            login("GitHub", "github.com", "octocat", "three"),
-        ]),
+    let plan = plan_import(vault.data(), rows(0, 0));
+    assert!(plan.new_items.is_empty());
+    let conflicts: Vec<_> = plan
+        .conflicts
+        .iter()
+        .map(|c| {
+            (
+                c.conflict_id.as_str(),
+                c.entry.incoming_name.as_str(),
+                c.entry.username.as_str(),
+                c.entry.existing_id.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        conflicts,
+        [("conflict-1", "GitHub 2", "OCTO", gh.id.as_str())]
     );
-    assert_eq!(plan.conflicts.len(), 2);
+    let dups: Vec<_> = plan
+        .duplicates
+        .iter()
+        .map(|m| {
+            (
+                m.incoming_name.as_str(),
+                m.existing_id.as_str(),
+                m.existing_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(dups, [("GitHub", "", "GitHub 2")], "within the file");
+
     let report = vault.commit_import(plan, ConflictMode::Update).unwrap();
-    assert_eq!(report.updated, 2);
-    let gh = vault.item(&gh.id).unwrap();
-    assert_eq!(gh.password(), "three");
-    let history: Vec<_> = gh
+    assert_eq!((report.imported, report.updated), (0, 1));
+    assert!(report.conflicts_skipped.is_empty());
+    let item = vault.item(&gh.id).unwrap();
+    assert_eq!(item.password(), "n2");
+    let history: Vec<_> = item
         .password_history
         .iter()
         .map(|h| h.password.as_str())
         .collect();
-    assert_eq!(history, ["two", "one"]);
+    assert_eq!(history, ["old"], "n1 was never the vault's password");
+
+    // With timestamps (Bitwarden `revisionDate`, Keystead) the row changed
+    // most recently is kept, wherever it is in the file.
+    let dir = tempfile::tempdir().unwrap();
+    let (_store, mut vault) = new_vault(dir.path());
+    let gh = vault
+        .save_item(login("GitHub", "github.com", "octo", "old"))
+        .unwrap();
+    let plan = plan_import(vault.data(), rows(2_000, 1_000));
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!(plan.conflicts[0].entry.incoming_name, "GitHub");
+    assert_eq!(plan.duplicates[0].incoming_name, "GitHub 2");
+    assert_eq!(plan.duplicates[0].existing_name, "GitHub");
+    let report = vault.commit_import(plan, ConflictMode::KeepBoth).unwrap();
+    assert_eq!((report.imported, report.updated), (1, 0), "one login added");
+    let mut passwords: Vec<_> = vault
+        .items()
+        .iter()
+        .map(|i| i.password().to_owned())
+        .collect();
+    passwords.sort();
+    assert_eq!(passwords, ["n1", "old"]);
+    assert_eq!(vault.item(&gh.id).unwrap().password(), "old");
 }
 
 #[test]
@@ -955,6 +1043,28 @@ fn commit_keep_both() {
     assert_eq!(passwords, ["NEW-gh-pass", "gh-pass"]);
     assert_eq!(find(&vault, "Mail").len(), 2);
     assert_eq!(find(&vault, "router").len(), 1);
+}
+
+#[test]
+fn commit_reports_deselected_conflicts_as_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_store, mut vault, ids, mut plan) = seeded_plan(&dir);
+    // The user keeps only the GitHub conflict selected.
+    plan.conflicts.retain(|c| c.conflict_id == "conflict-1");
+    let report = vault.commit_import(plan, ConflictMode::KeepBoth).unwrap();
+    assert_eq!((report.imported, report.updated), (6, 0));
+    let skipped: Vec<_> = report
+        .conflicts_skipped
+        .iter()
+        .map(|m| (m.incoming_name.as_str(), m.existing_id.as_str()))
+        .collect();
+    assert_eq!(
+        skipped,
+        [("Mail", ids.mail.as_str()), ("router", ids.router.as_str())]
+    );
+    assert_eq!(find(&vault, "GitHub").len(), 2);
+    assert_eq!(find(&vault, "Mail").len(), 1);
+    assert_eq!(find(&vault, "router").len(), 0);
 }
 
 #[test]
@@ -1021,6 +1131,111 @@ fn commit_rechecks_the_current_vault() {
 }
 
 #[test]
+fn commit_applies_the_mode_only_to_conflicts_of_the_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_store, mut vault) = new_vault(dir.path());
+    let plan = plan_import(
+        vault.data(),
+        parsed(vec![login("Shop", "shop.example", "me", "from-file")]),
+    );
+    assert_eq!((plan.new_items.len(), plan.conflicts.len()), (1, 0));
+
+    // After the preview the user (or the browser extension) saves the login
+    // with another password: the preview never showed this conflict, so no
+    // mode may overwrite or duplicate it.
+    let shop = vault
+        .save_item(login(
+            "Shop",
+            "https://shop.example",
+            "me",
+            "typed-meanwhile",
+        ))
+        .unwrap();
+    let revision = vault.revision();
+    for mode in [
+        ConflictMode::Update,
+        ConflictMode::KeepBoth,
+        ConflictMode::Skip,
+    ] {
+        let report = vault.commit_import_ref(&plan, mode).unwrap();
+        assert_eq!((report.imported, report.updated), (0, 0), "{mode:?}");
+        assert!(report.duplicates.is_empty(), "{mode:?}");
+        let skipped: Vec<_> = report
+            .conflicts_skipped
+            .iter()
+            .map(|m| (m.incoming_name.as_str(), m.existing_id.as_str()))
+            .collect();
+        assert_eq!(skipped, [("Shop", shop.id.as_str())], "{mode:?}");
+        assert_eq!(vault.revision(), revision, "{mode:?}: nothing written");
+    }
+    let item = vault.item(&shop.id).unwrap();
+    assert_eq!(item.password(), "typed-meanwhile");
+    assert!(item.password_history.is_empty());
+    assert_eq!(find(&vault, "Shop").len(), 1);
+}
+
+#[test]
+fn commit_updates_only_the_login_shown_in_the_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_store, mut vault) = new_vault(dir.path());
+    let incoming = || parsed(vec![login("GitHub", "github.com", "octocat", "new")]);
+    let shown = vault
+        .save_item(login("GitHub", "github.com", "octocat", "old"))
+        .unwrap();
+    let plan = plan_import(vault.data(), incoming());
+    assert_eq!(plan.conflicts[0].entry.existing_id, shown.id);
+
+    // Meanwhile a second login for the site and username is saved. It is
+    // the most recently changed one, so a new plan would name it …
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let other = vault
+        .save_item(login(
+            "GitHub 2",
+            "https://www.github.com",
+            "OctoCat",
+            "other",
+        ))
+        .unwrap();
+    assert_eq!(
+        plan_import(vault.data(), incoming()).conflicts[0]
+            .entry
+            .existing_id,
+        other.id
+    );
+    // … but the commit updates the login the user decided about.
+    let report = vault.commit_import(plan, ConflictMode::Update).unwrap();
+    assert_eq!((report.imported, report.updated), (0, 1));
+    assert!(report.conflicts_skipped.is_empty());
+    assert_eq!(vault.item(&shown.id).unwrap().password(), "new");
+    assert_eq!(vault.item(&other.id).unwrap().password(), "other");
+
+    // The shown login is deleted after the preview while the other one
+    // still matches: the conflict now meets a login the preview did not
+    // name – skipped in every mode, nothing added.
+    let plan = plan_import(
+        vault.data(),
+        parsed(vec![login("GitHub", "github.com", "octocat", "newer")]),
+    );
+    assert_eq!(plan.conflicts[0].entry.existing_id, shown.id);
+    vault.delete_item(&shown.id).unwrap();
+    let revision = vault.revision();
+    for mode in [
+        ConflictMode::Update,
+        ConflictMode::KeepBoth,
+        ConflictMode::Skip,
+    ] {
+        let report = vault.commit_import_ref(&plan, mode).unwrap();
+        assert_eq!((report.imported, report.updated), (0, 0), "{mode:?}");
+        assert_eq!(report.conflicts_skipped.len(), 1, "{mode:?}");
+        assert_eq!(report.conflicts_skipped[0].existing_id, other.id);
+        assert_eq!(report.conflicts_skipped[0].existing_name, "GitHub 2");
+    }
+    assert_eq!(vault.revision(), revision, "nothing written");
+    assert_eq!(vault.items().len(), 1);
+    assert_eq!(vault.item(&other.id).unwrap().password(), "other");
+}
+
+#[test]
 fn commit_ref_survives_a_save_conflict_and_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let (store, mut vault) = new_vault(dir.path());
@@ -1070,7 +1285,7 @@ fn commit_leaves_out_removed_conflicts_and_unused_folders() {
             name: "Social".into(),
         })
         .unwrap();
-    vault
+    let github = vault
         .save_item(login("GitHub", "github.com", "octocat", "gh"))
         .unwrap();
     vault
@@ -1111,8 +1326,15 @@ fn commit_leaves_out_removed_conflicts_and_unused_folders() {
     assert_eq!(report.imported, 2);
     assert_eq!(report.skipped, 2);
     assert_eq!(report.warnings.len(), 2);
-    assert!(report.conflicts_skipped.is_empty());
+    // The removed conflict is reported, so the UI can list it as skipped.
+    let skipped: Vec<_> = report
+        .conflicts_skipped
+        .iter()
+        .map(|m| (m.incoming_name.as_str(), m.existing_id.as_str()))
+        .collect();
+    assert_eq!(skipped, [("GitHub", github.id.as_str())]);
     assert_eq!(find(&vault, "GitHub").len(), 1, "removed conflict left out");
+    assert_eq!(vault.item(&github.id).unwrap().password(), "gh");
     let names: Vec<_> = vault.folders().iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["Social", "Work"]);
     let work = &vault.folders()[1];

@@ -10,7 +10,7 @@ use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
-use crate::{bridge, commands, monitor, platform, tray, BACKGROUND_ARG};
+use crate::{bridge, commands, extension, monitor, platform, tray, update, BACKGROUND_ARG};
 
 /// Runs the desktop app; returns the process exit code.
 pub fn run(background: bool) -> i32 {
@@ -24,6 +24,10 @@ pub fn run(background: bool) -> i32 {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        // The UI never calls these plugins directly (no permission granted):
+        // `check_update` / `install_update` below drive the updater.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_vaults,
@@ -66,7 +70,11 @@ pub fn run(background: bool) -> i32 {
             commands::respond_pairing,
             commands::open_terminal,
             commands::open_data_dir,
+            commands::open_extension_dir,
             commands::set_portable_mode,
+            commands::check_update,
+            commands::pending_update,
+            commands::install_update,
         ])
         .setup(move |app| {
             setup(app.handle(), background);
@@ -148,6 +156,13 @@ fn setup(app: &AppHandle, background: bool) {
             .name("keystead-register".into())
             .spawn(bridge::reregister_if_needed);
     }
+    // The browser extension the app delivers: (re)write its folder when the
+    // embedded version differs (file work off the main thread).
+    let data_dir = core.data_dir();
+    let _ = std::thread::Builder::new()
+        .name("keystead-extension".into())
+        .spawn(move || extension::deploy_logged(&data_dir));
+    update::spawn_background_checks(app.clone(), &core);
 
     // Start hidden for `--background` (native host) and "start in tray" –
     // the latter only if there is a tray icon to bring the window back.

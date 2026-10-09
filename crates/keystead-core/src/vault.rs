@@ -380,10 +380,20 @@ impl UnlockedVault {
     /// revision; nothing is written if nothing changes).
     ///
     /// The incoming items are classified again against the *current* data –
-    /// the vault may have changed since the plan was made: an item that
-    /// became a duplicate is skipped (reported in `duplicates`), a conflict
-    /// whose existing login is gone (deleted or trashed) is added as a new
-    /// item, and an item planned as new that now conflicts follows `mode`.
+    /// the vault may have changed since the plan was made:
+    ///
+    /// * an item that became a duplicate is skipped (`duplicates`);
+    /// * a conflict whose login is gone (deleted, trashed, or no longer the
+    ///   same site and username) is added as a new item if no other login
+    ///   matches it;
+    /// * `mode` applies only to the conflicts of the preview, and only while
+    ///   they still conflict with the login the preview named. Whatever
+    ///   else conflicts now – an item planned as new, or a conflict that now
+    ///   meets another login – is not imported (`conflictsSkipped`) in
+    ///   every mode, so the commit never touches a login the user did not
+    ///   decide about.
+    ///
+    /// Then:
     ///
     /// * New items get fresh ids; folders of the file are merged by name
     ///   into existing folders or created – only those an added item uses.
@@ -395,8 +405,10 @@ impl UnlockedVault {
     ///   `passwordRevisedAt` is set) and its TOTP seed if the existing login
     ///   has none. An existing TOTP seed is never replaced and an empty
     ///   incoming password never clears one; a conflict with nothing to take
-    ///   over is reported in `conflictsSkipped`.
-    /// * Conflicts the caller removed from `plan.conflicts` are left out.
+    ///   over is reported in `conflictsSkipped`. A login is updated at most
+    ///   once per commit.
+    /// * Conflicts the caller removed from `plan.conflicts` are not imported
+    ///   either and are reported in `conflictsSkipped` as planned.
     ///
     /// The plan is dropped (and its secrets overwritten) either way; use
     /// [`Self::commit_import_ref`] to keep it for a retry after an error
@@ -415,8 +427,6 @@ impl UnlockedVault {
         mode: ConflictMode,
     ) -> Result<ImportReport> {
         let now = now_ms();
-        let incoming = plan.incoming();
-        let folders = plan.folders.clone();
         let mut report = ImportReport {
             skipped: plan.invalid,
             duplicates: plan.duplicates.clone(),
@@ -424,7 +434,7 @@ impl UnlockedVault {
             ..Default::default()
         };
         self.mutate_if_changed(move |data| {
-            let resolved = import::resolve_import(&data.items, incoming, mode);
+            let resolved = import::resolve_import(&data.items, plan, mode);
             report.duplicates.extend(resolved.duplicates);
             report.conflicts_skipped = resolved.conflicts_skipped;
             for update in resolved.updates {
@@ -444,7 +454,7 @@ impl UnlockedVault {
                 wipe_item(&mut incoming);
             }
             let to_add = resolved.to_add;
-            let mut folders = folders;
+            let mut folders = plan.folders.clone();
             folders.retain(|f| {
                 to_add
                     .iter()

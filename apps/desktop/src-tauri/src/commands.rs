@@ -758,6 +758,9 @@ fn switch_portable_mode(
     if result.is_ok() {
         // The host manifest moved with the data directory.
         bridge::reregister_if_needed();
+        // The extension folder is not moved (the browser may use it): write
+        // it at the new location, the extension points the user there.
+        extension::deploy_logged(&c.data_dir());
     }
     bridge::start_if_enabled(c);
     result

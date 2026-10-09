@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use keystead_bridge::{
-    register, start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, PairedClient,
-    PairingRequest, VaultBackend, VaultSummary,
+    register, start_server, BridgeError, ClientStore, Dispatcher, ExtensionInfo, LoginSecret,
+    PairedClient, PairingRequest, VaultBackend, VaultSummary,
 };
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
@@ -15,6 +15,7 @@ use keystead_core::totp::{self, TotpCode};
 use keystead_core::{matching, Error as CoreError, UnlockedVault};
 
 use crate::error::{AppError, AppResult};
+use crate::extension;
 use crate::state::{log, Core, LockReason};
 
 /// Debug builds only: auto-approve pairing requests (automated E2E tests).
@@ -79,7 +80,21 @@ fn name_from_url(url: &str) -> String {
 
 impl VaultBackend for Backend {
     fn app_version(&self) -> String {
-        env!("CARGO_PKG_VERSION").to_owned()
+        match self.core.upgrade() {
+            Some(core) => core.app_version().to_owned(),
+            None => env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+
+    /// The extension folder the app maintains (`crate::extension`).
+    fn extension_info(&self) -> Option<ExtensionInfo> {
+        let core = self.core.upgrade()?;
+        Some(ExtensionInfo {
+            version: extension::bundled_version().to_owned(),
+            dir: extension::extension_dir(&core.data_dir())
+                .display()
+                .to_string(),
+        })
     }
 
     fn unlocked_vault(&self) -> Option<VaultSummary> {

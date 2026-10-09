@@ -184,6 +184,7 @@ pub fn classify(error: &UpdaterError) -> CheckFailure {
 /// Normalises a Windows directory for comparison: no surrounding quotes or
 /// whitespace, no `\\?\` prefix, backslashes, no trailing separator,
 /// lowercase (NTFS paths are case-insensitive).
+#[cfg_attr(not(windows), allow(dead_code))]
 fn normalize_windows_dir(dir: &str) -> String {
     let dir = dir.trim().trim_matches('"').trim();
     let dir = dir.strip_prefix(r"\\?\").unwrap_or(dir);
@@ -197,6 +198,7 @@ fn normalize_windows_dir(dir: &str) -> String {
 /// or in a directory an uninstall entry of the installer names
 /// (`InstallLocation`). Everything else is a portable copy, which must not
 /// run the installer (it would install a second copy elsewhere).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_installed_copy(exe_dir: &str, per_user_install_dir: &str, registered: &[String]) -> bool {
     let exe_dir = normalize_windows_dir(exe_dir);
     if exe_dir.is_empty() {
@@ -258,6 +260,7 @@ pub fn can_install(app: &AppHandle) -> bool {
         }
         #[cfg(target_os = "linux")]
         {
+            use tauri::Manager as _;
             app.env().appimage.is_some()
         }
         #[cfg(not(any(windows, target_os = "linux")))]

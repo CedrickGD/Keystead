@@ -100,7 +100,8 @@ pub enum ConflictMode {
 /// Result of [`plan_import`]: held in memory until it is committed or
 /// dropped. Holds the incoming secrets – `Debug` prints only counts, and the
 /// items are overwritten when the plan is dropped. Lists may be inspected
-/// and shortened: a conflict removed from `conflicts` is left out on commit.
+/// and shortened: a conflict removed from `conflicts` is not imported on
+/// commit (it is reported in `conflictsSkipped`).
 pub struct ImportPlan {
     /// Items that are not in the vault yet (file order, source ids).
     pub new_items: Vec<VaultItem>,
@@ -108,13 +109,23 @@ pub struct ImportPlan {
     pub folders: Vec<Folder>,
     /// Items that already exist; they are not imported.
     pub duplicates: Vec<ImportMatch>,
-    /// Logins that exist with a different password or TOTP seed.
+    /// Logins that exist with a different password or TOTP seed (at most
+    /// one per existing login).
     pub conflicts: Vec<ImportConflict>,
     /// Invalid rows/entries of the file (each has a warning).
     pub invalid: usize,
     pub warnings: Vec<String>,
-    /// The incoming item of each conflict, by `conflict_id`.
-    conflict_items: Vec<(String, VaultItem)>,
+    /// Every conflict as planned, with its incoming item (`conflicts` may
+    /// have been shortened by the caller since).
+    conflict_items: Vec<PlannedConflict>,
+}
+
+/// A conflict of a plan and the incoming login behind it.
+struct PlannedConflict {
+    /// As shown in the preview: `entry.existing_id` is the login the user
+    /// decided about.
+    conflict: ImportConflict,
+    item: VaultItem,
 }
 
 /// Secret-free summary of an [`ImportPlan`] for the import preview.
@@ -140,26 +151,6 @@ impl ImportPlan {
             warnings: self.warnings.clone(),
         }
     }
-
-    /// Copies of the new items followed by the incoming items of the
-    /// conflicts still listed in `conflicts`.
-    pub(crate) fn incoming(&self) -> Vec<VaultItem> {
-        let listed: HashSet<&str> = self
-            .conflicts
-            .iter()
-            .map(|c| c.conflict_id.as_str())
-            .collect();
-        self.new_items
-            .iter()
-            .chain(
-                self.conflict_items
-                    .iter()
-                    .filter(|(id, _)| listed.contains(id.as_str()))
-                    .map(|(_, item)| item),
-            )
-            .cloned()
-            .collect()
-    }
 }
 
 impl std::fmt::Debug for ImportPlan {
@@ -179,20 +170,26 @@ impl std::fmt::Debug for ImportPlan {
 impl Drop for ImportPlan {
     fn drop(&mut self) {
         wipe_items(&mut self.new_items);
-        for (_, item) in &mut self.conflict_items {
-            wipe_item(item);
+        for planned in &mut self.conflict_items {
+            wipe_item(&mut planned.item);
         }
     }
 }
 
 /// Classifies the parsed items against the non-trashed items of `existing`
 /// (see the module documentation). An item equal to an earlier item of the
-/// same file is a duplicate of that one (`existingId` empty).
+/// same file is a duplicate of that one (`existingId` empty). Rows that
+/// conflict with a login another row already conflicts with are folded into
+/// that conflict: the row with the newer `updated_at` (on a tie the later
+/// row) is kept, the other one is listed as a duplicate within the file.
 pub fn plan_import(existing: &VaultData, mut parsed: ParsedImport) -> ImportPlan {
     let mut classifier = Classifier::new(&existing.items);
     // Accepted items (new or conflicting) in file order; `Some` for conflicts.
     let mut accepted: Vec<VaultItem> = Vec::new();
     let mut accepted_conflicts: Vec<Option<ImportConflict>> = Vec::new();
+    // Index of an existing login → index of the accepted row conflicting
+    // with it.
+    let mut conflict_rows: HashMap<usize, usize> = HashMap::new();
     let mut duplicates = Vec::new();
     let mut conflict_count = 0usize;
     for mut item in std::mem::take(&mut parsed.items) {
@@ -206,12 +203,27 @@ pub fn plan_import(existing: &VaultData, mut parsed: ParsedImport) -> ImportPlan
                 existing: index,
                 reason,
             } => {
+                if let Some(&row) = conflict_rows.get(&index) {
+                    // Another row for the same login: one conflict, so that
+                    // `update` never applies two passwords to one login.
+                    if item.updated_at >= accepted[row].updated_at {
+                        std::mem::swap(&mut accepted[row], &mut item);
+                        if let Some(conflict) = accepted_conflicts[row].as_mut() {
+                            conflict.reason = reason;
+                            conflict.entry = describe(&accepted[row], &existing.items[index]);
+                        }
+                    }
+                    duplicates.push(describe_as(&item, "", &accepted[row].name));
+                    wipe_item(&mut item);
+                    continue;
+                }
                 conflict_count += 1;
                 accepted_conflicts.push(Some(ImportConflict {
                     conflict_id: format!("conflict-{conflict_count}"),
                     reason,
                     entry: describe(&item, &existing.items[index]),
                 }));
+                conflict_rows.insert(index, accepted.len());
                 classifier.accept(key, accepted.len());
                 accepted.push(item);
             }
@@ -234,9 +246,8 @@ pub fn plan_import(existing: &VaultData, mut parsed: ParsedImport) -> ImportPlan
     for (item, conflict) in accepted.into_iter().zip(accepted_conflicts) {
         match conflict {
             Some(conflict) => {
-                plan.conflict_items
-                    .push((conflict.conflict_id.clone(), item));
-                plan.conflicts.push(conflict);
+                plan.conflicts.push(conflict.clone());
+                plan.conflict_items.push(PlannedConflict { conflict, item });
             }
             None => plan.new_items.push(item),
         }
@@ -253,56 +264,92 @@ pub(crate) struct PendingUpdate {
 }
 
 /// Commit-time classification of a plan's items against the current vault
-/// items (see [`crate::vault::UnlockedVault::commit_import`]).
+/// items (see [`crate::vault::UnlockedVault::commit_import`]). Holds copies
+/// of the plan's items: `to_add` goes into the vault, `updates` must be
+/// wiped after use.
 #[derive(Default)]
 pub(crate) struct Resolution {
-    /// To add as new items (new, conflicts without existing login any more,
+    /// To add as new items (new, conflicts whose login is gone,
     /// [`ConflictMode::KeepBoth`]).
     pub to_add: Vec<VaultItem>,
-    /// [`ConflictMode::Update`] conflicts.
+    /// [`ConflictMode::Update`] conflicts, at most one per existing login.
     pub updates: Vec<PendingUpdate>,
     pub duplicates: Vec<ImportMatch>,
-    /// [`ConflictMode::Skip`] conflicts.
+    /// Conflicts not imported: [`ConflictMode::Skip`], removed from
+    /// `plan.conflicts`, or not shown as such in the preview.
     pub conflicts_skipped: Vec<ImportMatch>,
 }
 
+/// Classifies the plan's new items and conflicts again against `existing`.
+///
+/// `mode` applies only to a conflict of the preview that is still listed
+/// in `plan.conflicts` and still conflicts with the login the preview named.
+/// Everything else that conflicts now – an item planned as new, a conflict
+/// whose login is gone while another login has the same site and username –
+/// goes to `conflicts_skipped`, so a commit never changes a login the user
+/// did not decide about.
 pub(crate) fn resolve_import(
     existing: &[VaultItem],
-    incoming: Vec<VaultItem>,
+    plan: &ImportPlan,
     mode: ConflictMode,
 ) -> Resolution {
+    let listed: HashSet<&str> = plan
+        .conflicts
+        .iter()
+        .map(|c| c.conflict_id.as_str())
+        .collect();
     let mut classifier = Classifier::new(existing);
+    let mut updated: HashSet<usize> = HashSet::new();
     let mut out = Resolution::default();
-    for mut item in incoming {
-        let key = dedup_key(&item);
-        match classifier.classify(&item, key.as_ref(), &out.to_add) {
+    let planned = plan.new_items.iter().map(|item| (item, None)).chain(
+        plan.conflict_items
+            .iter()
+            .map(|p| (&p.item, Some(&p.conflict))),
+    );
+    for (item, conflict) in planned {
+        if let Some(conflict) = conflict {
+            if !listed.contains(conflict.conflict_id.as_str()) {
+                // Deselected by the caller.
+                out.conflicts_skipped.push(conflict.entry.clone());
+                continue;
+            }
+        }
+        let key = dedup_key(item);
+        match classifier.classify(item, key.as_ref(), &out.to_add) {
             Decision::Duplicate(target) => {
                 out.duplicates
-                    .push(describe_target(&item, target, existing, &out.to_add));
-                wipe_item(&mut item);
+                    .push(describe_target(item, target, existing, &out.to_add));
             }
             Decision::New => {
                 classifier.accept(key, out.to_add.len());
-                out.to_add.push(item);
+                out.to_add.push(item.clone());
             }
             Decision::Conflict {
                 existing: index, ..
             } => {
-                let matched = describe(&item, &existing[index]);
+                // The login the user decided about, if it still has the key
+                // (then it still conflicts: no login with the key is equal).
+                let shown =
+                    conflict.and_then(|c| classifier.candidate(key.as_ref(), &c.entry.existing_id));
+                let Some(position) = shown else {
+                    out.conflicts_skipped.push(describe(item, &existing[index]));
+                    continue;
+                };
+                let matched = describe(item, &existing[position]);
                 match mode {
-                    ConflictMode::Skip => {
-                        out.conflicts_skipped.push(matched);
-                        wipe_item(&mut item);
-                    }
+                    ConflictMode::Skip => out.conflicts_skipped.push(matched),
                     ConflictMode::KeepBoth => {
                         classifier.accept(key, out.to_add.len());
-                        out.to_add.push(item);
+                        out.to_add.push(item.clone());
                     }
-                    ConflictMode::Update => out.updates.push(PendingUpdate {
-                        position: index,
-                        incoming: item,
-                        matched,
-                    }),
+                    ConflictMode::Update if updated.insert(position) => {
+                        out.updates.push(PendingUpdate {
+                            position,
+                            incoming: item.clone(),
+                            matched,
+                        });
+                    }
+                    ConflictMode::Update => out.conflicts_skipped.push(matched),
                 }
             }
         }
@@ -427,6 +474,15 @@ impl<'a> Classifier<'a> {
         if let Some(key) = key {
             self.accepted_keys.entry(key).or_default().push(index);
         }
+    }
+
+    /// Index of the non-trashed existing item `id` if it has `key`.
+    fn candidate(&self, key: Option<&DedupKey>, id: &str) -> Option<usize> {
+        self.existing_keys
+            .get(key?)?
+            .iter()
+            .copied()
+            .find(|&i| self.existing[i].id == id)
     }
 }
 

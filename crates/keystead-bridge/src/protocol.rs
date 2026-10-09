@@ -608,6 +608,24 @@ pub struct StatusData {
     pub vault_name: Option<String>,
     /// Id of the unlocked vault; only revealed to paired clients.
     pub vault_id: Option<String>,
+    /// Version of the browser extension the app delivers (its
+    /// `manifest.json` version, 1–4 dot-separated integers); only revealed
+    /// to paired clients. A newer one than the running extension means the
+    /// app has updated the extension folder.
+    pub extension_version: Option<String>,
+    /// Folder the app keeps that extension in (load it unpacked from
+    /// there); only revealed to paired clients.
+    pub extension_dir: Option<String>,
+}
+
+/// The browser extension the app delivers (see
+/// [`VaultBackend::extension_info`](crate::VaultBackend::extension_info)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionInfo {
+    /// `version` of its `manifest.json`.
+    pub version: String,
+    /// Absolute path of the folder.
+    pub dir: String,
 }
 
 /// A vault as the bridge shows it (`list_vaults`, `unlock`).

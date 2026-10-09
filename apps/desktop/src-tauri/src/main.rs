@@ -11,12 +11,14 @@
 mod bridge;
 mod commands;
 mod error;
+mod extension;
 mod gui;
 mod monitor;
 mod platform;
 mod portable;
 mod state;
 mod tray;
+mod update;
 mod wipe;
 
 use std::ffi::OsString;

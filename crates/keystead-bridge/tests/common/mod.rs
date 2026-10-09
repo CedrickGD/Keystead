@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use keystead_bridge::server::{handle_frame, BridgeHandler};
 use keystead_bridge::{
-    BridgeError, LoginSecret, PairingRequest, Response, VaultBackend, VaultSummary,
+    BridgeError, ExtensionInfo, LoginSecret, PairingRequest, Response, VaultBackend, VaultSummary,
 };
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::matching;
@@ -27,6 +27,8 @@ pub const TOTP_SEED: &str = "JBSWY3DPEHPK3PXP";
 pub const GITHUB_ID: &str = "item-github";
 pub const EXAMPLE_ID: &str = "item-example";
 pub const NOTE_ID: &str = "item-note";
+pub const EXTENSION_VERSION: &str = "2.0.0.7";
+pub const EXTENSION_DIR: &str = "/data/keystead/browser-extension";
 
 /// In-memory backend with two vaults ("Privat" – the last used one – and
 /// "arbeit") sharing three items; records calls.
@@ -156,6 +158,13 @@ impl FakeBackend {
 impl VaultBackend for FakeBackend {
     fn app_version(&self) -> String {
         "2.0.0-test".to_owned()
+    }
+
+    fn extension_info(&self) -> Option<ExtensionInfo> {
+        Some(ExtensionInfo {
+            version: EXTENSION_VERSION.to_owned(),
+            dir: EXTENSION_DIR.to_owned(),
+        })
     }
 
     fn unlocked_vault(&self) -> Option<VaultSummary> {

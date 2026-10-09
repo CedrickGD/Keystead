@@ -11,7 +11,9 @@
 //!   temporary names, then renamed), then rename `Keystead-Data` away
 //!   (commit) and delete it.
 //!
-//! Lock files (`*.lock`) and temporary files (`*.tmp`) are not moved. The
+//! Lock files (`*.lock`), temporary files (`*.tmp`) and the browser
+//! extension folder (`browser-extension`, written again by the app) are not
+//! moved. The
 //! caller runs [`preflight`] first (while the vault is still open), then
 //! makes sure no vault is open and the bridge is stopped.
 
@@ -22,6 +24,7 @@ use std::path::{Path, PathBuf};
 use keystead_core::paths;
 
 use crate::error::{AppError, AppResult};
+use crate::extension;
 use crate::state::log;
 
 const STAGING_SUFFIX: &str = ".partial";
@@ -151,6 +154,14 @@ fn collect_files(root: &Path) -> AppResult<Vec<PathBuf>> {
         let entries = fs::read_dir(&dir).map_err(|e| io_err(&dir, e))?;
         for entry in entries {
             let entry = entry.map_err(|e| io_err(&dir, e))?;
+            if rel.as_os_str().is_empty()
+                && extension::is_managed_entry(&entry.file_name().to_string_lossy())
+            {
+                // The browser extension folder is not moved: the app writes
+                // it again at the new location, and the copy the browser
+                // loaded keeps working until the user switches folders.
+                continue;
+            }
             let file_type = entry.file_type().map_err(|e| io_err(&entry.path(), e))?;
             let rel_path = rel.join(entry.file_name());
             if file_type.is_dir() {
@@ -396,6 +407,31 @@ mod tests {
             "other"
         );
         assert!(!default.join("settings.json.vxmove").exists());
+    }
+
+    #[test]
+    fn the_browser_extension_folder_stays_where_the_browser_loaded_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("os").join("keystead");
+        let portable = dir.path().join("usb").join("Keystead-Data");
+        fs::create_dir_all(portable.parent().unwrap()).unwrap();
+        write(&default.join("vaults/a.keystead"), "A");
+        write(&default.join("browser-extension/manifest.json"), "{}");
+        write(&default.join(".browser-extension.1-2.tmp/manifest.json"), "{}");
+        // Only the top-level folder is special.
+        write(&default.join("vaults/browser-extension/x"), "x");
+
+        let files = collect_files(&default).unwrap();
+        assert!(files.iter().all(|f| !f.starts_with("browser-extension")));
+        assert!(files.iter().all(|f| !f.starts_with(".browser-extension.1-2.tmp")));
+        assert!(files.contains(&PathBuf::from("vaults/browser-extension/x")));
+
+        enable(&default, &portable).unwrap();
+        assert!(portable.join("vaults/a.keystead").is_file());
+        assert!(!portable.join("browser-extension").exists());
+        // The old copy is not deleted (the browser may still use it).
+        assert!(default.join("browser-extension/manifest.json").is_file());
+        assert!(!default.join("vaults").exists());
     }
 
     #[test]

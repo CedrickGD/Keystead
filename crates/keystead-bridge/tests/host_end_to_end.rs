@@ -16,8 +16,8 @@ use keystead_bridge::framing::{
 };
 use keystead_bridge::host::{self, LocalSocketConnector};
 use keystead_bridge::{
-    start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, Response, VaultBackend,
-    VaultSummary,
+    start_server, BridgeError, ClientStore, Dispatcher, ExtensionInfo, LoginSecret, Response,
+    VaultBackend, VaultSummary,
 };
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
@@ -58,6 +58,13 @@ impl CoreBackend {
 impl VaultBackend for CoreBackend {
     fn app_version(&self) -> String {
         "2.0.0".into()
+    }
+
+    fn extension_info(&self) -> Option<ExtensionInfo> {
+        Some(ExtensionInfo {
+            version: "2.0.0.12".into(),
+            dir: self.store.root().join("browser-extension").display().to_string(),
+        })
     }
 
     fn unlocked_vault(&self) -> Option<VaultSummary> {
@@ -305,7 +312,7 @@ fn browser_to_vault_through_host_and_socket() {
     assert_eq!(
         r[0].data,
         json!({"appVersion": "2.0.0", "paired": false, "unlocked": false, "vaultName": null,
-            "vaultId": null})
+            "vaultId": null, "extensionVersion": null, "extensionDir": null})
     );
     assert_eq!(r[1], Response::null("a2"));
     assert_eq!(r[2], Response::error("a3", BridgeError::NotPaired));
@@ -359,7 +366,8 @@ fn browser_to_vault_through_host_and_socket() {
     assert_eq!(
         r.data,
         json!({"appVersion": "2.0.0", "paired": true, "unlocked": true, "vaultName": "Privat",
-            "vaultId": vault_id})
+            "vaultId": vault_id, "extensionVersion": "2.0.0.12",
+            "extensionDir": backend.store.root().join("browser-extension").display().to_string()})
     );
 
     let r = browser.send(auth(

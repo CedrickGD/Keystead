@@ -64,7 +64,10 @@ pub struct ImportReport {
     /// Items not imported because they already exist (or appear twice in
     /// the file: `existingId` is empty then).
     pub duplicates: Vec<ImportMatch>,
-    /// Conflicts that were not imported.
+    /// Conflicts that were not imported: [`ConflictMode::Skip`], removed
+    /// from `plan.conflicts`, nothing to take over with
+    /// [`ConflictMode::Update`], or a conflict that arose or moved to
+    /// another login after the preview (never applied).
     pub conflicts_skipped: Vec<ImportMatch>,
     pub warnings: Vec<String>,
 }
@@ -1095,9 +1098,14 @@ fn split_uris_single(url: &str) -> Vec<LoginUri> {
 fn csv_reader(text: &str) -> Result<csv::Reader<&[u8]>> {
     let mut text = util::strip_bom(text);
     let mut first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    // Excel's "sep=;" hint line.
+    // Excel's "sep=;" hint line; the separator may be a tab, so only
+    // spaces are trimmed at the end.
     let mut delimiter = None;
-    if let Some(sep) = first_line.trim().strip_prefix("sep=") {
+    if let Some(sep) = first_line
+        .trim_start()
+        .trim_end_matches(['\r', '\n', ' '])
+        .strip_prefix("sep=")
+    {
         if let Some(&b) = sep.as_bytes().first() {
             delimiter = Some(b);
             let skip = text.find(first_line).map_or(0, |p| p + first_line.len());
@@ -1456,9 +1464,8 @@ fn parse_bitwarden_json(text: &str) -> Result<ParsedImport> {
         .as_object()
         .ok_or_else(|| Error::invalid("bitwarden_json"))?;
     if obj.get("encrypted").and_then(Value::as_bool) == Some(true) {
-        return Err(Error::Unsupported(
-            "encrypted Bitwarden export; export as unencrypted JSON".into(),
-        ));
+        // Same UI code as `detect_import`.
+        return Err(Error::Unsupported("bitwarden_encrypted".into()));
     }
     let items = obj
         .get("items")

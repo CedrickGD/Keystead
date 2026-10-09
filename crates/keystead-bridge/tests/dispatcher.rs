@@ -84,6 +84,8 @@ fn status_without_pairing() {
             // Not revealed to unpaired callers.
             vault_name: None,
             vault_id: None,
+            extension_version: None,
+            extension_dir: None,
         }
     );
     // Wrong credentials are just "not paired" for status.
@@ -151,6 +153,11 @@ fn pairing_approved_issues_working_credentials() {
     );
     let status: StatusData = r.data_as().unwrap();
     assert!(status.paired && !status.unlocked && status.vault_name.is_none());
+    // Paired clients learn which extension the app delivers and where.
+    assert_eq!(status.extension_version.as_deref(), Some(EXTENSION_VERSION));
+    assert_eq!(status.extension_dir.as_deref(), Some(EXTENSION_DIR));
+    assert_eq!(r.data["extensionVersion"], EXTENSION_VERSION);
+    assert_eq!(r.data["extensionDir"], EXTENSION_DIR);
 
     // lastSeenAt is touched by authenticated requests.
     let before = f.dispatcher.clients()[0].last_seen_at;

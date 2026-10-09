@@ -278,7 +278,7 @@ pub struct ImportReport {          // camelCase
     pub updated: usize,            // existing logins updated from the file (mode update)
     pub skipped: usize,            // invalid rows/entries of the file (each has a warning)
     pub duplicates: Vec<ImportMatch>,        // not imported: already present (existingId "" = twice in the file)
-    pub conflicts_skipped: Vec<ImportMatch>, // "conflictsSkipped": conflicts not imported
+    pub conflicts_skipped: Vec<ImportMatch>, // "conflictsSkipped": conflicts not imported (mode skip, deselected, nothing to take over, or not shown in the preview)
     pub warnings: Vec<String>,
 }
 pub enum ImportFormat { Legacy, Csv, BitwardenJson, Keystead } // serde "legacy" | "csv" | "bitwarden_json" | "keystead"; FromStr/Display/as_str(), needs_password()
@@ -288,7 +288,8 @@ pub struct ParsedImport { pub items: Vec<VaultItem>, pub folders: Vec<Folder>, p
 pub fn read_import(path: &Path, format: ImportFormat, password: Option<&str>) -> Result<ParsedImport>;
 pub fn plan_import(existing: &VaultData, parsed: ParsedImport) -> ImportPlan;
 pub struct ImportPlan { pub new_items: Vec<VaultItem>, pub folders: Vec<Folder>, pub duplicates: Vec<ImportMatch>,
-                        pub conflicts: Vec<ImportConflict>, pub invalid: usize, pub warnings: Vec<String>, /* + incoming conflict items (private) */ }
+                        pub conflicts: Vec<ImportConflict> /*at most one per existing login*/, pub invalid: usize, pub warnings: Vec<String>,
+                        /* + every planned conflict with its incoming item (private) */ }
 impl ImportPlan { pub fn preview(&self) -> ImportPreview }          // Debug prints counts only; items wiped on drop; not Clone/Serialize
 pub struct ImportPreview { pub new_count: usize, pub duplicates: Vec<ImportMatch>, pub conflicts: Vec<ImportConflict>, pub invalid: usize, pub warnings: Vec<String> } // camelCase, secret-free
 pub struct ImportMatch { pub incoming_name: String, pub username: String, pub site: String, pub item_type: ItemType, pub existing_id: String, pub existing_name: String } // camelCase, no passwords
@@ -380,7 +381,9 @@ Behaviour notes:
   `totp_digits`, `totp_period`, `csv_empty`, `csv_unknown_columns`,
   `bitwarden_json`, `json: …`, `csv: …`, `format <x>`.
 * `unsupported` details of the import meant for the UI: `unknown_format`,
-  `bitwarden_encrypted`, `file_too_large` (others are English free text, e.g.
+  `bitwarden_encrypted` (from `detect_import`, and from `read_import` /
+  `import_into` / `import_bitwarden_json` with `bitwarden_json`),
+  `file_too_large` (others are English free text, e.g.
   `vault format version 2`, `not a Keystead vault file`).
 * Strength texts (`crackTime`, `warning`, `suggestions`) and import warnings
   are English.
@@ -415,7 +418,7 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
      optional) → `legacy`, needs password (header validated);
   5. a CSV header row of a supported dialect (Bitwarden, Firefox, or the
      generic/Chrome/legacy aliases with at least two recognised columns;
-     `,` `;` or tab, Excel `sep=` line) → `csv`;
+     `,` `;` or tab, Excel `sep=` line, also `sep=<TAB>`) → `csv`;
   6. anything else (other JSON, plain text, binary, empty) →
      `unsupported:unknown_format`.
   JSON is scanned shallowly (top-level keys only, values skipped), so
@@ -442,6 +445,14 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
   * Items of different types never match. An item equal to an earlier item
     of the same file is a duplicate of that one (`existingId` empty,
     `existingName` = the earlier item's name).
+  * Several rows of the file that conflict with the same existing login
+    (same site and username, different passwords) form **one** conflict:
+    the row with the newest `updatedAt` from the file (Bitwarden
+    `revisionDate`, Keystead, Firefox `timePasswordChanged`) is kept, on a
+    tie (e.g. Chrome CSV without timestamps) the last row. The other rows
+    are listed as duplicates within the file (`existingId` empty,
+    `existingName` = the kept row's name), so `update` never writes a
+    password into the history that was never the vault's.
   * `ImportMatch`: `incomingName`; `username` = login username (trimmed), for
     other types the list subtitle (card `•••• 1234`, identity name/e-mail,
     empty for notes); `site` = the login host (empty without URI / for other
@@ -449,11 +460,22 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
     number or note text.
 * **Commit** (`commit_import`, `commit_import_ref`): one save = one revision;
   nothing is written when nothing changes. The incoming items are
-  classified again against the current vault: an item that became a
-  duplicate meanwhile is skipped (`duplicates`), a conflict whose login was
-  deleted or trashed is added as a new item, an item planned as new that now
-  conflicts follows the mode. Conflicts removed from `plan.conflicts` by the
-  caller are left out.
+  classified again against the current vault (it may have changed since the
+  preview, e.g. through the browser extension):
+  * an item that became a duplicate meanwhile is skipped (`duplicates`);
+  * a conflict whose login was deleted, trashed or no longer has the same
+    site and username is added as a new item if no other login matches it;
+  * the mode applies **only to the conflicts of the preview**, and only
+    while they still conflict with the login the preview named
+    (`existingId`; it may have been edited). Anything else that conflicts
+    at commit time – an item planned as new whose login was saved after the
+    preview, or a conflict whose named login is gone while another login
+    with the same site and username exists – is not imported and goes to
+    `conflictsSkipped` in every mode. The commit never changes or doubles a
+    login the user did not decide about;
+  * conflicts the caller removed from `plan.conflicts` (deselected) are not
+    imported either and are reported in `conflictsSkipped` as planned;
+  * a login is updated at most once per commit.
   * `skip` (default): conflicts are not imported (`conflictsSkipped`).
   * `update`: the incoming password replaces the existing one through the
     normal save path (old password → `passwordHistory`, `passwordRevisedAt`
