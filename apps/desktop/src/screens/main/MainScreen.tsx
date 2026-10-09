@@ -58,11 +58,11 @@ export function MainScreen() {
   // dropped onto the window (`request` = that file).
   const [importDialog, setImportDialog] = useState<{ request: ImportRequest | null } | null>(null);
   const importSeq = useRef(0);
-  const openImport = useCallback((path?: string) => {
+  const openImport = useCallback((path?: string, others = 0) => {
     importSeq.current += 1;
-    setImportDialog({ request: path ? { path, seq: importSeq.current } : null });
+    setImportDialog({ request: path ? { path, seq: importSeq.current, others } : null });
   }, []);
-  useFileDropTarget((path) => openImport(path));
+  useFileDropTarget((path, others) => openImport(path, others));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);

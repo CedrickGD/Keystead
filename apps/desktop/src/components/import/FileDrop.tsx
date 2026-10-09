@@ -2,17 +2,21 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type M
 import { createPortal } from "react-dom";
 import { FileDown, LockKeyhole } from "lucide-react";
 import { events, subscribeEffect } from "../../lib/api";
-import { useT } from "../../i18n";
+import { useT, type MessageKey } from "../../i18n";
 import { useToast } from "../Toasts";
 
 /**
- * Receives the path of a file dropped onto the window. Returns false if it
- * cannot take a file right now (e.g. an import is being committed).
+ * Receives the path of a file dropped onto the window; `others` = how many
+ * further files were dropped with it (only the first is imported). The
+ * target tells the user about ignored files itself – inside the import
+ * dialog, where a toast would cover the dialog's title.
  */
-export type FileDropHandler = (path: string) => boolean | void;
+export type FileDropHandler = (path: string, others: number) => void;
 
 interface FileDropApi {
   register: (handler: MutableRefObject<FileDropHandler>) => () => void;
+  /** Overrides the "no target" explanation while the caller is mounted. */
+  overrideNoTarget: (mode: NoDropTarget | null) => void;
 }
 
 const FileDropContext = createContext<FileDropApi | null>(null);
@@ -31,8 +35,18 @@ export function baseName(path: string): string {
  * without a target (vault locked, welcome screen) that importing needs an
  * unlocked vault first.
  */
-export function FileDropProvider({ noTarget, children }: { noTarget: "unlock" | "create"; children: ReactNode }) {
+export type NoDropTarget = "unlock" | "create" | "finishSetup";
+
+const NO_TARGET_TEXT: Record<NoDropTarget, { title: MessageKey; hint: MessageKey }> = {
+  unlock: { title: "drop.lockedTitle", hint: "drop.lockedHint" },
+  create: { title: "drop.noVaultTitle", hint: "drop.noVaultHint" },
+  finishSetup: { title: "drop.finishSetupTitle", hint: "drop.finishSetupHint" },
+};
+
+export function FileDropProvider({ noTarget: defaultNoTarget, children }: { noTarget: NoDropTarget; children: ReactNode }) {
   const { t } = useT();
+  const [noTargetOverride, setNoTargetOverride] = useState<NoDropTarget | null>(null);
+  const noTarget = noTargetOverride ?? defaultNoTarget;
   const toast = useToast();
   const targets = useRef<{ id: number; handler: MutableRefObject<FileDropHandler> }[]>([]);
   const nextId = useRef(1);
@@ -47,11 +61,12 @@ export function FileDropProvider({ noTarget, children }: { noTarget: "unlock" | 
           targets.current = targets.current.filter((target) => target.id !== id);
         };
       },
+      overrideNoTarget: setNoTargetOverride,
     }),
     [],
   );
 
-  const noTargetText = noTarget === "create" ? t("drop.noVaultTitle") : t("drop.lockedTitle");
+  const noTargetText = t(NO_TARGET_TEXT[noTarget].title);
   const drop = useRef<(paths: string[]) => void>(() => undefined);
   drop.current = (paths: string[]) => {
     const first = paths[0];
@@ -61,8 +76,7 @@ export function FileDropProvider({ noTarget, children }: { noTarget: "unlock" | 
       toast.info(noTargetText);
       return;
     }
-    if (paths.length > 1) toast.info(t("drop.onlyOne", { name: baseName(first) }));
-    if (target.handler.current(first) === false) toast.info(t("drop.busy"));
+    target.handler.current(first, paths.length - 1);
   };
 
   useEffect(
@@ -91,7 +105,7 @@ export function FileDropProvider({ noTarget, children }: { noTarget: "unlock" | 
   );
 }
 
-function DropOverlay({ withTarget, noTarget }: { withTarget: boolean; noTarget: "unlock" | "create" }) {
+function DropOverlay({ withTarget, noTarget }: { withTarget: boolean; noTarget: NoDropTarget }) {
   const { t } = useT();
   return createPortal(
     <div className={`drop-overlay ${withTarget ? "" : "blocked"}`} aria-live="polite">
@@ -116,8 +130,8 @@ function DropOverlay({ withTarget, noTarget }: { withTarget: boolean; noTarget: 
             </>
           ) : (
             <>
-              <div className="drop-title">{noTarget === "create" ? t("drop.noVaultTitle") : t("drop.lockedTitle")}</div>
-              <div className="drop-hint">{noTarget === "create" ? t("drop.noVaultHint") : t("drop.lockedHint")}</div>
+              <div className="drop-title">{t(NO_TARGET_TEXT[noTarget].title)}</div>
+              <div className="drop-hint">{t(NO_TARGET_TEXT[noTarget].hint)}</div>
             </>
           )}
         </div>
@@ -139,4 +153,18 @@ export function useFileDropTarget(handler: FileDropHandler, enabled = true): voi
     if (!ctx || !enabled) return;
     return ctx.register(ref);
   }, [ctx, enabled]);
+}
+
+/**
+ * While mounted (and `mode` is set), explains a drop without a target with
+ * `mode` instead of the app-wide default – e.g. the setup wizard after its
+ * vault was created, where the app does not know about that vault yet.
+ */
+export function useNoDropTargetMode(mode: NoDropTarget | null): void {
+  const ctx = useContext(FileDropContext);
+  useEffect(() => {
+    if (!ctx || !mode) return;
+    ctx.overrideNoTarget(mode);
+    return () => ctx.overrideNoTarget(null);
+  }, [ctx, mode]);
 }

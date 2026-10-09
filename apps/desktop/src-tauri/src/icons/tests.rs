@@ -335,6 +335,11 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tauri::async_runtime::block_on(f)
 }
 
+/// A run that is never cancelled.
+fn never() -> bool {
+    false
+}
+
 #[test]
 fn the_resolver_hides_local_addresses() {
     // `localhost` resolves without a network (hosts file).
@@ -356,7 +361,7 @@ fn the_resolver_hides_local_addresses() {
     // And the fetcher refuses such hosts before any request.
     for host in ["localhost", "127.0.0.1", "nas", "printer.local"] {
         assert!(matches!(
-            block_on(fetcher.fetch(host)),
+            block_on(fetcher.fetch(host, &never)),
             Err(FetchError::Refused(_))
         ));
     }
@@ -441,6 +446,43 @@ fn unusable_images_are_refused() {
     assert!(process_icon(&huge).is_err());
 }
 
+#[test]
+fn images_larger_than_any_favicon_are_not_decoded() {
+    // A small file can announce a big image (a 4096×4096 PNG of one colour
+    // is a few hundred KiB): sides above 1024 px are refused up front, which
+    // bounds the decoding work per image.
+    assert_eq!(MAX_DIMENSION, 1024);
+    for (w, h) in [(1025, 16), (16, 1025), (4096, 16)] {
+        assert!(process_icon(&png(w, h)).is_err(), "{w}×{h}");
+    }
+    let edge = decode(&process_icon(&png(1024, 16)).unwrap());
+    assert_eq!(edge.dimensions(), (64, 64));
+}
+
+#[test]
+fn icon_decoding_does_not_block_the_async_runtime() {
+    // One runtime thread only: if decoding ran on it, the other task could
+    // not run before the decode is done.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let image = png(1024, 1024);
+    let (decoded, other_task_ran_meanwhile) = rt.block_on(async move {
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        let other = tokio::spawn(async move { flag.store(true, Ordering::SeqCst) });
+        let decoded = decode_icon(image).await;
+        let ran_meanwhile = ran.load(Ordering::SeqCst);
+        other.await.unwrap();
+        (decoded, ran_meanwhile)
+    });
+    assert_eq!(decode(&decoded.unwrap()).dimensions(), (64, 64));
+    assert!(
+        other_task_ran_meanwhile,
+        "the decode held the runtime thread"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Fetcher against a local server
 // ---------------------------------------------------------------------------
@@ -473,6 +515,8 @@ fn redirect(to: &str) -> Reply {
 struct Seen {
     path: String,
     headers: Vec<(String, String)>,
+    /// When the request arrived.
+    at: Instant,
 }
 
 struct Server {
@@ -523,6 +567,7 @@ fn serve(route: impl Fn(&str) -> Reply + Send + Sync + 'static) -> Server {
                 log.lock().unwrap().push(Seen {
                     path: path.clone(),
                     headers,
+                    at: Instant::now(),
                 });
                 let r = route(&path);
                 std::thread::sleep(r.delay);
@@ -571,7 +616,7 @@ fn loads_the_best_linked_icon_with_a_neutral_request() {
         _ => reply(404, ""),
     });
     let fetcher = local_fetcher(&server);
-    let out = block_on(fetcher.fetch("a.example.com")).unwrap();
+    let out = block_on(fetcher.fetch("a.example.com", &never)).unwrap();
     assert_eq!(decode(&out).dimensions(), (64, 64));
     assert_eq!(
         server.paths(),
@@ -609,10 +654,10 @@ fn falls_back_to_favicon_ico() {
         _ => reply(404, ""),
     });
     let fetcher = local_fetcher(&server);
-    assert!(block_on(fetcher.fetch("b.example.com")).is_ok());
-    assert!(block_on(fetcher.fetch("c.example.com")).is_ok());
+    assert!(block_on(fetcher.fetch("b.example.com", &never)).is_ok());
+    assert!(block_on(fetcher.fetch("c.example.com", &never)).is_ok());
     // Nothing anywhere: a failure, but the site answered (not "offline").
-    let err = block_on(fetcher.fetch("d.example.com")).unwrap_err();
+    let err = block_on(fetcher.fetch("d.example.com", &never)).unwrap_err();
     assert!(matches!(err, FetchError::Failed(_)), "{err}");
 }
 
@@ -624,7 +669,7 @@ fn data_url_icons_need_no_request() {
         "/e.example.com/" => reply(200, html.clone()),
         _ => reply(404, ""),
     });
-    assert!(block_on(local_fetcher(&server).fetch("e.example.com")).is_ok());
+    assert!(block_on(local_fetcher(&server).fetch("e.example.com", &never)).is_ok());
     assert_eq!(server.paths(), vec!["/e.example.com/"]);
 }
 
@@ -652,11 +697,11 @@ fn redirects_are_limited_and_checked() {
         _ => reply(404, ""),
     });
     let fetcher = local_fetcher(&server);
-    assert!(block_on(fetcher.fetch("r3.example.com")).is_ok());
-    let err = block_on(fetcher.fetch("r4.example.com")).unwrap_err();
+    assert!(block_on(fetcher.fetch("r3.example.com", &never)).is_ok());
+    let err = block_on(fetcher.fetch("r4.example.com", &never)).unwrap_err();
     assert!(matches!(err, FetchError::Refused(_)), "{err}");
     assert!(!server.paths().contains(&"/four/4".to_owned()));
-    let err = block_on(fetcher.fetch("away.example.com")).unwrap_err();
+    let err = block_on(fetcher.fetch("away.example.com", &never)).unwrap_err();
     assert!(matches!(err, FetchError::Refused(_)), "{err}");
 }
 
@@ -682,10 +727,10 @@ fn large_bodies_and_slow_servers_are_cut_off() {
         _ => reply(404, ""),
     });
     let fetcher = local_fetcher(&server);
-    assert!(block_on(fetcher.fetch("big.example.com")).is_err());
-    assert!(block_on(fetcher.fetch("long.example.com")).is_ok());
+    assert!(block_on(fetcher.fetch("big.example.com", &never)).is_err());
+    assert!(block_on(fetcher.fetch("long.example.com", &never)).is_ok());
     let started = Instant::now();
-    let err = block_on(fetcher.fetch("slow.example.com")).unwrap_err();
+    let err = block_on(fetcher.fetch("slow.example.com", &never)).unwrap_err();
     assert!(err.is_network(), "{err}");
     assert!(started.elapsed() < Duration::from_secs(4));
 }
@@ -867,6 +912,138 @@ fn locking_cancels_a_run() {
 }
 
 #[test]
+fn turning_the_setting_off_stops_open_and_further_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = core_with_open_vault(dir.path(), Settings::default());
+    for n in 1..=6 {
+        core.mutate(|v| {
+            v.save_item(login(
+                &format!("S{n}"),
+                &format!("https://s{n}.example.com"),
+            ))
+        })
+        .unwrap();
+    }
+    // Every answer takes 1.2 s; without cancellation each worker would go on
+    // to the next request (favicon, next site) after its page.
+    let server = serve(|_| Reply {
+        delay: Duration::from_millis(1200),
+        ..reply(404, "")
+    });
+    let fetcher = local_fetcher(&server);
+    let off_at = Arc::new(Mutex::new(None::<Instant>));
+    let switch = {
+        let (core, off_at) = (Arc::clone(&core), Arc::clone(&off_at));
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            core.state().settings.website_icons = false;
+            core.icons().setting_changed(false);
+            *off_at.lock().unwrap() = Some(Instant::now());
+        })
+    };
+    let outcome = run_once(&core, &fetcher);
+    let returned = Instant::now();
+    switch.join().unwrap();
+    assert_eq!(outcome, RunOutcome::Cancelled);
+    let off_at = off_at.lock().unwrap().unwrap();
+    // The open requests were dropped instead of awaited.
+    assert!(
+        returned < off_at + Duration::from_millis(700),
+        "run ended {:?} after the setting went off",
+        returned.saturating_duration_since(off_at)
+    );
+    // No request was sent after the setting went off (the servers' answers
+    // would have arrived at 1.2 s and started the favicon requests).
+    std::thread::sleep(Duration::from_millis(1500));
+    let seen = server.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), CONCURRENCY, "{seen:?}");
+    assert!(seen.iter().all(|s| s.at < off_at), "{seen:?}");
+    assert!(core.state().vault.as_ref().unwrap().data().icons.is_empty());
+}
+
+#[test]
+fn a_stopped_run_sends_no_further_request() {
+    let server = serve(|_| reply(404, ""));
+    let fetcher = local_fetcher(&server);
+    let err = block_on(fetcher.fetch("a.example.com", &|| true)).unwrap_err();
+    assert!(err.is_network(), "{err}");
+    assert!(server.paths().is_empty());
+}
+
+#[test]
+fn sites_a_proxy_would_handle_are_not_fetched() {
+    let proxied = || {
+        ProxyMatcher::builder()
+            .https("http://proxy.example.net:3128")
+            .no("b.example.com")
+            .build()
+    };
+    let matcher = proxied();
+    assert!(proxied_by(&matcher, "a.example.com"));
+    assert!(!proxied_by(&matcher, "b.example.com"));
+    assert!(!proxied_by(
+        &ProxyMatcher::builder().build(),
+        "a.example.com"
+    ));
+    // Only a proxy for plain http does not concern the https requests.
+    let http_only = ProxyMatcher::builder()
+        .http("http://proxy.example.net:3128")
+        .build();
+    assert!(!proxied_by(&http_only, "a.example.com"));
+
+    // A run skips the proxied sites (without recording them as failed) and
+    // fetches the rest directly.
+    let dir = tempfile::tempdir().unwrap();
+    let core = core_with_open_vault(dir.path(), Settings::default());
+    for (name, uri) in [
+        ("A", "https://a.example.com"),
+        ("C", "https://c.example.com"),
+    ] {
+        core.mutate(|v| v.save_item(login(name, uri))).unwrap();
+    }
+    let server = icon_server(Duration::ZERO);
+    let mut fetcher = local_fetcher(&server);
+    fetcher.proxies = Some(|| {
+        ProxyMatcher::builder()
+            .all("http://proxy.example.net:3128")
+            .no("c.example.com")
+            .build()
+    });
+    assert_eq!(
+        run_once(&core, &fetcher),
+        RunOutcome::Done { more_due: false }
+    );
+    assert!(server
+        .paths()
+        .iter()
+        .all(|p| p.starts_with("/c.example.com/")));
+    {
+        let st = core.state();
+        let icons = &st.vault.as_ref().unwrap().data().icons;
+        assert!(icons["c.example.com"].png.is_some());
+        assert!(!icons.contains_key("a.example.com"), "not marked as failed");
+    }
+    // Everything behind the proxy: nothing to do, no request.
+    fetcher.proxies = Some(|| {
+        ProxyMatcher::builder()
+            .all("http://proxy.example.net:3128")
+            .build()
+    });
+    let before = server.paths().len();
+    assert_eq!(run_once(&core, &fetcher), RunOutcome::Proxied);
+    assert_eq!(server.paths().len(), before);
+
+    // The production fetcher reads the settings; the local test fetcher and
+    // one that uses the proxy itself do not.
+    assert!(Fetcher::new("test").unwrap().proxies.is_some());
+    assert!(local_fetcher(&server).proxies.is_none());
+    assert!(Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, true)
+        .unwrap()
+        .proxies
+        .is_none());
+}
+
+#[test]
 fn the_scheduler_follows_the_vault_session() {
     let dir = tempfile::tempdir().unwrap();
     let core = core_with_open_vault(dir.path(), Settings::default());
@@ -942,7 +1119,7 @@ fn real_sites() {
     });
     for host in hosts.split_whitespace() {
         let started = Instant::now();
-        match block_on(fetcher.fetch(host)) {
+        match block_on(fetcher.fetch(host, &never)) {
             Ok(png) => {
                 let img = decode(&png);
                 println!(
@@ -958,4 +1135,28 @@ fn real_sites() {
             Err(e) => println!("{host}: {e} ({:?})", started.elapsed()),
         }
     }
+}
+
+#[test]
+fn unclear_proxy_setups_fail_closed() {
+    let none = SystemProxyHints::default();
+    let pac = SystemProxyHints {
+        auto_config: true,
+        manual_enabled: false,
+    };
+    let manual = SystemProxyHints {
+        auto_config: false,
+        manual_enabled: true,
+    };
+    // Nothing configured: fetch directly.
+    assert!(!proxy_unclear_from(false, &none, false));
+    // A PAC script is never evaluated: always skip.
+    assert!(proxy_unclear_from(false, &pac, false));
+    assert!(proxy_unclear_from(false, &pac, true));
+    // A proxy the matcher understands: the per-host skipping handles it.
+    assert!(!proxy_unclear_from(true, &none, true));
+    assert!(!proxy_unclear_from(false, &manual, true));
+    // Configured but not understood (e.g. "http=…;https=…"): skip.
+    assert!(proxy_unclear_from(true, &none, false));
+    assert!(proxy_unclear_from(false, &manual, false));
 }

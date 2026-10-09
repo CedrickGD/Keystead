@@ -350,6 +350,7 @@ function lock(reason: "manual" | "timeout" | "system"): void {
   if (!s.unlockedId) return;
   s.unlockedId = null;
   pendingImport = null;
+  importTicket += 1;
   emit("vault://locked", { reason });
 }
 
@@ -576,6 +577,8 @@ interface MockPendingImport {
 
 let pendingImport: MockPendingImport | null = null;
 let importSeq = 0;
+/** Like the backend's slot ticket: only the newest analysis may store its plan. */
+let importTicket = 0;
 
 async function analyzeImport(args: Record<string, unknown>): Promise<unknown> {
   const s = getState();
@@ -583,6 +586,7 @@ async function analyzeImport(args: Record<string, unknown>): Promise<unknown> {
   const password = optStr(args, "password") || null;
   if (!path.trim()) fail("invalid_input:path_required");
   pendingImport = null;
+  const ticket = ++importTicket;
   const vault = openVault();
   if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
   await sleep(450);
@@ -597,6 +601,8 @@ async function analyzeImport(args: Record<string, unknown>): Promise<unknown> {
     if (password !== DEMO_PASSWORD) fail("wrong_password");
   }
   if (s.unlockedId !== vault.info.id) fail("locked");
+  // Overtaken by a newer analysis (another file dropped meanwhile).
+  if (ticket !== importTicket) fail("not_found");
   const plan = planMockImport(vault.data.items, file.items);
   importSeq += 1;
   pendingImport = { id: `import-${importSeq}`, vaultId: vault.info.id, expires: Date.now() + 15 * 60_000, file, plan };

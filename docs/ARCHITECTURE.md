@@ -739,7 +739,13 @@ Frontend integration requirements for `src-tauri`:
 * **The waiting plan** holds the file's decrypted items, so it is kept as
   briefly as possible, in one slot (`Core::import_slot`; lock order: state
   before slot): a new analysis replaces it (also when that analysis fails or
-  only asks for a password); it is dropped – `ImportPlan`'s `Drop` overwrites
+  only asks for a password). Each analysis takes a ticket from the slot when
+  it starts; only the newest may store its plan, so an older analysis that
+  finishes late (a slow key derivation while the next file was dropped) or
+  one during which its vault was closed drops its plan and answers
+  `not_found` – the newer preview stays importable (the UI ignores and
+  cancels results of analyses it has moved on from, also after the dialog
+  was closed). It is dropped – `ImportPlan`'s `Drop` overwrites
   the secrets – after every commit attempt (success or error: the UI analyses
   again), on `cancel_import`, 15 minutes after the analysis (the monitor
   checks every 5 s, and a commit after that answers `not_found`), and when its
@@ -778,9 +784,12 @@ Frontend integration requirements for `src-tauri`:
   dragged over the window a full-window overlay shows "Datei hier ablegen, um
   sie zu importieren" with the supported sources; the drop goes to the newest
   registered target – the open import dialog (a new file restarts its
-  analysis; while it commits: "Bitte warte …"), else the main window (opens
+  analysis; while it commits the file is not taken: "„x“ wurde nicht
+  geöffnet, weil gerade importiert wird …"), else the main window (opens
   the dialog with the file), else the wizard's import step. Several files:
-  the first is used, a toast says so. Without a target (unlock screen,
+  the first is used. Both notes appear inside the dialog / wizard step (an
+  info box above its content), not as a toast, which would cover the
+  dialog's title. Without a target (unlock screen,
   welcome screen) the overlay says "Zum Importieren zuerst den Tresor
   entsperren" ("… einen Tresor anlegen" while no vault exists) and the drop
   does nothing but show that hint.
@@ -876,7 +885,8 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   unchanged): `{ [host]: IconEntry { png: string|null /* base64, 64×64 PNG */,
   fetchedAt: number /* last attempt */, failedAt: number|null /* last failed
   attempt, null after a success */ } }`. A failed refresh keeps the older
-  icon. `IconEntry`'s `Debug` prints only the image length.
+  icon. `IconEntry`'s and `ItemSummary`'s (its `icon` data URL) `Debug`
+  print only the image length.
 * **Host key** (`icons::site_host` / `icon_host`, same as the import's
   "site"; the UI has the same function in `src/lib/icons.ts`): the
   lower-case host of a login's first http(s) URI (scheme-less URIs count as
@@ -902,7 +912,9 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   turned on, and every 24 h while the vault stays open. A run handles at most
   200 sites, 4 at a time; if more are due the next run follows 1 min later.
   Locking, switching the vault, turning the setting off or quitting cancels
-  a run (generation counter); results are written only into the vault the
+  a run (generation counter) at once: no further request is sent (checked
+  before every request) and open requests are dropped (checked every
+  100 ms); results are written only into the vault the
   run started for (`mutate_for_page` with its id, checked under the state
   lock – never into another vault), in batches of up to 16 or every 5 s, each
   followed by `vault://icons`. Writes use the normal `conflict` → reload →
@@ -931,11 +943,26 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   only to what the resolver returns – also after a redirect – and uses no
   proxy (otherwise the proxy would resolve the name), so a website cannot
   make the app talk to the local network.
+* **Proxy**: the app never goes *around* a proxy either (that would show the
+  websites of the user's accounts the user's own address). Before every run
+  it reads the proxy settings of the system and the environment
+  (`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, the Windows Internet settings, the
+  macOS network settings) and
+  skips every site a proxy would handle – not recorded as failed, the log
+  only counts them. If all due sites are skipped, the run does nothing (the
+  next one follows the usual triggers, at the latest in 24 h). Networks that
+  allow web access only through a proxy therefore get no icons.
+  Fail closed: a PAC/auto-config script, or a proxy that is set but not
+  understood (e.g. the per-protocol Windows form `http=…;https=…`), makes the
+  run fetch nothing at all.
 * **Image**: recognised by content (PNG, ICO – its largest frame –, JPEG,
-  GIF – first frame –, WebP; SVG and BMP are refused), decoder limits 4096 px
-  per side and 64 MiB; smaller than 8 px or fully transparent = no icon.
-  Scaled into 64×64 keeping the aspect ratio (Lanczos down, Catmull-Rom up),
-  centred on a transparent square, stored as PNG.
+  GIF – first frame –, WebP; SVG and BMP are refused), decoder limits 1024 px
+  per side (no favicon needs more; it bounds the work per image) and 64 MiB;
+  smaller than 8 px or fully transparent = no icon. Scaled into 64×64
+  keeping the aspect ratio (Lanczos down, Catmull-Rom up), centred on a
+  transparent square, stored as PNG. Decoding and scaling run on the
+  blocking thread pool, never on the async runtime's threads (which also
+  serve the app's commands); the 15 s per-site limit includes them.
 * **Failures are silent**: a site without a usable icon gets `failedAt`
   (retried after 7 days) and keeps the letter avatar; the log only counts
   (`website icons: 12 loaded, 3 not available`, never host names). A run in
@@ -945,8 +972,9 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   and editor header and the security report show the icon of
   `iconHost(item)` on a light tile (letter avatar while missing or if the
   image does not decode). Settings → Allgemein: "Website-Icons automatisch
-  laden" (hint: loaded directly from the websites; off = no requests for
-  this) and "Gespeicherte Icons löschen" (`clear_icons`).
+  laden" (hint: loaded directly from the websites, never around a proxy –
+  with a proxy set up, no icons are loaded; off = no requests for this) and
+  "Gespeicherte Icons löschen" (`clear_icons`).
 * **Browser extension**: `logins_for_url` and `search` rows carry the stored
   icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
   (see the bridge protocol); the popup shows it, else the letter. The
@@ -1380,4 +1408,6 @@ register::registered_browsers() -> Vec<BrowserId>;            // re-register the
   the suggested name; the success toast offers "Im Ordner anzeigen"
   (`show_export`).
 * While a dialog is open, toasts appear at the top so they never cover its
-  buttons.
+  buttons. Notes that belong to a dialog (e.g. the import dialog's "only one
+  file" / "import in progress" notes for dropped files) are shown inside it
+  instead, so nothing covers its title.

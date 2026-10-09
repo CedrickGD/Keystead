@@ -208,8 +208,8 @@ pub struct VaultInfo {
 }
 
 /// Lightweight item view without secrets (used by search lists, the browser
-/// extension and the TUI list).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// extension and the TUI list). `Debug` prints only the icon's length.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemSummary {
     pub id: String,
@@ -227,6 +227,23 @@ pub struct ItemSummary {
     /// the desktop app's browser bridge for a few rows (omitted otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+}
+
+impl std::fmt::Debug for ItemSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never dump the icon's image data.
+        f.debug_struct("ItemSummary")
+            .field("id", &self.id)
+            .field("item_type", &self.item_type)
+            .field("name", &self.name)
+            .field("subtitle", &self.subtitle)
+            .field("uri", &self.uri)
+            .field("favorite", &self.favorite)
+            .field("has_totp", &self.has_totp)
+            .field("folder_id", &self.folder_id)
+            .field("icon_len", &self.icon.as_ref().map(String::len))
+            .finish()
+    }
 }
 
 /// Current time in Unix epoch milliseconds.
@@ -444,5 +461,23 @@ mod tests {
         }
         assert_eq!(ident.summary().subtitle, "Max Muster");
         assert_eq!(VaultItem::new(ItemType::Note, "n").summary().subtitle, "");
+    }
+
+    #[test]
+    fn debug_output_never_contains_icon_data() {
+        let blob = format!("data:image/png;base64,{}", "iVBORw0KGgo".repeat(40));
+        let mut summary = VaultItem::new(ItemType::Login, "GitHub").summary();
+        summary.icon = Some(blob.clone());
+        let debug = format!("{summary:?}");
+        assert!(!debug.contains("iVBORw0KGgo"), "{debug}");
+        assert!(debug.contains("GitHub"));
+        assert!(debug.contains(&format!("icon_len: Some({})", blob.len())));
+
+        let entry = IconEntry {
+            png: Some("iVBORw0KGgo".repeat(40)),
+            fetched_at: 1,
+            failed_at: None,
+        };
+        assert!(!format!("{entry:?}").contains("iVBORw0KGgo"));
     }
 }

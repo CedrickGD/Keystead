@@ -30,6 +30,11 @@ tauri-plugin-process = "2"
 # plugin's, so nothing extra is compiled. `rustls-no-provider` → ring is
 # installed as the process default first (as the plugin does).
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# The icon fetcher reads the system/environment proxy settings with the same
+# matcher reqwest uses (`system-proxy` above) – to skip sites a proxy would
+# handle instead of going around it. Already compiled for reqwest.
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+http = "1"
 # Website icons: decoders for what sites serve as favicons (no SVG); resized
 # to 64×64 and stored as PNG. `png` is already compiled for Tauri.
 image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp"] }

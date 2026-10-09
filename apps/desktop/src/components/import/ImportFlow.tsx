@@ -10,6 +10,7 @@ import {
   FileText,
   FileUp,
   Globe,
+  Info,
   KeyRound,
   Plus,
   Shield,
@@ -45,10 +46,14 @@ export interface ImportFlowLayout {
   dismissable: boolean;
 }
 
-/** A file to analyse right away (dropped onto the window); `seq` changes for every new request. */
+/**
+ * A file to analyse right away (dropped onto the window); `seq` changes for
+ * every new request, `others` = further files dropped with it (ignored).
+ */
 export interface ImportRequest {
   path: string;
   seq: number;
+  others?: number;
 }
 
 /** Long lists in the preview are cut off after this many rows. */
@@ -89,6 +94,8 @@ export function ImportFlow({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   /** `retry`: checking the same file again may help (I/O, expired preview). */
   const [error, setError] = useState<{ text: string; retry: boolean } | null>(null);
+  /** About dropped files that were not taken (shown in the dialog, not as a toast over it). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<"analyze" | "commit" | null>(null);
   const [mode, setMode] = useState<ConflictMode>("skip");
   const [report, setReport] = useState<ImportReport | null>(null);
@@ -108,7 +115,15 @@ export function ImportFlow({
     if (id) api.cancelImport(id).catch(() => undefined);
   }, []);
 
-  useEffect(() => dropPending, [dropPending]);
+  useEffect(
+    () => () => {
+      // Left while an analysis is still running: its late result is
+      // cancelled as soon as it arrives (see `analyze`).
+      seq.current += 1;
+      dropPending();
+    },
+    [dropPending],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +152,7 @@ export function ImportFlow({
   );
 
   const analyze = useCallback(
-    async (path: string, filePassword: string | null) => {
+    async (path: string, filePassword: string | null, others = 0) => {
       const mine = ++seq.current;
       dropPending();
       const samePasswordStep = filePassword !== null;
@@ -150,6 +165,7 @@ export function ImportFlow({
         setStep("choose");
         setAnalysis(null);
         setPassword("");
+        setNotice(others > 0 ? t("drop.onlyOne", { name: baseName(path) }) : null);
       }
       try {
         const result = await api.analyzeImport(path, filePassword);
@@ -189,14 +205,19 @@ export function ImportFlow({
   analyzeRef.current = analyze;
   const requestPath = request?.path;
   const requestSeq = request?.seq;
+  const requestOthers = request?.others ?? 0;
   useEffect(() => {
-    if (requestPath) void analyzeRef.current(requestPath, null);
-  }, [requestPath, requestSeq]);
+    if (requestPath) void analyzeRef.current(requestPath, null, requestOthers);
+  }, [requestPath, requestSeq, requestOthers]);
 
-  useFileDropTarget((path) => {
-    if (busyRef.current === "commit") return false;
-    void analyze(path, null);
-    return true;
+  useFileDropTarget((path, others) => {
+    // While the import is written the file is not taken (it would replace
+    // the plan being committed); say so here, not as a toast over the dialog.
+    if (busyRef.current === "commit") {
+      setNotice(t("drop.busy", { name: baseName(path) }));
+      return;
+    }
+    void analyze(path, null, others);
   });
 
   const pick = async () => {
@@ -228,6 +249,7 @@ export function ImportFlow({
     if (!importId || busy) return;
     setBusy("commit");
     setError(null);
+    setNotice(null);
     // The backend drops the plan with every commit attempt.
     pendingId.current = null;
     try {
@@ -252,6 +274,7 @@ export function ImportFlow({
     setPassword("");
     setPasswordError(null);
     setError(null);
+    setNotice(null);
     setStep("choose");
   };
 
@@ -272,6 +295,12 @@ export function ImportFlow({
   const finishLabel = variant === "wizard" ? t("common.continue") : t("common.done");
   const leaveLabel = variant === "wizard" ? t("common.skip") : t("common.cancel");
   const preview = analysis?.preview ?? null;
+  const noticeBox = notice && (
+    <div className="callout callout-info import-notice" role="status">
+      <Info />
+      <span>{notice}</span>
+    </div>
+  );
 
   // ------------------------------------------------------------------ choose
 
@@ -304,6 +333,7 @@ export function ImportFlow({
     );
     const body = (
       <div className="import-flow">
+        {noticeBox}
         {variant === "wizard" && legacyList}
         <button
           type="button"
@@ -375,6 +405,7 @@ export function ImportFlow({
     const legacyFile = analysis.format === "legacy";
     const body = (
       <div className="import-flow">
+        {noticeBox}
         <FileRow name={analysis.fileName} format={t(FORMAT_LABEL[analysis.format])} />
         <Field
           label={legacyFile ? t("import.legacyPassword") : t("import.filePassword")}
@@ -428,6 +459,7 @@ export function ImportFlow({
     const nothingToDo = preview.newCount === 0 && conflicts.length === 0;
     const body = (
       <div className="import-flow">
+        {noticeBox}
         <FileRow name={analysis.fileName} format={t(FORMAT_LABEL[analysis.format])} />
         <div className="import-stats">
           <Stat tone="new" icon={<Plus />} n={preview.newCount} label={t("importFlow.statNew")} hint={t("importFlow.statNewHint")} />
@@ -558,6 +590,7 @@ export function ImportFlow({
   ];
   const body = (
     <div className="import-flow">
+      {noticeBox}
       <div className="import-result">
         <div className="success-badge">
           <Check />
@@ -588,7 +621,15 @@ export function ImportFlow({
     icon: <CircleCheck />,
     body,
     footer: (
-      <Button variant="primary" onClick={onFinish} size={variant === "wizard" ? "lg" : "md"} data-autofocus data-import-focus>
+      // The wizard's single action spans the card, like its other steps.
+      <Button
+        variant="primary"
+        onClick={onFinish}
+        size={variant === "wizard" ? "lg" : "md"}
+        block={variant === "wizard"}
+        data-autofocus
+        data-import-focus
+      >
         {finishLabel}
       </Button>
     ),

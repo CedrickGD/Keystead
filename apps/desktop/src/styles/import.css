@@ -93,10 +93,16 @@
   width: min(640px, 100%);
 }
 
-/* Toasts must not cover a dialog's buttons: above it while one is open. */
+/* Toasts must not cover a dialog's buttons: above it while one is open.
+   (The import dialog shows its own notes – e.g. about further dropped
+   files – inside, so nothing covers its title.) */
 body:has(.modal-overlay) .toast-region {
   top: 20px;
   bottom: auto;
+}
+
+.import-notice > svg {
+  flex: none;
 }
 
 .import-flow {
@@ -484,12 +490,37 @@ body:has(.modal-overlay) .toast-region {
   background: var(--accent-soft);
 }
 
+/* Own radio look (like `.checkbox`): the native one renders as a solid
+   white disc in WebKitGTK's dark mode. */
 .import-mode input {
+  appearance: none;
+  -webkit-appearance: none;
   flex: none;
-  width: 16px;
-  height: 16px;
-  margin: 2px 0 0;
-  accent-color: var(--primary-bg);
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  border: 1.5px solid var(--border-input);
+  border-radius: 50%;
+  background: var(--bg-input);
+  cursor: pointer;
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.import-mode input:checked {
+  border: 5px solid var(--primary-bg);
+  background: #ffffff;
+}
+
+.import-mode input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.import-mode input:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .import-mode-text {

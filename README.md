@@ -169,7 +169,9 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   das Laden der Website-Icons.
 - Website-Icons werden direkt bei der jeweiligen Website abgerufen (nur `https`,
   ohne Cookies, ohne Tresordaten); die Website sieht dabei wie bei jedem Besuch
-  deine IP-Adresse. Adressen im lokalen Netz (Router, NAS, `localhost`) werden nie
+  deine IP-Adresse. Einen eingerichteten Proxy umgeht die App nie: Ist für eine
+  Website ein Proxy eingestellt (System oder `HTTPS_PROXY`), lädt sie deren Icon
+  gar nicht. Adressen im lokalen Netz (Router, NAS, `localhost`) werden nie
   angefragt. Die Icons liegen verschlüsselt im Tresor, nicht als lose Dateien.
 - Updates sind signiert (minisign/Ed25519); die App installiert nur Dateien mit
   gültiger Signatur für genau die angekündigte Version.
@@ -334,9 +336,11 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   access is the update check against GitHub and loading website icons (both can be
   switched off).
 - Website icons are fetched directly from each website (`https` only, no cookies, no
-  vault data); like any visit, the site sees your IP address. Addresses in the local
-  network (router, NAS, `localhost`) are never contacted. The icons are stored
-  encrypted inside the vault, not as loose files.
+  vault data); like any visit, the site sees your IP address. The app never goes
+  around a proxy: if one is configured for a site (system settings or
+  `HTTPS_PROXY`), its icon is not loaded at all. Addresses in the local network
+  (router, NAS, `localhost`) are never contacted. The icons are stored encrypted
+  inside the vault, not as loose files.
 - Updates are signed (minisign/Ed25519): the app installs only files with a valid
   signature for exactly the announced version.
 - A browser is paired only after you confirm a 6-digit code in the app; the app

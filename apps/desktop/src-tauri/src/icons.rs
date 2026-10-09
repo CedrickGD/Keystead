@@ -9,22 +9,26 @@
 //!   24 h while the vault is open; only while `Settings.websiteIcons` is on.
 //!   At most [`MAX_HOSTS_PER_RUN`] sites per run, [`CONCURRENCY`] at a time;
 //!   a run that hit the limit is followed by the next one a minute later.
-//!   Locking, switching the vault or turning the setting off cancels a run;
-//!   results are only written into the vault the run started for.
+//!   Locking, switching the vault or turning the setting off cancels a run
+//!   at once – open requests are dropped, no new one starts; results are
+//!   only written into the vault the run started for.
 //! * **How** ([`Fetcher`]): `GET https://<host>/` (only https, ≤ 3
 //!   redirects, each again https on the default port to a host that may be
 //!   contacted, 5 s timeout, ≤ 512 KiB, no cookies, no referrer, user agent
 //!   `Keystead/<version> (icon fetcher)`), the best `<link rel=icon |
 //!   shortcut icon | apple-touch-icon>` of the page's head (PNG/ICO
 //!   preferred, ≥ 32 px; no SVG, `data:` only as `image/png;base64`), then
-//!   `https://<host>/favicon.ico`. Decoded (PNG, ICO, JPEG, GIF, WebP),
-//!   scaled into 64×64 (aspect kept, transparent padding), stored as PNG.
+//!   `https://<host>/favicon.ico`. Decoded (PNG, ICO, JPEG, GIF, WebP; at
+//!   most [`MAX_DIMENSION`] px per side) on the blocking thread pool, scaled
+//!   into 64×64 (aspect kept, transparent padding), stored as PNG.
 //! * **Privacy & SSRF guards**: hosts that are IP literals, `localhost`,
 //!   `.local`/intranet names are never contacted
 //!   (`keystead_core::icons::is_fetchable_host`); every connection goes
 //!   through [`PublicResolver`], which only hands out public addresses, so
 //!   a site (or a redirect, or an icon link) cannot make the app talk to the
-//!   local network. No vault data is ever sent.
+//!   local network. No vault data is ever sent. The app never goes around a
+//!   proxy: if the system or the environment sets one for a site, that site
+//!   is skipped ([`proxy_matcher`]).
 //! * Failures are silent (logged as counts, never host names): the site's
 //!   entry gets `failedAt` and is retried after 7 days. A run in which not a
 //!   single site answered counts as **offline** and records nothing (retried
@@ -38,6 +42,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use hyper_util::client::proxy::matcher::Matcher as ProxyMatcher;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::imageops::{self, FilterType};
 use image::{ExtendedColorType, ImageEncoder as _, ImageFormat, ImageReader, Limits, RgbaImage};
@@ -76,9 +81,13 @@ const PERSIST_BATCH: usize = 16;
 /// … or after this long, so icons appear while a long run goes on.
 const PERSIST_EVERY: Duration = Duration::from_secs(5);
 
+/// How often a run checks whether it was cancelled while requests are open.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
 /// Timeout of every request (connect + answer + body).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-/// Everything for one site (page, up to [`MAX_CANDIDATES`] icons, favicon).
+/// Everything for one site (page, up to [`MAX_CANDIDATES`] icons, favicon,
+/// decoding).
 const HOST_DEADLINE: Duration = Duration::from_secs(15);
 /// Redirects per request.
 const MAX_REDIRECTS: usize = 3;
@@ -87,8 +96,9 @@ const MAX_REDIRECTS: usize = 3;
 const MAX_BYTES: usize = 512 * 1024;
 /// Icon links of a page tried before `/favicon.ico`.
 const MAX_CANDIDATES: usize = 3;
-/// Decoder limits: largest image side and decoder memory.
-const MAX_DIMENSION: u32 = 4096;
+/// Decoder limits: largest image side (no favicon needs more; it bounds the
+/// decoding work per image) and decoder memory.
+const MAX_DIMENSION: u32 = 1024;
 const MAX_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
 /// Smaller images are no icon (tracking pixels, spacers).
 const MIN_DIMENSION: u32 = 8;
@@ -189,6 +199,8 @@ enum RunOutcome {
     Cancelled,
     /// Nothing was due.
     Idle,
+    /// Every due site would go through a proxy: nothing fetched.
+    Proxied,
     /// Stored the results; `more_due`: the run stopped at the limit.
     Done { more_due: bool },
     /// No site answered: nothing recorded.
@@ -258,7 +270,9 @@ fn scheduler_loop(core: &Weak<Core>, signals: &mpsc::Receiver<Signal>, fetcher: 
                 let now = Instant::now();
                 next_run = match outcome {
                     RunOutcome::Disabled | RunOutcome::Locked | RunOutcome::Cancelled => None,
-                    RunOutcome::Idle | RunOutcome::Done { more_due: false } => {
+                    RunOutcome::Idle
+                    | RunOutcome::Proxied
+                    | RunOutcome::Done { more_due: false } => {
                         cooldown_until = now;
                         offline_retry = OFFLINE_RETRY;
                         Some(now + RUN_INTERVAL)
@@ -281,6 +295,9 @@ fn scheduler_loop(core: &Weak<Core>, signals: &mpsc::Receiver<Signal>, fetcher: 
 
 type FetchResult = (String, Result<Vec<u8>, FetchError>);
 
+/// "Stop now" check of a run (locked, switched, setting off, quitting).
+type Stop = dyn Fn() -> bool + Send + Sync;
+
 /// One run: fetches the due icons of the open vault and stores them (in
 /// batches, each one save) into that vault only.
 fn run_once(core: &Arc<Core>, fetcher: &Fetcher) -> RunOutcome {
@@ -301,11 +318,33 @@ fn run_once(core: &Arc<Core>, fetcher: &Fetcher) -> RunOutcome {
     if hosts.is_empty() {
         return RunOutcome::Idle;
     }
+    // Never around a proxy the user set up (see `proxy_matcher`).
+    if let Some(proxies) = fetcher.proxy_settings() {
+        // A proxy setup the matcher cannot interpret (PAC script,
+        // per-protocol Windows proxy, …): fail closed, fetch nothing.
+        if proxy_setup_unclear(&proxies) {
+            log(format_args!(
+                "website icons: skipped (a proxy configuration this app cannot evaluate is set)"
+            ));
+            return RunOutcome::Proxied;
+        }
+        let due = hosts.len();
+        hosts.retain(|host| !proxied_by(&proxies, host));
+        if hosts.len() < due {
+            log(format_args!(
+                "website icons: {} skipped (a proxy is configured)",
+                due - hosts.len()
+            ));
+        }
+        if hosts.is_empty() {
+            return RunOutcome::Proxied;
+        }
+    }
     let more_due = hosts.len() > MAX_HOSTS_PER_RUN;
     hosts.truncate(MAX_HOSTS_PER_RUN);
 
     let weak = Arc::downgrade(core);
-    let cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+    let cancelled: Arc<Stop> = Arc::new(move || {
         weak.upgrade()
             .is_none_or(|c| c.is_exiting() || c.icons().generation() != generation)
     });
@@ -397,13 +436,14 @@ fn store(
     }
 }
 
-/// Fetches `hosts` with `workers` parallel tasks and sends every result
-/// (stops early once `cancelled`).
+/// Fetches `hosts` with `workers` parallel tasks and sends every result.
+/// Once `cancelled`, no new request starts and the open ones are dropped
+/// (within [`CANCEL_POLL`]).
 async fn fetch_all(
     fetcher: Fetcher,
     hosts: Vec<String>,
     workers: usize,
-    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    cancelled: Arc<Stop>,
     results: Sender<FetchResult>,
 ) {
     let queue = Arc::new(Mutex::new(VecDeque::from(hosts)));
@@ -423,7 +463,7 @@ async fn fetch_all(
                 let Some(host) = lock(&queue).pop_front() else {
                     return;
                 };
-                let result = fetcher.fetch(&host).await;
+                let result = fetcher.fetch(&host, &*cancelled).await;
                 if results.send((host, result)).is_err() {
                     return;
                 }
@@ -431,7 +471,19 @@ async fn fetch_all(
         });
     }
     drop(results);
-    while tasks.join_next().await.is_some() {}
+    loop {
+        match tokio::time::timeout(CANCEL_POLL, tasks.join_next()).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(_) if cancelled() => {
+                // Drops the open requests (and their connections) now.
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                return;
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -673,17 +725,103 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || o[0] >= 224) // multicast, reserved, broadcast
 }
 
+/// The proxy settings of the system and the environment (`HTTPS_PROXY`,
+/// `ALL_PROXY`, `NO_PROXY`; Windows Internet settings; macOS network
+/// settings), read anew for every run. The fetcher connects directly (only
+/// then does [`PublicResolver`] see every host), so a site the user's proxy
+/// would handle is not fetched at all: going around a proxy would reveal
+/// the user's own address to the websites of their accounts, and through
+/// it the proxy would resolve names this app cannot check.
+fn proxy_matcher() -> ProxyMatcher {
+    ProxyMatcher::from_system()
+}
+
+/// Proxy settings that exist but that [`proxy_matcher`] does not turn into a
+/// proxy for https sites – e.g. a PAC script, or the per-protocol form of
+/// the Windows proxy. The fetcher then fetches nothing rather than possibly
+/// going around the user's proxy.
+fn proxy_setup_unclear(matcher: &ProxyMatcher) -> bool {
+    let env_https = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|name| std::env::var(name).is_ok_and(|v| !v.trim().is_empty()));
+    proxy_unclear_from(
+        env_https,
+        &system_proxy_hints(),
+        proxied_by(matcher, "example.com"),
+    )
+}
+
+/// Proxy-related system settings beyond what [`proxy_matcher`] understands.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct SystemProxyHints {
+    /// A PAC / auto-config script is configured.
+    auto_config: bool,
+    /// A manual proxy is switched on.
+    manual_enabled: bool,
+}
+
+#[cfg(windows)]
+fn system_proxy_hints() -> SystemProxyHints {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let Ok(key) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+    else {
+        return SystemProxyHints::default();
+    };
+    let auto_config = key
+        .get_value::<String, _>("AutoConfigURL")
+        .is_ok_and(|url| !url.trim().is_empty());
+    let manual_enabled = key.get_value::<u32, _>("ProxyEnable").is_ok_and(|v| v != 0)
+        && key
+            .get_value::<String, _>("ProxyServer")
+            .is_ok_and(|server| !server.trim().is_empty());
+    SystemProxyHints {
+        auto_config,
+        manual_enabled,
+    }
+}
+
+#[cfg(not(windows))]
+fn system_proxy_hints() -> SystemProxyHints {
+    SystemProxyHints::default()
+}
+
+/// The decision behind [`proxy_setup_unclear`]: some proxy is configured,
+/// but the matcher would still connect directly to a public https site.
+fn proxy_unclear_from(env_https: bool, hints: &SystemProxyHints, matcher_proxies: bool) -> bool {
+    if hints.auto_config {
+        return true;
+    }
+    (env_https || hints.manual_enabled) && !matcher_proxies
+}
+
+/// Would `matcher` send a request for `https://<host>/` through a proxy?
+fn proxied_by(matcher: &ProxyMatcher, host: &str) -> bool {
+    format!("https://{host}/")
+        .parse::<http::Uri>()
+        .is_ok_and(|uri| matcher.intercept(&uri).is_some())
+}
+
 /// Loads website icons (see the module docs). Cheap to clone.
 #[derive(Clone)]
 pub(crate) struct Fetcher {
     client: reqwest::Client,
     policy: Arc<Policy>,
+    /// Reads the proxy settings before a run ([`proxy_matcher`]); `None` for
+    /// the local test server and when the client itself uses the proxy.
+    proxies: Option<fn() -> ProxyMatcher>,
 }
 
 impl Fetcher {
     /// The production fetcher: no proxy, [`PublicResolver`], https only.
     pub fn new(app_version: &str) -> Result<Self, String> {
         Self::build(Allow::Public, app_version, REQUEST_TIMEOUT, false)
+    }
+
+    /// The current proxy settings, if this fetcher has to respect them.
+    fn proxy_settings(&self) -> Option<ProxyMatcher> {
+        self.proxies.map(|read| read())
     }
 
     fn build(
@@ -697,6 +835,8 @@ impl Fetcher {
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }
+        let proxies: Option<fn() -> ProxyMatcher> =
+            (matches!(allow, Allow::Public) && !use_env_proxy).then_some(proxy_matcher);
         let policy = Arc::new(Policy { allow });
         let redirects = Arc::clone(&policy);
         let mut builder = reqwest::Client::builder()
@@ -720,19 +860,24 @@ impl Fetcher {
             builder = builder.no_proxy();
         }
         let client = builder.build().map_err(|e| e.to_string())?;
-        Ok(Fetcher { client, policy })
+        Ok(Fetcher {
+            client,
+            policy,
+            proxies,
+        })
     }
 
     /// The 64×64 PNG icon of `host`, or why there is none. Never takes
-    /// longer than [`HOST_DEADLINE`].
-    pub async fn fetch(&self, host: &str) -> Result<Vec<u8>, FetchError> {
-        match tokio::time::timeout(HOST_DEADLINE, self.fetch_inner(host)).await {
+    /// longer than [`HOST_DEADLINE`]; once `stop` says so, no further
+    /// request is sent.
+    pub async fn fetch(&self, host: &str, stop: &Stop) -> Result<Vec<u8>, FetchError> {
+        match tokio::time::timeout(HOST_DEADLINE, self.fetch_inner(host, stop)).await {
             Ok(result) => result,
             Err(_) => Err(FetchError::Network("deadline".into())),
         }
     }
 
-    async fn fetch_inner(&self, host: &str) -> Result<Vec<u8>, FetchError> {
+    async fn fetch_inner(&self, host: &str, stop: &Stop) -> Result<Vec<u8>, FetchError> {
         if !core_icons::is_fetchable_host(host) {
             return Err(FetchError::Refused("host".into()));
         }
@@ -742,7 +887,7 @@ impl Fetcher {
             .ok_or_else(|| FetchError::Refused("host".into()))?;
         let mut errors: Vec<FetchError> = Vec::new();
         let mut tried: HashSet<Url> = HashSet::new();
-        match self.get(&page, ACCEPT_HTML, true).await {
+        match self.get(&page, ACCEPT_HTML, true, stop).await {
             Ok((final_url, body)) => {
                 let html = String::from_utf8_lossy(&body);
                 for candidate in icon_candidates(&html, &final_url)
@@ -755,10 +900,16 @@ impl Fetcher {
                             if !tried.insert(url.clone()) {
                                 continue;
                             }
-                            self.get(&url, ACCEPT_IMAGE, false).await.map(|(_, b)| b)
+                            self.get(&url, ACCEPT_IMAGE, false, stop)
+                                .await
+                                .map(|(_, b)| b)
                         }
                     };
-                    match bytes.and_then(|b| process_icon(&b)) {
+                    let icon = match bytes {
+                        Ok(bytes) => decode_icon(bytes).await,
+                        Err(e) => Err(e),
+                    };
+                    match icon {
                         Ok(png) => return Ok(png),
                         Err(e) => errors.push(e),
                     }
@@ -768,8 +919,8 @@ impl Fetcher {
         }
         if let Some(favicon) = self.policy.site_url(host, "favicon.ico") {
             if tried.insert(favicon.clone()) {
-                match self.get(&favicon, ACCEPT_IMAGE, false).await {
-                    Ok((_, bytes)) => match process_icon(&bytes) {
+                match self.get(&favicon, ACCEPT_IMAGE, false, stop).await {
+                    Ok((_, bytes)) => match decode_icon(bytes).await {
                         Ok(png) => return Ok(png),
                         Err(e) => errors.push(e),
                     },
@@ -788,13 +939,18 @@ impl Fetcher {
 
     /// GET `url` (allowed by the policy; redirects are checked too) and
     /// read at most [`MAX_BYTES`]: `truncate` cuts a longer body, otherwise
-    /// it is refused. Returns the final URL and the body.
+    /// it is refused. Returns the final URL and the body. Sends nothing once
+    /// `stop` says so.
     async fn get(
         &self,
         url: &Url,
         accept: &str,
         truncate: bool,
+        stop: &Stop,
     ) -> Result<(Url, Vec<u8>), FetchError> {
+        if stop() {
+            return Err(FetchError::Network("cancelled".into()));
+        }
         if !self.policy.url_allowed(url) {
             return Err(FetchError::Refused("url".into()));
         }
@@ -1176,9 +1332,19 @@ fn find_ascii_ci(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // Images
 // ---------------------------------------------------------------------------
 
+/// [`process_icon`] on the blocking thread pool: decoding and scaling are
+/// CPU work that must not hold up the async runtime (which also serves the
+/// app's commands); [`HOST_DEADLINE`] still ends the wait for it.
+async fn decode_icon(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
+    tauri::async_runtime::spawn_blocking(move || process_icon(&bytes))
+        .await
+        .unwrap_or_else(|_| Err(FetchError::failed("decoder stopped")))
+}
+
 /// Decodes an icon (PNG, ICO, JPEG, GIF, WebP – recognised by content, not
-/// by the server's content type), fits it into 64×64 keeping the aspect
-/// ratio on a transparent square, and encodes it as PNG.
+/// by the server's content type; at most [`MAX_DIMENSION`] px per side),
+/// fits it into 64×64 keeping the aspect ratio on a transparent square, and
+/// encodes it as PNG. CPU-bound: call it through [`decode_icon`].
 pub(crate) fn process_icon(bytes: &[u8]) -> Result<Vec<u8>, FetchError> {
     let format = image::guess_format(bytes).map_err(|_| FetchError::failed("not an image"))?;
     if !matches!(

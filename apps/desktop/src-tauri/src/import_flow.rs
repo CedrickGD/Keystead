@@ -9,7 +9,8 @@
 //!    `commit_import` with a conflict mode, or `cancel_import`.
 //!
 //! The plan holds the decrypted items of the file, so it is kept as briefly
-//! as possible: one slot (a new analysis replaces the old plan), dropped –
+//! as possible: one slot (a new analysis replaces the old plan; an older
+//! analysis that finishes after a newer one started stores nothing), dropped –
 //! and its secrets overwritten (`ImportPlan`'s `Drop`) – after every commit
 //! attempt, on cancel, after [`IMPORT_TTL`] (checked by the monitor thread)
 //! and whenever its vault is closed (lock of any kind, vault switch through
@@ -67,12 +68,31 @@ struct PendingImport {
 #[derive(Default)]
 pub struct ImportSlot {
     pending: Option<PendingImport>,
+    /// The newest analysis' ticket ([`ImportSlot::begin`]); also moved on
+    /// when a vault closes. Only the analysis holding it may store its plan,
+    /// so an older one that finishes late (a slow key derivation while the
+    /// next file was dropped) cannot replace the newer plan.
+    ticket: u64,
 }
 
 impl ImportSlot {
-    /// Stores a plan, dropping the previous one.
-    fn put(&mut self, pending: PendingImport) {
+    /// Starts an analysis: drops the waiting plan and returns the ticket
+    /// for [`ImportSlot::put`]; analyses still running lose theirs.
+    fn begin(&mut self) -> u64 {
+        self.pending = None;
+        self.ticket += 1;
+        self.ticket
+    }
+
+    /// Stores the plan of the analysis `ticket`, dropping the previous one –
+    /// unless a newer analysis started (or a vault closed) since: then
+    /// `pending` is dropped (its secrets overwritten) and `false` returned.
+    fn put(&mut self, ticket: u64, pending: PendingImport) -> bool {
+        if ticket != self.ticket {
+            return false;
+        }
         self.pending = Some(pending);
+        true
     }
 
     /// Takes the plan `id` out if it has not expired at `now`.
@@ -85,11 +105,6 @@ impl ImportSlot {
         }
     }
 
-    /// Drops the waiting plan, if any. Returns whether there was one.
-    pub fn clear(&mut self) -> bool {
-        self.pending.take().is_some()
-    }
-
     /// Drops the plan `id` (cancel). Returns whether it was waiting.
     fn cancel(&mut self, id: &str) -> bool {
         if self.pending.as_ref().is_some_and(|p| p.id == id) {
@@ -100,8 +115,10 @@ impl ImportSlot {
         }
     }
 
-    /// Drops a plan made for `vault_id` (that vault was closed).
+    /// Drops a plan made for `vault_id` (that vault was closed). Analyses
+    /// still running store nothing either.
     pub fn drop_for_vault(&mut self, vault_id: &str) -> bool {
+        self.ticket += 1;
         if self
             .pending
             .as_ref()
@@ -145,7 +162,9 @@ fn next_import_id() -> String {
 /// open vault, or not `page_vault_id`), `invalid_input:path_required`, the
 /// detection and reading errors of `keystead_core::import`
 /// (`unsupported:unknown_format`, `unsupported:bitwarden_encrypted`,
-/// `unsupported:file_too_large`, `not_found`, `io:…`, `wrong_password`, …).
+/// `unsupported:file_too_large`, `not_found`, `io:…`, `wrong_password`, …);
+/// `not_found` also when a newer analysis started (or the vault was closed)
+/// while this one was reading the file – the newer one counts.
 pub(crate) fn analyze(
     c: &Core,
     path: &str,
@@ -156,7 +175,18 @@ pub(crate) fn analyze(
         return Err(AppError::invalid("path_required"));
     }
     // A new analysis replaces the waiting plan, also when it fails.
-    c.import_slot().clear();
+    let ticket = c.import_slot().begin();
+    analyze_with_ticket(c, ticket, path, password, page_vault_id)
+}
+
+/// The rest of [`analyze`] once it holds `ticket`.
+fn analyze_with_ticket(
+    c: &Core,
+    ticket: u64,
+    path: &str,
+    password: Option<&str>,
+    page_vault_id: Option<&str>,
+) -> AppResult<ImportAnalysis> {
     // Fail early (before the slow key derivation) if the page's vault is
     // not open; checked again below, under the same lock as the plan.
     c.state().page_vault(page_vault_id)?;
@@ -183,13 +213,20 @@ pub(crate) fn analyze(
     let id = next_import_id();
     // Stored while the vault is known to be open: closing it (which takes it
     // out under this lock first) drops the plan afterwards.
-    c.import_slot().put(PendingImport {
-        id: id.clone(),
-        vault_id: vault.id().to_owned(),
-        expires: Instant::now() + IMPORT_TTL,
-        plan,
-    });
+    let stored = c.import_slot().put(
+        ticket,
+        PendingImport {
+            id: id.clone(),
+            vault_id: vault.id().to_owned(),
+            expires: Instant::now() + IMPORT_TTL,
+            plan,
+        },
+    );
     drop(st);
+    if !stored {
+        // Overtaken by a newer analysis: its plan stays, this one is gone.
+        return Err(keystead_core::Error::NotFound("import superseded".into()).into());
+    }
     Ok(ImportAnalysis {
         import_id: Some(id),
         file_name: detected.file_name,
@@ -530,6 +567,88 @@ mod tests {
         let err = commit(&c, &second, ConflictMode::Skip, Some(&id)).unwrap_err();
         assert_eq!(err.code(), "not_found");
         assert!(item_names(&c).is_empty());
+    }
+
+    #[test]
+    fn an_older_analysis_finishing_late_does_not_replace_the_newer_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let id = vault_id(&c);
+        let older = write(dir.path(), "older.csv", CSV);
+        // Analysis A starts (e.g. an encrypted file: slow key derivation) …
+        let ticket_a = c.import_slot().begin();
+        // … the user drops another file meanwhile: B starts and finishes …
+        let b = analyze_csv(&c, dir.path()).import_id.unwrap();
+        // … then A finishes: it stores nothing and B's plan stays.
+        let err = analyze_with_ticket(&c, ticket_a, older.to_str().unwrap(), None, Some(&id))
+            .unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        assert_eq!(c.import_slot().pending_id(), Some(b.as_str()));
+        let report = commit(&c, &b, ConflictMode::Skip, Some(&id)).unwrap();
+        assert_eq!(report.imported, 2);
+    }
+
+    #[test]
+    fn a_slow_analysis_overtaken_by_a_dropped_file_keeps_the_new_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let id = vault_id(&c);
+        // An encrypted export with the real key derivation (takes a while).
+        let source = core_with_open_vault(&dir.path().join("source"), Settings::default());
+        let csv = write(&dir.path().join("source"), "a.csv", CSV);
+        source
+            .mutate(|v| keystead_core::import::import_into(v, "csv", &csv, None))
+            .unwrap();
+        let export_path = dir.path().join("Slow.keystead");
+        let data: VaultData = source.read(|v| v.data().clone()).unwrap();
+        export::export_encrypted_with_params(&data, &export_path, "pw", KdfParams::default())
+            .unwrap();
+        let other = write(
+            dir.path(),
+            "other.csv",
+            "name,url,username,password\nShop,https://shop.example.com,me,Pw-1234!\n",
+        );
+
+        let ticket_before = c.import_slot().ticket;
+        let slow = {
+            let (c, id, path) = (
+                Arc::clone(&c),
+                id.clone(),
+                export_path.to_str().unwrap().to_owned(),
+            );
+            std::thread::spawn(move || analyze(&c, &path, Some("pw"), Some(&id)))
+        };
+        // The second file is dropped once the first analysis has started.
+        while c.import_slot().ticket == ticket_before {
+            std::thread::yield_now();
+        }
+        let newer = analyze(&c, other.to_str().unwrap(), None, Some(&id)).unwrap();
+        let newer_id = newer.import_id.unwrap();
+        let err = slow.join().unwrap().unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        // The preview the user sees can be imported.
+        assert_eq!(c.import_slot().pending_id(), Some(newer_id.as_str()));
+        let report = commit(&c, &newer_id, ConflictMode::Skip, Some(&id)).unwrap();
+        assert_eq!(report.imported, 1);
+        assert_eq!(item_names(&c), vec!["Shop".to_owned()]);
+    }
+
+    #[test]
+    fn an_analysis_running_while_the_vault_closes_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let id = vault_id(&c);
+        let path = write(dir.path(), "chrome.csv", CSV);
+        let ticket = c.import_slot().begin();
+        // Locked and unlocked again while the file was being read.
+        assert!(c.lock(Some(LockReason::Timeout)));
+        c.unlock(&id, "master").unwrap();
+        let err =
+            analyze_with_ticket(&c, ticket, path.to_str().unwrap(), None, Some(&id)).unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        assert_eq!(c.import_slot().pending_id(), None);
+        // A new analysis works as usual.
+        assert!(analyze_csv(&c, dir.path()).import_id.is_some());
     }
 
     #[test]

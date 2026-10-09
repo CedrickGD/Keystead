@@ -21,6 +21,7 @@ import { Logo } from "../components/Logo";
 import { Button, Field } from "../components/Controls";
 import { RecoveryKeyReveal } from "../components/RecoveryKey";
 import { ImportFlow } from "../components/import/ImportFlow";
+import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
 import {
   MasterPasswordFields,
@@ -128,6 +129,9 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
   const { vaults, enterVault } = useApp();
   const [step, setStep] = useState<Step>("vault");
   const [created, setCreated] = useState<VaultInfo | null>(null);
+  // The vault exists from here on: a dropped file without a target is about
+  // finishing the setup, not about creating or unlocking a vault.
+  useNoDropTargetMode(created ? "finishSetup" : null);
 
   const steps: { id: Step; label: string }[] = [
     { id: "vault", label: t("wizard.stepVault") },

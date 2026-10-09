@@ -24,8 +24,11 @@ export function ImportDialog({ request, onClose }: { request: ImportRequest | nu
   );
 }
 
-/** Opens the import dialog of the main window, optionally with a file to analyse right away. */
-export type OpenImport = (path?: string) => void;
+/**
+ * Opens the import dialog of the main window, optionally with a file to
+ * analyse right away (`others`: further files dropped with it, ignored).
+ */
+export type OpenImport = (path?: string, others?: number) => void;
 
 export const ImportLauncherContext = createContext<OpenImport | null>(null);
 
