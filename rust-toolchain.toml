@@ -1,0 +1,6 @@
+# Pin the toolchain so new clippy lints in a later stable release don't break CI
+# without a code change. Bump deliberately.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-pc-windows-msvc"]
