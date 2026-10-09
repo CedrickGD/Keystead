@@ -1,0 +1,608 @@
+//! In-app updates (see "In-app updates" in docs/ARCHITECTURE.md).
+//!
+//! `tauri-plugin-updater` fetches a `latest.json` from GitHub – the endpoint
+//! is chosen at runtime by `Settings.updateChannel` – and verifies the
+//! minisign signature of the downloaded NSIS setup (or AppImage) against the
+//! public key in `tauri.conf.json` before anything runs. The UI talks to the
+//! commands here, never to the plugin's JS API (no plugin permission is
+//! granted to the webview).
+//!
+//! * `check_update` / the background check (15 s after start, then every
+//!   6 h while `updateCheck` is on; `update://available` once per version);
+//! * `install_update`: download with `update://progress`, `update://ready`,
+//!   lock the vault and clear a copied secret, then install: on Windows the
+//!   plugin starts the setup (passive mode, restarts the app) and exits the
+//!   process, elsewhere the app restarts itself.
+//!
+//! Only installed copies update themselves (`canInstall`): the portable
+//! build gets a link to the release page instead.
+
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
+
+use keystead_core::settings::UpdateChannel;
+use semver::Version;
+use serde::Serialize;
+use tauri::{AppHandle, Url};
+use tauri_plugin_updater::{Error as UpdaterError, RemoteRelease, Update, Updater, UpdaterExt};
+
+use crate::error::{AppError, AppResult};
+use crate::state::{log, Core, LockReason};
+
+/// `update://available` – payload `UpdateInfo`, once per newly found version.
+pub const EVENT_AVAILABLE: &str = "update://available";
+/// `update://progress` – payload `{ downloaded, total }` (bytes).
+pub const EVENT_PROGRESS: &str = "update://progress";
+/// `update://ready` – payload `{ version }`: downloaded and verified, the
+/// app installs it and restarts.
+pub const EVENT_READY: &str = "update://ready";
+
+/// The repository the releases come from.
+pub const REPO_URL: &str = "https://github.com/CedrickGD/Keystead";
+/// `latest.json` of the beta channel: a fixed pre-release (`updater-beta`)
+/// whose asset CI overwrites with every published build (betas and stable
+/// releases). Being a pre-release it is never GitHub's "latest" release,
+/// which VaultX 1.x follows.
+pub const BETA_ENDPOINT: &str =
+    "https://github.com/CedrickGD/Keystead/releases/download/updater-beta/latest.json";
+/// `latest.json` of the stable channel: an asset of GitHub's "latest"
+/// (newest non-pre-release) release.
+pub const STABLE_ENDPOINT: &str =
+    "https://github.com/CedrickGD/Keystead/releases/latest/download/latest.json";
+
+/// First background check after start.
+pub const FIRST_CHECK_DELAY: Duration = Duration::from_secs(15);
+/// Background check interval.
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Timeout of the `latest.json` request (not of the download).
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// `update://progress` is sent at most this often.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The `latest.json` URL of a channel.
+pub fn endpoint(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Beta => BETA_ENDPOINT,
+        UpdateChannel::Stable => STABLE_ENDPOINT,
+    }
+}
+
+/// The release page of `version` (tag `v<version>`), or the release list.
+pub fn release_url(version: Option<&str>) -> String {
+    match version {
+        Some(v) => format!("{REPO_URL}/releases/tag/v{v}"),
+        None => format!("{REPO_URL}/releases"),
+    }
+}
+
+/// The version the app shows (About page, bridge `status`): CI's
+/// `KEYSTEAD_VERSION_LABEL` if set, else the version from `tauri.conf.json`
+/// (which CI also sets per build, e.g. `2.0.0-beta.42`).
+pub fn version_label(package_version: &str) -> String {
+    option_env!("KEYSTEAD_VERSION_LABEL")
+        .filter(|label| !label.is_empty())
+        .unwrap_or(package_version)
+        .to_owned()
+}
+
+/// Result of `check_update`, payload of `update://available`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// A newer version than the running one is offered.
+    pub available: bool,
+    pub current_version: String,
+    /// The version `latest.json` names (`null` if the channel has none yet).
+    pub version: Option<String>,
+    pub notes: Option<String>,
+    /// Release date, RFC 3339.
+    pub date: Option<String>,
+    /// This copy can install it (installed copy with a build for this
+    /// platform); otherwise the UI links to `release_url`.
+    pub can_install: bool,
+    pub release_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressPayload {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyPayload {
+    version: String,
+}
+
+/// The release `latest.json` announced (independent of the platform).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseFacts {
+    pub version: Version,
+    pub notes: Option<String>,
+    pub date: Option<String>,
+}
+
+impl ReleaseFacts {
+    fn of(release: &RemoteRelease) -> Self {
+        ReleaseFacts {
+            version: release.version.clone(),
+            notes: release.notes.clone().filter(|n| !n.trim().is_empty()),
+            date: release.pub_date.and_then(|d| {
+                d.format(&time::format_description::well_known::Rfc3339)
+                    .ok()
+            }),
+        }
+    }
+}
+
+/// Builds the [`UpdateInfo`] for the running version `current`, the release
+/// the channel announces (if any) and whether this copy could install it.
+pub fn info_from(current: &Version, release: Option<&ReleaseFacts>, can_install: bool) -> UpdateInfo {
+    let available = release.is_some_and(|r| r.version > *current);
+    let version = release.map(|r| r.version.to_string());
+    UpdateInfo {
+        available,
+        current_version: current.to_string(),
+        release_url: release_url(version.as_deref()),
+        version,
+        notes: release.and_then(|r| r.notes.clone()),
+        date: release.and_then(|r| r.date.clone()),
+        can_install: available && can_install,
+    }
+}
+
+/// What remains of a failed `latest.json` check.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CheckFailure {
+    /// The channel has no `latest.json` (yet): nothing to offer.
+    NoRelease,
+    /// The release has no build for this platform: show it, but only as a
+    /// download link.
+    NoBuildForPlatform,
+    /// Network/HTTP/parse error (`io:<detail>`).
+    Other(String),
+}
+
+/// Classifies an updater error.
+pub fn classify(error: &UpdaterError) -> CheckFailure {
+    match error {
+        UpdaterError::ReleaseNotFound => CheckFailure::NoRelease,
+        UpdaterError::TargetNotFound(_) | UpdaterError::TargetsNotFound(_) => {
+            CheckFailure::NoBuildForPlatform
+        }
+        other => CheckFailure::Other(other.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Installed or portable?
+// ---------------------------------------------------------------------------
+
+/// Normalises a Windows directory for comparison: no surrounding quotes or
+/// whitespace, no `\\?\` prefix, backslashes, no trailing separator,
+/// lowercase (NTFS paths are case-insensitive).
+fn normalize_windows_dir(dir: &str) -> String {
+    let dir = dir.trim().trim_matches('"').trim();
+    let dir = dir.strip_prefix(r"\\?\").unwrap_or(dir);
+    dir.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
+}
+
+/// Whether the exe in `exe_dir` is an installed copy (Windows paths): it
+/// lives in the per-user NSIS install directory (`%LOCALAPPDATA%\Keystead`)
+/// or in a directory an uninstall entry of the installer names
+/// (`InstallLocation`). Everything else is a portable copy, which must not
+/// run the installer (it would install a second copy elsewhere).
+pub fn is_installed_copy(exe_dir: &str, per_user_install_dir: &str, registered: &[String]) -> bool {
+    let exe_dir = normalize_windows_dir(exe_dir);
+    if exe_dir.is_empty() {
+        return false;
+    }
+    std::iter::once(per_user_install_dir)
+        .chain(registered.iter().map(String::as_str))
+        .map(normalize_windows_dir)
+        .any(|dir| !dir.is_empty() && dir == exe_dir)
+}
+
+/// The directories the installer's uninstall entry
+/// (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Keystead`,
+/// written by the Tauri NSIS template as `UNINSTKEY` = product name) names:
+/// `InstallLocation` and the folder of `UninstallString`.
+#[cfg(windows)]
+fn registered_install_dirs() -> Vec<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Keystead";
+    let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(UNINSTALL_KEY) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    if let Ok(location) = key.get_value::<String, _>("InstallLocation") {
+        dirs.push(location);
+    }
+    if let Ok(uninstaller) = key.get_value::<String, _>("UninstallString") {
+        let path = uninstaller.trim().trim_matches('"').to_owned();
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            dirs.push(dir.to_string_lossy().into_owned());
+        }
+    }
+    dirs
+}
+
+/// Whether this copy can install updates itself: Windows – an installed
+/// copy (see [`is_installed_copy`]); Linux – an AppImage; macOS – never
+/// (no builds are published).
+pub fn can_install(app: &AppHandle) -> bool {
+    static CAN_INSTALL: OnceLock<bool> = OnceLock::new();
+    *CAN_INSTALL.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            let _ = app;
+            let Some(exe_dir) = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|d| d.to_string_lossy().into_owned()))
+            else {
+                return false;
+            };
+            let per_user = keystead_core::paths::default_data_dir();
+            is_installed_copy(
+                &exe_dir,
+                &per_user.to_string_lossy(),
+                &registered_install_dirs(),
+            )
+        }
+        #[cfg(target_os = "linux")]
+        {
+            app.env().appimage.is_some()
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = app;
+            false
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Checking
+// ---------------------------------------------------------------------------
+
+fn build_updater(
+    app: &AppHandle,
+    channel: UpdateChannel,
+    seen: Arc<Mutex<Option<ReleaseFacts>>>,
+) -> Result<Updater, UpdaterError> {
+    let url = Url::parse(endpoint(channel)).map_err(|_| UpdaterError::EmptyEndpoints)?;
+    app.updater_builder()
+        .endpoints(vec![url])?
+        .timeout(CHECK_TIMEOUT)
+        // Called with the parsed `latest.json` before the platform entry is
+        // looked up: remembers the release even if it has no build for this
+        // platform (then shown as a download link).
+        .version_comparator(move |current, release| {
+            let newer = release.version > current;
+            *seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(ReleaseFacts::of(&release));
+            newer
+        })
+        .build()
+}
+
+/// Checks the channel. Returns the info for the UI and the installable
+/// update (only when `info.can_install`).
+pub async fn check(app: &AppHandle, channel: UpdateChannel) -> AppResult<(UpdateInfo, Option<Update>)> {
+    let current = app.package_info().version.clone();
+    let installable = can_install(app);
+    let seen = Arc::new(Mutex::new(None));
+    let updater = build_updater(app, channel, Arc::clone(&seen))
+        .map_err(|e| AppError::io(format!("updater: {e}")))?;
+    let result = updater.check().await;
+    let facts = seen.lock().unwrap_or_else(|p| p.into_inner()).take();
+    match result {
+        Ok(update) => {
+            let info = info_from(&current, facts.as_ref(), installable && update.is_some());
+            let update = update.filter(|_| info.can_install);
+            Ok((info, update))
+        }
+        Err(e) => match classify(&e) {
+            CheckFailure::NoRelease => Ok((info_from(&current, None, false), None)),
+            CheckFailure::NoBuildForPlatform => Ok((info_from(&current, facts.as_ref(), false), None)),
+            CheckFailure::Other(detail) => Err(AppError::io(detail)),
+        },
+    }
+}
+
+/// `check_update`: checks the configured channel now and remembers the
+/// result (a found update is not announced again by the background check).
+pub async fn check_now(app: &AppHandle, core: &Arc<Core>) -> AppResult<UpdateInfo> {
+    let channel = core.state().settings.update_channel;
+    let (info, _) = check(app, channel).await?;
+    core.remember_update(&info);
+    Ok(info)
+}
+
+/// Background checks: [`FIRST_CHECK_DELAY`] after start, then every
+/// [`CHECK_INTERVAL`] and whenever [`Core::wake_update_checker`] is called
+/// (setting turned on, channel changed), while `updateCheck` is on. A newly
+/// found version is announced with `update://available`; errors are only
+/// logged.
+pub fn spawn_background_checks(app: AppHandle, core: &Arc<Core>) {
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    core.set_update_wake(wake_tx);
+    let weak: Weak<Core> = Arc::downgrade(core);
+    let spawned = std::thread::Builder::new()
+        .name("keystead-update-check".into())
+        .spawn(move || {
+            if matches!(
+                wake_rx.recv_timeout(FIRST_CHECK_DELAY),
+                Err(RecvTimeoutError::Disconnected)
+            ) {
+                return;
+            }
+            loop {
+                {
+                    let Some(core) = weak.upgrade() else { return };
+                    if core.is_exiting() {
+                        return;
+                    }
+                    let (enabled, channel) = {
+                        let st = core.state();
+                        (st.settings.update_check, st.settings.update_channel)
+                    };
+                    if enabled && !core.update_installing() {
+                        match tauri::async_runtime::block_on(check(&app, channel)) {
+                            Ok((info, _)) => {
+                                if core.remember_update(&info) {
+                                    core.emit(EVENT_AVAILABLE, info);
+                                }
+                            }
+                            Err(e) => log(format_args!("update check failed: {}", e.code())),
+                        }
+                    }
+                }
+                match wake_rx.recv_timeout(CHECK_INTERVAL) {
+                    Ok(()) => {
+                        // Several wake-ups in a row (settings toggled) → one check.
+                        while wake_rx.try_recv().is_ok() {}
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log(format_args!("could not start the update check: {e}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Installing
+// ---------------------------------------------------------------------------
+
+/// `install_update`: downloads the update of the configured channel,
+/// verifies its signature (inside the plugin), locks the vault, clears a
+/// copied secret and installs it. On Windows the plugin then starts the
+/// setup and ends this process (the setup restarts the app); elsewhere the
+/// app restarts. Only returns on failure (or once the restart is under way).
+pub async fn install(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
+    if !core.begin_update_install() {
+        return Err(AppError::invalid("update_in_progress"));
+    }
+    let result = install_inner(app, core).await;
+    if result.is_err() {
+        core.end_update_install();
+    }
+    result
+}
+
+async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
+    if !can_install(app) {
+        return Err(AppError::unsupported("update_portable"));
+    }
+    let channel = core.state().settings.update_channel;
+    let (info, update) = check(app, channel).await?;
+    core.remember_update(&info);
+    let Some(update) = update else {
+        return Err(if info.available {
+            AppError::unsupported("update_platform")
+        } else {
+            keystead_core::Error::NotFound("update".into()).into()
+        });
+    };
+
+    let mut downloaded: u64 = 0;
+    let mut last_emit: Option<Instant> = None;
+    let progress_core = Arc::clone(core);
+    let bytes = update
+        .download(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                let due = last_emit.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL);
+                if due || total == Some(downloaded) {
+                    last_emit = Some(Instant::now());
+                    progress_core.emit(EVENT_PROGRESS, ProgressPayload { downloaded, total });
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| AppError::io(format!("update: {e}")))?;
+    core.emit(
+        EVENT_READY,
+        ReadyPayload {
+            version: update.version.clone(),
+        },
+    );
+
+    // Nothing decrypted may outlive the process, and the setup replaces the
+    // executable: close the vault and clear a copied secret first.
+    let was_open = core.lock_for_update();
+    log(format_args!("installing update {}", update.version));
+    match update.install(&bytes) {
+        Ok(()) => {
+            // Windows never gets here (the plugin exits the process once the
+            // setup runs). AppImage: the file was replaced – restart into it.
+            app.request_restart();
+            Ok(())
+        }
+        Err(e) => {
+            if was_open {
+                // The page still shows the vault: back to the unlock screen.
+                core.emit_locked(LockReason::Manual);
+            }
+            Err(AppError::io(format!("update: {e}")))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+
+    fn facts(version: &str) -> ReleaseFacts {
+        ReleaseFacts {
+            version: v(version),
+            notes: Some("Neu: Updates in der App".into()),
+            date: Some("2026-10-09T12:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn endpoint_follows_the_channel() {
+        assert_eq!(
+            endpoint(UpdateChannel::Beta),
+            "https://github.com/CedrickGD/Keystead/releases/download/updater-beta/latest.json"
+        );
+        assert_eq!(
+            endpoint(UpdateChannel::Stable),
+            "https://github.com/CedrickGD/Keystead/releases/latest/download/latest.json"
+        );
+        // Both are valid https URLs (the updater refuses anything else in
+        // release builds).
+        for channel in [UpdateChannel::Beta, UpdateChannel::Stable] {
+            assert_eq!(Url::parse(endpoint(channel)).unwrap().scheme(), "https");
+        }
+    }
+
+    #[test]
+    fn semver_orders_betas_before_the_release() {
+        // CI versions every build: 2.0.0-beta.<run>, then 2.0.0.
+        assert!(v("2.0.0-beta.4") < v("2.0.0-beta.5"));
+        assert!(v("2.0.0-beta.9") < v("2.0.0-beta.10"));
+        assert!(v("2.0.0-beta.10") < v("2.0.0"));
+        assert!(v("2.0.0") < v("2.0.1-beta.1"));
+    }
+
+    #[test]
+    fn info_for_a_newer_release() {
+        let info = info_from(&v("2.0.0-beta.4"), Some(&facts("2.0.0-beta.5")), true);
+        assert_eq!(
+            info,
+            UpdateInfo {
+                available: true,
+                current_version: "2.0.0-beta.4".into(),
+                version: Some("2.0.0-beta.5".into()),
+                notes: Some("Neu: Updates in der App".into()),
+                date: Some("2026-10-09T12:00:00Z".into()),
+                can_install: true,
+                release_url: "https://github.com/CedrickGD/Keystead/releases/tag/v2.0.0-beta.5"
+                    .into(),
+            }
+        );
+        let json = serde_json::to_value(&info).unwrap();
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys.len(),
+            7,
+            "available, currentVersion, version, notes, date, canInstall, releaseUrl: {keys:?}"
+        );
+        assert_eq!(json["canInstall"], true);
+        assert_eq!(json["currentVersion"], "2.0.0-beta.4");
+    }
+
+    #[test]
+    fn info_without_an_update() {
+        // Same or older version: not available, never installable.
+        let same = info_from(&v("2.0.0-beta.5"), Some(&facts("2.0.0-beta.5")), true);
+        assert!(!same.available && !same.can_install);
+        assert_eq!(same.version.as_deref(), Some("2.0.0-beta.5"));
+        let older = info_from(&v("2.0.0"), Some(&facts("2.0.0-beta.9")), true);
+        assert!(!older.available);
+        // No release on the channel yet.
+        let none = info_from(&v("2.0.0"), None, true);
+        assert!(!none.available && !none.can_install);
+        assert_eq!(none.version, None);
+        assert_eq!(none.release_url, "https://github.com/CedrickGD/Keystead/releases");
+        // Portable copy: available, but only as a download.
+        let portable = info_from(&v("2.0.0-beta.4"), Some(&facts("2.0.0")), false);
+        assert!(portable.available && !portable.can_install);
+    }
+
+    #[test]
+    fn errors_are_classified() {
+        assert_eq!(classify(&UpdaterError::ReleaseNotFound), CheckFailure::NoRelease);
+        assert_eq!(
+            classify(&UpdaterError::TargetsNotFound(vec!["linux-x86_64".into()])),
+            CheckFailure::NoBuildForPlatform
+        );
+        assert_eq!(
+            classify(&UpdaterError::TargetNotFound("linux-x86_64".into())),
+            CheckFailure::NoBuildForPlatform
+        );
+        assert!(matches!(
+            classify(&UpdaterError::Network("offline".into())),
+            CheckFailure::Other(_)
+        ));
+    }
+
+    #[test]
+    fn installed_or_portable() {
+        let per_user = r"C:\Users\Ann\AppData\Local\Keystead";
+        // The per-user setup's default location.
+        assert!(is_installed_copy(per_user, per_user, &[]));
+        assert!(is_installed_copy(
+            r"c:\users\ann\appdata\local\keystead\",
+            per_user,
+            &[]
+        ));
+        assert!(is_installed_copy(
+            r"\\?\C:\Users\Ann\AppData\Local\Keystead",
+            per_user,
+            &[]
+        ));
+        // Installed elsewhere: the uninstall entry names the folder (the
+        // NSIS template writes InstallLocation in quotes).
+        let registered = vec![r#""D:\Apps\Keystead""#.to_owned()];
+        assert!(is_installed_copy(r"D:\Apps\Keystead", per_user, &registered));
+        assert!(is_installed_copy("D:/Apps/Keystead/", per_user, &registered));
+        // Portable: unzipped anywhere else.
+        assert!(!is_installed_copy(r"C:\Users\Ann\Downloads\Keystead-2.0.0", per_user, &registered));
+        assert!(!is_installed_copy(r"E:\Keystead", per_user, &[]));
+        // Below the install folder is not the installed exe either.
+        assert!(!is_installed_copy(
+            r"C:\Users\Ann\AppData\Local\Keystead\portable",
+            per_user,
+            &[]
+        ));
+        // Empty values never match.
+        assert!(!is_installed_copy("", "", &[String::new()]));
+        assert!(!is_installed_copy(r"D:\x", per_user, &[r#""""#.to_owned()]));
+    }
+
+    #[test]
+    fn release_urls() {
+        assert_eq!(
+            release_url(Some("2.0.0")),
+            "https://github.com/CedrickGD/Keystead/releases/tag/v2.0.0"
+        );
+        assert_eq!(release_url(None), "https://github.com/CedrickGD/Keystead/releases");
+    }
+}

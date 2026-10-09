@@ -18,13 +18,15 @@ use keystead_core::{export, paths, Error as CoreError, VaultStore};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::bridge;
 use crate::error::{AppError, AppResult};
+use crate::extension;
 use crate::platform;
 use crate::portable;
 use crate::state::{log, Core, LockReason};
+use crate::update::{self, UpdateInfo};
 use crate::wipe::Wiped;
 
 type Shared<'a> = State<'a, Arc<Core>>;
@@ -90,17 +92,19 @@ pub struct SessionState {
 pub struct BrowserStatus {
     server_running: bool,
     extension_id: &'static str,
+    /// The folder the app keeps the browser extension in (load it unpacked
+    /// from there) and the version the app delivers.
+    extension_dir: String,
+    extension_version: String,
     browsers: Vec<BrowserInfo>,
     clients: Vec<PairedClient>,
 }
 
 fn app_info_of(core: &Core) -> AppInfo {
     AppInfo {
-        // CI sets KEYSTEAD_VERSION_LABEL (e.g. "2.0.0-beta.7") so testers can tell builds apart.
-        version: option_env!("KEYSTEAD_VERSION_LABEL")
-            .filter(|label| !label.is_empty())
-            .unwrap_or(env!("CARGO_PKG_VERSION"))
-            .to_owned(),
+        // The version from tauri.conf.json, which CI sets per build (e.g.
+        // "2.0.0-beta.7"), or CI's KEYSTEAD_VERSION_LABEL.
+        version: core.app_version().to_owned(),
         data_dir: core.data_dir().display().to_string(),
         portable: paths::is_portable(),
         platform: platform::platform_name(),
@@ -113,6 +117,10 @@ fn browser_status_of(core: &Core) -> AppResult<BrowserStatus> {
     Ok(BrowserStatus {
         server_running,
         extension_id: EXTENSION_ID,
+        extension_dir: extension::extension_dir(&core.data_dir())
+            .display()
+            .to_string(),
+        extension_version: extension::bundled_version().to_owned(),
         browsers: register::browsers(),
         clients: bridge::clients(core)?,
     })
@@ -572,6 +580,11 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
         settings.save()?;
         std::mem::replace(&mut st.settings, settings.clone())
     };
+    if settings.update_channel != old.update_channel
+        || (settings.update_check && !old.update_check)
+    {
+        core.wake_update_checker();
+    }
     core.set_minimize_to_tray(settings.minimize_to_tray);
     if old.language != settings.language {
         core.with_tray(|tray| tray.set_language(settings.language));
@@ -662,6 +675,45 @@ pub async fn open_terminal(core: Shared<'_>) -> CmdResult<()> {
 #[tauri::command]
 pub async fn open_data_dir(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |c| platform::open_folder(&c.data_dir())).await
+}
+
+/// Opens the folder the app keeps the browser extension in (writes it
+/// first if it is missing).
+#[tauri::command]
+pub async fn open_extension_dir(core: Shared<'_>) -> CmdResult<()> {
+    run(&core, true, |c| {
+        let dir = extension::deploy_logged(&c.data_dir());
+        platform::open_folder(&dir)
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+/// Checks the configured update channel now ("Nach Updates suchen").
+#[tauri::command]
+pub async fn check_update(app: AppHandle, core: Shared<'_>) -> CmdResult<UpdateInfo> {
+    let core = Arc::clone(core.inner());
+    core.touch_activity();
+    Ok(update::check_now(&app, &core).await?)
+}
+
+/// The update the last check found (a page that reloaded shows its banner
+/// again), without a network request.
+#[tauri::command]
+pub async fn pending_update(core: Shared<'_>) -> CmdResult<Option<UpdateInfo>> {
+    run(&core, false, |c| Ok(c.pending_update())).await
+}
+
+/// Downloads, verifies and installs the update, then restarts (see
+/// `update::install`).
+#[tauri::command]
+pub async fn install_update(app: AppHandle, core: Shared<'_>) -> CmdResult<()> {
+    let core = Arc::clone(core.inner());
+    core.touch_activity();
+    Ok(update::install(&app, &core).await?)
 }
 
 /// Moves the data between the OS data directory and `Keystead-Data` next to

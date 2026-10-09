@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 use crate::error::{AppError, AppResult};
 use crate::monitor::MonitorSignal;
 use crate::tray::TrayMenu;
+use crate::update::UpdateInfo;
 
 /// `vault://locked` – payload `{ reason }`.
 pub const EVENT_LOCKED: &str = "vault://locked";
@@ -160,9 +161,23 @@ enum Frontend {
     Recorder(Mutex<Vec<(String, serde_json::Value)>>),
 }
 
+/// What the update checks found (see `crate::update`).
+#[derive(Default)]
+struct UpdateMemory {
+    /// The newest update found on the current channel (`pending_update`,
+    /// e.g. for a page that reloaded after a lock).
+    pending: Option<UpdateInfo>,
+    /// The version last announced with `update://available` (or shown by a
+    /// manual check): announced once per version.
+    announced: Option<String>,
+}
+
 /// The backend shared by all threads (`Arc<Core>` is managed Tauri state).
 pub struct Core {
     frontend: Frontend,
+    /// The version shown to the user and the browser (`app_info`, bridge
+    /// `status`).
+    version: String,
     state: Mutex<AppState>,
     /// Mirror of `settings.minimize_to_tray` for the main thread (window
     /// close handling must not wait for the state lock).
@@ -182,6 +197,12 @@ pub struct Core {
     /// remembers secrets that have a clear timer running, so this one is
     /// cleared here on lock and quit (if the clipboard still holds it).
     untimed_secret: Mutex<Option<Zeroizing<String>>>,
+    /// Results of the update checks.
+    updates: Mutex<UpdateMemory>,
+    /// `install_update` is running.
+    update_installing: AtomicBool,
+    /// Wakes the background update check (settings changed).
+    update_wake: Mutex<Option<Sender<()>>>,
 }
 
 fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -192,13 +213,20 @@ fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Core {
     pub fn new(app: AppHandle, store: VaultStore, settings: Settings) -> Arc<Core> {
-        Self::with_frontend(Frontend::App(app), store, settings)
+        let version = crate::update::version_label(&app.package_info().version.to_string());
+        Self::with_frontend(Frontend::App(app), version, store, settings)
     }
 
-    fn with_frontend(frontend: Frontend, store: VaultStore, settings: Settings) -> Arc<Core> {
+    fn with_frontend(
+        frontend: Frontend,
+        version: String,
+        store: VaultStore,
+        settings: Settings,
+    ) -> Arc<Core> {
         let minimize_to_tray = settings.minimize_to_tray;
         Arc::new(Core {
             frontend,
+            version,
             state: Mutex::new(AppState {
                 store,
                 vault: None,
@@ -215,7 +243,15 @@ impl Core {
             tray: Mutex::new(None),
             monitor: Mutex::new(None),
             untimed_secret: Mutex::new(None),
+            updates: Mutex::new(UpdateMemory::default()),
+            update_installing: AtomicBool::new(false),
+            update_wake: Mutex::new(None),
         })
+    }
+
+    /// The app version shown to the user and to the browser extension.
+    pub fn app_version(&self) -> &str {
+        &self.version
     }
 
     /// Locks the shared state. See the module docs for the locking rule.
@@ -281,7 +317,7 @@ impl Core {
     // Events & window
     // -----------------------------------------------------------------
 
-    fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
+    pub(crate) fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
         match &self.frontend {
             Frontend::App(app) => {
                 if let Err(e) = app.emit(event, payload) {
@@ -492,6 +528,67 @@ impl Core {
         Ok(result?)
     }
 
+    /// Closes the vault (no event: the UI shows the update progress) and
+    /// clears a copied secret still in the clipboard, before an update is
+    /// installed – on Windows the process then ends without `RunEvent::Exit`.
+    /// Returns whether a vault was open.
+    pub fn lock_for_update(&self) -> bool {
+        let was_open = self.lock(None);
+        if !was_open {
+            self.clear_copied_secret();
+        }
+        was_open
+    }
+
+    // -----------------------------------------------------------------
+    // Updates
+    // -----------------------------------------------------------------
+
+    /// Records the result of an update check. Returns true if it found a
+    /// version not announced before (→ `update://available`).
+    pub fn remember_update(&self, info: &UpdateInfo) -> bool {
+        let mut memory = lock_mutex(&self.updates);
+        if !info.available {
+            memory.pending = None;
+            return false;
+        }
+        memory.pending = Some(info.clone());
+        let new = memory.announced.as_deref() != info.version.as_deref();
+        memory.announced = info.version.clone();
+        new
+    }
+
+    /// The update the last check found, if any.
+    pub fn pending_update(&self) -> Option<UpdateInfo> {
+        lock_mutex(&self.updates).pending.clone()
+    }
+
+    pub fn set_update_wake(&self, sender: Sender<()>) {
+        *lock_mutex(&self.update_wake) = Some(sender);
+    }
+
+    /// Lets the background update check run now (setting turned on,
+    /// channel changed). The result of the old channel is dropped.
+    pub fn wake_update_checker(&self) {
+        lock_mutex(&self.updates).pending = None;
+        if let Some(tx) = lock_mutex(&self.update_wake).as_ref() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Marks an update installation as started; false if one is running.
+    pub fn begin_update_install(&self) -> bool {
+        !self.update_installing.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn end_update_install(&self) {
+        self.update_installing.store(false, Ordering::SeqCst);
+    }
+
+    pub fn update_installing(&self) -> bool {
+        self.update_installing.load(Ordering::SeqCst)
+    }
+
     /// Marks the app as shutting down: stops the bridge, locks the vault and
     /// clears a pending clipboard secret (on Windows the clipboard outlives
     /// the process).
@@ -506,6 +603,7 @@ impl Core {
             self.clear_copied_secret();
         }
         *lock_mutex(&self.monitor) = None;
+        *lock_mutex(&self.update_wake) = None;
     }
 }
 
@@ -522,7 +620,12 @@ pub fn show_main_window(app: &AppHandle) {
 impl Core {
     /// A core without a window, for unit tests; emitted events are recorded.
     pub fn for_tests(store: VaultStore, settings: Settings) -> Arc<Core> {
-        Self::with_frontend(Frontend::Recorder(Mutex::new(Vec::new())), store, settings)
+        Self::with_frontend(
+            Frontend::Recorder(Mutex::new(Vec::new())),
+            "2.0.0-test".to_owned(),
+            store,
+            settings,
+        )
     }
 
     /// The events emitted so far (name, payload).
@@ -579,6 +682,58 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, EVENT_LOCKED);
         assert_eq!(events[0].1, serde_json::json!({ "reason": "timeout" }));
+    }
+
+    fn update(version: &str, available: bool) -> UpdateInfo {
+        UpdateInfo {
+            available,
+            current_version: "2.0.0-beta.1".into(),
+            version: Some(version.into()),
+            notes: None,
+            date: None,
+            can_install: available,
+            release_url: crate::update::release_url(Some(version)),
+        }
+    }
+
+    #[test]
+    fn each_update_version_is_announced_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        assert_eq!(core.pending_update(), None);
+        assert!(core.remember_update(&update("2.0.0-beta.2", true)));
+        assert!(!core.remember_update(&update("2.0.0-beta.2", true)));
+        assert_eq!(core.pending_update(), Some(update("2.0.0-beta.2", true)));
+        assert!(core.remember_update(&update("2.0.0-beta.3", true)));
+        // Nothing newer (e.g. other channel): no pending update, no event.
+        assert!(!core.remember_update(&update("2.0.0-beta.1", false)));
+        assert_eq!(core.pending_update(), None);
+        // Settings changed: the old channel's result is dropped.
+        core.remember_update(&update("2.0.0-beta.4", true));
+        core.wake_update_checker();
+        assert_eq!(core.pending_update(), None);
+    }
+
+    #[test]
+    fn only_one_update_installs_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        assert!(core.begin_update_install());
+        assert!(core.update_installing());
+        assert!(!core.begin_update_install());
+        core.end_update_install();
+        assert!(core.begin_update_install());
+    }
+
+    #[test]
+    fn installing_an_update_closes_the_vault_without_an_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        assert!(core.lock_for_update());
+        assert!(core.state().vault.is_none());
+        assert!(!core.lock_for_update());
+        assert!(core.emitted().is_empty(), "the UI shows the update progress");
+        assert_eq!(core.app_version(), "2.0.0-test");
     }
 
     /// `xvfb-run cargo test -p keystead-desktop -- --ignored clipboard`

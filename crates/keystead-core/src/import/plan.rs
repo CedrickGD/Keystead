@@ -20,8 +20,11 @@
 //!   surrounding whitespace ignored).
 //!
 //! Cards, identities and notes with the same key are duplicates; they never
-//! conflict. Keys are SHA-256 digests, so the indexes keep no copies of
-//! usernames, card numbers or notes.
+//! conflict. Several rows of a file that conflict with the same login form
+//! one conflict (the row changed most recently according to the file, else
+//! the last one; the others count as duplicates within the file). Keys are
+//! SHA-256 digests, so the indexes keep no copies of usernames, card numbers
+//! or notes.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
