@@ -469,6 +469,7 @@ export const en: Record<MessageKey, string> = {
   "pairing.deny": "Deny",
   "pairing.approved": "“{name}” is now connected",
   "pairing.expired": "Pairing request expired",
+  "pairing.cancelled": "Pairing was cancelled in the browser",
 
   "settings.title": "Settings",
   "settings.subtitle": "Every option on one page.",

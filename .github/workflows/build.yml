@@ -98,6 +98,8 @@ jobs:
 
       - name: Build desktop app (exe + installer)
         working-directory: apps/desktop
+        env:
+          KEYSTEAD_VERSION_LABEL: ${{ steps.version.outputs.version }}
         run: npx tauri build
 
       - name: Build terminal binary

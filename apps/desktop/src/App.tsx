@@ -70,6 +70,8 @@ function AppRoot({
   const [boot, setBoot] = useState<Boot | null>(null);
   const [vault, setVault] = useState<VaultInfo | null>(null);
   const [pairings, setPairings] = useState<PairingRequest[]>([]);
+  const pairingsRef = useRef(pairings);
+  pairingsRef.current = pairings;
   const [unlockFocus, setUnlockFocus] = useState(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -78,10 +80,14 @@ function AppRoot({
   // Boot must run once – not again when the language (and thus errorText) changes.
   const errorTextRef = useRef(errorText);
   errorTextRef.current = errorText;
+  // Bumped whenever a vault is entered, so a slower boot does not overwrite
+  // an unlock that happened meanwhile (e.g. from the browser extension).
+  const enterSeq = useRef(0);
 
   const load = useCallback(async () => {
     setScreen("loading");
     setBootError(null);
+    const seq = enterSeq.current;
     try {
       const [info, loadedSettings, vaults, session] = await Promise.all([
         api.appInfo(),
@@ -91,6 +97,7 @@ function AppRoot({
       ]);
       setSettings(loadedSettings);
       setBoot({ info, vaults });
+      if (enterSeq.current !== seq) return;
       if (session.unlocked && session.vault) {
         setVault(session.vault);
         setScreen("main");
@@ -146,6 +153,17 @@ function AppRoot({
       ),
     [],
   );
+  useEffect(
+    () =>
+      subscribeEffect(
+        events.onPairingClosed(({ requestId }) => {
+          if (!pairingsRef.current.some((r) => r.requestId === requestId)) return;
+          toast.info(t("pairing.cancelled"));
+          setPairings((list) => list.filter((r) => r.requestId !== requestId));
+        }),
+      ),
+    [t, toast],
+  );
   useEffect(() => subscribeEffect(events.onUnlockRequest(() => setUnlockFocus((n) => n + 1))), []);
 
   const updateSettings = useCallback(
@@ -169,6 +187,7 @@ function AppRoot({
 
   const enterVault = useCallback(
     (info: VaultInfo) => {
+      enterSeq.current += 1;
       setVault(info);
       setScreen("main");
       void refreshVaults().catch(() => undefined);
@@ -180,7 +199,10 @@ function AppRoot({
   );
 
   // The browser extension unlocked the vault: leave the unlock screen.
-  useEffect(() => subscribeEffect(events.onVaultUnlocked((info) => enterVault(info))), [enterVault]);
+  // Subscribe once (via a ref) so no event is lost while re-subscribing.
+  const enterVaultRef = useRef(enterVault);
+  enterVaultRef.current = enterVault;
+  useEffect(() => subscribeEffect(events.onVaultUnlocked((info) => enterVaultRef.current(info))), []);
 
   const lock = useCallback(async () => {
     try {

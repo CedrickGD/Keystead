@@ -95,7 +95,11 @@ pub struct BrowserStatus {
 
 fn app_info_of(core: &Core) -> AppInfo {
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        // CI sets KEYSTEAD_VERSION_LABEL (e.g. "2.0.0-beta.7") so testers can tell builds apart.
+        version: option_env!("KEYSTEAD_VERSION_LABEL")
+            .filter(|label| !label.is_empty())
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_owned(),
         data_dir: core.data_dir().display().to_string(),
         portable: paths::is_portable(),
         platform: platform::platform_name(),

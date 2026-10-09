@@ -168,6 +168,9 @@ export const events = {
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
   onPairingRequest: (handler: (payload: PairingRequest) => void) =>
     subscribe<PairingRequest>("bridge://pairing-request", handler),
+  /** A pending pairing request ended without an answer from the UI (cancelled in the browser, timed out). */
+  onPairingClosed: (handler: (payload: { requestId: string }) => void) =>
+    subscribe<{ requestId: string }>("bridge://pairing-closed", handler),
   onUnlockRequest: (handler: () => void) => subscribe<Record<string, never>>("bridge://unlock-request", () => handler()),
 };
 

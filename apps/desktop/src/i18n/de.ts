@@ -487,6 +487,7 @@ export const de = {
   "pairing.deny": "Ablehnen",
   "pairing.approved": "„{name}“ ist jetzt verbunden",
   "pairing.expired": "Kopplungsanfrage abgelaufen",
+  "pairing.cancelled": "Kopplung wurde im Browser abgebrochen",
 
   // Settings
   "settings.title": "Einstellungen",
