@@ -110,14 +110,15 @@ impl VaultStore {
         let id = util::new_id();
         let key = crypto::random_key()?;
         let data = VaultData::default();
-        let file = VaultFile::create(&id, &name, master_password, kdf, &key, &data)?;
+        let (file, master_kek) =
+            VaultFile::create_with_kek(&id, &name, master_password, kdf, &key, &data)?;
         let path = self.vault_path(&id);
         if path.exists() {
             // A UUID v4 collision is practically impossible; never overwrite.
             return Err(Error::Conflict);
         }
         file.write_atomic(&path, false)?;
-        Ok(UnlockedVault::from_parts(path, file, key, data))
+        Ok(UnlockedVault::from_parts(path, file, key, master_kek, data))
     }
 
     fn read_vault(&self, vault_id: &str) -> Result<(PathBuf, VaultFile)> {
@@ -133,13 +134,16 @@ impl VaultStore {
     /// Unlocks a vault. `Error::WrongPassword` on a bad password.
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault> {
         let (path, file) = self.read_vault(vault_id)?;
-        let key = file.unwrap_key(master_password)?;
+        let master_kek = file.derive_master_kek(master_password)?;
+        let key = file.unwrap_key_with_kek(&master_kek)?;
         let data = file.decrypt_payload(&key)?;
-        Ok(UnlockedVault::from_parts(path, file, key, data))
+        Ok(UnlockedVault::from_parts(path, file, key, master_kek, data))
     }
 
     /// Unlocks a vault with its recovery key and sets a new master password.
-    /// The recovery key stays valid.
+    /// The recovery key stays valid. The vault key is rotated, so the old
+    /// master password does not open the vault any more, not even together
+    /// with an older copy of the file.
     pub fn unlock_with_recovery_key(
         &self,
         vault_id: &str,
@@ -150,13 +154,19 @@ impl VaultStore {
             return Err(Error::invalid("password_empty"));
         }
         let (path, file) = self.read_vault(vault_id)?;
-        let key = file.unwrap_key_with_recovery(recovery_key)?;
+        let recovery_kek = file.derive_recovery_kek(recovery_key)?;
+        let key = file.unwrap_recovery_with_kek(&recovery_kek)?;
         let data = file.decrypt_payload(&key)?;
-        let params = file.kdf_params();
+        let new_key = crypto::random_key()?;
         let mut header = file.clone();
-        header.set_master_password(&key, new_master_password, params)?;
-        let mut vault = UnlockedVault::from_parts(path, file, key, data);
-        vault.replace_header_and_save(header)?;
+        let master_kek =
+            header.set_master_password_kek(&new_key, new_master_password, file.kdf_params())?;
+        header.wrap_recovery_with_kek(&recovery_kek, &new_key)?;
+        // Only an intermediate state: `rekey_and_save` installs the new key
+        // together with the header the KEK belongs to (on error the vault is
+        // dropped).
+        let mut vault = UnlockedVault::from_parts(path, file, key, master_kek.clone(), data);
+        vault.rekey_and_save(header, new_key, master_kek)?;
         Ok(vault)
     }
 
@@ -168,8 +178,10 @@ impl VaultStore {
         {
             let _lock = format::lock_vault_file(&path)?;
             fs::remove_file(&path).map_err(|e| Error::io_at(&path, e))?;
-            for suffix in [".bak", ".tmp"] {
-                let p = format::sibling(&path, suffix);
+            // The temp-file prefix `.<id>.keystead.` also covers the
+            // temporary files of the `.bak`.
+            let bak = format::sibling(&path, ".bak");
+            for p in std::iter::once(bak).chain(format::stale_temp_files(&path)) {
                 match fs::remove_file(&p) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

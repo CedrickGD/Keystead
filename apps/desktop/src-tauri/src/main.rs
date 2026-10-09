@@ -17,6 +17,7 @@ mod platform;
 mod portable;
 mod state;
 mod tray;
+mod wipe;
 
 use std::ffi::OsString;
 

@@ -1,7 +1,9 @@
-//! Exporters: encrypted Keystead file, Bitwarden-style CSV and unencrypted
+//! Exporters: encrypted Keystead file, Bitwarden-style CSV (spreadsheet
+//! formulas neutralised, see [`export_csv`]) and unencrypted
 //! Bitwarden-compatible JSON. Trashed items and the generator history are
 //! never exported.
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -77,8 +79,53 @@ fn field_value(kind: FieldKind, value: &str) -> String {
     }
 }
 
+/// Characters that make a spreadsheet (Excel, LibreOffice, Google Sheets)
+/// treat a cell as a formula (`\t`/`\r` only at the very start).
+fn is_formula_start(c: char) -> bool {
+    matches!(c, '=' | '+' | '-' | '@')
+}
+
+/// True if a spreadsheet could evaluate `s` as a formula: it starts with
+/// `= + - @ \t \r`, or with `= + - @` after leading whitespace.
+pub(crate) fn csv_formula_like(s: &str) -> bool {
+    s.starts_with(['\t', '\r']) || s.trim_start().starts_with(is_formula_start)
+}
+
+/// Username variant of [`csv_formula_like`]: only `=` and `@` (`+`/`-`
+/// start real phone numbers and handles, which then stay unchanged).
+pub(crate) fn csv_username_formula_like(s: &str) -> bool {
+    s.trim_start().starts_with(['=', '@'])
+}
+
+/// Neutralises spreadsheet formulas ("CSV injection"): prefixes `'` if
+/// `formula_like(s)` holds – or if `s` already starts with `'`s followed by
+/// such a value, so that [`csv_unescape`] restores every value exactly.
+fn csv_escape(s: &str, formula_like: fn(&str) -> bool) -> Cow<'_, str> {
+    let rest = s.trim_start_matches('\'');
+    if formula_like(rest) {
+        Cow::Owned(format!("'{s}"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// Reverses [`csv_escape`] (used by the CSV import for Bitwarden-style files).
+pub(crate) fn csv_unescape(s: &str, formula_like: fn(&str) -> bool) -> &str {
+    match s.strip_prefix('\'') {
+        Some(rest) if formula_like(rest.trim_start_matches('\'')) => rest,
+        _ => s,
+    }
+}
+
 /// Bitwarden-style CSV of all logins and secure notes (cards and identities
 /// cannot be represented in this format and are left out).
+///
+/// Values that a spreadsheet would evaluate as a formula get a leading `'`
+/// (the usual "CSV injection" defence): folder, name, notes, custom field
+/// names, URIs, and usernames starting with `=` or `@`. Passwords and TOTP
+/// secrets are written unchanged so the file still imports correctly into
+/// other password managers – the file is not meant to be opened in a
+/// spreadsheet. Keystead's own CSV import removes the prefix again.
 pub fn export_csv(data: &VaultData) -> String {
     let mut w = csv::WriterBuilder::new()
         .terminator(csv::Terminator::CRLF)
@@ -97,10 +144,18 @@ pub fn export_csv(data: &VaultData) -> String {
             .and_then(|id| data.folders.iter().find(|f| f.id == id))
             .map(|f| f.name.as_str())
             .unwrap_or("");
+        // Each line starts with a field name: escaping the names covers the
+        // start of the cell (and of every line).
         let fields = Zeroizing::new(
             item.fields
                 .iter()
-                .map(|f| format!("{}: {}", f.name, field_value(f.kind, &f.value)))
+                .map(|f| {
+                    format!(
+                        "{}: {}",
+                        csv_escape(&f.name, csv_formula_like),
+                        field_value(f.kind, &f.value)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -117,16 +172,19 @@ pub fn export_csv(data: &VaultData) -> String {
             ),
             None => (String::new(), "", "", ""),
         };
+        let name = csv_escape(&item.name, csv_formula_like);
+        let notes = Zeroizing::new(csv_escape(&item.notes, csv_formula_like).into_owned());
+        let username = Zeroizing::new(csv_escape(username, csv_username_formula_like).into_owned());
         let _ = w.write_record([
-            folder,
+            csv_escape(folder, csv_formula_like).as_ref(),
             if item.favorite { "1" } else { "" },
             kind,
-            item.name.as_str(),
-            item.notes.as_str(),
+            name.as_ref(),
+            notes.as_str(),
             fields.as_str(),
             "0",
-            uris.as_str(),
-            username,
+            csv_escape(&uris, csv_formula_like).as_ref(),
+            username.as_str(),
             password,
             totp,
         ]);
@@ -290,8 +348,12 @@ pub fn export_bitwarden_json(data: &VaultData) -> String {
 
 /// Writes an export file. `format` is one of `"keystead"`, `"csv"`,
 /// `"bitwarden_json"` (the `export_data` command values); `password` is
-/// required for `keystead`. Plain-text exports are written atomically and,
-/// on Unix, readable only by the current user.
+/// required for `keystead`. Every export is written atomically through a
+/// new, randomly named temporary file (see [`format::write_atomic`]), so a
+/// file planted next to the target is never written to. On Unix the result
+/// is readable only by the current user; on Windows it gets the default
+/// permissions of the target folder (private inside the user profile, but
+/// readable by other users in shared folders such as `C:\Users\Public`).
 pub fn export_to_file(
     data: &VaultData,
     format: &str,
@@ -314,5 +376,29 @@ pub fn export_to_file(
             format::write_atomic(path, text.as_bytes(), false)
         }
         other => Err(Error::invalid(format!("format {other}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formula_escaping_round_trips() {
+        for s in [
+            "", "'", "''", "plain", "'plain", "a=b", "=1", "'=1", "''=1", " =1", "\t1", "\r1",
+            "+1", "-1", "@1", "'@1", "' -1",
+        ] {
+            let e = csv_escape(s, csv_formula_like);
+            assert!(!csv_formula_like(&e), "{s:?} → {e:?}");
+            assert_eq!(csv_unescape(&e, csv_formula_like), s, "{s:?}");
+        }
+        for s in ["+49", "-x", "=x", "@x", "'=x", " @x", "x", "'"] {
+            let e = csv_escape(s, csv_username_formula_like);
+            assert!(!csv_username_formula_like(&e), "{s:?} → {e:?}");
+            assert_eq!(csv_unescape(&e, csv_username_formula_like), s, "{s:?}");
+        }
+        assert_eq!(csv_escape("+49", csv_username_formula_like), "+49");
+        assert_eq!(csv_escape("+49", csv_formula_like), "'+49");
     }
 }

@@ -123,6 +123,19 @@ impl VaultFile {
         key: &SecretKey,
         data: &VaultData,
     ) -> Result<Self> {
+        Self::create_with_kek(id, name, master_password, params, key, data).map(|(file, _)| file)
+    }
+
+    /// [`VaultFile::create`] that also returns the master key-encryption
+    /// key it derived (kept by an [`crate::UnlockedVault`]).
+    pub(crate) fn create_with_kek(
+        id: &str,
+        name: &str,
+        master_password: &str,
+        params: KdfParams,
+        key: &SecretKey,
+        data: &VaultData,
+    ) -> Result<(Self, SecretKey)> {
         params.validate()?;
         let now = now_ms();
         let mut file = VaultFile {
@@ -150,9 +163,9 @@ impl VaultFile {
                 ciphertext: String::new(),
             },
         };
-        file.set_master_password(key, master_password, params)?;
+        let kek = file.set_master_password_kek(key, master_password, params)?;
         file.encrypt_payload(key, data)?;
-        Ok(file)
+        Ok((file, kek))
     }
 
     /// Parses and validates a vault file from raw bytes.
@@ -281,26 +294,78 @@ impl VaultFile {
     /// Unwraps the vault key with the master password.
     /// `Error::WrongPassword` if the password (or the header) does not match.
     pub fn unwrap_key(&self, master_password: &str) -> Result<SecretKey> {
+        let kek = self.derive_master_kek(master_password)?;
+        self.unwrap_key_with_kek(&kek)
+    }
+
+    /// Derives the key-encryption key of `master_password` for this header's
+    /// salt and KDF parameters (the slow Argon2id step of [`Self::unwrap_key`]).
+    pub(crate) fn derive_master_kek(&self, master_password: &str) -> Result<SecretKey> {
         let salt = crypto::b64_decode(&self.kdf.salt)?;
-        let kek = crypto::derive_key(master_password.as_bytes(), &salt, &self.kdf_params())?;
+        crypto::derive_key(master_password.as_bytes(), &salt, &self.kdf_params())
+    }
+
+    /// Unwraps the vault key with an already derived master KEK.
+    /// `Error::WrongPassword` if it does not open the wrapping.
+    pub(crate) fn unwrap_key_with_kek(&self, kek: &SecretKey) -> Result<SecretKey> {
         let (nonce, ct) = self.wrapped_key.decode()?;
-        crypto::open_key(&kek, &nonce, &ct, &self.key_aad()).map_err(|_| Error::WrongPassword)
+        crypto::open_key(kek, &nonce, &ct, &self.key_aad()).map_err(|_| Error::WrongPassword)
+    }
+
+    /// Wraps `key` with an already derived master KEK. The KEK must belong
+    /// to this header's salt and KDF parameters, which are kept.
+    pub(crate) fn wrap_key_with_kek(&mut self, kek: &SecretKey, key: &SecretKey) -> Result<()> {
+        let sealed = crypto::seal(kek, key.as_slice(), &self.key_aad())?;
+        self.wrapped_key = SealedBox::from_sealed(&sealed);
+        Ok(())
     }
 
     /// Unwraps the vault key with a recovery code (any accepted spelling).
     /// `Error::NotFound` if the vault has no recovery key,
     /// `Error::WrongPassword` if the code is wrong.
     pub fn unwrap_key_with_recovery(&self, recovery_code: &str) -> Result<SecretKey> {
-        let recovery = self
-            .recovery
+        let kek = self.derive_recovery_kek(recovery_code)?;
+        self.unwrap_recovery_with_kek(&kek)
+    }
+
+    fn recovery_box(&self) -> Result<&RecoveryBox> {
+        self.recovery
             .as_ref()
-            .ok_or_else(|| Error::NotFound("recovery key".into()))?;
+            .ok_or_else(|| Error::NotFound("recovery key".into()))
+    }
+
+    /// Derives the key-encryption key of a recovery code for this header's
+    /// recovery salt. `Error::NotFound` without recovery key.
+    pub(crate) fn derive_recovery_kek(&self, recovery_code: &str) -> Result<SecretKey> {
+        let recovery = self.recovery_box()?;
         let code = normalize_recovery_code(recovery_code)?;
         let salt = crypto::b64_decode(&recovery.salt)?;
-        let kek = crypto::derive_key(code.as_bytes(), &salt, &self.kdf_params())?;
+        crypto::derive_key(code.as_bytes(), &salt, &self.kdf_params())
+    }
+
+    /// Unwraps the vault key with an already derived recovery KEK.
+    pub(crate) fn unwrap_recovery_with_kek(&self, kek: &SecretKey) -> Result<SecretKey> {
+        let recovery = self.recovery_box()?;
         let nonce = crypto::b64_decode(&recovery.nonce)?;
         let ct = crypto::b64_decode(&recovery.ciphertext)?;
-        crypto::open_key(&kek, &nonce, &ct, &self.recovery_aad()).map_err(|_| Error::WrongPassword)
+        crypto::open_key(kek, &nonce, &ct, &self.recovery_aad()).map_err(|_| Error::WrongPassword)
+    }
+
+    /// Wraps `key` with an already derived recovery KEK, keeping the
+    /// recovery salt the KEK belongs to. `Error::NotFound` without recovery key.
+    pub(crate) fn wrap_recovery_with_kek(
+        &mut self,
+        kek: &SecretKey,
+        key: &SecretKey,
+    ) -> Result<()> {
+        let salt = self.recovery_box()?.salt.clone();
+        let sealed = crypto::seal(kek, key.as_slice(), &self.recovery_aad())?;
+        self.recovery = Some(RecoveryBox {
+            salt,
+            nonce: crypto::b64_encode(&sealed.nonce),
+            ciphertext: crypto::b64_encode(&sealed.ciphertext),
+        });
+        Ok(())
     }
 
     /// Wraps `key` with a new master password (fresh salt).
@@ -310,6 +375,17 @@ impl VaultFile {
         master_password: &str,
         params: KdfParams,
     ) -> Result<()> {
+        self.set_master_password_kek(key, master_password, params)
+            .map(drop)
+    }
+
+    /// [`Self::set_master_password`] that returns the derived master KEK.
+    pub(crate) fn set_master_password_kek(
+        &mut self,
+        key: &SecretKey,
+        master_password: &str,
+        params: KdfParams,
+    ) -> Result<SecretKey> {
         if master_password.is_empty() {
             return Err(Error::invalid("password_empty"));
         }
@@ -324,7 +400,7 @@ impl VaultFile {
             salt: crypto::b64_encode(&salt),
         };
         self.wrapped_key = SealedBox::from_sealed(&sealed);
-        Ok(())
+        Ok(kek)
     }
 
     /// Wraps `key` with a recovery code (normalised form, see
@@ -408,45 +484,165 @@ pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Atomically replaces `path` with `bytes`: write `<path>.tmp`, fsync,
-/// optionally copy the current file to `<path>.bak`, rename the temporary
-/// file over `path`, fsync the directory (Unix).
+/// Atomically replaces `path` with `bytes`: write a new, uniquely named
+/// temporary file `.<file name>.<16 hex digits>.tmp` in the same directory, fsync,
+/// optionally replace `<path>.bak` with a copy of the current file (the same
+/// way), rename the temporary file over `path`, fsync the directory (Unix).
+///
+/// The temporary file is always created by this call (never an existing
+/// file or a symlink planted by someone else), on Unix with mode 0600, and
+/// only that file is removed again if something fails.
 pub fn write_atomic(path: &Path, bytes: &[u8], keep_backup: bool) -> Result<()> {
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
+    let dir = parent_dir(path);
     fs::create_dir_all(&dir).map_err(|e| Error::io_at(&dir, e))?;
-    let tmp = sibling(path, ".tmp");
-    let result = (|| {
-        let mut f = open_private(&tmp)?;
-        f.write_all(bytes).map_err(|e| Error::io_at(&tmp, e))?;
-        f.sync_all().map_err(|e| Error::io_at(&tmp, e))?;
-        drop(f);
-        if keep_backup && path.exists() {
-            let bak = sibling(path, ".bak");
-            fs::copy(path, &bak).map_err(|e| Error::io_at(&bak, e))?;
-        }
-        rename_with_retry(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    let tmp = write_temp(&dir, path, bytes)?;
+    if keep_backup && path.exists() {
+        backup_current(path)?;
     }
-    result?;
+    tmp.persist(path)?;
     sync_dir(&dir);
     Ok(())
 }
 
-/// Creates/truncates a file readable only by the current user (Unix).
-fn open_private(path: &Path) -> Result<File> {
+/// Replaces `<path>.bak` with a copy of the current `path` (atomically, via
+/// a new temporary file).
+pub(crate) fn backup_current(path: &Path) -> Result<()> {
+    let bak = sibling(path, ".bak");
+    let current = fs::read(path).map_err(|e| Error::io_at(path, e))?;
+    write_temp(&parent_dir(&bak), &bak, &current)?.persist(&bak)
+}
+
+/// Makes sure `<path>.bak` holds no older revision than `path` itself: copies
+/// the current file over it, or removes it if that fails. Best effort, used
+/// after the secrets that open a vault were replaced (an older revision
+/// would still open with the replaced secret).
+pub(crate) fn supersede_backup(path: &Path) {
+    let bak = sibling(path, ".bak");
+    if !bak.exists() || backup_current(path).is_ok() {
+        return;
+    }
+    let mut attempt = 0u64;
+    loop {
+        match fs::remove_file(&bak) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20 * attempt));
+            }
+            _ => return,
+        }
+    }
+}
+
+fn parent_dir(path: &Path) -> PathBuf {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// Number of random names tried before giving up on creating a temp file.
+const TEMP_ATTEMPTS: usize = 8;
+/// Characters of the target file name used in temporary file names.
+const TEMP_NAME_CHARS: usize = 80;
+
+/// Temporary files for `target` are named `<prefix><16 hex digits>.tmp`
+/// with prefix `.<target file name>.` (the file name shortened to 80
+/// characters) in the target's directory.
+pub(crate) fn temp_file_prefix(target: &Path) -> String {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().chars().take(TEMP_NAME_CHARS).collect())
+        .unwrap_or_else(|| "file".to_owned());
+    format!(".{name}.")
+}
+
+/// A temporary file this process created; removed on drop unless
+/// [`TempFile::persist`] renamed it into place.
+struct TempFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFile {
+    fn persist(mut self, target: &Path) -> Result<()> {
+        rename_with_retry(&self.path, target)?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Creates a new temporary file for `target` in `dir` and writes + fsyncs
+/// `bytes` to it.
+fn write_temp(dir: &Path, target: &Path, bytes: &[u8]) -> Result<TempFile> {
+    let prefix = temp_file_prefix(target);
+    for _ in 0..TEMP_ATTEMPTS {
+        let suffix = data_encoding::HEXLOWER.encode(&crypto::random_array::<8>()?);
+        let path = dir.join(format!("{prefix}{suffix}.tmp"));
+        let f = match open_private_new(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Error::io_at(&path, e)),
+        };
+        // From here on the file is ours: remove it again on any error.
+        let tmp = TempFile { path, armed: true };
+        let written = (|| {
+            let mut f = f;
+            f.write_all(bytes)?;
+            f.sync_all()
+        })();
+        return match written {
+            Ok(()) => Ok(tmp),
+            Err(e) => Err(Error::io_at(&tmp.path, e)),
+        };
+    }
+    Err(Error::io_at(
+        dir,
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create a unique temporary file",
+        ),
+    ))
+}
+
+/// Creates a new file readable only by the current user (Unix mode 0600).
+/// Fails with `AlreadyExists` if anything – including a dangling symlink –
+/// exists at `path` (`O_CREAT|O_EXCL` / `CREATE_NEW`); std opens with
+/// `O_CLOEXEC`.
+fn open_private_new(path: &Path) -> std::io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    opts.open(path).map_err(|e| Error::io_at(path, e))
+    opts.open(path)
+}
+
+/// Leftover temporary files of `target` (from a crash during a write):
+/// `<prefix>*.tmp` as created by [`write_atomic`] and the `<target>.tmp`
+/// of older versions.
+pub(crate) fn stale_temp_files(target: &Path) -> Vec<PathBuf> {
+    let prefix = temp_file_prefix(target);
+    let mut out = vec![sibling(target, ".tmp")];
+    if let Ok(entries) = fs::read_dir(parent_dir(target)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".tmp") {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
 }
 
 /// `rename` with a few retries: on Windows, virus scanners and indexers
@@ -686,6 +882,142 @@ mod tests {
             let mode = fs::metadata(&p).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0);
         }
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Another local user pre-creates the temporary file names the old code
+    /// used (world-readable file, symlink to a victim file).
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_ignores_planted_temp_files() {
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("export.csv");
+        let planted = sibling(&target, ".tmp");
+        fs::write(&planted, b"").unwrap();
+        fs::set_permissions(&planted, fs::Permissions::from_mode(0o666)).unwrap();
+        let planted_ino = fs::metadata(&planted).unwrap().ino();
+        let victim = dir.path().join("victim.txt");
+        fs::write(&victim, b"victim").unwrap();
+        let target2 = dir.path().join("export.json");
+        symlink(&victim, sibling(&target2, ".tmp")).unwrap();
+
+        write_atomic(&target, b"secret", false).unwrap();
+        write_atomic(&target2, b"secret 2", false).unwrap();
+
+        let meta = fs::metadata(&target).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_ne!(meta.ino(), planted_ino);
+        assert_eq!(fs::read(&target).unwrap(), b"secret");
+        assert_eq!(fs::read(&planted).unwrap(), b"", "planted file untouched");
+        let planted_mode = fs::metadata(&planted).unwrap().permissions().mode();
+        assert_eq!(planted_mode & 0o777, 0o666);
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert_eq!(fs::read(&target2).unwrap(), b"secret 2");
+        assert_eq!(
+            fs::metadata(&target2).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Writing again works while the planted files still exist, and no
+        // temporary file of ours is left behind.
+        write_atomic(&target, b"again", true).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"again");
+        assert_eq!(
+            dir_names(dir.path()),
+            [
+                "export.csv",
+                "export.csv.bak",
+                "export.csv.tmp",
+                "export.json",
+                "export.json.tmp",
+                "victim.txt"
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_replaces_a_planted_symlink_instead_of_following_it() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v.keystead");
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"victim").unwrap();
+        write_atomic(&p, b"one", true).unwrap();
+        let bak = sibling(&p, ".bak");
+        symlink(&victim, &bak).unwrap();
+        write_atomic(&p, b"two", true).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        let meta = fs::symlink_metadata(&bak).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&bak).unwrap(), b"one");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_write_removes_only_its_own_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Renaming a file over a directory fails.
+        let target = dir.path().join("t");
+        fs::create_dir(&target).unwrap();
+        let planted = sibling(&target, ".tmp");
+        fs::write(&planted, b"planted").unwrap();
+        assert!(write_atomic(&target, b"secret", false).is_err());
+        assert_eq!(fs::read(&planted).unwrap(), b"planted");
+        assert_eq!(dir_names(dir.path()), ["t", "t.tmp"]);
+    }
+
+    #[test]
+    fn supersede_backup_drops_the_previous_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v.keystead");
+        let bak = sibling(&p, ".bak");
+        write_atomic(&p, b"one", true).unwrap();
+        supersede_backup(&p);
+        assert!(!bak.exists(), "no backup is created");
+        write_atomic(&p, b"two", true).unwrap();
+        assert_eq!(fs::read(&bak).unwrap(), b"one");
+        write_atomic(&p, b"three", false).unwrap();
+        supersede_backup(&p);
+        assert_eq!(fs::read(&bak).unwrap(), b"three");
+        assert_eq!(dir_names(dir.path()), ["v.keystead", "v.keystead.bak"]);
+    }
+
+    #[test]
+    fn stale_temp_files_match_only_this_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.keystead");
+        for name in [
+            ".a.keystead.0123456789abcdef.tmp",
+            ".a.keystead.bak.0123456789abcdef.tmp",
+            ".ab.keystead.0123456789abcdef.tmp",
+            ".a.keystead.0123456789abcdef.txt",
+            "a.keystead.tmp",
+        ] {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let mut found: Vec<String> = stale_temp_files(&target)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ".a.keystead.0123456789abcdef.tmp",
+                ".a.keystead.bak.0123456789abcdef.tmp",
+                "a.keystead.tmp"
+            ]
+        );
     }
 
     #[test]

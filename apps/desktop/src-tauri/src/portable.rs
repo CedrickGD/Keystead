@@ -12,7 +12,8 @@
 //!   (commit) and delete it.
 //!
 //! Lock files (`*.lock`) and temporary files (`*.tmp`) are not moved. The
-//! caller must make sure no vault is open and the bridge is stopped.
+//! caller runs [`preflight`] first (while the vault is still open), then
+//! makes sure no vault is open and the bridge is stopped.
 
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -68,6 +69,49 @@ fn check_not_inside_data_dir(portable: &Path, default: &Path) -> AppResult<()> {
             Err(AppError::unsupported("portable_installed"))
         }
         _ => Ok(()),
+    }
+}
+
+/// Checks whether switching portable mode to `enabled` can work, before the
+/// caller locks the vault or stops the bridge: the expected refusals
+/// (`$KEYSTEAD_DATA_DIR`, installed copy, exe folder not writable, a vault
+/// already at the destination) then leave the session untouched. Returns
+/// false if the mode already is `enabled` (nothing to move). The move itself
+/// can still fail (`io:…`); [`set_portable`] repeats these checks.
+pub fn preflight(enabled: bool) -> AppResult<bool> {
+    let portable = check_available()?;
+    if paths::is_portable() == enabled {
+        return Ok(false);
+    }
+    preflight_paths(enabled, &portable, &paths::default_data_dir())?;
+    Ok(true)
+}
+
+fn preflight_paths(enabled: bool, portable: &Path, default: &Path) -> AppResult<()> {
+    if enabled {
+        check_not_inside_data_dir(portable, default)?;
+    } else {
+        check_no_vault_at_target(&collect_files(portable)?, default)?;
+    }
+    // Enabling creates `Keystead-Data` there, disabling renames it away.
+    check_dir_writable(portable)
+}
+
+/// Creates and deletes a probe file next to `portable` (`io:…` if the exe
+/// folder is read-only, e.g. Program Files or a write-protected stick).
+fn check_dir_writable(portable: &Path) -> AppResult<()> {
+    let probe = sibling(portable, &format!(".{}.probe", std::process::id()));
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(file) => {
+            drop(file);
+            if let Err(e) = fs::remove_file(&probe) {
+                log(format_args!("could not delete {}: {e}", probe.display()));
+            }
+            Ok(())
+        }
+        // Someone else's file: inconclusive, the move reports real problems.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(io_err(portable.parent().unwrap_or(portable), e)),
     }
 }
 
@@ -175,18 +219,27 @@ fn enable(default: &Path, portable: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn disable(portable: &Path, default: &Path) -> AppResult<()> {
-    let files = collect_files(portable)?;
-    if let Some(rel) = files
+/// `invalid_input:target_exists` if one of the vault files among `files`
+/// (relative paths) already exists below `default`: it is never overwritten.
+fn check_no_vault_at_target(files: &[PathBuf], default: &Path) -> AppResult<()> {
+    match files
         .iter()
         .find(|rel| is_vault_file(rel) && default.join(rel).exists())
     {
-        log(format_args!(
-            "{} already exists; not overwriting it",
-            default.join(rel).display()
-        ));
-        return Err(AppError::invalid("target_exists"));
+        Some(rel) => {
+            log(format_args!(
+                "{} already exists; not overwriting it",
+                default.join(rel).display()
+            ));
+            Err(AppError::invalid("target_exists"))
+        }
+        None => Ok(()),
     }
+}
+
+fn disable(portable: &Path, default: &Path) -> AppResult<()> {
+    let files = collect_files(portable)?;
+    check_no_vault_at_target(&files, default)?;
 
     // 1. Stage all copies under temporary names.
     let mut staged: Vec<PathBuf> = Vec::new();
@@ -367,6 +420,44 @@ mod tests {
         assert!(
             check_not_inside_data_dir(&usb.join("Keystead-Data"), &dir.path().join("missing"))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn preflight_reports_expected_failures_before_anything_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("Keystead");
+        write(&default.join("vaults/a.keystead"), "A");
+
+        // Default per-user install: the exe sits in the data directory.
+        let installed = default.join("Keystead-Data");
+        let err = preflight_paths(true, &installed, &default).unwrap_err();
+        assert_eq!(err.code(), "unsupported:portable_installed");
+        assert!(!installed.exists());
+
+        // Exe folder that cannot be written (here: missing) → io, not moved.
+        let missing = dir.path().join("gone").join("Keystead-Data");
+        let err = preflight_paths(true, &missing, &default).unwrap_err();
+        assert!(err.code().starts_with("io:"), "{}", err.code());
+        assert!(!missing.exists());
+
+        // Portable copy elsewhere: fine, and the probe file is gone again.
+        let usb = dir.path().join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        let portable = usb.join("Keystead-Data");
+        preflight_paths(true, &portable, &default).unwrap();
+        assert_eq!(fs::read_dir(&usb).unwrap().count(), 0, "probe left behind");
+        assert!(default.join("vaults/a.keystead").is_file());
+
+        // Disabling onto a vault with the same id is refused up front.
+        write(&portable.join("vaults/a.keystead"), "other");
+        let err = preflight_paths(false, &portable, &default).unwrap_err();
+        assert_eq!(err.code(), "invalid_input:target_exists");
+        fs::remove_file(default.join("vaults/a.keystead")).unwrap();
+        preflight_paths(false, &portable, &default).unwrap();
+        assert_eq!(
+            fs::read_to_string(portable.join("vaults/a.keystead")).unwrap(),
+            "other"
         );
     }
 }

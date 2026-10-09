@@ -181,7 +181,7 @@ fn accept_loop(listener: &Listener, handler: &Arc<dyn BridgeHandler>, shared: &A
                 continue;
             }
         };
-        if !socket::peer_is_current_user(&stream) {
+        if !socket::client_is_current_user(&stream) {
             log("rejected a bridge connection from another user");
             continue;
         }

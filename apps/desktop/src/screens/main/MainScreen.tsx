@@ -26,6 +26,7 @@ interface EditState {
 }
 
 const ACTIVITY_THROTTLE_MS = 30_000;
+const ACTIVITY_EVENTS = ["mousemove", "pointerdown", "keydown", "wheel"] as const;
 
 const folderCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 const byName = (a: Folder, b: Folder) => folderCollator.compare(a.name, b.name);
@@ -35,7 +36,10 @@ export function MainScreen() {
   const toast = useToast();
   const confirm = useConfirm();
   const copy = useCopy();
-  const { vault, lock } = useApp();
+  const { vault, lock, showUnlock } = useApp();
+  // Via a ref: `reload` must not change (and refetch) with every context update.
+  const showUnlockRef = useRef(showUnlock);
+  showUnlockRef.current = showUnlock;
 
   const [items, setItems] = useState<VaultItem[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -61,7 +65,12 @@ export function MainScreen() {
       setItems(loadedItems);
       setFolders([...loadedFolders].sort(byName));
     } catch (err) {
-      if (err instanceof ApiError && err.code === "locked") return; // the lock event handles navigation
+      if (err instanceof ApiError && err.code === "locked") {
+        // Never keep showing the items of a vault that is no longer open,
+        // even if no `vault://locked` event arrives.
+        showUnlockRef.current();
+        return;
+      }
       toast.error(errorText(err));
       setItems((current) => current ?? []);
     }
@@ -73,20 +82,21 @@ export function MainScreen() {
 
   useEffect(() => subscribeEffect(events.onVaultChanged(() => void reload())), [reload]);
 
-  // Reset the auto-lock timer on user activity (at most every 30 s).
+  // Reset the auto-lock timer on user activity (at most every 30 s). Only
+  // input to the focused, visible window counts: WebView2 and WebKitGTK also
+  // deliver mousemove to a background window the pointer merely passes over.
   useEffect(() => {
     let last = 0;
     const onActivity = () => {
+      if (!document.hasFocus() || document.visibilityState !== "visible") return;
       const now = Date.now();
       if (now - last < ACTIVITY_THROTTLE_MS) return;
       last = now;
       api.touchActivity().catch(() => undefined);
     };
-    window.addEventListener("mousemove", onActivity, { passive: true });
-    window.addEventListener("keydown", onActivity, { passive: true });
+    for (const type of ACTIVITY_EVENTS) window.addEventListener(type, onActivity, { passive: true });
     return () => {
-      window.removeEventListener("mousemove", onActivity);
-      window.removeEventListener("keydown", onActivity);
+      for (const type of ACTIVITY_EVENTS) window.removeEventListener(type, onActivity);
     };
   }, []);
 

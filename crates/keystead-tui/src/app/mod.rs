@@ -530,6 +530,9 @@ impl App {
                     self.set_status(lang.t(M::ExternalChange), StatusKind::Info);
                 }
             }
+            // The master password or vault key was changed elsewhere: this
+            // session can neither read the new data nor save any more.
+            Err(e @ Error::KeyChanged) => self.lock(lang.error(&e)),
             Err(e) => {
                 let msg = lang.tf(M::VaultFileError, &[("err", &lang.error(&e))]);
                 if self.last_refresh_error.as_ref() != Some(&msg) {

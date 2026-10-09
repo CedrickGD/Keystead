@@ -248,6 +248,18 @@ impl VaultBackend for Backend {
         Ok(saved.id)
     }
 
+    /// Same path as the UI's `copy_text` (settings from memory; cleared on
+    /// lock and quit also with `clipboardClearSeconds` = 0).
+    fn copy_secret(&self, text: &str) -> Result<(), BridgeError> {
+        self.core()?.copy_to_clipboard(text, true).map_err(|e| {
+            log(format_args!(
+                "could not copy to the clipboard: {}",
+                e.code()
+            ));
+            BridgeError::Internal
+        })
+    }
+
     fn on_activity(&self) {
         if let Some(core) = self.core.upgrade() {
             core.touch_activity();

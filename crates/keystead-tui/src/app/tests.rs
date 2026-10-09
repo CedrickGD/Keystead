@@ -678,3 +678,66 @@ fn altgr_characters_are_typed() {
     app.run_pending();
     assert_eq!(app.vault_name(), Some("Zweit"));
 }
+
+#[test]
+fn key_change_elsewhere_locks_the_tui() {
+    let (fx, mut app) = unlocked(Language::En);
+    // A recovery-key change elsewhere rotates the vault key but keeps the
+    // master password: the TUI follows and can still save.
+    let mut other = fx.other_process();
+    other.create_recovery_key().unwrap();
+    app.tick(Instant::now() + Duration::from_secs(6));
+    assert!(matches!(app.screen, Screen::Main));
+    assert_eq!(
+        app.status.as_ref().map(|s| s.text.as_str()),
+        Some("The vault was changed elsewhere and has been reloaded.")
+    );
+    select(&mut app, "WLAN");
+    app.handle_key(ch('d'));
+    app.handle_key(ch('y'));
+    other.reload_if_changed().unwrap();
+    assert!(other
+        .items()
+        .iter()
+        .any(|i| i.name == "WLAN" && i.is_trashed()));
+
+    // A master password change elsewhere: the TUI cannot read or save the
+    // vault any more and locks itself.
+    other
+        .change_master_password(PASSWORD, "new master")
+        .unwrap();
+    app.tick(Instant::now() + Duration::from_secs(12));
+    assert!(matches!(app.screen, Screen::Unlock(_)));
+    assert!(app.vault.is_none());
+    assert!(app.items.is_empty());
+    assert_eq!(
+        app.status.as_ref().map(|s| s.text.as_str()),
+        Some(
+            "The master password or the key of the vault was changed elsewhere. Please unlock the vault again."
+        )
+    );
+    assert!(fx.calls().contains(&Call::ClearPending));
+}
+
+#[test]
+fn rollback_is_reported_and_newer_state_kept() {
+    let (fx, mut app) = unlocked(Language::En);
+    let mut other = fx.other_process();
+    other.save_item(login("Newer", "", "", "")).unwrap();
+    app.tick(Instant::now() + Duration::from_secs(6));
+    assert_eq!(app.items.len(), 6);
+    // Somebody puts the previous revision (.bak) back.
+    let path = other.path().to_path_buf();
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".bak");
+    std::fs::copy(std::path::PathBuf::from(bak), &path).unwrap();
+    app.tick(Instant::now() + Duration::from_secs(12));
+    assert!(matches!(app.screen, Screen::Main));
+    assert_eq!(app.items.len(), 6, "the newer state is kept");
+    let status = app
+        .status
+        .as_ref()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
+    assert!(status.contains("replaced by an older version"), "{status}");
+}

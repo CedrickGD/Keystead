@@ -48,8 +48,6 @@ export function createApi() {
     tabInfo: () => call("popup:tab-info"),
     matches: (tabId) => call("popup:matches", { tabId }),
     search: (query) => call("popup:search", { query }),
-    getLogin: (itemId) => call("popup:get-login", { itemId }),
-    getTotp: (itemId) => call("popup:get-totp", { itemId }),
     fill: (tabId, itemId) => call("popup:fill", { tabId, itemId }),
     generate: (options) => call("popup:generate", { options }),
     fillGenerated: (tabId, password) => call("popup:fill-generated", { tabId, password }),
@@ -71,6 +69,16 @@ export function createApi() {
         // Options are a convenience; generation still works with the current values.
       }
     },
+    /**
+     * Secrets are copied by the desktop app, not by the popup: the app excludes
+     * them from clipboard history and clears them after the user's
+     * "clipboardClearSeconds" (and on lock). A password never reaches the popup.
+     * Resolves to { remaining } (seconds a copied TOTP code stays valid, else null).
+     */
+    copyField: (itemId, field) => call("popup:copy-field", { itemId, field }),
+    /** Copies a secret the popup already holds (a generated password) through the app. */
+    copySecret: (text) => call("popup:copy-secret", { text }),
+    /** Non-secret text only (e.g. a username): stays on the clipboard. */
     copy: (text) => navigator.clipboard.writeText(text),
     close: () => window.close(),
   };

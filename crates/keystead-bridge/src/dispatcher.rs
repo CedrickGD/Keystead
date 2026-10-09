@@ -11,12 +11,13 @@ use keystead_core::model::ItemSummary;
 use keystead_core::totp::TotpCode;
 use serde::Serialize;
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
 use crate::protocol::{
-    BridgeError, IdData, LoginSecret, PairData, Payload, Request, Response, StatusData, UnlockData,
-    PAIRING_TIMEOUT, SEARCH_LIMIT,
+    BridgeError, CopyData, CopyField, IdData, LoginSecret, PairData, Payload, Request, Response,
+    StatusData, UnlockData, PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;
 use crate::util::{lock, log};
@@ -82,6 +83,29 @@ pub trait VaultBackend: Send + Sync + 'static {
         item_id: &str,
         password: &str,
     ) -> std::result::Result<String, BridgeError>;
+    /// Puts a secret the browser's popup copies (`copy_field`,
+    /// `copy_secret`) on the system clipboard: excluded from clipboard
+    /// history and cleared after the user's `clipboardClearSeconds`
+    /// (0 = never), like the app's own copies – so the extension never
+    /// leaves a password on the clipboard indefinitely.
+    ///
+    /// The default does exactly that with
+    /// [`keystead_core::clipboard::copy_secret`] in this (the app's)
+    /// process, reading the delay from the settings file
+    /// ([`keystead_core::settings::load`]); since the copy goes through the
+    /// core clipboard module, the app's "clear on lock" covers it as well.
+    /// An app that holds its settings in memory may override it.
+    fn copy_secret(&self, text: &str) -> std::result::Result<(), BridgeError> {
+        let seconds = keystead_core::settings::load().clipboard_clear_seconds;
+        let clear_after = (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)));
+        keystead_core::clipboard::copy_secret(text, clear_after).map_err(|e| {
+            log(format_args!(
+                "could not copy to the clipboard: {}",
+                e.code()
+            ));
+            BridgeError::Internal
+        })
+    }
     /// Called after a successful deliberate user action from the browser
     /// (see [`Payload::is_user_action`]), e.g. to reset the auto-lock timer.
     fn on_activity(&self) {}
@@ -286,6 +310,33 @@ impl Dispatcher {
             Payload::UpdatePassword { item_id, password } => json(&IdData {
                 id: backend.update_password(&item_id, &password)?,
             }),
+            Payload::CheckLoginPassword { item_id, password } => {
+                let login = backend.get_login(&item_id)?;
+                json(&same_secret(login.password.as_bytes(), password.as_bytes()))
+            }
+            Payload::CopyField { item_id, field } => {
+                let (text, remaining) = match field {
+                    CopyField::Password => (
+                        Zeroizing::new(backend.get_login(&item_id)?.password.clone()),
+                        None,
+                    ),
+                    CopyField::Totp => {
+                        let code = backend.get_totp(&item_id)?;
+                        let digits: String =
+                            code.code.chars().filter(|c| !c.is_whitespace()).collect();
+                        (Zeroizing::new(digits), Some(code.remaining))
+                    }
+                };
+                backend.copy_secret(&text)?;
+                json(&CopyData { remaining })
+            }
+            Payload::CopySecret { text } => {
+                if text.is_empty() {
+                    return Err(BridgeError::InvalidRequest);
+                }
+                backend.copy_secret(&text)?;
+                Ok(Value::Null)
+            }
         }
     }
 
@@ -368,6 +419,11 @@ impl Drop for Dispatcher {
 
 fn json<T: Serialize + ?Sized>(data: &T) -> std::result::Result<Value, BridgeError> {
     serde_json::to_value(data).map_err(|_| BridgeError::Internal)
+}
+
+/// Compares two secrets without an early exit on the first difference.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Trimmed name with control characters replaced; `None` if empty or longer

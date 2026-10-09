@@ -2,10 +2,17 @@
 //! docs/ARCHITECTURE.md).
 //!
 //! * Windows: named pipe `\\.\pipe\keystead-bridge-<USERNAME>`. The pipe gets a
-//!   DACL that grants access to the current user's SID only (best effort: if
-//!   the SID cannot be determined, the default pipe security applies). Remote
-//!   (network) clients are always rejected, and the first-instance flag makes
-//!   creation fail if anyone else already owns the name.
+//!   security descriptor whose owner is the current user's SID and whose DACL
+//!   grants access to that SID only (best effort: if the SID cannot be
+//!   determined, the default pipe security applies). Remote (network) clients
+//!   are always rejected, and the first-instance flag makes creation fail if
+//!   anyone else already owns the name. The pipe namespace is shared by all
+//!   users of the machine and the name is predictable, so another user could
+//!   create it first ("pipe squatting"): clients therefore check the owner of
+//!   the pipe they connected to *before sending anything* and refuse pipes
+//!   owned by anyone else (`PermissionDenied`); a server that finds the name
+//!   taken does the same check to tell its own second instance
+//!   (`AlreadyRunning`) from a hijacked name (`PermissionDenied`).
 //! * Unix: `$XDG_RUNTIME_DIR/keystead-bridge.sock`, fallback
 //!   `/tmp/keystead-bridge-<uid>.sock`, mode 0600. Both ends additionally
 //!   check that the peer runs as the same user (`SO_PEERCRED`).
@@ -163,17 +170,35 @@ pub(crate) fn current_euid() -> u32 {
 // Client side
 // ---------------------------------------------------------------------------
 
-/// Connects to the bridge server at `endpoint`. On Unix the connection is
-/// refused (`PermissionDenied`) if the server runs as another user.
+/// Connects to the bridge server at `endpoint`. The connection is refused
+/// (`PermissionDenied`) unless the server provably runs as the current user
+/// (Unix: peer uid; Windows: owner of the named pipe). The check happens
+/// before anything is sent, so a server squatting on the endpoint never sees
+/// a request (and, on Windows, cannot impersonate us: that needs data read
+/// from the pipe first).
 pub fn connect(endpoint: &Endpoint) -> io::Result<Stream> {
-    let stream = connect_unverified(endpoint, CONNECT_TIMEOUT)?;
-    if !peer_is_current_user(&stream) {
-        return Err(io::Error::new(
+    connect_verified(endpoint, CONNECT_TIMEOUT, server_is_current_user)
+}
+
+/// [`connect`] with an explicit server check (`verify`); any error of the
+/// check counts as "not ours" (fail closed).
+fn connect_verified(
+    endpoint: &Endpoint,
+    timeout: Duration,
+    verify: impl FnOnce(&Stream) -> io::Result<bool>,
+) -> io::Result<Stream> {
+    let stream = connect_unverified(endpoint, timeout)?;
+    match verify(&stream) {
+        Ok(true) => Ok(stream),
+        Ok(false) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("the bridge endpoint {endpoint} is served by another user"),
-        ));
+        )),
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("could not verify who serves the bridge endpoint {endpoint}: {e}"),
+        )),
     }
-    Ok(stream)
 }
 
 fn connect_unverified(endpoint: &Endpoint, timeout: Duration) -> io::Result<Stream> {
@@ -183,21 +208,52 @@ fn connect_unverified(endpoint: &Endpoint, timeout: Duration) -> io::Result<Stre
         .connect_sync()
 }
 
-/// True if the peer of `stream` runs as the current user. Where the OS
-/// cannot tell, the endpoint's access control (file mode / pipe DACL) is
-/// relied upon and `true` is returned.
-pub(crate) fn peer_is_current_user(stream: &Stream) -> bool {
+/// Client side: true if the *server* end of `stream` belongs to the current
+/// user. Unix: the peer's effective uid (where the OS cannot tell, the
+/// socket file's mode 0600 is relied upon). Windows: the owner SID of the
+/// named pipe must be the current user's SID; any API failure is an error
+/// (callers treat it as "not ours").
+pub(crate) fn server_is_current_user(stream: &Stream) -> io::Result<bool> {
     #[cfg(unix)]
     {
-        match stream.peer_creds() {
-            Ok(creds) => creds.euid().is_none_or(|uid| uid == current_euid()),
-            Err(_) => true,
-        }
+        Ok(peer_uid_is_current_user(stream))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        let Stream::NamedPipe(inner) = stream;
+        win::pipe_owner_is_current_user(inner.as_handle().as_raw_handle().cast())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = stream;
+        Ok(true)
+    }
+}
+
+/// Server side: true if the *client* of an accepted connection runs as the
+/// current user. Unix: the peer's effective uid (where the OS cannot tell,
+/// the socket file's mode 0600 is relied upon). Windows: the pipe's DACL
+/// already grants access to the current user's SID only (with the default
+/// security of the fallback path other users get read access at most, which
+/// cannot send a request), so every accepted client is the current user.
+pub(crate) fn client_is_current_user(stream: &Stream) -> bool {
+    #[cfg(unix)]
+    {
+        peer_uid_is_current_user(stream)
     }
     #[cfg(not(unix))]
     {
         let _ = stream;
         true
+    }
+}
+
+#[cfg(unix)]
+fn peer_uid_is_current_user(stream: &Stream) -> bool {
+    match stream.peer_creds() {
+        Ok(creds) => creds.euid().is_none_or(|uid| uid == current_euid()),
+        Err(_) => true,
     }
 }
 
@@ -295,26 +351,69 @@ impl Client {
 // ---------------------------------------------------------------------------
 
 /// Creates the listener. Fails with [`Error::AlreadyRunning`] if a live
-/// server already listens on `endpoint`; a stale Unix socket file left by a
+/// server of the current user already listens on `endpoint`, and with a
+/// `PermissionDenied` I/O error if the endpoint is held by another user
+/// (possible hijack, see the module docs). A stale Unix socket file left by a
 /// crashed instance is removed first.
 pub(crate) fn bind(endpoint: &Endpoint) -> Result<Listener> {
+    bind_with(endpoint, server_is_current_user)
+}
+
+/// [`bind`] with an explicit check of an existing server (`verify`, see
+/// [`server_is_current_user`]).
+fn bind_with(
+    endpoint: &Endpoint,
+    verify: impl Fn(&Stream) -> io::Result<bool>,
+) -> Result<Listener> {
     match endpoint {
         #[cfg(unix)]
-        Endpoint::Path(path) => prepare_unix_path(endpoint, path)?,
+        Endpoint::Path(path) => prepare_unix_path(endpoint, path, &verify)?,
         _ => {
-            if poke(endpoint).is_some() {
-                return Err(Error::AlreadyRunning(endpoint.to_string()));
+            if let Some(stream) = poke(endpoint) {
+                return Err(occupied(endpoint, verify(&stream)));
             }
         }
     }
 
     create_listener(endpoint).map_err(|e| {
-        if name_taken(&e) {
-            Error::AlreadyRunning(endpoint.to_string())
-        } else {
-            Error::Io(e)
+        if !name_taken(&e) {
+            return Error::Io(e);
+        }
+        // Someone owns the name although nobody answered the probe above:
+        // look again who it is before calling it a second instance.
+        match poke(endpoint) {
+            Some(stream) => occupied(endpoint, verify(&stream)),
+            None if cfg!(windows) => {
+                let error = io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "the bridge endpoint {endpoint} exists but its owner could not be verified (possibly another user)"
+                    ),
+                );
+                crate::util::log(format_args!("WARNING: {error}"));
+                Error::Io(error)
+            }
+            None => Error::AlreadyRunning(endpoint.to_string()),
         }
     })
+}
+
+/// The error for a live server found at `endpoint`, given the result of
+/// checking whether it runs as the current user: our own second instance →
+/// [`Error::AlreadyRunning`]; anyone else (or an unverifiable server) → a
+/// `PermissionDenied` I/O error, logged loudly.
+fn occupied(endpoint: &Endpoint, ours: io::Result<bool>) -> Error {
+    let reason = match ours {
+        Ok(true) => return Error::AlreadyRunning(endpoint.to_string()),
+        Ok(false) => "is owned by another user".to_owned(),
+        Err(e) => format!("is held by a server that could not be verified ({e})"),
+    };
+    let error = io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("the bridge endpoint {endpoint} {reason} (possible hijack); the browser bridge stays off"),
+    );
+    crate::util::log(format_args!("WARNING: {error}"));
+    Error::Io(error)
 }
 
 fn name_taken(e: &io::Error) -> bool {
@@ -375,11 +474,15 @@ fn create_listener(endpoint: &Endpoint) -> io::Result<Listener> {
     listener_options(endpoint)?.create_sync()
 }
 
-/// Handles an existing file at the socket path: a live server → error, a
-/// stale socket of ours → removed, anything else → error (never delete
-/// files that are not our sockets).
+/// Handles an existing file at the socket path: a live server → error (see
+/// [`occupied`]), a stale socket of ours → removed, anything else → error
+/// (never delete files that are not our sockets).
 #[cfg(unix)]
-fn prepare_unix_path(endpoint: &Endpoint, path: &std::path::Path) -> Result<()> {
+fn prepare_unix_path(
+    endpoint: &Endpoint,
+    path: &std::path::Path,
+    verify: &dyn Fn(&Stream) -> io::Result<bool>,
+) -> Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
     let meta = match std::fs::symlink_metadata(path) {
@@ -399,8 +502,8 @@ fn prepare_unix_path(endpoint: &Endpoint, path: &std::path::Path) -> Result<()> 
             format!("{} belongs to another user", path.display()),
         )));
     }
-    if poke(endpoint).is_some() {
-        return Err(Error::AlreadyRunning(endpoint.to_string()));
+    if let Some(stream) = poke(endpoint) {
+        return Err(occupied(endpoint, verify(&stream)));
     }
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -409,8 +512,9 @@ fn prepare_unix_path(endpoint: &Endpoint, path: &std::path::Path) -> Result<()> 
     }
 }
 
-/// Opens a throwaway connection to `endpoint` (used to wake up a blocking
-/// `accept` when the server stops).
+/// Opens a throwaway connection to `endpoint` without checking who serves it
+/// (used to wake up a blocking `accept` when the server stops, and by
+/// [`bind`], which checks the server itself). Nothing is ever sent on it.
 pub(crate) fn poke(endpoint: &Endpoint) -> Option<Stream> {
     connect_unverified(endpoint, Duration::from_millis(500)).ok()
 }
@@ -424,18 +528,76 @@ mod win {
 
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
     use widestring::{U16CStr, U16CString};
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetSecurityInfo, SE_KERNEL_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, IsValidSid, TokenUser, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    /// A security descriptor whose protected DACL grants full access to the
-    /// current user's SID and nobody else.
+    /// A security descriptor owned by the current user's SID whose protected
+    /// DACL grants full access to that SID and nobody else. The explicit
+    /// owner matters: clients verify it (see `pipe_owner_is_current_user`),
+    /// and the default owner of an elevated administrator's objects would be
+    /// the Administrators group instead.
     pub(super) fn current_user_only_security_descriptor() -> io::Result<SecurityDescriptor> {
-        let sid = current_user_sid()?;
-        let sddl = U16CString::from_str(format!("D:P(A;;GA;;;{sid})"))
+        let sid = CurrentUser::query()?.sid_string()?;
+        let sddl = U16CString::from_str(format!("O:{sid}D:P(A;;GA;;;{sid})"))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "SID contains NUL"))?;
         SecurityDescriptor::deserialize(&sddl)
+    }
+
+    /// True if the named pipe behind `handle` (an open client end) is owned
+    /// by the current user. Only the owner of a pipe name's first instance
+    /// can create further instances, and nobody but an administrator can
+    /// make another user the owner of an object, so another (non-admin) user
+    /// squatting on the name always fails this check. Errors of the Win32
+    /// calls are returned; callers treat them as "not ours".
+    pub(super) fn pipe_owner_is_current_user(handle: HANDLE) -> io::Result<bool> {
+        let user = CurrentUser::query()?;
+        let mut owner: PSID = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: `handle` is a valid pipe handle (opened with GENERIC_READ,
+        // which includes READ_CONTROL) borrowed for the call; the out
+        // pointers are valid; the unused ones are null as documented.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let _descriptor = LocalBox(descriptor.cast());
+        // SAFETY: `owner` is null or points into `descriptor`, which lives
+        // until the end of this function; `user.sid()` points into `user`.
+        let same = !owner.is_null()
+            && unsafe { IsValidSid(owner) } != 0
+            && unsafe { EqualSid(owner, user.sid()) } != 0;
+        Ok(same)
+    }
+
+    /// Memory allocated by the system with `LocalAlloc`; freed on drop.
+    struct LocalBox(*mut core::ffi::c_void);
+
+    impl Drop for LocalBox {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer was allocated by the system with
+                // LocalAlloc for us and is freed exactly once.
+                unsafe { LocalFree(self.0) };
+            }
+        }
     }
 
     struct TokenHandle(HANDLE);
@@ -448,46 +610,68 @@ mod win {
         }
     }
 
-    /// The string SID (`S-1-5-21-...`) of the user running this process.
-    fn current_user_sid() -> io::Result<String> {
-        let mut raw: HANDLE = ptr::null_mut();
-        // SAFETY: GetCurrentProcess returns a pseudo handle; `raw` is a valid
-        // out pointer.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let token = TokenHandle(raw);
+    /// The `TOKEN_USER` of this process (its user SID).
+    struct CurrentUser {
+        /// u64 elements keep the buffer suitably aligned for TOKEN_USER.
+        buf: Vec<u64>,
+    }
 
-        let mut len = 0u32;
-        // SAFETY: size query with a null buffer of length 0; expected to fail
-        // with ERROR_INSUFFICIENT_BUFFER and report the needed size.
-        unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut len) };
-        if len == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // u64 elements keep the buffer suitably aligned for TOKEN_USER.
-        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
-        // SAFETY: `buf` provides at least `len` writable bytes.
-        let ok = unsafe {
-            GetTokenInformation(token.0, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: GetTokenInformation(TokenUser) filled the buffer with a
-        // TOKEN_USER whose SID pointer points into the same buffer.
-        let sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    impl CurrentUser {
+        fn query() -> io::Result<CurrentUser> {
+            let mut raw: HANDLE = ptr::null_mut();
+            // SAFETY: GetCurrentProcess returns a pseudo handle; `raw` is a
+            // valid out pointer.
+            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let token = TokenHandle(raw);
 
-        let mut wide: *mut u16 = ptr::null_mut();
-        // SAFETY: `sid` is valid while `buf` lives; `wide` is a valid out pointer.
-        if unsafe { ConvertSidToStringSidW(sid, &mut wide) } == 0 || wide.is_null() {
-            return Err(io::Error::last_os_error());
+            let mut len = 0u32;
+            // SAFETY: size query with a null buffer of length 0; expected to
+            // fail with ERROR_INSUFFICIENT_BUFFER and report the needed size.
+            unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut len) };
+            if len == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+            // SAFETY: `buf` provides at least `len` writable bytes.
+            let ok = unsafe {
+                GetTokenInformation(token.0, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let user = CurrentUser { buf };
+            // SAFETY: the SID pointer was set by GetTokenInformation.
+            if user.sid().is_null() || unsafe { IsValidSid(user.sid()) } == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the process token has no valid user SID",
+                ));
+            }
+            Ok(user)
         }
-        // SAFETY: ConvertSidToStringSidW returns a NUL-terminated string
-        // allocated with LocalAlloc, freed right after copying.
-        let text = unsafe { U16CStr::from_ptr_str(wide) }.to_string_lossy();
-        unsafe { LocalFree(wide.cast()) };
-        Ok(text)
+
+        /// The user SID; valid while `self` lives.
+        fn sid(&self) -> PSID {
+            // SAFETY: GetTokenInformation(TokenUser) filled the buffer with a
+            // TOKEN_USER whose SID pointer points into the same buffer.
+            unsafe { (*self.buf.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+        }
+
+        /// The string SID (`S-1-5-21-...`).
+        fn sid_string(&self) -> io::Result<String> {
+            let mut wide: *mut u16 = ptr::null_mut();
+            // SAFETY: `sid()` is valid while `self` lives; `wide` is a valid
+            // out pointer.
+            if unsafe { ConvertSidToStringSidW(self.sid(), &mut wide) } == 0 || wide.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let wide = LocalBox(wide.cast());
+            // SAFETY: ConvertSidToStringSidW returns a NUL-terminated string
+            // allocated with LocalAlloc (freed by `wide` after copying).
+            Ok(unsafe { U16CStr::from_ptr_str(wide.0.cast::<u16>()) }.to_string_lossy())
+        }
     }
 }
 
@@ -538,6 +722,109 @@ mod tests {
             Endpoint::Path(PathBuf::from("/run/x.sock"))
         );
         assert_eq!(Endpoint::Path(PathBuf::from("/a/b")).to_string(), "/a/b");
+    }
+
+    fn is_permission_denied(err: &Error) -> bool {
+        matches!(err, Error::Io(e) if e.kind() == io::ErrorKind::PermissionDenied)
+    }
+
+    #[test]
+    fn occupied_endpoint_errors() {
+        let ep = Endpoint::Namespaced("x".into());
+        assert!(matches!(occupied(&ep, Ok(true)), Error::AlreadyRunning(_)));
+        let foreign = occupied(&ep, Ok(false));
+        assert!(is_permission_denied(&foreign), "{foreign:?}");
+        assert!(foreign.to_string().contains("another user"), "{foreign}");
+        let unverified = occupied(&ep, Err(io::Error::other("api failed")));
+        assert!(is_permission_denied(&unverified), "{unverified:?}");
+        assert!(unverified.code().starts_with("io:"));
+    }
+
+    /// Accepts `n` connections on `listener` and returns how many bytes
+    /// each client sent before closing.
+    fn count_received(listener: Listener, n: usize) -> std::thread::JoinHandle<Vec<usize>> {
+        std::thread::spawn(move || {
+            (0..n)
+                .map(|_| {
+                    let mut stream = listener.accept().unwrap();
+                    let mut buf = Vec::new();
+                    let _ = io::Read::read_to_end(&mut stream, &mut buf);
+                    buf.len()
+                })
+                .collect()
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_refuses_unverified_servers_before_sending_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = Endpoint::Path(dir.path().join("verify.sock"));
+        let server = count_received(bind(&ep).unwrap(), 3);
+        let timeout = Duration::from_secs(2);
+
+        let err = connect_verified(&ep, timeout, |_| Ok(false)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("another user"), "{err}");
+        // Fail closed: an error of the check counts as "not ours".
+        let err = connect_verified(&ep, timeout, |_| Err(io::Error::other("no SID"))).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+
+        // The real check accepts our own server.
+        let mut client = Client::connect(&ep).unwrap();
+        framing::write_frame(&mut client.stream, b"hi", MAX_MESSAGE_SIZE).unwrap();
+        drop(client);
+        // The refused connections never carried a byte.
+        assert_eq!(server.join().unwrap(), vec![0, 0, 6]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bind_tells_a_second_instance_from_a_foreign_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = Endpoint::Path(dir.path().join("bind.sock"));
+        let _listener = bind(&ep).unwrap();
+        assert!(matches!(bind(&ep).unwrap_err(), Error::AlreadyRunning(_)));
+        assert!(matches!(
+            bind_with(&ep, |_| Ok(true)).unwrap_err(),
+            Error::AlreadyRunning(_)
+        ));
+        assert!(is_permission_denied(
+            &bind_with(&ep, |_| Ok(false)).unwrap_err()
+        ));
+        assert!(is_permission_denied(
+            &bind_with(&ep, |_| Err(io::Error::other("x"))).unwrap_err()
+        ));
+        // The live server's socket file was left alone.
+        assert!(matches!(bind(&ep).unwrap_err(), Error::AlreadyRunning(_)));
+    }
+
+    /// Namespaced endpoints (abstract sockets on Linux, named pipes on
+    /// Windows) have no file permissions: the probe of `bind` decides.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn bind_checks_the_owner_of_a_namespaced_endpoint() {
+        let ep = Endpoint::Namespaced(format!("keystead-test-{}", uuid::Uuid::new_v4()));
+        let listener = bind(&ep).unwrap();
+        assert!(matches!(bind(&ep).unwrap_err(), Error::AlreadyRunning(_)));
+        assert!(is_permission_denied(
+            &bind_with(&ep, |_| Ok(false)).unwrap_err()
+        ));
+        drop(listener);
+    }
+
+    /// Windows: the pipe is owned by the current user (explicit owner in
+    /// the security descriptor), so our own client accepts it and the owner
+    /// check itself succeeds.
+    #[cfg(windows)]
+    #[test]
+    fn windows_client_accepts_its_own_pipe() {
+        let ep = Endpoint::Namespaced(format!("keystead-test-{}", uuid::Uuid::new_v4()));
+        let server = count_received(bind(&ep).unwrap(), 1);
+        let stream = connect(&ep).unwrap();
+        assert!(server_is_current_user(&stream).unwrap());
+        drop(stream);
+        assert_eq!(server.join().unwrap(), vec![0]);
     }
 
     #[cfg(unix)]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, ServerCrash } from "lucide-react";
 import { api, events, subscribeEffect } from "./lib/api";
+import { discardPageData } from "./lib/discard";
 import type { AppInfo, PairingRequest, Settings, ThemeSetting, VaultInfo } from "./lib/types";
 import { localPrefs } from "./lib/utils";
 import { I18nProvider, useT } from "./i18n";
@@ -138,8 +139,8 @@ function AppRoot({
         events.onVaultLocked(({ reason }) => {
           void toUnlockOrWelcome();
           const minutes = settingsRef.current?.autoLockMinutes ?? 0;
-          if (reason === "timeout") toast.info(t("lock.timeoutToast", { minutes }));
-          if (reason === "system") toast.info(t("lock.systemToast"));
+          if (reason === "timeout") toast.show({ kind: "info", message: t("lock.timeoutToast", { minutes }), carry: true });
+          if (reason === "system") toast.show({ kind: "info", message: t("lock.systemToast"), carry: true });
         }),
       ),
     [t, toast, toUnlockOrWelcome],
@@ -203,6 +204,14 @@ function AppRoot({
   const enterVaultRef = useRef(enterVault);
   enterVaultRef.current = enterVault;
   useEffect(() => subscribeEffect(events.onVaultUnlocked((info) => enterVaultRef.current(info))), []);
+
+  // Leaving an open vault (lock of any kind, vault deleted, portable switch):
+  // reload the page so the decrypted items etc. do not linger in the JS heap.
+  const vaultShown = useRef(false);
+  useEffect(() => {
+    if (screen === "main") vaultShown.current = true;
+    else if (vaultShown.current && (screen === "unlock" || screen === "welcome")) discardPageData(toast.carried);
+  }, [screen, toast]);
 
   const lock = useCallback(async () => {
     try {

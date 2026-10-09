@@ -8,7 +8,12 @@
  * - Fills only after a user gesture (click in our dropdown, popup button,
  *   keyboard shortcut). The service worker matches the login against the URL
  *   of this frame as known by the browser – nothing the page says is trusted.
- * - Offers to save / update logins after a form is submitted.
+ *   Clicks and keys in our UI only count while the control has been fully
+ *   visible (unoccluded, no opacity/filter effects; IntersectionObserver v2)
+ *   for a moment, so a page cannot trick the user into using our UI hidden
+ *   under its own content (clickjacking).
+ * - Offers to save / update logins after a form is submitted – only for a
+ *   password the user typed (or inserted from the generator) themselves.
  *
  * All UI lives in a closed shadow root with its own styles. Secrets are never
  * logged and never written anywhere but into the chosen input fields.
@@ -36,6 +41,8 @@
   const SNAPSHOT_TTL_MS = 60_000;
   const BAR_TTL_MS = 2 * 60_000;
   const SVG_NS = "http://www.w3.org/2000/svg";
+  /** How long a control must have been fully visible before it accepts a click or key. */
+  const VISIBLE_DWELL_MS = 500;
   const AVATAR_HUES = [214, 262, 330, 20, 145, 188, 282, 350, 38, 168, 236, 4];
 
   const t = (key, substitutions) => {
@@ -54,11 +61,18 @@
   let pageInfoRunning = false;
   let pageInfoQueued = false;
   let lastUrl = location.href;
-  let lastFocused = null;
+  /** The text field this frame last reported as focused (cs:focus); null after it lost the focus. */
   let lastReportedFocus = null;
   let lastContextTarget = null;
   /** Credentials typed into a form (for SPA logins without a submit event). */
   let snapshot = null;
+  /**
+   * field → the value the user gave it (trusted input: typing, pasting) or that
+   * the user inserted with the generator. A password is only offered for saving
+   * if a field still holds exactly that value: a page cannot make us prompt for
+   * a password it filled in (or replaced) by script.
+   */
+  let userValues = new WeakMap();
   let lastCapture = { key: "", at: 0 };
   /** Open dropdown: { field, node, index }. */
   let dropdown = null;
@@ -263,10 +277,10 @@
 
     .icon {
       all: unset; position: absolute; top: 0; left: 0; box-sizing: border-box; pointer-events: auto;
-      display: none; cursor: pointer; border-radius: 5px; opacity: 0.9;
-      transition: opacity 120ms ease, box-shadow 120ms ease;
+      display: none; cursor: pointer; border-radius: 5px;
+      transition: box-shadow 120ms ease;
     }
-    .icon:hover { opacity: 1; box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.22); }
+    .icon:hover { box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.22); }
     .icon svg { width: 100%; height: 100%; }
     .icon.locked .tile { fill: #7d8592; }
 
@@ -343,6 +357,8 @@
     @keyframes ks-pop { from { opacity: 0; transform: var(--pos) scale(0.98); } to { opacity: 1; transform: var(--pos); } }
     @keyframes ks-slide { from { opacity: 0; transform: var(--pos) translateY(-6px); } to { opacity: 1; transform: var(--pos); } }
     @media (prefers-reduced-motion: reduce) { .dropdown, .bar, .toast { animation: none; } }
+    /* Clickable controls must stay free of opacity, filters and non-translate transforms once shown:
+       IntersectionObserver v2 treats those as "not visible" (see uiIsTrustworthy). */
   `;
 
   let host = null;
@@ -492,17 +508,92 @@
     node.style.transform = pos;
   }
 
+  // ---------------------------------------------------------------------------
+  // Clickjacking protection
+  // ---------------------------------------------------------------------------
+
+  // elementFromPoint ignores `pointer-events: none`, so a page could cover our UI
+  // with its own opaque top-layer element and let the user's clicks fall through.
+  // IntersectionObserver v2 (trackVisibility) reports whether an element is really
+  // visible: not covered by anything, no opacity < 1, no filter, no distorting
+  // transform – on itself or any ancestor (also across frames).
+  const VISIBILITY_SUPPORTED =
+    typeof IntersectionObserver === "function" &&
+    typeof IntersectionObserverEntry === "function" &&
+    "isVisible" in IntersectionObserverEntry.prototype;
+  /** Tracked control → { visible, since } (since: when it last became visible). */
+  const visibility = new WeakMap();
+  let visibilityObserver = null;
+
+  function onVisibilityEntries(entries) {
+    for (const entry of entries) {
+      const state = visibility.get(entry.target);
+      if (!state) continue;
+      const visible = entry.isVisible === true && entry.isIntersecting;
+      if (visible && !state.visible) state.since = entry.time;
+      state.visible = visible;
+    }
+  }
+
+  /** Starts tracking an actionable control (a leaf: a container's own children would count as covering it). */
+  function trackVisibility(node) {
+    visibility.set(node, { visible: false, since: 0 });
+    if (!VISIBILITY_SUPPORTED) return;
+    try {
+      visibilityObserver ??= new IntersectionObserver(onVisibilityEntries, {
+        trackVisibility: true,
+        delay: 100,
+        threshold: [0, 1],
+      });
+      visibilityObserver.observe(node);
+    } catch {
+      // Stays "not visible": the control does nothing (filling from the popup still works).
+    }
+  }
+
+  /** Stops tracking the controls inside `root` (and `root` itself). */
+  function untrackVisibility(root) {
+    if (!root) return;
+    for (const node of [root, ...root.querySelectorAll("button")]) {
+      if (!visibility.has(node)) continue;
+      visibility.delete(node);
+      visibilityObserver?.unobserve(node);
+    }
+  }
+
+  /** True if `node` has been fully visible for at least VISIBLE_DWELL_MS (fails closed without IntersectionObserver v2). */
+  function seenLongEnough(node) {
+    if (!visibilityObserver || !node) return false;
+    // Apply changes that were computed but not delivered yet (e.g. a cover that just appeared).
+    onVisibilityEntries(visibilityObserver.takeRecords());
+    const state = visibility.get(node);
+    return !!state && state.visible && performance.now() - state.since >= VISIBLE_DWELL_MS;
+  }
+
+  /** A computed style value that hides or distorts what the user sees. */
+  function hasVisualEffect(style) {
+    const none = (value) => !value || value === "none";
+    return (
+      !none(style.filter) ||
+      !none(style.clipPath) ||
+      !none(style.getPropertyValue("mask-image")) ||
+      !none(style.getPropertyValue("-webkit-mask-image"))
+    );
+  }
+
   /**
-   * True if a click really hit our visible UI: the page cannot overlay,
-   * hide or fade our host to trick the user into clicking it (clickjacking).
+   * True if a click on (or a key for) `node` really comes from our visible UI:
+   * the page cannot overlay, hide or fade our host to trick the user into using
+   * it (clickjacking). `ev` is the click; null for keyboard actions (no position).
    */
-  function uiIsTrustworthy(ev) {
-    if (!host || !host.isConnected) return false;
+  function uiIsTrustworthy(ev, node) {
+    if (!host || !host.isConnected || !node || !node.isConnected) return false;
     const style = getComputedStyle(host);
-    if (style.opacity !== "1" || style.visibility !== "visible" || style.display === "none") return false;
+    if (style.opacity !== "1" || style.visibility !== "visible" || style.display === "none" || hasVisualEffect(style)) return false;
     if (Number(getComputedStyle(document.documentElement).opacity) < 1) return false;
+    if (!seenLongEnough(node)) return false;
     // Keyboard activation has no pointer position.
-    if (ev.detail === 0 && ev.clientX === 0 && ev.clientY === 0) return true;
+    if (!ev || (ev.detail === 0 && ev.clientX === 0 && ev.clientY === 0)) return true;
     return document.elementFromPoint(ev.clientX, ev.clientY) === host;
   }
 
@@ -526,6 +617,7 @@
     const fields = iconsWanted() ? Forms.iconFields(forms) : [];
     for (const [field, button] of icons) {
       if (!fields.includes(field)) {
+        untrackVisibility(button);
         button.remove();
         icons.delete(field);
         resizeObserver.unobserve(field);
@@ -567,8 +659,9 @@
       ev.stopPropagation();
       if (!ev.isTrusted) return;
       if (dropdown?.field === field) closeDropdown();
-      else openDropdown(field);
+      else if (uiIsTrustworthy(ev, button)) openDropdown(field);
     });
+    trackVisibility(button);
     return button;
   }
 
@@ -632,6 +725,7 @@
     node.addEventListener("mousedown", (ev) => ev.preventDefault());
     dropdown = { field, node, index: 0 };
     ensureUi().append(node);
+    raiseUi(true); // start above any top-layer element of the page
     renderDropdown();
     try {
       field.focus({ preventScroll: true });
@@ -644,6 +738,7 @@
 
   function closeDropdown() {
     if (!dropdown) return;
+    untrackVisibility(dropdown.node);
     dropdown.node.remove();
     dropdown = null;
   }
@@ -655,6 +750,7 @@
   function renderDropdown() {
     if (!dropdown) return;
     const { node } = dropdown;
+    untrackVisibility(node);
     node.replaceChildren();
 
     const head = el("div", "dd-head");
@@ -667,10 +763,11 @@
       const unlock = el("button", "btn btn-primary", t("csUnlock"));
       unlock.type = "button";
       unlock.addEventListener("click", (ev) => {
-        if (!ev.isTrusted || !uiIsTrustworthy(ev)) return;
+        if (!ev.isTrusted || !uiIsTrustworthy(ev, unlock)) return;
         closeDropdown();
         send({ type: "cs:open-popup" }).catch(() => undefined);
       });
+      trackVisibility(unlock);
       box.append(unlock);
       node.append(box);
       positionDropdown();
@@ -697,9 +794,10 @@
       item.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        if (!ev.isTrusted || !uiIsTrustworthy(ev)) return;
+        if (!ev.isTrusted || !uiIsTrustworthy(ev, item)) return;
         chooseMatch(match);
       });
+      trackVisibility(item);
       node.append(item);
     });
     positionDropdown();
@@ -740,10 +838,16 @@
       case "ArrowUp":
         if (matches.length) highlight((dropdown.index - 1 + matches.length) % matches.length);
         break;
-      case "Enter":
-        if (matches.length) chooseMatch(matches[dropdown.index]);
-        else handled = false;
+      case "Enter": {
+        if (!matches.length) {
+          handled = false;
+          break;
+        }
+        // No pointer position: the highlighted item itself must be visible (else the key is swallowed).
+        const item = dropdown.node.querySelectorAll(".item")[dropdown.index];
+        if (uiIsTrustworthy(null, item)) chooseMatch(matches[dropdown.index]);
         break;
+      }
       case "Escape":
         closeDropdown();
         break;
@@ -764,7 +868,7 @@
     try {
       const credentials = await send({ type: "cs:fill-request", itemId: match.id });
       const form = Forms.formForElement(refreshForms(), field);
-      const filled = form ? Forms.fillForm(form, credentials) : 0;
+      const filled = form ? fillStored(form, credentials) : 0;
       if (!filled) toast(t("csFillFailed"));
     } catch (err) {
       toast(errorMessage(err.code));
@@ -787,6 +891,7 @@
     node.setAttribute("role", "status");
     node.append(logo(), el("span", "", text));
     root.append(node);
+    raiseUi(true);
     toastNode = node;
     place(node, Math.max(8, innerWidth - node.offsetWidth - 16), 16);
     toastTimer = setTimeout(() => {
@@ -802,6 +907,7 @@
   function closeBar() {
     if (!bar) return;
     clearTimeout(bar.timer);
+    untrackVisibility(bar.node);
     bar.node.remove();
     bar = null;
   }
@@ -824,7 +930,8 @@
 
     const texts = el("div", "texts");
     const username = typeof info.username === "string" && info.username ? info.username : t("csNoUsername");
-    const detail = isUpdate ? `${info.itemName || info.host} · ${username}` : `${username} · ${info.host}`;
+    // The host is always shown: an update prompt from a sibling subdomain must be recognisable.
+    const detail = isUpdate ? [info.itemName, username, info.host].filter(Boolean).join(" · ") : `${username} · ${info.host}`;
     texts.append(el("div", "title", isUpdate ? t("csUpdateTitle") : t("csSaveTitle")), el("div", "detail", detail));
 
     const actions = el("div", "actions");
@@ -846,19 +953,22 @@
     close.addEventListener("click", (ev) => decide("dismiss", ev));
     actions.append(close);
 
+    for (const button of actions.querySelectorAll("button")) trackVisibility(button);
     node.append(logo(), texts, actions);
     ensureUi().append(node);
+    raiseUi(true);
     bar = { node, info, texts, actions, timer: setTimeout(closeBar, BAR_TTL_MS) };
     positionBar();
   }
 
   function setBarStatus(text, isError) {
     if (!bar) return;
+    untrackVisibility(bar.actions);
     bar.actions.replaceChildren(el("span", isError ? "status error" : "status", text));
   }
 
   async function decide(action, ev) {
-    if (!bar || !ev.isTrusted || !uiIsTrustworthy(ev)) return;
+    if (!bar || !ev.isTrusted || !uiIsTrustworthy(ev, ev.currentTarget)) return;
     const current = bar;
     current.actions.querySelectorAll("button").forEach((b) => {
       b.disabled = true;
@@ -885,10 +995,11 @@
         const unlock = el("button", "btn btn-primary", t("csUnlock"));
         unlock.type = "button";
         unlock.addEventListener("click", (e) => {
-          if (!e.isTrusted || !uiIsTrustworthy(e)) return;
+          if (!e.isTrusted || !uiIsTrustworthy(e, unlock)) return;
           send({ type: "cs:open-popup" }).catch(() => undefined);
           restoreBarActions(current);
         });
+        trackVisibility(unlock);
         current.actions.append(unlock);
       } else {
         setBarStatus(t("csSaveFailed"), true);
@@ -927,9 +1038,27 @@
     send({ type: "cs:capture", username: credentials.username, password: credentials.password }).catch(() => undefined);
   }
 
+  /**
+   * What the user entered in `form`: the credentials, but only if the password
+   * is one the user typed/pasted (or inserted from the generator) and no script
+   * changed since; null otherwise. Username-only steps are returned as is.
+   */
+  function userCredentials(form) {
+    const credentials = form ? Forms.readCredentials(form) : null;
+    if (!credentials?.password) return credentials;
+    const fromUser = form.passwords.some((f) => f.value === credentials.password && userValues.get(f) === f.value);
+    return fromUser ? credentials : null;
+  }
+
+  /** Fills stored credentials; the fields no longer hold user input. */
+  function fillStored(form, credentials) {
+    for (const field of [form.username, ...form.passwords]) if (field) userValues.delete(field);
+    return Forms.fillForm(form, credentials);
+  }
+
   function captureForm(form) {
     snapshot = null;
-    if (form) submitCredentials(Forms.readCredentials(form));
+    if (form) submitCredentials(userCredentials(form));
   }
 
   /** SPA logins: the form disappeared or the URL changed after the user typed credentials. */
@@ -972,12 +1101,13 @@
   }
 
   function onInput(ev) {
-    if (!ev.isTrusted) return; // our own fills are untrusted events
+    if (!ev.isTrusted) return; // our own fills and the page's synthetic events are untrusted
     const target = eventTarget(ev);
     if (!Forms.isTextEntry(target)) return;
+    userValues.set(target, target.value);
     const form = Forms.formForElement(forms, target);
     if (!form) return;
-    const credentials = Forms.readCredentials(form);
+    const credentials = userCredentials(form);
     snapshot = credentials ? { form, credentials, at: Date.now(), href: location.href } : null;
   }
 
@@ -986,9 +1116,11 @@
   // ---------------------------------------------------------------------------
 
   function onFocusIn(ev) {
+    // Synthetic focus events would let a frame (e.g. a cross-origin ad) claim the
+    // "focused frame" slot and receive the next generated password.
+    if (!ev.isTrusted) return;
     const target = eventTarget(ev);
     if (!Forms.isTextEntry(target)) return;
-    lastFocused = target;
     if (lastReportedFocus !== target) {
       lastReportedFocus = target;
       send({ type: "cs:focus" }).catch(() => undefined);
@@ -996,6 +1128,8 @@
   }
 
   function onFocusOut(ev) {
+    // Report the field again when it regains the focus: another frame may have claimed it meanwhile.
+    if (ev.isTrusted && eventTarget(ev) === lastReportedFocus) lastReportedFocus = null;
     if (dropdown && eventTarget(ev) === dropdown.field) {
       // Clicks into our dropdown keep the focus (mousedown is prevented), so this is a real blur.
       setTimeout(() => {
@@ -1004,7 +1138,12 @@
     }
   }
 
+  function onWindowBlur(ev) {
+    if (ev.target === window) lastReportedFocus = null;
+  }
+
   function onContextMenu(ev) {
+    if (!ev.isTrusted) return;
     const target = eventTarget(ev);
     lastContextTarget = Forms.isTextEntry(target) ? target : null;
   }
@@ -1021,11 +1160,22 @@
     let target;
     if (msg.target === "context") target = lastContextTarget;
     else {
+      // Only the field that has the focus right now (it keeps it while the popup is
+      // open). A frame that does not own the focus has no focused field and fills
+      // nothing – never a field that was focused at some earlier point.
       const active = deepActiveElement();
-      target = Forms.isTextEntry(active) ? active : lastFocused;
+      target = Forms.isTextEntry(active) ? active : null;
     }
     if (!target || !target.isConnected) return 0;
-    return Forms.fillGenerated(target, msg.password);
+    const filled = Forms.fillGenerated(target, msg.password);
+    if (filled) {
+      // The user chose to insert it: offer to save it like a typed password.
+      const form = Forms.formForElement(refreshForms(), target);
+      for (const field of form ? [target, ...form.passwords] : [target]) {
+        if (field.value === msg.password) userValues.set(field, msg.password);
+      }
+    }
+    return filled;
   }
 
   // ---------------------------------------------------------------------------
@@ -1041,7 +1191,7 @@
     sendResponse({ hasForm: true });
     send({ type: "cs:fill-request", nonce: msg.nonce })
       .then((credentials) => {
-        if (!Forms.fillForm(form, credentials)) toast(t("csFillFailed"));
+        if (!fillStored(form, credentials)) toast(t("csFillFailed"));
       })
       .catch((err) => {
         if (err.code === "insecure") toast(t("csInsecureBlocked"));
@@ -1098,6 +1248,7 @@
     alive = false;
     observer.disconnect();
     resizeObserver.disconnect();
+    visibilityObserver?.disconnect();
     clearTimeout(scanTimer);
     clearTimeout(toastTimer);
     clearInterval(positionInterval);
@@ -1114,6 +1265,7 @@
     dropdown = null;
     bar = null;
     snapshot = null;
+    userValues = new WeakMap();
     if (globalThis.__keysteadContent === api) delete globalThis.__keysteadContent;
   }
 
@@ -1125,6 +1277,7 @@
   listen(document, "input", onInput, true);
   listen(document, "focusin", onFocusIn, true);
   listen(document, "focusout", onFocusOut, true);
+  listen(window, "blur", onWindowBlur);
   listen(document, "contextmenu", onContextMenu, true);
   listen(document, "mousedown", onOutsidePointer, true);
   listen(document, "visibilitychange", onVisibility);

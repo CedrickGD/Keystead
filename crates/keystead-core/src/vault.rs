@@ -4,6 +4,11 @@
 //! Every mutating method works on a copy of the data and only commits it to
 //! memory after the file was written successfully, so a failed save (for
 //! example `Error::Conflict`) never leaves memory and disk out of sync.
+//!
+//! Replacing a secret that opens the vault (master password, recovery key)
+//! also replaces the vault key where possible ("rotation"), so the old
+//! secret together with an older copy of the file (the `.bak`, a backup, a
+//! synced version) cannot decrypt the current or any later revision.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +37,19 @@ pub struct UnlockedVault {
     /// Header as last read from / written to disk.
     file: VaultFile,
     key: SecretKey,
+    /// Master-password key-encryption key for `file.kdf` (salt and
+    /// parameters); always opens `file.wrapped_key` to `key`. Lets the
+    /// recovery-key operations wrap a fresh vault key without asking for the
+    /// password again, and lets [`UnlockedVault::reload_if_changed`] follow
+    /// a vault key rotated by another process.
+    master_kek: SecretKey,
     data: VaultData,
+}
+
+/// The new secrets of a save that replaces what opens the vault.
+struct Rekey {
+    key: SecretKey,
+    master_kek: SecretKey,
 }
 
 impl std::fmt::Debug for UnlockedVault {
@@ -117,12 +134,14 @@ impl UnlockedVault {
         path: PathBuf,
         file: VaultFile,
         key: SecretKey,
+        master_kek: SecretKey,
         data: VaultData,
     ) -> Self {
         UnlockedVault {
             path,
             file,
             key,
+            master_kek,
             data,
         }
     }
@@ -457,7 +476,16 @@ impl UnlockedVault {
             .is_ok_and(|k| crypto::ct_eq(k.as_slice(), self.key.as_slice()))
     }
 
-    /// Changes the master password (re-wraps the vault key only).
+    /// Changes the master password.
+    ///
+    /// Without a recovery key the vault key is rotated: a fresh key encrypts
+    /// the data, so the old password does not open this or any later
+    /// revision even together with an older copy of the file. With a
+    /// recovery key only the vault key is re-wrapped – the recovery code is
+    /// not known here and a new vault key would make it useless; replacing
+    /// the recovery key afterwards ([`Self::create_recovery_key`]) rotates
+    /// the key and so also revokes the old password. Either way no `.bak`
+    /// of the previous revision is left behind.
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
         if !self.verify_master_password(current) {
             return Err(Error::WrongPassword);
@@ -465,39 +493,83 @@ impl UnlockedVault {
         if new.is_empty() {
             return Err(Error::invalid("password_empty"));
         }
+        let params = self.file.kdf_params();
         let mut header = self.file.clone();
-        header.set_master_password(&self.key, new, self.file.kdf_params())?;
+        let rekey = if header.has_recovery() {
+            let master_kek = header.set_master_password_kek(&self.key, new, params)?;
+            Rekey {
+                key: self.key.clone(),
+                master_kek,
+            }
+        } else {
+            let key = crypto::random_key()?;
+            let master_kek = header.set_master_password_kek(&key, new, params)?;
+            Rekey { key, master_kek }
+        };
         let data = self.data.clone();
-        self.write(header, data)
+        self.commit(header, data, Some(rekey))
     }
 
     /// Creates a new recovery key (replacing an existing one) and returns
-    /// it formatted as `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`.
+    /// it formatted as `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`. Rotates the vault
+    /// key: a replaced recovery code does not open this or any later
+    /// revision, even together with an older copy of the file.
     pub fn create_recovery_key(&mut self) -> Result<String> {
         let code = format::generate_recovery_code()?;
-        let mut header = self.file.clone();
-        header.set_recovery_code(&self.key, &code)?;
+        let (mut header, rekey) = self.rotated_header()?;
+        header.set_recovery_code(&rekey.key, &code)?;
         let data = self.data.clone();
-        self.write(header, data)?;
+        self.commit(header, data, Some(rekey))?;
         Ok(code)
     }
 
+    /// Removes the recovery key. Rotates the vault key (see
+    /// [`Self::create_recovery_key`]).
     pub fn remove_recovery_key(&mut self) -> Result<()> {
-        let mut header = self.file.clone();
+        let (mut header, rekey) = self.rotated_header()?;
         header.recovery = None;
         let data = self.data.clone();
-        self.write(header, data)
+        self.commit(header, data, Some(rekey))
     }
 
     pub fn has_recovery_key(&self) -> bool {
         self.file.has_recovery()
     }
 
-    /// Persists the data with a modified header (used by the store after a
-    /// recovery-key unlock).
-    pub(crate) fn replace_header_and_save(&mut self, header: VaultFile) -> Result<()> {
+    /// A copy of the header with a fresh vault key wrapped by the (unchanged)
+    /// master password. The recovery box still wraps the old key: callers
+    /// replace or remove it.
+    fn rotated_header(&self) -> Result<(VaultFile, Rekey)> {
+        // Invariant check: the cached KEK opens the current header.
+        let current = self
+            .file
+            .unwrap_key_with_kek(&self.master_kek)
+            .map_err(|_| Error::KeyChanged)?;
+        if !crypto::ct_eq(current.as_slice(), self.key.as_slice()) {
+            return Err(Error::KeyChanged);
+        }
+        let key = crypto::random_key()?;
+        let mut header = self.file.clone();
+        header.wrap_key_with_kek(&self.master_kek, &key)?;
+        Ok((
+            header,
+            Rekey {
+                key,
+                master_kek: self.master_kek.clone(),
+            },
+        ))
+    }
+
+    /// Persists the data under a header whose key wrappings belong to
+    /// `key`/`master_kek` (used by the store after a recovery-key unlock).
+    pub(crate) fn rekey_and_save(
+        &mut self,
+        header: VaultFile,
+        key: SecretKey,
+        master_kek: SecretKey,
+    ) -> Result<()> {
         let data = self.data.clone();
-        self.write(header, data)
+        self.commit(header, data, Some(Rekey { key, master_kek }))
     }
 
     /// Persists the current state (atomic write, revision check, `.bak`).
@@ -507,23 +579,41 @@ impl UnlockedVault {
         self.write(header, data)
     }
 
-    /// Re-reads the file if another process saved a newer revision; the
-    /// in-memory vault key is used (the master password may have changed).
+    /// Re-reads the file if another process saved a newer revision.
     /// Returns true if the data was reloaded.
+    ///
+    /// * A different vault id → `Error::Corrupt`.
+    /// * An older revision than the one in memory → `Error::Rollback`
+    ///   (restored backup/copy or tampering); the newer in-memory state is
+    ///   kept, and saving keeps failing with `Error::Conflict`.
+    /// * A newer revision is opened with this session's master KEK (the
+    ///   vault key may have been rotated by a recovery-key change). If that
+    ///   does not open it – the master password was changed elsewhere –
+    ///   `Error::KeyChanged`: the vault has to be unlocked again.
     pub fn reload_if_changed(&mut self) -> Result<bool> {
         let on_disk = VaultFile::read(&self.path)?;
-        if on_disk.revision == self.file.revision && on_disk.id == self.file.id {
-            return Ok(false);
-        }
         if on_disk.id != self.file.id {
             return Err(Error::corrupt(
                 "vault file was replaced by a different vault",
             ));
         }
-        let data = on_disk.decrypt_payload(&self.key)?;
+        if on_disk.revision == self.file.revision {
+            return Ok(false);
+        }
+        if on_disk.revision < self.file.revision {
+            return Err(Error::Rollback);
+        }
+        let key = on_disk
+            .unwrap_key_with_kek(&self.master_kek)
+            .map_err(|e| match e {
+                Error::WrongPassword => Error::KeyChanged,
+                other => other,
+            })?;
+        let data = on_disk.decrypt_payload(&key)?;
         let mut old = std::mem::replace(&mut self.data, data);
         wipe_data(&mut old);
         self.file = on_disk;
+        self.key = key;
         Ok(true)
     }
 
@@ -548,10 +638,25 @@ impl UnlockedVault {
         Ok(result)
     }
 
+    /// Writes `header` + `data` as the next revision with the current keys.
+    fn write(&mut self, header: VaultFile, data: VaultData) -> Result<()> {
+        self.commit(header, data, None)
+    }
+
     /// Writes `header` + `data` as the next revision. Holds the inter-process
     /// lock while checking that the file on disk is still at the revision we
     /// loaded (`Error::Conflict` otherwise).
-    fn write(&mut self, mut header: VaultFile, mut data: VaultData) -> Result<()> {
+    ///
+    /// With `rekey` the payload is encrypted with `rekey.key` (the header
+    /// already carries the matching wrappings), the previous revision is not
+    /// kept as `.bak` (it would still open with the replaced secret) and the
+    /// in-memory keys are replaced once the file was written.
+    fn commit(
+        &mut self,
+        mut header: VaultFile,
+        mut data: VaultData,
+        rekey: Option<Rekey>,
+    ) -> Result<()> {
         let result = (|| {
             if !self.path.exists() {
                 // Deleted by another process: never recreate it silently
@@ -568,14 +673,28 @@ impl UnlockedVault {
             }
             header.revision = self.file.revision + 1;
             header.updated_at = now_ms().max(self.file.updated_at);
-            header.encrypt_payload(&self.key, &data)?;
-            header.write_atomic(&self.path, true)
+            match &rekey {
+                None => {
+                    header.encrypt_payload(&self.key, &data)?;
+                    header.write_atomic(&self.path, true)
+                }
+                Some(rekey) => {
+                    header.encrypt_payload(&rekey.key, &data)?;
+                    header.write_atomic(&self.path, false)?;
+                    format::supersede_backup(&self.path);
+                    Ok(())
+                }
+            }
         })();
         match result {
             Ok(()) => {
                 self.file = header;
                 let mut old = std::mem::replace(&mut self.data, data);
                 wipe_data(&mut old);
+                if let Some(rekey) = rekey {
+                    self.key = rekey.key;
+                    self.master_kek = rekey.master_kek;
+                }
                 Ok(())
             }
             Err(e) => {

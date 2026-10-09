@@ -25,6 +25,9 @@ serde_json = "1"
 # on Windows: no `cmd /c start` quoting pitfalls, no console flash).
 open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
 raw-window-handle = "0.6.2"
+# Wipes secrets in values handed to the UI and a copied secret kept for
+# clear-on-lock.
+zeroize = "1.9.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Probe for the AppIndicator library before creating the tray icon.

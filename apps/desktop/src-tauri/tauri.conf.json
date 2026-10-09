@@ -21,6 +21,7 @@
         "minHeight": 600,
         "center": true,
         "visible": false,
+        "contentProtected": true,
         "create": false
       }
     ],

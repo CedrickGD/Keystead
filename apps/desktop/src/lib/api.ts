@@ -63,7 +63,15 @@ function toApiError(err: unknown): ApiError {
 
 type Args = Record<string, unknown>;
 
+let callsInFlight = 0;
+
+/** Number of commands that have not answered yet. */
+export function pendingCalls(): number {
+  return callsInFlight;
+}
+
 async function call<T>(command: string, args?: Args): Promise<T> {
+  callsInFlight += 1;
   try {
     if (IN_TAURI) {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -73,6 +81,8 @@ async function call<T>(command: string, args?: Args): Promise<T> {
     return await mock.mockInvoke<T>(command, args ?? {});
   } catch (err) {
     throw toApiError(err);
+  } finally {
+    callsInFlight -= 1;
   }
 }
 

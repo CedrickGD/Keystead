@@ -3,7 +3,7 @@
 //! blocking thread pool (key derivation, file I/O), never on the main
 //! thread. Errors are stable codes (see [`AppError::code`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use keystead_core::import::{self, ImportReport, LegacyVaultInfo};
 use keystead_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
 use keystead_core::settings::Settings;
 use keystead_core::totp::{self, TotpCode};
-use keystead_core::{clipboard, export, paths, Error as CoreError, VaultStore};
+use keystead_core::{export, paths, Error as CoreError, VaultStore};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -25,6 +25,7 @@ use crate::error::{AppError, AppResult};
 use crate::platform;
 use crate::portable;
 use crate::state::{log, Core, LockReason};
+use crate::wipe::Wiped;
 
 type Shared<'a> = State<'a, Arc<Core>>;
 type CmdResult<T> = Result<T, String>;
@@ -229,8 +230,8 @@ pub async fn touch_activity(core: Shared<'_>) -> CmdResult<()> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn list_items(core: Shared<'_>) -> CmdResult<Vec<VaultItem>> {
-    run(&core, false, |c| c.read(|v| v.items().to_vec())).await
+pub async fn list_items(core: Shared<'_>) -> CmdResult<Wiped<Vec<VaultItem>>> {
+    run(&core, false, |c| c.read(|v| Wiped(v.items().to_vec()))).await
 }
 
 #[tauri::command]
@@ -246,10 +247,10 @@ pub async fn list_folders(core: Shared<'_>) -> CmdResult<Vec<Folder>> {
 }
 
 #[tauri::command]
-pub async fn save_item(core: Shared<'_>, item: Value) -> CmdResult<VaultItem> {
+pub async fn save_item(core: Shared<'_>, item: Value) -> CmdResult<Wiped<VaultItem>> {
     run(&core, true, move |c| {
-        let item: VaultItem = parse(item, "item")?;
-        c.mutate(|v| v.save_item(item.clone()))
+        let item = Wiped(parse::<VaultItem>(item, "item")?);
+        c.mutate(|v| v.save_item(item.0.clone())).map(Wiped)
     })
     .await
 }
@@ -314,8 +315,11 @@ pub async fn generate_password(
 }
 
 #[tauri::command]
-pub async fn generator_history(core: Shared<'_>) -> CmdResult<Vec<GeneratedPassword>> {
-    run(&core, true, |c| c.read(|v| v.generator_history().to_vec())).await
+pub async fn generator_history(core: Shared<'_>) -> CmdResult<Wiped<Vec<GeneratedPassword>>> {
+    run(&core, true, |c| {
+        c.read(|v| Wiped(v.generator_history().to_vec()))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -337,14 +341,8 @@ pub async fn totp_code(core: Shared<'_>, seed: String) -> CmdResult<TotpCode> {
 #[tauri::command]
 pub async fn copy_text(core: Shared<'_>, text: String, sensitive: bool) -> CmdResult<()> {
     run(&core, true, move |c| {
-        if sensitive {
-            let seconds = c.state().settings.clipboard_clear_seconds;
-            let clear_after = (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)));
-            clipboard::copy_secret(&text, clear_after)?;
-        } else {
-            clipboard::copy_text(&text)?;
-        }
-        Ok(())
+        let text = zeroize::Zeroizing::new(text);
+        c.copy_to_clipboard(&text, sensitive)
     })
     .await
 }
@@ -413,12 +411,8 @@ pub async fn delete_vault(
             }
             closed
         };
-        if closed.is_some() {
-            drop(closed);
-            if let Err(e) = clipboard::clear_pending_secret() {
-                log(format_args!("could not clear the clipboard: {}", e.code()));
-            }
-        }
+        // The UI navigates itself after deleting; no `vault://locked`.
+        c.finish_lock(closed, None);
         Ok(())
     })
     .await
@@ -600,33 +594,96 @@ pub async fn open_data_dir(core: Shared<'_>) -> CmdResult<()> {
 #[tauri::command]
 pub async fn set_portable_mode(core: Shared<'_>, enabled: bool) -> CmdResult<AppInfo> {
     run(&core, true, move |c| {
-        portable::check_available()?;
-        if paths::is_portable() == enabled {
-            return Ok(app_info_of(c));
-        }
-        // Nothing may use the data directory while it moves.
-        bridge::stop(c);
-        let (result, closed) = {
-            let mut st = c.state();
-            let closed = st.vault.take();
-            let result = portable::set_portable(enabled).map(|dir| {
-                st.store = VaultStore::new(dir);
-            });
-            (result, closed)
-        };
-        if closed.is_some() {
-            drop(closed);
-            if let Err(e) = clipboard::clear_pending_secret() {
-                log(format_args!("could not clear the clipboard: {}", e.code()));
-            }
-        }
-        if result.is_ok() {
-            // The host manifest moved with the data directory.
-            bridge::reregister_if_needed();
-        }
-        bridge::start_if_enabled(c);
-        result?;
+        switch_portable_mode(c, enabled, portable::preflight, portable::set_portable)?;
         Ok(app_info_of(c))
     })
     .await
+}
+
+/// `set_portable_mode` with the data move passed in (unit tests).
+/// `preflight` runs while the vault is still open and the bridge running,
+/// so the expected refusals change nothing. Once the vault had to be
+/// closed for the move, `vault://locked {manual}` is emitted – whether the
+/// move then succeeds or not – so the UI never keeps showing the items of a
+/// vault that is no longer open.
+fn switch_portable_mode(
+    c: &Arc<Core>,
+    enabled: bool,
+    preflight: impl FnOnce(bool) -> AppResult<bool>,
+    move_data: impl FnOnce(bool) -> AppResult<PathBuf>,
+) -> AppResult<()> {
+    if !preflight(enabled)? {
+        return Ok(());
+    }
+    // Nothing may use the data directory while it moves.
+    bridge::stop(c);
+    let (result, closed) = {
+        // Held across the move: nothing can unlock the vault meanwhile.
+        let mut st = c.state();
+        let closed = st.vault.take();
+        let result = move_data(enabled).map(|dir| {
+            st.store = VaultStore::new(dir);
+        });
+        (result, closed)
+    };
+    c.finish_lock(closed, Some(LockReason::Manual));
+    if result.is_ok() {
+        // The host manifest moved with the data directory.
+        bridge::reregister_if_needed();
+    }
+    bridge::start_if_enabled(c);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use keystead_core::settings::Settings;
+
+    use super::*;
+    use crate::state::test_support::core_with_open_vault;
+    use crate::state::EVENT_LOCKED;
+
+    fn locked_events(c: &Core) -> Vec<Value> {
+        c.emitted()
+            .into_iter()
+            .filter(|(name, _)| name == EVENT_LOCKED)
+            .map(|(_, payload)| payload)
+            .collect()
+    }
+
+    #[test]
+    fn refused_portable_switch_leaves_the_vault_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let err = switch_portable_mode(
+            &c,
+            true,
+            |_| Err(AppError::unsupported("portable_installed")),
+            |_| panic!("must not move after a failed preflight"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "unsupported:portable_installed");
+        assert!(c.state().vault.is_some(), "vault must stay open");
+        assert!(locked_events(&c).is_empty());
+
+        // Already in the requested mode: nothing happens either.
+        switch_portable_mode(&c, true, |_| Ok(false), |_| panic!("no move")).unwrap();
+        assert!(c.state().vault.is_some());
+    }
+
+    #[test]
+    fn failed_portable_move_announces_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let root = c.data_dir();
+        let err = switch_portable_mode(&c, true, |_| Ok(true), |_| Err(AppError::io("read-only")))
+            .unwrap_err();
+        assert_eq!(err.code(), "io:read-only");
+        assert!(c.state().vault.is_none());
+        assert_eq!(c.data_dir(), root, "store unchanged");
+        assert_eq!(
+            locked_events(&c),
+            vec![serde_json::json!({ "reason": "manual" })]
+        );
+    }
 }

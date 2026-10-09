@@ -2,9 +2,9 @@
 //! folders, passwords, recovery, conflicts, tamper detection.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use keystead_core::crypto::{b64_decode, b64_encode};
+use keystead_core::crypto::{b64_decode, b64_encode, SecretKey};
 use keystead_core::format::VaultFile;
 use keystead_core::model::{CardData, Folder, ItemType, LoginData, LoginUri, UriMatch, VaultItem};
 use keystead_core::{Error, KdfParams, UnlockedVault, VaultStore};
@@ -461,7 +461,9 @@ fn recovery_key_flow() {
     store
         .unlock_with_recovery_key(v.id(), &code, "third")
         .unwrap();
-    u.reload_if_changed().unwrap();
+    // That set another master password: `u` has to unlock again.
+    assert!(matches!(u.reload_if_changed(), Err(Error::KeyChanged)));
+    let mut u = store.unlock(v.id(), "third").unwrap();
 
     // Replacing the key invalidates the old one.
     let code2 = u.create_recovery_key().unwrap();
@@ -504,15 +506,260 @@ fn conflict_detection_and_reload() {
     assert_eq!(app.items().len(), 2);
     assert!(!app.reload_if_changed().unwrap());
 
-    // A master password change elsewhere: reload still works with the
-    // in-memory key and further saves succeed.
+    // A master password change elsewhere: the other session has to unlock
+    // again (see `other_sessions_follow_rotation_or_must_unlock_again`).
     app.change_master_password(PW, "other").unwrap();
-    assert!(tui.reload_if_changed().unwrap());
-    assert!(tui.verify_master_password("other"));
+    assert!(matches!(tui.reload_if_changed(), Err(Error::KeyChanged)));
+    let mut tui = store.unlock(&id, "other").unwrap();
     tui.save_item(login("After", "c", "3", "")).unwrap();
     assert!(app.reload_if_changed().unwrap());
     assert_eq!(app.items().len(), 3);
     assert_eq!(app.revision(), tui.revision());
+}
+
+fn bak_path(v: &UnlockedVault) -> PathBuf {
+    let mut p = v.path().as_os_str().to_owned();
+    p.push(".bak");
+    PathBuf::from(p)
+}
+
+/// What an offline attacker who knows an old secret gets from an older
+/// copy of the vault file (the `.bak`, a backup, a synced version).
+fn key_from_copy(
+    copy: &[u8],
+    unwrap: impl Fn(&VaultFile) -> keystead_core::Result<SecretKey>,
+) -> SecretKey {
+    unwrap(&VaultFile::parse(copy).expect("parse copy")).expect("old secret opens the old copy")
+}
+
+fn opens_current(v: &UnlockedVault, key: &SecretKey) -> bool {
+    VaultFile::read(v.path())
+        .unwrap()
+        .decrypt_payload(key)
+        .is_ok()
+}
+
+#[test]
+fn replacing_or_removing_the_recovery_key_rotates_the_vault_key() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let code1 = v.create_recovery_key().unwrap();
+    v.save_item(login("B", "b", "secret-b", "")).unwrap();
+    let bak = bak_path(&v);
+    assert!(VaultFile::read(&bak)
+        .unwrap()
+        .unwrap_key_with_recovery(&code1)
+        .is_ok());
+    let copy_with_code1 = fs::read(v.path()).unwrap();
+
+    // Replace: the old code opens neither the current file nor the .bak,
+    // and the key it yields from an older copy decrypts no later revision.
+    let code2 = v.create_recovery_key().unwrap();
+    let old_key = key_from_copy(&copy_with_code1, |f| f.unwrap_key_with_recovery(&code1));
+    assert!(!opens_current(&v, &old_key));
+    let current = VaultFile::read(v.path()).unwrap();
+    assert!(matches!(
+        current.unwrap_key_with_recovery(&code1),
+        Err(Error::WrongPassword)
+    ));
+    if bak.exists() {
+        assert!(VaultFile::read(&bak)
+            .unwrap()
+            .unwrap_key_with_recovery(&code1)
+            .is_err());
+    }
+    let k2 = current.unwrap_key_with_recovery(&code2).unwrap();
+    assert_eq!(current.decrypt_payload(&k2).unwrap().items.len(), 2);
+    assert_eq!(store.unlock(v.id(), PW).unwrap().items().len(), 2);
+    v.save_item(login("C", "c", "secret-c", "")).unwrap();
+    assert!(!opens_current(&v, &old_key));
+
+    // Remove: the same for the removed code.
+    let copy_with_code2 = fs::read(v.path()).unwrap();
+    v.remove_recovery_key().unwrap();
+    assert!(!v.has_recovery_key());
+    if bak.exists() {
+        assert!(VaultFile::read(&bak)
+            .unwrap()
+            .unwrap_key_with_recovery(&code2)
+            .is_err());
+    }
+    let key2 = key_from_copy(&copy_with_code2, |f| f.unwrap_key_with_recovery(&code2));
+    assert!(!opens_current(&v, &key2));
+    for n in 0..3 {
+        v.save_item(login(&format!("Later {n}"), "x", "later-secret", ""))
+            .unwrap();
+    }
+    assert!(!opens_current(&v, &key2));
+    assert!(!opens_current(&v, &old_key));
+    let reopened = store.unlock(v.id(), PW).unwrap();
+    assert_eq!(reopened.items().len(), 6);
+    assert_eq!(reopened.data(), v.data());
+}
+
+#[test]
+fn changing_the_master_password_rotates_the_vault_key() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    v.save_item(login("B", "b", "secret-b", "")).unwrap();
+    let bak = bak_path(&v);
+    let old_copy = fs::read(v.path()).unwrap();
+
+    v.change_master_password(PW, "new master").unwrap();
+    let old_key = key_from_copy(&old_copy, |f| f.unwrap_key(PW));
+    assert!(!opens_current(&v, &old_key));
+    // No .bak that still opens with the old password.
+    if bak.exists() {
+        assert!(matches!(
+            VaultFile::read(&bak).unwrap().unwrap_key(PW),
+            Err(Error::WrongPassword)
+        ));
+    }
+    v.save_item(login("C", "c", "secret-c", "")).unwrap();
+    assert!(!opens_current(&v, &old_key));
+    let reopened = store.unlock(v.id(), "new master").unwrap();
+    assert_eq!(reopened.data(), v.data());
+}
+
+#[test]
+fn master_password_change_with_recovery_key_keeps_the_recovery_key() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let code = v.create_recovery_key().unwrap();
+    v.save_item(login("B", "b", "secret-b", "")).unwrap();
+    let bak = bak_path(&v);
+    let old_copy = fs::read(v.path()).unwrap();
+
+    // The recovery code is not known here, so the vault key is only
+    // re-wrapped: the recovery key keeps working ...
+    v.change_master_password(PW, "new master").unwrap();
+    let current = VaultFile::read(v.path()).unwrap();
+    let k = current.unwrap_key_with_recovery(&code).unwrap();
+    assert_eq!(current.decrypt_payload(&k).unwrap().items.len(), 2);
+    // ... but no .bak opens with the old password.
+    if bak.exists() {
+        assert!(matches!(
+            VaultFile::read(&bak).unwrap().unwrap_key(PW),
+            Err(Error::WrongPassword)
+        ));
+    }
+    // Replacing the recovery key then rotates the vault key, which also
+    // retires older copies that open with the old password.
+    let old_key = key_from_copy(&old_copy, |f| f.unwrap_key(PW));
+    assert!(opens_current(&v, &old_key));
+    v.create_recovery_key().unwrap();
+    assert!(!opens_current(&v, &old_key));
+    assert_eq!(store.unlock(v.id(), "new master").unwrap().items().len(), 2);
+}
+
+#[test]
+fn recovery_unlock_rotates_the_vault_key() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let code = v.create_recovery_key().unwrap();
+    v.save_item(login("B", "b", "secret-b", "")).unwrap();
+    let bak = bak_path(&v);
+    let old_copy = fs::read(v.path()).unwrap();
+    let id = v.id().to_owned();
+    drop(v);
+
+    let r = store
+        .unlock_with_recovery_key(&id, &code, "after recovery")
+        .unwrap();
+    let old_key = key_from_copy(&old_copy, |f| f.unwrap_key(PW));
+    assert!(!opens_current(&r, &old_key));
+    if bak.exists() {
+        assert!(matches!(
+            VaultFile::read(&bak).unwrap().unwrap_key(PW),
+            Err(Error::WrongPassword)
+        ));
+    }
+    // The recovery key stays valid (it wraps the new key).
+    let current = VaultFile::read(r.path()).unwrap();
+    let k = current.unwrap_key_with_recovery(&code).unwrap();
+    assert_eq!(current.decrypt_payload(&k).unwrap().items.len(), 2);
+    assert_eq!(
+        store.unlock(&id, "after recovery").unwrap().data(),
+        r.data()
+    );
+}
+
+#[test]
+fn other_sessions_follow_rotation_or_must_unlock_again() {
+    let (_dir, store) = store();
+    let id = create(&store, "Shared").id().to_owned();
+    let mut app = store.unlock(&id, PW).unwrap();
+    let mut tui = store.unlock(&id, PW).unwrap();
+    app.save_item(login("From app", "a", "1", "")).unwrap();
+
+    // Recovery-key changes rotate the vault key but keep the master
+    // password: other sessions follow transparently and keep saving.
+    app.create_recovery_key().unwrap();
+    assert!(tui.reload_if_changed().unwrap());
+    assert_eq!(tui.items().len(), 1);
+    assert!(tui.has_recovery_key());
+    tui.save_item(login("From tui", "b", "2", "")).unwrap();
+    assert!(app.reload_if_changed().unwrap());
+    app.remove_recovery_key().unwrap();
+    assert!(tui.reload_if_changed().unwrap());
+    tui.save_item(login("From tui 2", "c", "3", "")).unwrap();
+    assert!(app.reload_if_changed().unwrap());
+    assert_eq!(app.data(), tui.data());
+    assert_eq!(store.unlock(&id, PW).unwrap().items().len(), 3);
+
+    // A master password change: a distinct error (not `corrupt`), the
+    // in-memory state is kept and saving fails loudly.
+    app.change_master_password(PW, "new master").unwrap();
+    let (revision, data) = (tui.revision(), tui.data().clone());
+    let err = tui.reload_if_changed().unwrap_err();
+    assert!(matches!(err, Error::KeyChanged), "{err:?}");
+    assert_eq!(err.code(), "locked");
+    assert_eq!(tui.revision(), revision);
+    assert_eq!(tui.data(), &data);
+    assert!(matches!(
+        tui.save_item(login("Lost", "d", "4", "")),
+        Err(Error::Conflict)
+    ));
+    assert!(matches!(tui.reload_if_changed(), Err(Error::KeyChanged)));
+    let again = store.unlock(&id, "new master").unwrap();
+    assert_eq!(again.data(), app.data());
+}
+
+#[test]
+fn rollback_to_an_older_revision_is_refused() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Current");
+    v.save_item(login("A", "a", "pw-old", "")).unwrap();
+    v.save_item(login("B", "b", "pw-b", "")).unwrap();
+    let path = v.path().to_path_buf();
+    let (revision, data) = (v.revision(), v.data().clone());
+    assert_eq!(revision, 3);
+
+    // Put the valid older revision (.bak) back, with an attacker-chosen
+    // name in the unauthenticated header.
+    fs::copy(bak_path(&v), &path).unwrap();
+    tamper(&path, |j| j["name"] = Value::from("Evil"));
+    let err = v.reload_if_changed().unwrap_err();
+    assert!(matches!(err, Error::Rollback), "{err:?}");
+    assert_eq!(err.code(), "corrupt:rollback");
+    assert_eq!(v.revision(), revision);
+    assert_eq!(v.data(), &data);
+    assert_eq!(v.name(), "Current");
+    // Saving does not build on the rolled-back file.
+    assert!(matches!(
+        v.save_item(login("C", "c", "pw-c", "")),
+        Err(Error::Conflict)
+    ));
+    assert!(matches!(v.rename("x"), Err(Error::Conflict)));
+    assert_eq!(VaultFile::read(&path).unwrap().revision, 2);
+    assert_eq!(v.data(), &data);
+    // A newer revision is still picked up (conflict_detection_and_reload).
+    // Unlocking anew opens what is on disk now.
+    assert_eq!(store.unlock(v.id(), PW).unwrap().revision(), 2);
 }
 
 #[test]
@@ -536,6 +783,21 @@ fn backup_is_previous_revision() {
         std::path::PathBuf::from(p)
     };
     assert!(!tmp.exists());
+    // No temporary files are left behind.
+    let mut names: Vec<String> = fs::read_dir(store.vaults_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let id = v.id();
+    assert_eq!(
+        names,
+        [
+            format!("{id}.keystead"),
+            format!("{id}.keystead.bak"),
+            format!("{id}.keystead.lock"),
+        ]
+    );
 }
 
 #[test]
@@ -547,6 +809,19 @@ fn rename_and_delete_vault() {
     assert_eq!(store.list_vaults().unwrap()[0].name, "Neu");
     assert!(matches!(v.rename(""), Err(Error::InvalidInput(_))));
     v.save_item(login("A", "a", "a", "")).unwrap(); // creates .bak
+                                                    // Temporary files left behind by a crash (current and old naming).
+    let vaults = store.vaults_dir();
+    fs::write(
+        vaults.join(format!(".{}.keystead.0123456789abcdef.tmp", v.id())),
+        b"x",
+    )
+    .unwrap();
+    fs::write(
+        vaults.join(format!(".{}.keystead.bak.0123456789abcdef.tmp", v.id())),
+        b"x",
+    )
+    .unwrap();
+    fs::write(vaults.join(format!("{}.keystead.tmp", v.id())), b"x").unwrap();
 
     assert!(matches!(
         store.delete_vault(v.id(), "wrong"),

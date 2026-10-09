@@ -24,6 +24,17 @@ pub enum Error {
     /// The vault file was modified by another process since it was loaded.
     #[error("the vault was changed by another process")]
     Conflict,
+    /// The master password or the vault key was changed by another process:
+    /// this unlocked session cannot read or save the vault any more and has
+    /// to unlock it again (UI code `locked`).
+    #[error("the vault was re-keyed by another process; unlock it again")]
+    KeyChanged,
+    /// The vault file on disk is an older revision than the one this session
+    /// already has (a restored backup or copy, or tampering). The newer
+    /// in-memory state is kept and saving is refused (UI code
+    /// `corrupt:rollback`).
+    #[error("the vault file was replaced by an older revision")]
+    Rollback,
     /// A vault, item, folder or file does not exist.
     #[error("not found: {0}")]
     NotFound(String),
@@ -40,8 +51,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// The stable error code for the UI:
-    /// `wrong_password`, `not_found`, `conflict`, `invalid_input:<detail>`,
-    /// `io:<detail>`, `corrupt:<detail>` or `unsupported:<detail>`.
+    /// `wrong_password`, `not_found`, `conflict`, `locked` (key changed),
+    /// `invalid_input:<detail>`, `io:<detail>`, `corrupt:<detail>` (rollback:
+    /// `corrupt:rollback`) or `unsupported:<detail>`.
     pub fn code(&self) -> String {
         match self {
             Error::Io(e) => format!("io:{e}"),
@@ -49,6 +61,8 @@ impl Error {
             Error::WrongPassword => "wrong_password".to_owned(),
             Error::Corrupt(d) => format!("corrupt:{d}"),
             Error::Conflict => "conflict".to_owned(),
+            Error::KeyChanged => "locked".to_owned(),
+            Error::Rollback => "corrupt:rollback".to_owned(),
             Error::NotFound(_) => "not_found".to_owned(),
             Error::InvalidInput(d) => format!("invalid_input:{d}"),
             Error::Unsupported(d) => format!("unsupported:{d}"),
@@ -80,6 +94,8 @@ mod tests {
     fn codes_are_stable() {
         assert_eq!(Error::WrongPassword.code(), "wrong_password");
         assert_eq!(Error::Conflict.code(), "conflict");
+        assert_eq!(Error::KeyChanged.code(), "locked");
+        assert_eq!(Error::Rollback.code(), "corrupt:rollback");
         assert_eq!(Error::NotFound("x".into()).code(), "not_found");
         assert_eq!(
             Error::InvalidInput("name".into()).code(),

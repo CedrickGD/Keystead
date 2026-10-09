@@ -135,14 +135,6 @@ export function createDemoApi(state) {
       const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
       return ALL.filter((item) => terms.every((term) => `${item.name} ${item.subtitle} ${item.uri}`.toLowerCase().includes(term)));
     },
-    async getLogin() {
-      requireUnlocked();
-      return { username: "max.mustermann@example.com", password: "demo-password" };
-    },
-    async getTotp() {
-      requireUnlocked();
-      return { code: "492 817", period: 30, remaining: 23 };
-    },
     async fill() {
       requireUnlocked();
       await delay(150);
@@ -168,6 +160,14 @@ export function createDemoApi(state) {
     },
     async saveGeneratorOptions(options) {
       generatorOptions = options;
+    },
+    async copyField(_itemId, field) {
+      requireUnlocked();
+      return { remaining: field === "totp" ? 23 : null };
+    },
+    async copySecret() {
+      requireUnlocked();
+      return null;
     },
     copy: async () => undefined,
     close: () => undefined,

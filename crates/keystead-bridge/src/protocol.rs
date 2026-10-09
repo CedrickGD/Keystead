@@ -6,6 +6,13 @@
 //!
 //! `Debug` output of every type that can carry a secret (passwords, tokens,
 //! response data) is redacted, so requests and responses can be logged.
+//!
+//! Memory hygiene (best effort): passwords in requests are held in
+//! [`Zeroizing`] strings, [`LoginSecret`] wipes its secrets when dropped and
+//! a [`Response`] wipes every string of its `data` when dropped. Transient
+//! copies made by serde/serde_json while parsing or serialising (buffered
+//! `flatten`/tagged content, escaped strings, buffer reallocations) are not
+//! covered; removing those would need hand-written (de)serialisers.
 
 use std::fmt;
 use std::time::Duration;
@@ -15,6 +22,7 @@ use keystead_core::totp::TotpCode;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use zeroize::{Zeroize, Zeroizing};
 
 /// How long a `pair` request waits for the user's decision in the app.
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
@@ -107,12 +115,15 @@ impl<'de> Deserialize<'de> for BridgeError {
 impl From<keystead_core::Error> for BridgeError {
     /// Maps core errors for [`VaultBackend`](crate::dispatcher::VaultBackend)
     /// implementations: wrong password, not found and invalid input keep
-    /// their meaning, everything else is `internal`.
+    /// their meaning, a key changed elsewhere means `locked`, everything else
+    /// is `internal`.
     fn from(err: keystead_core::Error) -> Self {
         match err {
             keystead_core::Error::WrongPassword => BridgeError::WrongPassword,
             keystead_core::Error::NotFound(_) => BridgeError::NotFound,
             keystead_core::Error::InvalidInput(_) => BridgeError::InvalidRequest,
+            // The key was rotated elsewhere: the session is gone, unlock again.
+            keystead_core::Error::KeyChanged => BridgeError::Locked,
             _ => BridgeError::Internal,
         }
     }
@@ -150,7 +161,8 @@ pub enum Payload {
         code: String,
     },
     Unlock {
-        password: String,
+        #[serde(with = "secret_string")]
+        password: Zeroizing<String>,
     },
     Lock,
     FocusApp,
@@ -175,12 +187,60 @@ pub enum Payload {
         name: String,
         url: String,
         username: String,
-        password: String,
+        #[serde(with = "secret_string")]
+        password: Zeroizing<String>,
     },
     UpdatePassword {
         item_id: String,
-        password: String,
+        #[serde(with = "secret_string")]
+        password: Zeroizing<String>,
     },
+    /// Whether `password` equals the stored password of a login (answers a
+    /// bool, never the stored secret; not a user action).
+    CheckLoginPassword {
+        item_id: String,
+        #[serde(with = "secret_string")]
+        password: Zeroizing<String>,
+    },
+    /// Copies a field of a login to the clipboard of the app (see
+    /// [`VaultBackend::copy_secret`](crate::dispatcher::VaultBackend::copy_secret)),
+    /// so the secret never travels back to the browser.
+    CopyField {
+        item_id: String,
+        field: CopyField,
+    },
+    /// Copies `text` (e.g. a generated password) like `copy_field`.
+    CopySecret {
+        #[serde(with = "secret_string")]
+        text: Zeroizing<String>,
+    },
+}
+
+/// The field of a login that `copy_field` copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyField {
+    Password,
+    Totp,
+}
+
+/// (De)serialises a [`Zeroizing<String>`] as a plain JSON string.
+mod secret_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use zeroize::Zeroizing;
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Zeroizing<String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(value)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Zeroizing<String>, D::Error> {
+        String::deserialize(deserializer).map(Zeroizing::new)
+    }
 }
 
 impl Payload {
@@ -199,6 +259,9 @@ impl Payload {
             Payload::GeneratePassword { .. } => "generate_password",
             Payload::SaveLogin { .. } => "save_login",
             Payload::UpdatePassword { .. } => "update_password",
+            Payload::CheckLoginPassword { .. } => "check_login_password",
+            Payload::CopyField { .. } => "copy_field",
+            Payload::CopySecret { .. } => "copy_secret",
         }
     }
 
@@ -220,13 +283,18 @@ impl Payload {
                 | Payload::GetTotp { .. }
                 | Payload::SaveLogin { .. }
                 | Payload::UpdatePassword { .. }
+                | Payload::CheckLoginPassword { .. }
+                | Payload::CopyField { .. }
+                | Payload::CopySecret { .. }
         )
     }
 
     /// True for requests that represent a deliberate user action in the
     /// browser (as opposed to background traffic such as `status` polling or
-    /// the automatic `logins_for_url` on page load). Only these are reported
-    /// to [`VaultBackend::on_activity`](crate::dispatcher::VaultBackend::on_activity),
+    /// the automatic `logins_for_url` on page load, or the
+    /// `check_login_password` comparison after a form submission, which a
+    /// page can trigger). Only these are reported to
+    /// [`VaultBackend::on_activity`](crate::dispatcher::VaultBackend::on_activity),
     /// so the extension cannot keep the vault from auto-locking by itself.
     pub fn is_user_action(&self) -> bool {
         matches!(
@@ -238,6 +306,8 @@ impl Payload {
                 | Payload::GeneratePassword { .. }
                 | Payload::SaveLogin { .. }
                 | Payload::UpdatePassword { .. }
+                | Payload::CopyField { .. }
+                | Payload::CopySecret { .. }
         )
     }
 }
@@ -287,6 +357,20 @@ impl fmt::Debug for Payload {
                 .debug_struct("update_password")
                 .field("item_id", item_id)
                 .field("password", &REDACTED)
+                .finish(),
+            Payload::CheckLoginPassword { item_id, .. } => f
+                .debug_struct("check_login_password")
+                .field("item_id", item_id)
+                .field("password", &REDACTED)
+                .finish(),
+            Payload::CopyField { item_id, field } => f
+                .debug_struct("copy_field")
+                .field("item_id", item_id)
+                .field("field", field)
+                .finish(),
+            Payload::CopySecret { .. } => f
+                .debug_struct("copy_secret")
+                .field("text", &REDACTED)
                 .finish(),
         }
     }
@@ -399,6 +483,24 @@ impl fmt::Debug for Response {
             s.field("error", &self.error);
         }
         s.finish()
+    }
+}
+
+impl Drop for Response {
+    /// `data` may hold passwords, TOTP codes or a pairing token.
+    fn drop(&mut self) {
+        wipe_value(&mut self.data);
+    }
+}
+
+/// Overwrites every string inside `value` (recursively) with zeros and
+/// empties it. Object keys are left alone (they are field names).
+pub fn wipe_value(value: &mut Value) {
+    match value {
+        Value::String(s) => s.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(wipe_value),
+        Value::Object(map) => map.values_mut().for_each(wipe_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
@@ -539,6 +641,24 @@ pub struct LoginSecret {
     pub uris: Vec<String>,
 }
 
+impl Drop for LoginSecret {
+    fn drop(&mut self) {
+        self.username.zeroize();
+        self.password.zeroize();
+        if let Some(totp) = self.totp.as_mut() {
+            totp.code.zeroize();
+        }
+    }
+}
+
+/// `data` of `copy_field`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyData {
+    /// Seconds the copied TOTP code stays valid (`null` for passwords).
+    pub remaining: Option<u32>,
+}
+
 impl fmt::Debug for LoginSecret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LoginSecret")
@@ -596,7 +716,7 @@ mod tests {
                 name: "n".into(),
                 url: "u".into(),
                 username: "me".into(),
-                password: "hunter2".into(),
+                password: Zeroizing::new("hunter2".into()),
             },
         )
         .with_credentials("c", "tok-secret");
@@ -607,11 +727,23 @@ mod tests {
             Request::new(
                 "1",
                 Payload::Unlock {
-                    password: "hunter2".into()
+                    password: Zeroizing::new("hunter2".into())
                 }
             )
         );
         assert!(!s.contains("hunter2"), "{s}");
+        for payload in [
+            Payload::CheckLoginPassword {
+                item_id: "i".into(),
+                password: Zeroizing::new("hunter2".into()),
+            },
+            Payload::CopySecret {
+                text: Zeroizing::new("hunter2".into()),
+            },
+        ] {
+            let s = format!("{payload:?}");
+            assert!(!s.contains("hunter2"), "{s}");
+        }
 
         let secret = LoginSecret {
             id: "i".into(),
@@ -642,7 +774,7 @@ mod tests {
         assert!(!p.needs_pairing());
         assert!(!Payload::FocusApp.needs_pairing());
         let p = Payload::Unlock {
-            password: String::new(),
+            password: Zeroizing::default(),
         };
         assert!(p.needs_pairing() && !p.needs_unlocked());
         assert!(Payload::Lock.needs_pairing() && !Payload::Lock.needs_unlocked());
@@ -652,5 +784,133 @@ mod tests {
             item_id: "x".into(),
         };
         assert!(p.needs_pairing() && p.needs_unlocked());
+
+        // The capture comparison is no user activity; copying is.
+        let p = Payload::CheckLoginPassword {
+            item_id: "x".into(),
+            password: Zeroizing::new("pw".into()),
+        };
+        assert!(p.needs_pairing() && p.needs_unlocked() && !p.is_user_action());
+        let p = Payload::CopyField {
+            item_id: "x".into(),
+            field: CopyField::Totp,
+        };
+        assert!(p.needs_pairing() && p.needs_unlocked() && p.is_user_action());
+        let p = Payload::CopySecret {
+            text: Zeroizing::new("pw".into()),
+        };
+        assert!(p.needs_pairing() && p.needs_unlocked() && p.is_user_action());
+    }
+
+    /// Zeroizing fields do not change the wire format.
+    #[test]
+    fn secret_fields_keep_the_wire_format() {
+        let cases = [
+            (
+                r#"{"id":"1","type":"unlock","password":"pw \"1\""}"#,
+                Payload::Unlock {
+                    password: Zeroizing::new("pw \"1\"".into()),
+                },
+            ),
+            (
+                r#"{"id":"1","type":"save_login","name":"n","url":"u","username":"me","password":"pw"}"#,
+                Payload::SaveLogin {
+                    name: "n".into(),
+                    url: "u".into(),
+                    username: "me".into(),
+                    password: Zeroizing::new("pw".into()),
+                },
+            ),
+            (
+                r#"{"id":"1","type":"update_password","itemId":"i","password":"pw"}"#,
+                Payload::UpdatePassword {
+                    item_id: "i".into(),
+                    password: Zeroizing::new("pw".into()),
+                },
+            ),
+            (
+                r#"{"id":"1","type":"check_login_password","itemId":"i","password":"pw"}"#,
+                Payload::CheckLoginPassword {
+                    item_id: "i".into(),
+                    password: Zeroizing::new("pw".into()),
+                },
+            ),
+            (
+                r#"{"id":"1","type":"copy_field","itemId":"i","field":"password"}"#,
+                Payload::CopyField {
+                    item_id: "i".into(),
+                    field: CopyField::Password,
+                },
+            ),
+            (
+                r#"{"id":"1","type":"copy_field","itemId":"i","field":"totp"}"#,
+                Payload::CopyField {
+                    item_id: "i".into(),
+                    field: CopyField::Totp,
+                },
+            ),
+            (
+                r#"{"id":"1","type":"copy_secret","text":"pw"}"#,
+                Payload::CopySecret {
+                    text: Zeroizing::new("pw".into()),
+                },
+            ),
+        ];
+        for (json, payload) in cases {
+            let request = Request::new("1", payload);
+            assert_eq!(Request::parse(json.as_bytes()).unwrap(), request, "{json}");
+            let expected: Value = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_value(&request).unwrap(), expected);
+        }
+        for bad in [
+            r#"{"id":"1","type":"copy_field","itemId":"i","field":"username"}"#,
+            r#"{"id":"1","type":"copy_field","itemId":"i"}"#,
+            r#"{"id":"1","type":"check_login_password","itemId":"i","password":7}"#,
+            r#"{"id":"1","type":"copy_secret"}"#,
+        ] {
+            assert_eq!(
+                Request::parse(bad.as_bytes()).unwrap_err(),
+                Response::error("1", BridgeError::InvalidRequest),
+                "{bad}"
+            );
+        }
+
+        let secret = LoginSecret {
+            id: "i".into(),
+            name: "n".into(),
+            username: "u".into(),
+            password: "pw".into(),
+            totp: None,
+            uris: vec!["https://x".into()],
+        };
+        let json = serde_json::to_value(&secret).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"id": "i", "name": "n", "username": "u", "password": "pw",
+                "totp": null, "uris": ["https://x"]})
+        );
+        assert_eq!(serde_json::from_value::<LoginSecret>(json).unwrap(), secret);
+    }
+
+    #[test]
+    fn wipe_value_blanks_every_nested_string() {
+        let mut value = serde_json::json!({
+            "password": "hunter2",
+            "totp": {"code": "123456", "remaining": 7},
+            "uris": ["https://a", {"deep": ["s3cret"]}],
+            "flag": true,
+            "none": null
+        });
+        wipe_value(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "password": "",
+                "totp": {"code": "", "remaining": 7},
+                "uris": ["", {"deep": [""]}],
+                "flag": true,
+                "none": null
+            })
+        );
     }
 }

@@ -657,17 +657,27 @@ function showUnlocked(status, initialTab = "page") {
     }
   }
 
+  // Passwords and TOTP codes are copied by the app (cleared after the user's
+  // clipboard timeout, excluded from clipboard history); see api.copyField.
   function copyPassword(item) {
     return guarded(async () => {
-      const login = await api.getLogin(item.id);
-      await copy(login.password, t("copiedPassword"));
+      await api.copyField(item.id, "password");
+      toast(t("copiedPassword"));
     });
   }
 
   function copyTotp(item) {
     return guarded(async () => {
-      const code = await api.getTotp(item.id);
-      await copy(String(code.code).replace(/\s+/g, ""), t("copiedTotp", String(code.remaining)));
+      const result = await api.copyField(item.id, "totp");
+      toast(t("copiedTotp", String(result?.remaining ?? "")));
+    });
+  }
+
+  function copyGenerated(password) {
+    if (!password) return undefined;
+    return guarded(async () => {
+      await api.copySecret(password);
+      toast(t("copied"));
     });
   }
 
@@ -830,7 +840,7 @@ function showUnlocked(status, initialTab = "page") {
         "div",
         { class: "gen-box-actions" },
         iconButton("refresh", t("regenerate"), () => generate()),
-        iconButton("copy", t("copy"), () => password && copy(password, t("copied"))),
+        iconButton("copy", t("copy"), () => copyGenerated(password)),
       ),
     );
     const kindButtons = [
@@ -854,7 +864,7 @@ function showUnlocked(status, initialTab = "page") {
     content.append(box, h("div", { class: "seg", role: "group" }, kindButtons), controls);
     renderControls();
 
-    const copyButton = button(t("copy"), { kind: "secondary", iconName: "copy", onclick: () => password && copy(password, t("copied")) });
+    const copyButton = button(t("copy"), { kind: "secondary", iconName: "copy", onclick: () => copyGenerated(password) });
     const fillButton = button(t("fillGenerated"), {
       kind: "primary",
       onclick: async (ev) => {

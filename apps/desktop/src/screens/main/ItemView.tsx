@@ -136,7 +136,8 @@ function Notes({ item }: { item: VaultItem }) {
   if (!item.notes.trim()) return null;
   return (
     <Section title={t("field.notes")}>
-      <FieldRow value={item.notes} multiline copyLabel={t("field.notes")} sensitive={item.type === "note"} />
+      {/* Notes of any item type often hold backup codes or security answers: copy as a secret. */}
+      <FieldRow value={item.notes} multiline copyLabel={t("field.notes")} sensitive />
     </Section>
   );
 }

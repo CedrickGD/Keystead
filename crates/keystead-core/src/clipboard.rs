@@ -2,9 +2,10 @@
 //!
 //! One long-lived [`arboard::Clipboard`] is kept for the whole process: on
 //! Linux/X11 the copying process has to serve the clipboard content, so it
-//! would vanish as soon as the `Clipboard` is dropped. Secrets are marked
-//! as "exclude from clipboard history" (Windows clipboard history/cloud
-//! clipboard, KDE password-manager hint on Linux, macOS concealed type) and
+//! would vanish as soon as the `Clipboard` is dropped. Secrets are kept out
+//! of clipboard history and sync (Windows: excluded from the local
+//! clipboard history *and* from Cloud Clipboard sync to the user's other
+//! devices; Linux: KDE password-manager hint; macOS: concealed type) and
 //! can be cleared automatically after a delay – but only if the clipboard
 //! still holds the copied secret.
 
@@ -83,8 +84,18 @@ fn with_clipboard<R>(
 fn set_text(text: &str, sensitive: bool) -> Result<()> {
     with_clipboard(|cb| {
         let set = cb.set();
+        // Windows: `CanIncludeInClipboardHistory` = 0 only keeps the item
+        // out of the local clipboard history (Win+V); Cloud Clipboard sync
+        // ("Sync across your devices") additionally needs
+        // `CanUploadToCloudClipboard` = 0. arboard advises against combining
+        // these with `exclude_from_monitoring`.
+        #[cfg(windows)]
+        let set = if sensitive {
+            set.exclude_from_history().exclude_from_cloud()
+        } else {
+            set
+        };
         #[cfg(any(
-            windows,
             target_os = "macos",
             all(
                 unix,
@@ -117,18 +128,21 @@ pub fn copy_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copies a secret, excluded from clipboard history. With `clear_after`
+/// Copies a secret, excluded from clipboard history (on Windows also from
+/// Cloud Clipboard sync, see the module docs). With `clear_after`
 /// (non-zero), a background thread clears the clipboard after the delay if
 /// it still contains `text` and nothing else was copied through this module
-/// in the meantime.
+/// in the meantime. Without a delay the secret stays until
+/// [`clear_pending_secret`] runs (lock, quit).
 pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()> {
     set_text(text, true)?;
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    // Always remember the secret so lock/quit can clear it via
+    // clear_pending_secret(), even when no timed clear is configured.
+    *lock(&PENDING) = Some((generation, Zeroizing::new(text.to_owned())));
     let Some(delay) = clear_after.filter(|d| !d.is_zero()) else {
-        *lock(&PENDING) = None;
         return Ok(());
     };
-    *lock(&PENDING) = Some((generation, Zeroizing::new(text.to_owned())));
     std::thread::Builder::new()
         .name("keystead-clipboard-clear".into())
         .spawn(move || {

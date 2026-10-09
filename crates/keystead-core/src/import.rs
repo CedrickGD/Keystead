@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::crypto;
 use crate::error::{Error, Result};
+use crate::export;
 use crate::format::VaultFile;
 use crate::model::{
     CardData, CustomField, FieldKind, Folder, IdentityData, ItemType, LoginData, LoginUri,
@@ -738,15 +739,19 @@ impl FolderSet {
     }
 }
 
-/// Bitwarden CSV `fields`: one `name: value` per line.
+/// Bitwarden CSV `fields`: one `name: value` per line (names possibly
+/// escaped by Keystead's CSV export, see [`export::csv_unescape`]).
 fn parse_bitwarden_csv_fields(s: &str) -> Vec<CustomField> {
+    fn name(n: &str) -> &str {
+        export::csv_unescape(n.trim(), export::csv_formula_like).trim()
+    }
     s.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| match line.split_once(": ") {
-            Some((n, v)) => text_field(n.trim(), v),
+            Some((n, v)) => text_field(name(n), v),
             None => match line.split_once(':') {
-                Some((n, v)) => text_field(n.trim(), v.trim_start()),
-                None => text_field(line.trim(), ""),
+                Some((n, v)) => text_field(name(n), v.trim_start()),
+                None => text_field(name(line), ""),
             },
         })
         .collect()
@@ -761,13 +766,25 @@ fn split_uris(s: &str) -> Vec<LoginUri> {
 }
 
 fn csv_bitwarden_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
+    // Keystead's own CSV export prefixes formula-like values with `'`
+    // (see `export::export_csv`); passwords and TOTP are never escaped.
+    let unescape = |column: &str| -> String {
+        export::csv_unescape(&row.get(column), export::csv_formula_like).to_owned()
+    };
     let kind = row.get("type").trim().to_lowercase();
-    let username = row.get("login_username").trim().to_owned();
+    let username = export::csv_unescape(
+        row.get("login_username").trim(),
+        export::csv_username_formula_like,
+    )
+    .trim()
+    .to_owned();
     let password = row.get("login_password");
-    let uris = split_uris(&row.get("login_uri"));
+    let uris = split_uris(&unescape("login_uri"));
     let totp = row.get("login_totp").trim().to_owned();
-    let name = row.get("name").trim().to_owned();
-    let notes = row.get("notes");
+    let name = export::csv_unescape(row.get("name").trim(), export::csv_formula_like)
+        .trim()
+        .to_owned();
+    let notes = unescape("notes");
     let fields = parse_bitwarden_csv_fields(&row.get("fields"));
     let has_login =
         !username.is_empty() || !password.is_empty() || !uris.is_empty() || !totp.is_empty();
@@ -785,7 +802,7 @@ fn csv_bitwarden_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
         name,
         notes,
         favorite: truthy(&row.get("favorite")),
-        folder_id: folders.id_for(&row.get("folder")),
+        folder_id: folders.id_for(&unescape("folder")),
         fields,
         login: (item_type == ItemType::Login).then_some(LoginData {
             username,

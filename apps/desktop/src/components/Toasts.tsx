@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, Info, X } from "lucide-react";
 import { useT } from "../i18n";
+import { takeCarriedNotices, type CarriedNotice } from "../lib/discard";
 
 export type ToastKind = "success" | "error" | "info";
 
@@ -10,6 +11,12 @@ export interface ToastOptions {
   action?: { label: string; onClick: () => void };
   /** Milliseconds; defaults to 3.5 s (6 s with an action, 6 s for errors). */
   duration?: number;
+  /**
+   * Shown again if the page reloads to discard vault data while this toast
+   * is visible (see lib/discard.ts). Never set it for messages that contain
+   * vault data such as item names.
+   */
+  carry?: boolean;
 }
 
 interface ToastEntry extends ToastOptions {
@@ -22,6 +29,8 @@ interface ToastApi {
   success: (message: string) => number;
   error: (message: string) => number;
   info: (message: string) => number;
+  /** The visible toasts marked `carry`. */
+  carried: () => CarriedNotice[];
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -31,12 +40,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const nextId = useRef(1);
   const timers = useRef(new Map<number, number>());
+  const carriedRef = useRef(new Map<number, CarriedNotice>());
 
   const dismiss = useCallback((id: number) => {
     setToasts((list) => list.filter((toast) => toast.id !== id));
     const timer = timers.current.get(id);
     if (timer) window.clearTimeout(timer);
     timers.current.delete(id);
+    carriedRef.current.delete(id);
   }, []);
 
   const show = useCallback(
@@ -46,10 +57,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       // Keep at most three toasts; replace an identical message instead of stacking it.
       setToasts((list) => [...list.filter((toast) => toast.message !== options.message).slice(-2), { ...options, id }]);
       timers.current.set(id, window.setTimeout(() => dismiss(id), duration));
+      if (options.carry) carriedRef.current.set(id, { kind: options.kind ?? "success", message: options.message });
       return id;
     },
     [dismiss],
   );
+
+  // Messages that were visible when the page reloaded after a lock.
+  useEffect(() => {
+    for (const notice of takeCarriedNotices()) show(notice);
+  }, [show]);
 
   const api = useMemo<ToastApi>(
     () => ({
@@ -58,6 +75,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       success: (message) => show({ message, kind: "success" }),
       error: (message) => show({ message, kind: "error" }),
       info: (message) => show({ message, kind: "info" }),
+      carried: () => [...carriedRef.current.values()],
     }),
     [show, dismiss],
   );

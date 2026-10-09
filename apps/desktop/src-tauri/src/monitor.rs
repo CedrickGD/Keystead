@@ -145,6 +145,12 @@ fn check_external_change(core: &Core, last_error: &mut Option<String>) {
             core.emit_changed();
         }
         Ok(false) => *last_error = None,
+        // The master password or vault key was changed by another process:
+        // the cached key no longer opens the file, so end this session.
+        Err(keystead_core::Error::KeyChanged) => {
+            *last_error = None;
+            core.lock(Some(LockReason::Manual));
+        }
         Err(e) => {
             // Log each distinct problem once, not every 2 s.
             let code = e.code();

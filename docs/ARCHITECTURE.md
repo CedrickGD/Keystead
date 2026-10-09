@@ -69,7 +69,9 @@ returned code: `0` success, `1` error, `2` invalid usage.
   `clipboardClearSeconds`, pending secret cleared on lock/quit), `o` open
   http(s) website, `n`/`e` edit, `d` trash, `g` generator (copies are added
   to the vault's generator history), auto-lock after `autoLockMinutes`, file
-  re-checked every 5 s (`reload_if_changed`), `Conflict` → reload + retry once.
+  re-checked every 5 s (`reload_if_changed`), `Conflict` → reload + retry once;
+  `KeyChanged` (master password changed elsewhere) locks the TUI, `Rollback`
+  is shown as an error (the newer in-memory state stays open).
   `--vault NAME|ID` preselects a vault. Creating a vault is possible when none
   exists (`n` in the picker).
 * Subcommands (all accept `--vault NAME|ID`; default: the only vault, else
@@ -91,8 +93,11 @@ returned code: `0` success, `1` error, `2` invalid usage.
   3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead`,
      Linux `~/.local/share/keystead`, macOS `~/Library/Application Support/Keystead`.
 * Vault files: `<data_dir>/vaults/<vault-id>.keystead` (+ `<vault-id>.keystead.bak`
-  = previous good version, written before each save; `<vault-id>.keystead.lock`
-  = empty inter-process lock file held only while a save runs).
+  = previous good version, written before each save – except when the master
+  password or recovery key changes: then the `.bak` is replaced by the new
+  revision (or removed), so no local copy still opens with the old secret;
+  `<vault-id>.keystead.lock` = empty inter-process lock file held only while a
+  save runs).
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
@@ -102,7 +107,13 @@ returned code: `0` success, `1` error, `2` invalid usage.
 
 ## Vault file format (version 1) – `keystead_core::format`
 
-UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
+UTF-8 JSON, written atomically: write a new temporary file
+`.<file name>.<16 random hex>.tmp` in the same dir (created exclusively –
+`O_CREAT|O_EXCL`/`CREATE_NEW`, never an existing file or symlink; Unix mode
+0600) → fsync → rename over the target. The `.bak` is replaced the same way
+(never written through an existing file). On error only the temporary file
+this write created is removed. All `format::write_atomic` users (vault
+files, settings, plain-text exports) share this.
 
 ```json
 {
@@ -125,7 +136,22 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
   `"keystead:v1:payload:" + id + ":" + revision`.
 * The master password → Argon2id (params above, salt 16 B) → 32-byte KEK →
   wraps the vault key (XChaCha20-Poly1305, AAD `"keystead:v1:key:" + id`).
-  Changing the master password re-wraps only the key.
+* **Key rotation**: replacing a secret replaces the vault key where
+  possible, so the old secret plus an older copy of the file (`.bak`, a
+  backup, a synced version) yields only the old key, which decrypts no
+  later revision:
+  * `create_recovery_key` (also "replace") and `remove_recovery_key`: fresh
+    vault key, re-wrapped with the unchanged master password (the unlocked
+    vault keeps the master KEK in memory for this – no password prompt).
+  * `unlock_with_recovery_key`: fresh vault key, wrapped with the new master
+    password and again with the (still valid) recovery code.
+  * `change_master_password`: fresh vault key if the vault has **no**
+    recovery key. With a recovery key only the vault key is re-wrapped (the
+    recovery code is unknown to the app, a new key would make it useless):
+    older copies still open with the old password until the recovery key is
+    replaced, which rotates the key.
+  * Copies made before a rotation still open with the old secret – but only
+    show the data they contained back then.
 * Optional **recovery key**: random 25 chars of Crockford base32 shown as
   `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 bit). KEK_r = Argon2id(recovery code
   normalised to uppercase without dashes, own salt, same params) wraps the
@@ -133,6 +159,13 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 * `revision` increments on every save; saving checks the on-disk revision
   equals the loaded one, otherwise `Error::Conflict` (another process – TUI or
   app – changed it). Callers reload and retry.
+* Only id + revision are authenticated (payload AAD); name, timestamps, kdf
+  and the recovery box are not. `reload_if_changed` therefore refuses an
+  on-disk revision lower than the one in memory (`Error::Rollback`, code
+  `corrupt:rollback`): a restored `.bak`/backup or a rolled-back file is not
+  adopted while a vault is open, and saving keeps failing with `Conflict`
+  instead of silently building on it. Locking and unlocking again opens the
+  file as it is. (A rollback while no session is open is not detected.)
 * Base64 = standard alphabet with padding. Secrets in memory use
   `zeroize`/`secrecy` where practical.
 * Argon2id default params: m = 64 MiB, t = 3, p = 4. Tests may use a cheaper
@@ -141,7 +174,7 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 ## Core API – `keystead-core` (Rust)
 
 ```rust
-pub mod error;    // pub enum Error { Io, Json, WrongPassword, Corrupt(String), Conflict, NotFound(String), InvalidInput(String), Unsupported(String) }  pub type Result<T>
+pub mod error;    // pub enum Error { Io, Json, WrongPassword, Corrupt(String), Conflict, KeyChanged, Rollback, NotFound(String), InvalidInput(String), Unsupported(String) }  pub type Result<T>
 pub mod model;    // see crates/keystead-core/src/model.rs (the data contract)
 pub mod crypto;   // KdfParams, derive_key, seal/open (XChaCha20-Poly1305), random bytes
 pub mod format;   // VaultFile (serde of the JSON above), read/write atomic
@@ -168,8 +201,8 @@ impl VaultStore {
     pub fn create_vault(&self, name: &str, master_password: &str) -> Result<UnlockedVault>;
     pub fn create_vault_with_params(&self, name: &str, master_password: &str, kdf: KdfParams) -> Result<UnlockedVault>;
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault>;   // Error::WrongPassword on bad pw
-    pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // also re-wraps with the new master pw
-    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak
+    pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid
+    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak + leftover temp files
     pub fn vault_path(&self, vault_id: &str) -> PathBuf;
 }
 ```
@@ -199,12 +232,13 @@ impl UnlockedVault {
     pub fn import_items(&mut self, items: Vec<VaultItem>, folders: Vec<Folder>) -> Result<usize>; // assigns fresh ids, maps folder ids, persists once
     pub fn rename(&mut self, name: &str) -> Result<()>;
     pub fn verify_master_password(&self, password: &str) -> bool;
-    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()>;
-    pub fn create_recovery_key(&mut self) -> Result<String>;   // returns formatted code, replaces an existing one
-    pub fn remove_recovery_key(&mut self) -> Result<()>;
+    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()>; // rotates the vault key unless a recovery key exists (see "Key rotation")
+    pub fn create_recovery_key(&mut self) -> Result<String>;   // returns formatted code, replaces an existing one; rotates the vault key
+    pub fn remove_recovery_key(&mut self) -> Result<()>;       // rotates the vault key
     pub fn has_recovery_key(&self) -> bool;
     pub fn save(&mut self) -> Result<()>;                      // atomic write, revision check, .bak
-    pub fn reload_if_changed(&mut self) -> Result<bool>;       // re-reads file if revision on disk differs (uses in-memory key)
+    pub fn reload_if_changed(&mut self) -> Result<bool>;       // re-reads file if the revision on disk is newer (opens it with the in-memory master KEK, so a recovery-key rotation elsewhere is followed);
+                                                               // older revision → Error::Rollback; master password changed elsewhere → Error::KeyChanged (unlock again); state unchanged on error
     pub fn path(&self) -> &Path;
 }
 ```
@@ -246,7 +280,7 @@ pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>,
 pub fn import_keystead_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)>;
 // export
 pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v1 file (own random key/salt), trash excluded
-pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded
+pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded; formula-like values get a leading ' (see below)
 pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded
 ```
 
@@ -254,7 +288,7 @@ pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitward
 Additive helpers beyond the signatures above (all optional to use):
 ```rust
 // error
-impl Error { pub fn code(&self) -> String }  // stable UI code; Json → "corrupt:<d>", NotFound(_) → "not_found"
+impl Error { pub fn code(&self) -> String }  // stable UI code; Json → "corrupt:<d>", NotFound(_) → "not_found", KeyChanged → "locked", Rollback → "corrupt:rollback"
 // paths (all infallible)
 pub fn data_dir() -> PathBuf; pub fn vaults_dir() -> PathBuf; pub fn settings_path() -> PathBuf;
 pub fn legacy_dir() -> Option<PathBuf>; pub fn is_portable() -> bool;
@@ -277,7 +311,7 @@ pub fn export::export_encrypted_with_params(data, path, password, kdf: KdfParams
 impl Settings { pub fn load() -> Settings; pub fn load_from(&Path) -> Settings; pub fn save(&self) -> Result<()>;
                 pub fn save_to(&self, &Path) -> Result<()> }   // + free fns settings::load(), settings::save(&Settings)
 // clipboard
-pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // excluded from clipboard history
+pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // excluded from clipboard history; Windows: CanIncludeInClipboardHistory=0 and CanUploadToCloudClipboard=0 (no Cloud Clipboard sync)
 pub fn copy_text(text: &str) -> Result<()>;            // non-secret, no auto-clear
 pub fn clear_pending_secret() -> Result<bool>;         // e.g. on lock: clears now if our secret is still there
 // totp
@@ -302,6 +336,19 @@ Behaviour notes:
   1.x could not distinguish either). Importers keep the source ids;
   `import_items` replaces them and merges imported folders into existing
   folders of the same name (case-insensitive).
+* CSV export ("CSV injection"): folder, name, notes, custom field names and
+  URIs that a spreadsheet would evaluate (starting with `= + - @`, also after
+  leading whitespace, or with tab/CR) get a leading `'`; usernames only when
+  starting with `=` or `@` (phone numbers like `+49…` stay). Passwords and
+  TOTP secrets are written unchanged so other managers import them
+  correctly – the file must not be opened in a spreadsheet. Values that
+  already start with `'` followed by such a value get one more `'`; the
+  Bitwarden-style CSV import strips exactly one, so a Keystead → Keystead
+  round trip is lossless. The Bitwarden JSON export is unchanged.
+* Plain-text exports (`csv`, `bitwarden_json`) are written with
+  `write_atomic` (new temporary file, see "Vault file format"): readable only
+  by the current user on Unix; on Windows the file gets the target folder's
+  default permissions.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
   `password_empty`, `password_required`, `kdf_params`, `recovery_key_format`,
   `length`, `words`, `separator`, `no_character_set`,
@@ -358,8 +405,10 @@ interface Settings {
 All commands are `async`, return `Result<T, String>` where the error string is
 a **stable error code** the UI translates: `wrong_password`, `locked`,
 `not_found`, `conflict`, `invalid_input:<detail>`, `io:<detail>`,
-`corrupt:<detail>`, `unsupported:<detail>`. Argument names are camelCase on
-the JS side (Tauri converts to snake_case).
+`corrupt:<detail>`, `unsupported:<detail>`. `locked` also comes from the core
+(`Error::KeyChanged`: the master password was changed by another process,
+the session has to unlock again); `corrupt:rollback` = `Error::Rollback`.
+Argument names are camelCase on the JS side (Tauri converts to snake_case).
 
 | Command | Args | Returns |
 |---|---|---|
@@ -370,7 +419,7 @@ the JS side (Tauri converts to snake_case).
 | `unlock_vault` | `vaultId, masterPassword` | `VaultInfo` |
 | `unlock_with_recovery` | `vaultId, recoveryKey, newMasterPassword` | `VaultInfo` |
 | `lock_vault` | – | `null` |
-| `touch_activity` | – | `null` (resets auto-lock timer; UI calls it throttled to ≤1/30 s on input) |
+| `touch_activity` | – | `null` (resets auto-lock timer; UI calls it throttled to ≤1/30 s on input – mouse move/click, key, wheel – while its window is focused and visible) |
 | `list_items` | – | `VaultItem[]` (all, incl. trash; UI filters) |
 | `list_folders` | – | `Folder[]` |
 | `save_item` | `item: VaultItem` | `VaultItem` |
@@ -383,7 +432,7 @@ the JS side (Tauri converts to snake_case).
 | `clear_generator_history` | – | `null` |
 | `password_strength` | `password` | `Strength` |
 | `totp_code` | `seed` | `TotpCode` |
-| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → cleared after `clipboardClearSeconds`, only if clipboard still holds it) |
+| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies passwords, TOTP codes, card number/code, hidden fields, notes of every item type, generated passwords and the recovery key as sensitive) |
 | `health_report` | – | `HealthReport` |
 | `change_master_password` | `current, newPassword` | `null` |
 | `create_recovery_key` | – | `string` |
@@ -440,6 +489,15 @@ Frontend integration requirements for `src-tauri`:
   CSP needs `style-src 'self' 'unsafe-inline'` and `img-src 'self' data:`.
 * Build: `devUrl` `http://localhost:1420`, `frontendDist` `../dist`,
   `beforeDevCommand` `npm run dev`, `beforeBuildCommand` `npm run build`.
+* Leaving an open vault (any lock, `delete_vault` of the open vault, the
+  vault closed by `set_portable_mode`) reloads the page (`src/lib/discard.ts`)
+  once the commands in flight have answered (≤ 3 s), so the decrypted items,
+  generator history etc. do not linger in the renderer's JS heap – hygiene:
+  unreachable, not overwritten. Visible toasts marked `carry` (lock reason,
+  portable-mode result; never vault data) survive the reload via
+  `sessionStorage`. Not with the mock backend (it lives in the same page).
+* A `locked` answer to the main screen's `list_items`/`list_folders` also
+  returns to the unlock screen (not only `vault://locked`).
 
 ### Desktop backend behaviour details (implemented in `src-tauri`)
 * Commands run on the blocking thread pool; complex arguments (`item`,
@@ -457,9 +515,15 @@ Frontend integration requirements for `src-tauri`:
   hibernate) locks with reason `system`. Linux/macOS do not detect a plain
   screen lock without suspend.
 * The vault file is checked every 2 s (`reload_if_changed`) → `vault://changed`.
-* Locking (any reason) also clears a secret still pending in the clipboard;
-  so does quitting the app. `lock_vault` (the UI's own request) emits no event;
+* Locking (any reason) also clears a secret copied through the app
+  (`copy_text` with `sensitive`, the bridge's `copy_field`/`copy_secret`) if
+  the clipboard still holds it – also with `clipboardClearSeconds` = 0 (the
+  app then remembers the secret itself, as `Zeroizing<String>`); so does
+  quitting the app. `lock_vault` (the UI's own request) emits no event;
   tray "Sperren" and the extension's `lock` emit `vault://locked {manual}`.
+* `list_items`, `save_item` and `generator_history` overwrite the strings of
+  their cloned result once Tauri has serialized it (`src/wipe.rs`); the
+  serialized IPC message itself is out of reach.
 * Every unlock/create stores the vault as `lastVaultId`. The extension's
   `unlock` opens `lastVaultId` if it exists, else the only vault (else
   `not_found`).
@@ -470,10 +534,15 @@ Frontend integration requirements for `src-tauri`:
   `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`,
   `kitty`, `alacritty`, `foot`, `xterm` (none → `unsupported:no_terminal`);
   macOS Terminal via `osascript`.
-* `set_portable_mode` locks an open vault itself (no event; the UI checks
-  `session_state` afterwards), stops the bridge, moves the whole data
+* `set_portable_mode` first checks the preconditions (`portable::preflight`:
+  the errors below except a failing move, plus `io:…` if the exe folder is
+  not writable) while the vault stays open and the bridge keeps running.
+  Then it stops the bridge, locks an open vault itself and emits
+  `vault://locked {manual}` – whether the move then succeeds or fails; the
+  UI also checks `session_state` afterwards in both cases –, moves the whole data
   directory (copy, commit by creating/renaming `Keystead-Data`, then delete
-  the old copy; `*.lock`/`*.tmp` are skipped), re-registers the native host
+  the old copy; `*.lock`/`*.tmp` – including the `.<name>.<hex>.tmp` temporary
+  files of `write_atomic` – are skipped), re-registers the native host
   and restarts the bridge. Errors: `unsupported:data_dir_override` (with
   `$KEYSTEAD_DATA_DIR`), `unsupported:portable_installed` (enabling while the
   exe lives in the default data directory itself – the per-user NSIS setup
@@ -491,6 +560,11 @@ Frontend integration requirements for `src-tauri`:
   the system browser (http/https only). Without a tray icon (Linux without
   AppIndicator) the close button quits even with `minimizeToTray`, and
   `startInTray` is ignored.
+* The main window is excluded from screen capture (`contentProtected` in
+  tauri.conf.json and `content_protected(true)` on the builder: Windows
+  `WDA_EXCLUDEFROMCAPTURE` – screenshots, recordings, screen sharing and
+  Windows Recall see it black or not at all; before Windows 10 2004 it is
+  shown black; macOS `NSWindowSharingNone`; no effect on Linux).
 
 ## Browser bridge protocol – `keystead-bridge`
 
@@ -501,13 +575,25 @@ Max message 1 MiB (host → browser) / 4 MiB otherwise.
 
 ### Local socket
 * Windows: named pipe `\\.\pipe\keystead-bridge-<USERNAME>` (via the
-  `interprocess` crate, `GenericNamespaced`), current-user only.
+  `interprocess` crate, `GenericNamespaced`), current-user only: the pipe's
+  security descriptor has the current user's SID as **owner** and a DACL
+  granting only that SID. The pipe namespace is machine-wide and the name is
+  predictable, so another user could create it first ("squatting"): **both
+  ends verify the pipe owner** – the host (client) checks that the pipe it
+  connected to is owned by its own user SID *before sending anything*
+  (otherwise `PermissionDenied`, nothing is sent and the browser gets
+  `app_unavailable`), and a starting app that finds the name taken does the
+  same check: owned by its user → `AlreadyRunning`, otherwise (or not
+  verifiable) a `PermissionDenied` I/O error ("possible hijack", logged) and
+  the bridge stays off.
 * Unix: `$XDG_RUNTIME_DIR/keystead-bridge.sock`, fallback
-  `/tmp/keystead-bridge-<uid>.sock`, mode 0600.
+  `/tmp/keystead-bridge-<uid>.sock`, mode 0600. Both ends check the peer uid
+  (`SO_PEERCRED`).
 * The host forwards each browser message to the app and the app's reply back.
   If it cannot connect, it launches the app (`<own exe> --background`, the
   host *is* Keystead.exe) and retries for up to 8 s; if that fails it answers
-  `{ "id", "ok": false, "error": "app_unavailable" }`.
+  `{ "id", "ok": false, "error": "app_unavailable" }`. An endpoint served by
+  another user is answered with `app_unavailable` right away (no launch).
 
 ### Messages (extension → app)
 Every request: `{ "id": "<uuid>", "type": "<type>", "clientId"?: string, "token"?: string, ...payload }`.
@@ -528,6 +614,9 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 | `generate_password` | yes | `options?` (GeneratorOptions partial) | `string` (uses defaults + stored in generator history if unlocked) |
 | `save_login` | yes, unlocked | `name, url, username, password` | `{ id }` (creates new login) |
 | `update_password` | yes, unlocked | `itemId, password` | `{ id }` |
+| `check_login_password` | yes, unlocked | `itemId, password` | `bool` – whether `password` equals the stored password (the secret is never returned; used for the save/update prompt) |
+| `copy_field` | yes, unlocked | `itemId, field: "password"\|"totp"` | `{ remaining: number\|null }` – the **app** copies the field (seconds a TOTP code stays valid, `null` for passwords); the secret is not sent to the browser |
+| `copy_secret` | yes, unlocked | `text` (non-empty, e.g. a generated password) | `null` – copied by the app like `copy_field` |
 
 Pairing flow: the extension generates a random 6-digit `code`, displays it in
 its popup, and sends `pair { clientName, code }`. The app emits
@@ -580,22 +669,46 @@ Behaviour (additive to the table above):
   resets the counter. Attempts are serialised.
 * `VaultBackend::on_activity` runs after successful *user actions* only
   (`unlock`, `search`, `get_login`, `get_totp`, `generate_password`,
-  `save_login`, `update_password`) – `status` polling and the automatic
-  `logins_for_url` must not keep the vault from auto-locking.
+  `save_login`, `update_password`, `copy_field`, `copy_secret`) – `status`
+  polling, the automatic `logins_for_url` and `check_login_password` (a page
+  can trigger it by submitting forms) must not keep the vault from
+  auto-locking.
+* `copy_field` / `copy_secret` call `VaultBackend::copy_secret`, whose default
+  copies with `keystead_core::clipboard::copy_secret` in the app process:
+  excluded from clipboard history, cleared after `clipboardClearSeconds` from
+  the settings file (0 = never) if the clipboard still holds it, and – being
+  the same pending secret – cleared when the app locks. (The desktop app
+  overrides it with the path of its own sensitive `copy_text`.) TOTP codes
+  are copied without spaces. `copy_field` with another `field` → `invalid_request`; a
+  login without TOTP seed → `not_found`.
+* `check_login_password` compares without an early exit and answers only
+  `true`/`false` (unknown id or non-login → `not_found`).
+* Memory hygiene (best effort): request passwords (`unlock`, `save_login`,
+  `update_password`, `check_login_password`, `copy_secret`) are held in
+  `Zeroizing<String>`; `LoginSecret` wipes username, password and TOTP code
+  on drop (so its fields cannot be moved out); a `Response` wipes every
+  string in `data` on drop (`protocol::wipe_value`). Transient copies inside
+  serde/serde_json (buffered tagged/flattened content, escaped strings,
+  buffer growth) are not covered.
 * `bridge-clients.json` = `{ "version": 1, "clients": [ { id, name,
   tokenSha256, createdAt, lastSeenAt } ] }`; `tokenSha256` = lowercase hex
   SHA-256 of the UTF-8 token string; atomic writes (0600 on Unix);
   `lastSeenAt` is persisted at most once a minute. A corrupt file is moved to
   `bridge-clients.json.corrupt` (browsers must pair again).
-* Server: never displaces a live server (second instance → `AlreadyRunning`);
-  removes stale Unix socket files; both ends check the peer uid on Unix.
-  Windows: pipe DACL = current user's SID only (best effort, falls back to
-  default pipe security), remote clients rejected. After `stop()` open
-  connections are closed unanswered on their next request, so the host
-  reconnects to a restarted server (or launches the app).
+* Server: never displaces a live server (second instance of the same user →
+  `AlreadyRunning`; endpoint held by another user or not verifiable →
+  `Error::Io(PermissionDenied)`, see "Local socket"); removes stale Unix
+  socket files; both ends check the peer uid on Unix. Windows: pipe owner +
+  DACL = current user's SID only (best effort, falls back to default pipe
+  security), remote clients rejected; clients verify the pipe owner (any
+  Win32 failure counts as "not ours"), the server relies on the DACL for its
+  clients. After `stop()` open connections are closed unanswered on their
+  next request, so the host reconnects to a restarted server (or launches the
+  app).
 * Host: oversized browser frame → `invalid_request` and exit; app reply
   > 1 MiB → `internal`; after a failed launch, requests within 30 s fail fast
-  with `app_unavailable`. `$KEYSTEAD_BRIDGE_SOCKET` overrides the endpoint
+  with `app_unavailable`; an endpoint that fails the owner check →
+  `app_unavailable` without launching the app. `$KEYSTEAD_BRIDGE_SOCKET` overrides the endpoint
   (Unix: socket path, Windows: pipe name), `$KEYSTEAD_APP_EXE` the executable
   the host launches.
 
@@ -615,6 +728,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError>;
     fn save_login(&self, name: &str, url: &str, username: &str, password: &str) -> Result<String, BridgeError>;
     fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError>;
+    fn copy_secret(&self, text: &str) -> Result<(), BridgeError> { /* default: core clipboard::copy_secret, clipboardClearSeconds from settings.json */ }
     fn on_activity(&self) {}
 }
 impl From<keystead_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal

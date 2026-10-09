@@ -2,12 +2,14 @@
 //! ("Browser bridge protocol"), checked against literal JSON strings.
 
 use keystead_bridge::protocol::{
-    extract_id, IdData, PairData, StatusData, UnlockData, PAIRING_TIMEOUT, SEARCH_LIMIT,
+    extract_id, CopyData, CopyField, IdData, PairData, StatusData, UnlockData, PAIRING_TIMEOUT,
+    SEARCH_LIMIT,
 };
 use keystead_bridge::{BridgeError, LoginSecret, Payload, Request, Response};
 use keystead_core::generator::{GeneratorKind, GeneratorOptions};
 use keystead_core::totp::TotpCode;
 use serde_json::{json, Value};
+use zeroize::Zeroizing;
 
 fn parse(s: &str) -> Request {
     Request::parse(s.as_bytes()).unwrap_or_else(|r| panic!("{s} rejected: {r:?}"))
@@ -39,7 +41,7 @@ fn every_request_type_parses() {
         (
             r#"{"id":"1","type":"unlock","password":"pw"}"#,
             Payload::Unlock {
-                password: "pw".into(),
+                password: Zeroizing::new("pw".into()),
             },
         ),
         (r#"{"id":"1","type":"lock"}"#, Payload::Lock),
@@ -78,14 +80,41 @@ fn every_request_type_parses() {
                 name: "GitHub".into(),
                 url: "https://github.com".into(),
                 username: "me".into(),
-                password: "pw".into(),
+                password: Zeroizing::new("pw".into()),
             },
         ),
         (
             r#"{"id":"1","type":"update_password","itemId":"abc","password":"new"}"#,
             Payload::UpdatePassword {
                 item_id: "abc".into(),
-                password: "new".into(),
+                password: Zeroizing::new("new".into()),
+            },
+        ),
+        (
+            r#"{"id":"1","type":"check_login_password","itemId":"abc","password":"pw"}"#,
+            Payload::CheckLoginPassword {
+                item_id: "abc".into(),
+                password: Zeroizing::new("pw".into()),
+            },
+        ),
+        (
+            r#"{"id":"1","type":"copy_field","itemId":"abc","field":"password"}"#,
+            Payload::CopyField {
+                item_id: "abc".into(),
+                field: CopyField::Password,
+            },
+        ),
+        (
+            r#"{"id":"1","type":"copy_field","itemId":"abc","field":"totp"}"#,
+            Payload::CopyField {
+                item_id: "abc".into(),
+                field: CopyField::Totp,
+            },
+        ),
+        (
+            r#"{"id":"1","type":"copy_secret","text":"pw"}"#,
+            Payload::CopySecret {
+                text: Zeroizing::new("pw".into()),
             },
         ),
     ];
@@ -253,6 +282,13 @@ fn data_shapes() {
         r#"{"vaultName":"Privat"}"#,
     );
     same_json(&IdData { id: "i".into() }, r#"{"id":"i"}"#);
+    same_json(
+        &CopyData {
+            remaining: Some(12),
+        },
+        r#"{"remaining":12}"#,
+    );
+    same_json(&CopyData { remaining: None }, r#"{"remaining":null}"#);
     same_json(
         &LoginSecret {
             id: "i".into(),

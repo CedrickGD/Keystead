@@ -420,6 +420,9 @@ impl<C: AppConnector> Relay<C> {
                 self.last_failed_launch = None;
                 return Ok(conn);
             }
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                return Err(foreign_endpoint(&e))
+            }
             Err(e) => log(format_args!("the app is not reachable ({e})")),
         }
         if self
@@ -441,6 +444,9 @@ impl<C: AppConnector> Relay<C> {
                     self.last_failed_launch = None;
                     return Ok(conn);
                 }
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    return Err(foreign_endpoint(&e))
+                }
                 Err(e) if Instant::now() >= deadline => {
                     log(format_args!("the app did not become reachable: {e}"));
                     self.last_failed_launch = Some(Instant::now());
@@ -450,6 +456,14 @@ impl<C: AppConnector> Relay<C> {
             }
         }
     }
+}
+
+/// The endpoint is served by another user, or its server could not be
+/// verified (see [`socket::connect`]): nothing is sent there, and launching
+/// the app cannot help (its server refuses such an endpoint as well).
+fn foreign_endpoint(e: &io::Error) -> BridgeError {
+    log(format_args!("refusing the bridge endpoint: {e}"));
+    BridgeError::AppUnavailable
 }
 
 /// Sends one request and reads its reply.
@@ -610,6 +624,50 @@ mod tests {
             replies(&output),
             vec![Response::error("a", BridgeError::AppUnavailable)]
         );
+    }
+
+    /// A connector whose endpoint is held by another user.
+    struct Hijacked {
+        connects: usize,
+        launches: usize,
+    }
+
+    impl AppConnector for Hijacked {
+        type Stream = Cursor<Vec<u8>>;
+        fn connect(&mut self) -> io::Result<Self::Stream> {
+            self.connects += 1;
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "served by another user",
+            ))
+        }
+        fn launch_app(&mut self) -> io::Result<()> {
+            self.launches += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn foreign_endpoint_is_refused_without_launching_the_app() {
+        let input = frames(&[
+            br#"{"id":"a","type":"status"}"#,
+            br#"{"id":"b","type":"unlock","password":"x"}"#,
+        ]);
+        let mut output = Vec::new();
+        let mut connector = Hijacked {
+            connects: 0,
+            launches: 0,
+        };
+        assert_eq!(run_with(Cursor::new(input), &mut output, &mut connector), 0);
+        assert_eq!(
+            replies(&output),
+            vec![
+                Response::error("a", BridgeError::AppUnavailable),
+                Response::error("b", BridgeError::AppUnavailable),
+            ]
+        );
+        assert_eq!(connector.connects, 2);
+        assert_eq!(connector.launches, 0);
     }
 
     #[test]

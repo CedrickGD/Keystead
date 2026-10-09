@@ -33,6 +33,8 @@ pub struct FakeBackend {
     pub activity: AtomicUsize,
     pub focus_calls: AtomicUsize,
     pub lock_calls: AtomicUsize,
+    /// Texts passed to `copy_secret` (instead of the real clipboard).
+    pub copied: Mutex<Vec<String>>,
 }
 
 fn login(id: &str, name: &str, username: &str, password: &str, uri: &str, totp: &str) -> VaultItem {
@@ -82,6 +84,7 @@ impl FakeBackend {
             activity: AtomicUsize::new(0),
             focus_calls: AtomicUsize::new(0),
             lock_calls: AtomicUsize::new(0),
+            copied: Mutex::new(Vec::new()),
         }
     }
 
@@ -247,6 +250,11 @@ impl VaultBackend for FakeBackend {
             l.password = password.to_owned();
         }
         Ok(item.id.clone())
+    }
+
+    fn copy_secret(&self, text: &str) -> Result<(), BridgeError> {
+        self.copied.lock().unwrap().push(text.to_owned());
+        Ok(())
     }
 
     fn on_activity(&self) {

@@ -195,6 +195,10 @@ fn build_main_window(app: &AppHandle, core: &Arc<Core>) -> tauri::Result<Webview
     };
     let page_core = Arc::downgrade(core);
     WebviewWindowBuilder::from_config(app, &config)?
+        // Revealed passwords, card numbers and the recovery key must not end
+        // up in screenshots, recordings, screen sharing or Windows Recall
+        // (`WDA_EXCLUDEFROMCAPTURE`; also set in tauri.conf.json).
+        .content_protected(true)
         // Links and `window.open` go to the system browser, never into a
         // webview; the app itself never navigates away from its UI.
         .on_navigation(move |url| {
@@ -223,6 +227,19 @@ fn build_main_window(app: &AppHandle, core: &Arc<Core>) -> tauri::Result<Webview
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_is_excluded_from_screen_capture() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["label"] == MAIN_WINDOW)
+            .unwrap();
+        assert_eq!(main["contentProtected"], serde_json::Value::Bool(true));
+    }
 
     #[test]
     fn app_urls() {

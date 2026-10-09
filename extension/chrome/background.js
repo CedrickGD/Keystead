@@ -25,7 +25,17 @@ const AUTOFILL_WINDOW_MS = 6_000;
 /** Requests that work without pairing. */
 const UNPAIRED_TYPES = new Set(["status", "pair", "focus_app"]);
 /** Requests whose success proves the vault is unlocked. */
-const UNLOCKED_TYPES = new Set(["logins_for_url", "search", "get_login", "get_totp", "save_login", "update_password"]);
+const UNLOCKED_TYPES = new Set([
+  "logins_for_url",
+  "search",
+  "get_login",
+  "get_totp",
+  "save_login",
+  "update_password",
+  "check_login_password",
+  "copy_field",
+  "copy_secret",
+]);
 
 const t = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
 
@@ -406,13 +416,23 @@ async function focusedFrameId(tabId) {
   return entry ? entry.frameId : 0;
 }
 
-/** Inserts a generated password into the focused (or right-clicked) field of one frame. */
+/**
+ * Inserts a generated password into the focused (or right-clicked) field of one
+ * frame. A frame fills only the field that currently has its focus (see
+ * content.js), so a frame that merely claimed the focus earlier gets nothing.
+ */
 async function fillGenerated(tabId, frameId, password, target) {
   if (typeof password !== "string" || !password) throw new BridgeError("invalid_request");
-  const response = await chrome.tabs
-    .sendMessage(tabId, { type: "bg:fill-generated", password, target }, { frameId })
-    .catch(() => null);
-  const filled = Number.isInteger(response?.filled) ? response.filled : 0;
+  const fillFrame = async (id) => {
+    const response = await chrome.tabs
+      .sendMessage(tabId, { type: "bg:fill-generated", password, target }, { frameId: id })
+      .catch(() => null);
+    return Number.isInteger(response?.filled) ? response.filled : 0;
+  };
+  let filled = await fillFrame(frameId);
+  // The remembered frame may be stale (the focus went back to the page): the
+  // top frame fills only if the focused field is its own.
+  if (!filled && frameId !== 0 && target === "focused") filled = await fillFrame(0);
   if (!filled) throw new BridgeError("no_field");
   return { filled };
 }
@@ -496,13 +516,16 @@ async function handleCapture(msg, sender) {
 
   let item = null;
   for (const candidate of candidates) {
-    let secret;
+    // The app only answers "same or not": the stored password never comes
+    // here, and the comparison does not count as user activity (a page that
+    // submits forms must not keep the vault from auto-locking).
+    let same;
     try {
-      secret = await call("get_login", { itemId: candidate.id });
+      same = await call("check_login_password", { itemId: candidate.id, password }, { auto: true });
     } catch {
       return { prompt: false };
     }
-    if (secret?.password === password) return { prompt: false }; // already stored
+    if (same === true) return { prompt: false }; // already stored
     item = item ?? candidate;
   }
 
@@ -529,7 +552,12 @@ async function handlePendingQuery(sender) {
   const url = parseWebUrl(sender.url);
   if (sender.frameId !== 0 || tabId === undefined || !url) return null;
   const pending = await store.getPending(tabId);
-  if (!pending || pending.site !== siteKey(url.hostname)) return null;
+  if (!pending) return null;
+  // An update (it overwrites a stored password) is only offered on the origin
+  // it was captured on: a sibling subdomain must not get its prompt shown on
+  // the real site. A new login may follow the user across the site (log in on
+  // accounts.example.com, land on www.example.com).
+  if (pending.kind === "update" ? pending.origin !== url.origin : pending.site !== siteKey(url.hostname)) return null;
   return publicPending(pending);
 }
 
@@ -647,14 +675,20 @@ const popupHandlers = {
     if (!query) return [];
     return loginSummaries(await call("search", { query }));
   },
-  "popup:get-login": async (msg) => {
-    const login = await call("get_login", { itemId: requireString(msg.itemId, 200) });
-    return {
-      username: typeof login?.username === "string" ? login.username : "",
-      password: typeof login?.password === "string" ? login.password : "",
-    };
+  // Secrets are copied by the app (clipboard history exclusion, clearing after
+  // clipboardClearSeconds and on lock); the popup never receives them.
+  "popup:copy-field": async (msg) => {
+    const field = msg.field === "password" || msg.field === "totp" ? msg.field : null;
+    if (!field) throw new BridgeError("invalid_request");
+    const data = await call("copy_field", { itemId: requireString(msg.itemId, 200), field });
+    return { remaining: Number.isInteger(data?.remaining) ? data.remaining : null };
   },
-  "popup:get-totp": (msg) => call("get_totp", { itemId: requireString(msg.itemId, 200) }),
+  "popup:copy-secret": async (msg) => {
+    const text = requireString(msg.text);
+    if (!text) throw new BridgeError("invalid_request");
+    await call("copy_secret", { text });
+    return null;
+  },
   "popup:fill": (msg) => fillTab(requireTabId(msg.tabId), requireString(msg.itemId, 200)),
   "popup:generate": (msg) => generatePassword(msg.options),
   "popup:fill-generated": async (msg) => {

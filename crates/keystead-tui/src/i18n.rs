@@ -253,6 +253,8 @@ messages! {
     HelpClose => "Beliebige Taste schließt diese Hilfe.", "Press any key to close this help.";
     // ---- errors ---------------------------------------------------------------
     ErrConflict => "Der Tresor wurde an anderer Stelle geändert. Bitte versuche es noch einmal.", "The vault was changed elsewhere. Please try again.";
+    ErrKeyChanged => "Das Master-Passwort oder der Schlüssel des Tresors wurde an anderer Stelle geändert. Bitte entsperre den Tresor erneut.", "The master password or the key of the vault was changed elsewhere. Please unlock the vault again.";
+    ErrRollback => "Die Tresordatei wurde durch eine ältere Version ersetzt (z. B. eine wiederhergestellte Sicherung). Deine aktuellen Daten bleiben geöffnet, Speichern ist gesperrt. Sperren und neu entsperren öffnet die ältere Datei.", "The vault file was replaced by an older version (e.g. a restored backup). Your current data stays open, saving is blocked. Locking and unlocking again opens the older file.";
     ErrNotFound => "Nicht gefunden.", "Not found.";
     ErrInvalidInput => "Ungültige Eingabe: {detail}", "Invalid input: {detail}";
     ErrIo => "Datei konnte nicht gelesen oder geschrieben werden: {detail}", "Could not read or write a file: {detail}";
@@ -403,6 +405,8 @@ impl Lang {
         match err {
             Error::WrongPassword => self.t(M::WrongPassword).to_owned(),
             Error::Conflict => self.t(M::ErrConflict).to_owned(),
+            Error::KeyChanged => self.t(M::ErrKeyChanged).to_owned(),
+            Error::Rollback => self.t(M::ErrRollback).to_owned(),
             Error::NotFound(_) => self.t(M::ErrNotFound).to_owned(),
             Error::InvalidInput(detail) => {
                 let known = match detail.as_str() {

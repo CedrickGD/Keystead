@@ -107,6 +107,9 @@ fn everything_but_status_pair_focus_needs_pairing() {
         json!({"id": "7", "type": "generate_password"}),
         json!({"id": "8", "type": "save_login", "name": "n", "url": "u", "username": "x", "password": "y"}),
         json!({"id": "9", "type": "update_password", "itemId": GITHUB_ID, "password": "y"}),
+        json!({"id": "10", "type": "check_login_password", "itemId": GITHUB_ID, "password": "y"}),
+        json!({"id": "11", "type": "copy_field", "itemId": GITHUB_ID, "field": "password"}),
+        json!({"id": "12", "type": "copy_secret", "text": "y"}),
     ];
     for req in requests {
         let r = call(f.dispatcher.as_ref(), req.clone());
@@ -115,6 +118,7 @@ fn everything_but_status_pair_focus_needs_pairing() {
     }
     assert_eq!(f.backend.unlock_calls.load(Ordering::SeqCst), 0);
     assert_eq!(f.backend.lock_calls.load(Ordering::SeqCst), 0);
+    assert!(f.backend.copied.lock().unwrap().is_empty());
     // focus_app works without pairing.
     let r = call(
         f.dispatcher.as_ref(),
@@ -430,7 +434,7 @@ fn unlocked_operations() {
     assert_eq!(secret.username, "octocat");
     assert_eq!(secret.password, "gh-secret");
     assert_eq!(secret.uris, vec!["https://github.com"]);
-    let totp = secret.totp.unwrap();
+    let totp = secret.totp.as_ref().unwrap();
     assert_eq!(totp.code.len(), 6);
     let keys: Vec<_> = r.data.as_object().unwrap().keys().cloned().collect();
     assert_eq!(keys.len(), 6, "{keys:?}");
@@ -553,6 +557,118 @@ fn activity_is_reported_for_user_actions_only() {
         c(json!({"id": "6", "type": "get_login", "itemId": "missing"})),
     );
     assert_eq!(f.backend.activity.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn check_login_password_compares_without_revealing_or_counting_as_activity() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+
+    let check = json!({"id": "1", "type": "check_login_password", "itemId": GITHUB_ID, "password": "gh-secret"});
+    assert_eq!(err(&call(d, c(check.clone()))), BridgeError::Locked);
+    f.backend.set_unlocked(true);
+    assert_eq!(call(d, c(check)), Response::success("1", &true));
+    for (id, pw) in [
+        ("2", "gh-secret "),
+        ("3", "gh-secre"),
+        ("4", ""),
+        ("5", "GH-SECRET"),
+    ] {
+        let r = call(
+            d,
+            c(
+                json!({"id": id, "type": "check_login_password", "itemId": GITHUB_ID, "password": pw}),
+            ),
+        );
+        assert_eq!(r, Response::success(id, &false), "{pw:?}");
+    }
+    let r = call(
+        d,
+        c(json!({"id": "6", "type": "check_login_password", "itemId": NOTE_ID, "password": "x"})),
+    );
+    assert_eq!(err(&r), BridgeError::NotFound);
+    // A page that submits forms in a loop must not keep the vault unlocked.
+    assert_eq!(f.backend.activity.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn copy_requests_use_the_app_clipboard() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+
+    // Locked: rejected, nothing copied.
+    for req in [
+        json!({"id": "l1", "type": "copy_field", "itemId": GITHUB_ID, "field": "password"}),
+        json!({"id": "l2", "type": "copy_secret", "text": "generated"}),
+    ] {
+        assert_eq!(err(&call(d, c(req.clone()))), BridgeError::Locked, "{req}");
+    }
+    // Wrong token: rejected even while unlocked.
+    f.backend.set_unlocked(true);
+    let r = call(
+        d,
+        with_creds(
+            json!({"id": "t", "type": "copy_field", "itemId": GITHUB_ID, "field": "password"}),
+            &cid,
+            "wrong-token",
+        ),
+    );
+    assert_eq!(err(&r), BridgeError::NotPaired);
+    assert!(f.backend.copied.lock().unwrap().is_empty());
+
+    let r = call(
+        d,
+        c(json!({"id": "1", "type": "copy_field", "itemId": GITHUB_ID, "field": "password"})),
+    );
+    // The secret is not sent back to the browser.
+    assert_eq!(r, Response::success("1", &json!({"remaining": null})));
+    let r = call(
+        d,
+        c(json!({"id": "2", "type": "copy_field", "itemId": GITHUB_ID, "field": "totp"})),
+    );
+    let remaining = r.data["remaining"].as_u64().unwrap();
+    assert!((1..=30).contains(&remaining), "{r:?}");
+    assert_eq!(r.data.as_object().unwrap().len(), 1);
+    let r = call(
+        d,
+        c(json!({"id": "3", "type": "copy_secret", "text": "generated-pw"})),
+    );
+    assert_eq!(r, Response::null("3"));
+    {
+        let copied = f.backend.copied.lock().unwrap();
+        assert_eq!(copied.len(), 3);
+        assert_eq!(copied[0], "gh-secret");
+        assert!(copied[1].len() == 6 && copied[1].bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(copied[2], "generated-pw");
+    }
+    assert_eq!(f.backend.activity.load(Ordering::SeqCst), 3);
+
+    for (req, code) in [
+        (
+            json!({"id": "4", "type": "copy_field", "itemId": EXAMPLE_ID, "field": "totp"}),
+            BridgeError::NotFound,
+        ),
+        (
+            json!({"id": "5", "type": "copy_field", "itemId": NOTE_ID, "field": "password"}),
+            BridgeError::NotFound,
+        ),
+        (
+            json!({"id": "6", "type": "copy_field", "itemId": GITHUB_ID, "field": "username"}),
+            BridgeError::InvalidRequest,
+        ),
+        (
+            json!({"id": "7", "type": "copy_secret", "text": ""}),
+            BridgeError::InvalidRequest,
+        ),
+    ] {
+        assert_eq!(err(&call(d, c(req.clone()))), code, "{req}");
+    }
+    assert_eq!(f.backend.copied.lock().unwrap().len(), 3);
+    assert_eq!(f.backend.activity.load(Ordering::SeqCst), 3);
 }
 
 #[test]

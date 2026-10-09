@@ -629,13 +629,19 @@ function AdvancedSection() {
     setPortableBusy(true);
     try {
       setInfo(await api.setPortableMode(enabled));
-      toast.success(enabled ? t("data.portableEnabled") : t("data.portableDisabled"));
-      const session = await api.sessionState();
-      if (!session.unlocked) showUnlock();
+      toast.show({ kind: "success", message: enabled ? t("data.portableEnabled") : t("data.portableDisabled"), carry: true });
     } catch (err) {
-      toast.error(errorText(err));
+      toast.show({ kind: "error", message: errorText(err), carry: true });
     } finally {
       setPortableBusy(false);
+      // The backend closes the vault to move its file – also when the move
+      // fails afterwards. Never stay on the item view of a closed vault.
+      try {
+        const session = await api.sessionState();
+        if (!session.unlocked) showUnlock();
+      } catch {
+        /* the `vault://locked` event navigates as well */
+      }
     }
   };
 
