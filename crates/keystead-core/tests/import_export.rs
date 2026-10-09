@@ -639,6 +639,7 @@ fn sample_data() -> VaultData {
             password: "generated-secret".into(),
             created_at: 1,
         }],
+        ..Default::default()
     }
 }
 
@@ -779,7 +780,7 @@ fn formula_data() -> VaultData {
             id: "f1".into(),
             name: "@team".into(),
         }],
-        generator_history: vec![],
+        ..Default::default()
     }
 }
 

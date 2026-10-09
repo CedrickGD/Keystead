@@ -34,7 +34,6 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::ParsedImport;
-use crate::matching;
 use crate::model::{Folder, ItemType, VaultData, VaultItem};
 use crate::totp;
 use crate::vault::{wipe_item, wipe_items};
@@ -596,13 +595,13 @@ fn normalize_name(name: &str) -> String {
 
 /// Lower-case host of the first http(s) URI of a login (scheme-less URIs
 /// count as https), without a trailing dot and a leading `www.`.
+/// The same host keys the website icons ([`crate::icons::site_host`]).
 fn login_site(item: &VaultItem) -> Option<String> {
-    item.login.as_ref()?.uris.iter().find_map(|u| {
-        let url = matching::parse_stored(u.uri.trim()).filter(matching::is_web)?;
-        let host = url.host_str()?.trim_end_matches('.').to_lowercase();
-        let host = host.strip_prefix("www.").unwrap_or(&host);
-        (!host.is_empty()).then(|| host.to_owned())
-    })
+    item.login
+        .as_ref()?
+        .uris
+        .iter()
+        .find_map(|u| crate::icons::site_host(&u.uri))
 }
 
 fn describe(incoming: &VaultItem, existing: &VaultItem) -> ImportMatch {

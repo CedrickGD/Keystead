@@ -37,6 +37,7 @@ import { totpNow } from "./demo/totp";
 import { estimateStrength } from "./demo/strength";
 import { generate } from "./demo/generator";
 import { legacyImportItems, privateVault, workVault, type SampleVault } from "./demo/sampleData";
+import { describe, mockImportFile, mockPreview, planMockImport, type MockImportFile, type MockPlan } from "./demo/importFiles";
 
 const DEMO_PASSWORD = "demo";
 const DEMO_RECOVERY_KEY = "VXDMO-2K7QF-9MZ4T-H8WRC-31PNA";
@@ -172,7 +173,7 @@ function initState(): MockState {
       startInTray: false,
       browserIntegration: true,
       lastVaultId: empty ? null : "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d",
-      showIcons: false,
+      websiteIcons: true,
       updateCheck: true,
       updateChannel: "beta",
     },
@@ -345,6 +346,7 @@ function lock(reason: "manual" | "timeout" | "system"): void {
   const s = getState();
   if (!s.unlockedId) return;
   s.unlockedId = null;
+  pendingImport = null;
   emit("vault://locked", { reason });
 }
 
@@ -374,6 +376,11 @@ export interface MockDevHelpers {
   simulateUnlockRequest: () => void;
   /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
   simulateUpdate: (portable?: boolean) => void;
+  /** Drags a file over the window (the drop overlay stays until `dropFile` / `cancelDrag`). Default: a Chrome CSV export. */
+  dragFile: (path?: string | string[]) => void;
+  /** Drops a file onto the window (opens the import dialog while unlocked). */
+  dropFile: (path?: string | string[]) => void;
+  cancelDrag: () => void;
 }
 
 declare global {
@@ -389,6 +396,9 @@ function installDevHelpers(): void {
     simulateExternalChange: () => emit("vault://changed", {}),
     simulateUnlockRequest: () => emit("bridge://unlock-request", {}),
     simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),
+    dragFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "enter", paths: dropPaths(path) }),
+    dropFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "drop", paths: dropPaths(path) }),
+    cancelDrag: () => emit("mock://drag-drop", { type: "leave" }),
   };
 }
 
@@ -549,6 +559,94 @@ function importItems(vault: MockVault, items: VaultItem[], folders: Folder[] = [
   }
   touch(vault);
   return items.length;
+}
+
+// Import with preview (`analyze_import` → `commit_import`), see demo/importFiles.ts.
+
+interface MockPendingImport {
+  id: string;
+  vaultId: string;
+  expires: number;
+  file: MockImportFile;
+  plan: MockPlan;
+}
+
+let pendingImport: MockPendingImport | null = null;
+let importSeq = 0;
+
+async function analyzeImport(args: Record<string, unknown>): Promise<unknown> {
+  const s = getState();
+  const path = str(args, "path");
+  const password = optStr(args, "password") || null;
+  if (!path.trim()) fail("invalid_input:path_required");
+  pendingImport = null;
+  const vault = openVault();
+  if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+  await sleep(450);
+  const file = mockImportFile(path, Date.now());
+  if ("error" in file) fail(file.error);
+  const fileName = path.split(/[\\/]/).pop() ?? path;
+  if (file.needsPassword && !password) {
+    return { importId: null, fileName, format: file.format, needsPassword: true, preview: null };
+  }
+  if (file.needsPassword) {
+    await sleep(500);
+    if (password !== DEMO_PASSWORD) fail("wrong_password");
+  }
+  if (s.unlockedId !== vault.info.id) fail("locked");
+  const plan = planMockImport(vault.data.items, file.items);
+  importSeq += 1;
+  pendingImport = { id: `import-${importSeq}`, vaultId: vault.info.id, expires: Date.now() + 15 * 60_000, file, plan };
+  return {
+    importId: pendingImport.id,
+    fileName,
+    format: file.format,
+    needsPassword: file.needsPassword,
+    preview: clone(mockPreview(plan, file)),
+  };
+}
+
+async function commitImport(args: Record<string, unknown>): Promise<ImportReport> {
+  const id = str(args, "importId");
+  const mode = args.conflictMode;
+  if (mode !== "skip" && mode !== "update" && mode !== "keepBoth") fail("invalid_input:conflictMode");
+  const pending = pendingImport && pendingImport.id === id && pendingImport.expires > Date.now() ? pendingImport : null;
+  pendingImport = null;
+  if (!pending) fail("not_found");
+  const vault = openVault();
+  if (optStr(args, "pageVaultId") !== vault.info.id || pending.vaultId !== vault.info.id) fail("locked");
+  await sleep(400);
+  // Classified again: the vault may have changed since the preview.
+  const now = planMockImport(vault.data.items, [...pending.plan.newItems, ...pending.plan.conflicts.map((c) => c.item)]);
+  const report: ImportReport = {
+    imported: 0,
+    updated: 0,
+    skipped: pending.file.invalid,
+    duplicates: [...pending.plan.duplicates, ...now.duplicates],
+    conflictsSkipped: [],
+    warnings: pending.file.warnings,
+  };
+  report.imported += importItems(vault, now.newItems);
+  for (const { conflict, item } of now.conflicts) {
+    const existing = vault.data.items.find((i) => i.id === conflict.existingId);
+    if (mode === "keepBoth") {
+      report.imported += importItems(vault, [item]);
+    } else if (mode === "update" && existing?.login && item.login) {
+      saveItem({ ...existing, login: { ...existing.login, password: item.login.password } });
+      report.updated += 1;
+    } else {
+      report.conflictsSkipped.push(describe(item, existing ?? null));
+    }
+  }
+  if (report.imported + report.updated > 0) touch(vault);
+  emit("vault://changed", {});
+  return report;
+}
+
+/** Paths for the simulated drag & drop (default: a Chrome password export). */
+function dropPaths(path?: string | string[]): string[] {
+  if (Array.isArray(path)) return path;
+  return [path ?? "C:\\Users\\Demo\\Downloads\\Chrome-Passwörter.csv"];
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +898,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       if (!path) fail("invalid_input:path_required");
       await sleep(500);
       const now = Date.now();
-      let report: ImportReport;
+      // The older one-step import (the UI uses analyze_import / commit_import).
+      let report: Pick<ImportReport, "imported" | "skipped" | "warnings">;
       switch (format) {
         case "legacy":
           if (password !== DEMO_PASSWORD) fail("wrong_password");
@@ -826,8 +925,21 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
           fail(`unsupported:${String(format)}`);
       }
       emit("vault://changed", {});
-      return report;
+      return { updated: 0, duplicates: [], conflictsSkipped: [], ...report } satisfies ImportReport;
     }
+
+    case "analyze_import":
+      return analyzeImport(args);
+
+    case "commit_import":
+      return commitImport(args);
+
+    case "cancel_import":
+      if (pendingImport?.id === str(args, "importId")) pendingImport = null;
+      return null;
+
+    case "show_export":
+      return null;
 
     case "export_data": {
       const vault = openVault();
@@ -931,8 +1043,8 @@ export async function mockPickOpenFile(filters?: { name: string; extensions: str
   await sleep(150);
   const ext = filters?.[0]?.extensions[0] ?? "csv";
   const names: Record<string, string> = {
-    json: "vault_export.json",
-    csv: "passwords.csv",
+    json: "bitwarden_export.json",
+    csv: "Chrome-Passwörter.csv",
     keystead: "Keystead-Export.keystead",
   };
   return `C:\\Users\\Demo\\Downloads\\${names[ext] ?? `import.${ext}`}`;

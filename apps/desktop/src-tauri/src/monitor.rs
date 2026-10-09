@@ -87,6 +87,8 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
         if last_auto_lock_check.elapsed() >= AUTO_LOCK_INTERVAL {
             last_auto_lock_check = Instant::now();
             check_auto_lock(&core);
+            // An analysed import nobody committed: drop its secrets.
+            core.import_slot().expire(Instant::now());
         }
 
         if last_reload_check.elapsed() >= RELOAD_INTERVAL {

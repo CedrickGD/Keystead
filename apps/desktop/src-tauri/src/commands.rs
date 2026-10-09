@@ -29,8 +29,8 @@ use crate::state::{log, Core, LockReason};
 use crate::update::{self, UpdateInfo};
 use crate::wipe::Wiped;
 
-type Shared<'a> = State<'a, Arc<Core>>;
-type CmdResult<T> = Result<T, String>;
+pub(crate) type Shared<'a> = State<'a, Arc<Core>>;
+pub(crate) type CmdResult<T> = Result<T, String>;
 
 /// Delay before events a freshly loaded page may have missed are re-sent:
 /// its listeners subscribe asynchronously after boot, and the boot applies
@@ -40,7 +40,7 @@ const BOOT_RESEND_DELAY: Duration = Duration::from_millis(1000);
 /// Runs `f` on the blocking pool. `activity`: the command is a deliberate
 /// user action and resets the auto-lock timer (passive/polled commands such
 /// as `totp_code` or `browser_status` must not keep the vault open).
-async fn run<T, F>(core: &Shared<'_>, activity: bool, f: F) -> CmdResult<T>
+pub(crate) async fn run<T, F>(core: &Shared<'_>, activity: bool, f: F) -> CmdResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&Arc<Core>) -> AppResult<T> + Send + 'static,
@@ -58,7 +58,7 @@ where
 }
 
 /// Parses a JSON argument; malformed input → `invalid_input:<what>`.
-fn parse<T: DeserializeOwned>(value: Value, what: &str) -> AppResult<T> {
+pub(crate) fn parse<T: DeserializeOwned>(value: Value, what: &str) -> AppResult<T> {
     serde_json::from_value(value).map_err(|_| AppError::invalid(what))
 }
 
@@ -548,6 +548,8 @@ pub async fn export_data(
             return Err(CoreError::WrongPassword.into());
         }
         export::export_to_file(vault.data(), &format, Path::new(&path), password.as_deref())?;
+        // "Im Ordner anzeigen" (`show_export`) opens only this file's folder.
+        crate::import_flow::remember_export(Path::new(&path));
         Ok(())
     })
     .await
@@ -583,6 +585,9 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
     if settings.update_channel != old.update_channel || (settings.update_check && !old.update_check)
     {
         core.wake_update_checker();
+    }
+    if settings.website_icons != old.website_icons {
+        core.icons().setting_changed(settings.website_icons);
     }
     core.set_minimize_to_tray(settings.minimize_to_tray);
     if old.language != settings.language {

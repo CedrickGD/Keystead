@@ -13,6 +13,8 @@ mod commands;
 mod error;
 mod extension;
 mod gui;
+mod icons;
+mod import_flow;
 mod monitor;
 mod platform;
 mod portable;

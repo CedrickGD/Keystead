@@ -81,7 +81,10 @@ pub struct Settings {
     pub start_in_tray: bool,
     pub browser_integration: bool,
     pub last_vault_id: Option<String>,
-    pub show_icons: bool,
+    /// Fetch missing website icons in the background, directly from the
+    /// websites (no icon service). Off: no icon requests at all; stored
+    /// icons are still shown.
+    pub website_icons: bool,
     /// Look for app updates in the background (at start and every 6 h).
     pub update_check: bool,
     pub update_channel: UpdateChannel,
@@ -99,7 +102,7 @@ impl Default for Settings {
             start_in_tray: false,
             browser_integration: true,
             last_vault_id: None,
-            show_icons: false,
+            website_icons: true,
             update_check: true,
             update_channel: UpdateChannel::Beta,
         }
@@ -156,7 +159,9 @@ impl Settings {
         take(&obj, "startInTray", &mut s.start_in_tray);
         take(&obj, "browserIntegration", &mut s.browser_integration);
         take(&obj, "lastVaultId", &mut s.last_vault_id);
-        take(&obj, "showIcons", &mut s.show_icons);
+        // `showIcons` of older versions is ignored: it was never shown in
+        // the UI, so its `false` was the old default, not a choice.
+        take(&obj, "websiteIcons", &mut s.website_icons);
         take(&obj, "updateCheck", &mut s.update_check);
         take(&obj, "updateChannel", &mut s.update_channel);
         s.normalized()
@@ -217,7 +222,7 @@ mod tests {
         assert!(!s.start_in_tray);
         assert!(s.browser_integration);
         assert_eq!(s.last_vault_id, None);
-        assert!(!s.show_icons);
+        assert!(s.website_icons);
         assert!(s.update_check);
         assert_eq!(s.update_channel, UpdateChannel::Beta);
     }
@@ -235,11 +240,25 @@ mod tests {
         assert_eq!(s.theme, Theme::Dark);
         assert_eq!(s.auto_lock_minutes, 5);
         assert_eq!(s.last_vault_id.as_deref(), Some("v-1"));
+        assert!(s.website_icons);
         assert!(s.update_check);
         assert_eq!(s.update_channel, UpdateChannel::Beta);
         // The strict deserializer (Tauri `save_settings` argument) as well.
         let strict: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(strict, s);
+    }
+
+    #[test]
+    fn website_icons_default_on_and_ignore_the_old_show_icons() {
+        // Old files: `showIcons` (never in the UI, always false) is ignored.
+        let s = Settings::from_json_lenient(r#"{"showIcons":false}"#);
+        assert!(s.website_icons);
+        let s = Settings::from_json_lenient(r#"{"showIcons":true,"websiteIcons":false}"#);
+        assert!(!s.website_icons);
+        let s = Settings::from_json_lenient(r#"{"websiteIcons":"yes"}"#);
+        assert!(s.website_icons);
+        let strict: Settings = serde_json::from_str(r#"{"showIcons":false}"#).unwrap();
+        assert!(strict.website_icons);
     }
 
     #[test]
@@ -276,7 +295,8 @@ mod tests {
         assert_eq!(v["autoLockMinutes"], 15);
         assert_eq!(v["clipboardClearSeconds"], 30);
         assert_eq!(v["lastVaultId"], "abc");
-        assert_eq!(v["showIcons"], false);
+        assert_eq!(v["websiteIcons"], true);
+        assert!(v.get("showIcons").is_none());
         assert_eq!(v["updateCheck"], true);
         assert_eq!(v["updateChannel"], "beta");
         assert_eq!(v.as_object().unwrap().len(), 12);
@@ -285,13 +305,13 @@ mod tests {
     #[test]
     fn lenient_parsing() {
         let s = Settings::from_json_lenient(
-            "\u{feff}{\"theme\":\"dark\",\"language\":\"klingon\",\"autoLockMinutes\":-5,\"clipboardClearSeconds\":999999,\"showIcons\":true,\"extra\":1,\"lastVaultId\":\"\"}",
+            "\u{feff}{\"theme\":\"dark\",\"language\":\"klingon\",\"autoLockMinutes\":-5,\"clipboardClearSeconds\":999999,\"websiteIcons\":false,\"extra\":1,\"lastVaultId\":\"\"}",
         );
         assert_eq!(s.theme, Theme::Dark);
         assert_eq!(s.language, Language::system_default());
         assert_eq!(s.auto_lock_minutes, 15);
         assert_eq!(s.clipboard_clear_seconds, MAX_CLIPBOARD_CLEAR_SECONDS);
-        assert!(s.show_icons);
+        assert!(!s.website_icons);
         assert_eq!(s.last_vault_id, None);
         assert_eq!(Settings::from_json_lenient("garbage"), Settings::default());
         assert_eq!(Settings::from_json_lenient("[1,2]"), Settings::default());
@@ -312,7 +332,7 @@ mod tests {
             start_in_tray: true,
             browser_integration: false,
             last_vault_id: Some("id-1".into()),
-            show_icons: true,
+            website_icons: false,
             update_check: false,
             update_channel: UpdateChannel::Stable,
         };

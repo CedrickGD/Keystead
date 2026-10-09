@@ -9,6 +9,7 @@ pub mod export;
 pub mod format;
 pub mod generator;
 pub mod health;
+pub mod icons;
 pub mod import;
 pub mod matching;
 pub mod model;

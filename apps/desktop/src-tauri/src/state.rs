@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 use crate::error::{AppError, AppResult};
 use crate::monitor::MonitorSignal;
 use crate::tray::TrayMenu;
+use crate::import_flow::ImportSlot;
 use crate::update::UpdateInfo;
 
 /// `vault://locked` – payload `{ reason }`.
@@ -207,6 +208,13 @@ pub struct Core {
     update_locked: AtomicBool,
     /// Wakes the background update check (settings changed).
     update_wake: Mutex<Option<Sender<()>>>,
+    /// The analysed import waiting for the user's decision (holds the
+    /// file's secrets; dropped when its vault closes, see `import_flow`).
+    /// Lock order: `state` before `import_slot`.
+    import_slot: Mutex<ImportSlot>,
+    /// Website icon fetcher: told when a vault opens, closes or changes
+    /// (see `crate::icons`). Never locked together with `state`.
+    icons: crate::icons::IconTracker,
 }
 
 fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -251,7 +259,14 @@ impl Core {
             update_installing: AtomicBool::new(false),
             update_locked: AtomicBool::new(false),
             update_wake: Mutex::new(None),
+            import_slot: Mutex::new(ImportSlot::default()),
+            icons: crate::icons::IconTracker::default(),
         })
+    }
+
+    /// The website icon fetcher's session tracker.
+    pub fn icons(&self) -> &crate::icons::IconTracker {
+        &self.icons
     }
 
     /// The app version shown to the user and to the browser extension.
@@ -262,6 +277,12 @@ impl Core {
     /// Locks the shared state. See the module docs for the locking rule.
     pub fn state(&self) -> MutexGuard<'_, AppState> {
         lock_mutex(&self.state)
+    }
+
+    /// The waiting import plan (`import_flow`). May be locked while the
+    /// state is held, never the other way round.
+    pub fn import_slot(&self) -> MutexGuard<'_, ImportSlot> {
+        lock_mutex(&self.import_slot)
     }
 
     // -----------------------------------------------------------------
@@ -399,8 +420,14 @@ impl Core {
     /// given. No-op for `None`. Returns whether a vault was closed.
     pub fn finish_lock(&self, vault: Option<UnlockedVault>, reason: Option<LockReason>) -> bool {
         let was_open = vault.is_some();
+        if let Some(closed) = &vault {
+            // An import analysed for this vault must not outlive it.
+            self.import_slot().drop_for_vault(closed.id());
+        }
         drop(vault);
         if was_open {
+            // A running icon fetch stops and writes nothing.
+            self.icons.vault_closed();
             self.clear_copied_secret();
             if let Some(reason) = reason {
                 self.emit_locked(reason);
@@ -471,6 +498,7 @@ impl Core {
             previous
         };
         self.finish_lock(previous, None);
+        self.icons.vault_opened();
         Ok(info)
     }
 
@@ -541,6 +569,10 @@ impl Core {
         };
         if reloaded {
             self.emit_changed();
+        }
+        if result.is_ok() {
+            // Maybe a login with a website that has no icon yet.
+            self.icons.vault_changed();
         }
         Ok(result?)
     }
@@ -642,6 +674,7 @@ impl Core {
         }
         *lock_mutex(&self.monitor) = None;
         *lock_mutex(&self.update_wake) = None;
+        self.icons.stop();
     }
 }
 

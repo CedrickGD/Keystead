@@ -181,9 +181,59 @@ export interface HealthReport {
   score: number;
 }
 
+/** An item of an import file that is not added as a new item, and the vault item it matches (never a password). */
+export interface ImportMatch {
+  incomingName: string;
+  /** Login username; for other types the list subtitle (card "•••• 1234", identity name/e-mail, "" for notes). */
+  username: string;
+  /** Login host without www. ("" without URI and for other types). */
+  site: string;
+  itemType: ItemType;
+  /** "" = the file itself contains this item twice (`existingName` = the earlier entry's name). */
+  existingId: string;
+  existingName: string;
+}
+
+/** A login whose site and username exist with a different password ("password") or 2FA key ("totp"). */
+export interface ImportConflict extends ImportMatch {
+  conflictId: string;
+  reason: "password" | "totp";
+}
+
+/** Secret-free summary of an analysed import file (`analyze_import`). */
+export interface ImportPreview {
+  newCount: number;
+  duplicates: ImportMatch[];
+  conflicts: ImportConflict[];
+  /** Rows/entries of the file that could not be read (see `warnings`). */
+  invalid: number;
+  /** English, technical. */
+  warnings: string[];
+}
+
+/** Answer of `analyze_import`. `preview` null (and `importId` null) = ask for the file's password and analyse again. */
+export interface ImportAnalysis {
+  importId: string | null;
+  fileName: string;
+  format: ImportFormat;
+  /** Encrypted format (VaultX 1.x vault, Keystead export). */
+  needsPassword: boolean;
+  preview: ImportPreview | null;
+}
+
+/** What `commit_import` does with conflicts. */
+export type ConflictMode = "skip" | "update" | "keepBoth";
+
 export interface ImportReport {
   imported: number;
+  /** Existing logins whose password was taken over from the file (`update`). */
+  updated: number;
+  /** Invalid rows/entries of the file. */
   skipped: number;
+  /** Not imported: already in the vault (or twice in the file). */
+  duplicates: ImportMatch[];
+  /** Not imported: conflicts that were skipped. */
+  conflictsSkipped: ImportMatch[];
   warnings: string[];
 }
 
@@ -208,7 +258,8 @@ export interface Settings {
   startInTray: boolean;
   browserIntegration: boolean;
   lastVaultId: string | null;
-  showIcons: boolean;
+  /** Load missing website icons in the background, directly from the websites. Default true; off = no icon requests (stored icons stay visible). */
+  websiteIcons: boolean;
   /** Look for app updates in the background (at start and every 6 h). Default true. */
   updateCheck: boolean;
   /** "beta" = test versions and stable releases (default during the beta phase), "stable" = stable releases only. */

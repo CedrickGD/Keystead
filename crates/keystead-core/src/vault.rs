@@ -17,6 +17,7 @@ use zeroize::Zeroize;
 use crate::crypto::{self, SecretKey};
 use crate::error::{Error, Result};
 use crate::format::{self, VaultFile};
+use crate::icons;
 use crate::import::{self, ConflictMode, ImportPlan, ImportReport};
 use crate::matching;
 use crate::model::{
@@ -76,6 +77,7 @@ pub(crate) fn wipe_data(data: &mut VaultData) {
     for g in &mut data.generator_history {
         g.password.zeroize();
     }
+    icons::wipe_icons(&mut data.icons);
 }
 
 /// Overwrites the secret strings of items before the memory is freed.
@@ -360,6 +362,55 @@ impl UnlockedVault {
         self.mutate(|data| {
             data.generator_history.clear();
             Ok(())
+        })
+    }
+
+    /// Hosts of non-trashed logins whose website icon should be fetched at
+    /// `now` (Unix ms): none stored yet, the last attempt 30 days old, or
+    /// the last failure 7 days old. Hosts that must not be contacted (IP
+    /// literals, `localhost`, `.local`, intranet names) are left out. See
+    /// [`icons::hosts_needing_fetch`].
+    pub fn icon_hosts_needing_fetch(&self, now: i64) -> Vec<String> {
+        icons::hosts_needing_fetch(&self.data, now)
+    }
+
+    /// The stored icon of `host` (base64 of a 64×64 PNG), if any.
+    pub fn icon_for_host(&self, host: &str) -> Option<&str> {
+        self.data.icons.get(host)?.png.as_deref()
+    }
+
+    /// The stored icon of an item ([`icons::icon_host`]), if any.
+    pub fn icon_for_item(&self, item: &VaultItem) -> Option<&str> {
+        self.icon_for_host(&icons::icon_host(item)?)
+    }
+
+    /// Stores the results of an icon fetch run in **one** save: PNG bytes,
+    /// or `None` for a failed fetch (keeps an older icon, retried after 7
+    /// days). Hosts that no longer belong to a non-trashed login are
+    /// ignored, and icons of such hosts are removed. Returns the number of
+    /// entries written; nothing is saved if nothing changed. On
+    /// `Error::Conflict` nothing changed: `reload_if_changed()` and call
+    /// again with the same results.
+    pub fn set_icons(&mut self, results: &[(String, Option<Vec<u8>>)], now: i64) -> Result<usize> {
+        if results.is_empty() && self.data.icons.is_empty() {
+            return Ok(0);
+        }
+        self.mutate_if_changed(|data| {
+            let written = icons::apply_icons(data, results, now);
+            let pruned = icons::prune_icons(data);
+            Ok((written, written > 0 || pruned > 0))
+        })
+    }
+
+    /// Removes every stored website icon (one save). Returns how many.
+    pub fn clear_icons(&mut self) -> Result<usize> {
+        let count = self.data.icons.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        self.mutate(|data| {
+            icons::wipe_icons(&mut data.icons);
+            Ok(count)
         })
     }
 
@@ -652,6 +703,9 @@ impl UnlockedVault {
             wipe_data(&mut data);
             return Ok(result);
         }
+        // Icons of hosts no login uses any more (deleted, trashed, address
+        // changed) leave the vault with the change.
+        icons::prune_icons(&mut data);
         let header = self.file.clone();
         self.write(header, data)?;
         Ok(result)

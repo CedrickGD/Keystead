@@ -12,6 +12,8 @@ import type {
   GeneratedPassword,
   GeneratorOptions,
   HealthReport,
+  ConflictMode,
+  ImportAnalysis,
   ImportFormat,
   ImportReport,
   LegacyVaultInfo,
@@ -157,6 +159,19 @@ export const api = {
     call<ImportReport>("import_data", { format, path, password, pageVaultId }),
   exportData: (format: ExportFormat, path: string, password: string | null, masterPassword: string) =>
     call<null>("export_data", { format, path, password, masterPassword, pageVaultId }),
+  /**
+   * Recognises an import file by its content and compares it with the open
+   * vault. `preview: null` = the file is encrypted: ask for its password and
+   * call again. The plan waits in the backend (15 min) for `commitImport`.
+   */
+  analyzeImport: (path: string, password: string | null) =>
+    call<ImportAnalysis>("analyze_import", { path, password, pageVaultId }),
+  /** Imports an analysed file (`not_found` once the plan expired, was replaced or the vault was locked). */
+  commitImport: (importId: string, conflictMode: ConflictMode) =>
+    call<ImportReport>("commit_import", { importId, conflictMode, pageVaultId }),
+  cancelImport: (importId: string) => call<null>("cancel_import", { importId }),
+  /** Shows the file the last export wrote in the file manager. */
+  showExport: () => call<null>("show_export"),
 
   getSettings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
@@ -224,7 +239,25 @@ export const events = {
   /** Downloaded and verified; the app installs it and restarts. */
   onUpdateReady: (handler: (payload: { version: string }) => void) =>
     subscribe<{ version: string }>("update://ready", handler),
+  /**
+   * Files dragged over / dropped onto the window (Tauri's webview drag & drop
+   * events; the mock backend simulates them via `window.__keysteadMock`).
+   */
+  onFileDrag: async (handler: (event: FileDragEvent) => void): Promise<Unlisten> => {
+    if (IN_TAURI) {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      return getCurrentWebview().onDragDropEvent((e) => {
+        const p = e.payload;
+        handler(p.type === "enter" || p.type === "drop" ? { type: p.type, paths: p.paths } : { type: p.type });
+      });
+    }
+    const mock = await import("./mock");
+    return mock.mockListen("mock://drag-drop", (payload) => handler(payload as FileDragEvent));
+  },
 };
+
+/** Drag & drop of files onto the window. */
+export type FileDragEvent = { type: "enter" | "drop"; paths: string[] } | { type: "over" | "leave" };
 
 /**
  * Subscribe from a React effect: returns a synchronous cleanup that also

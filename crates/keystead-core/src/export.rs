@@ -55,6 +55,9 @@ pub fn export_encrypted_with_params(
         items: active_items(data).cloned().collect(),
         folders: data.folders.clone(),
         generator_history: Vec::new(),
+        // Website icons stay in the vault: an export carries no list of
+        // hosts beyond the items themselves (imports never read icons).
+        icons: Default::default(),
     };
     let name = path
         .file_stem()

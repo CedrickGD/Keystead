@@ -5,6 +5,8 @@
 //! terminal UI. All JSON uses camelCase keys. Timestamps are Unix epoch
 //! milliseconds (UTC).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Everything inside the encrypted payload of a vault.
@@ -15,6 +17,34 @@ pub struct VaultData {
     pub folders: Vec<Folder>,
     /// Last generated passwords (newest first, max 50). Only kept locally.
     pub generator_history: Vec<GeneratedPassword>,
+    /// Website icons by host (see [`crate::icons::icon_host`]), fetched by
+    /// the desktop app. Kept inside the encrypted payload – the set of hosts
+    /// would reveal the user's accounts. Never exported or imported.
+    pub icons: BTreeMap<String, IconEntry>,
+}
+
+/// A website icon stored in the vault ([`VaultData::icons`]).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IconEntry {
+    /// Base64 (standard, padded) of a 64×64 PNG; `None` if no fetch has
+    /// succeeded yet. A failed refresh keeps the previous icon.
+    pub png: Option<String>,
+    /// Unix ms of the last fetch attempt (successful or not).
+    pub fetched_at: i64,
+    /// Unix ms of the last failed attempt; `None` after a success.
+    pub failed_at: Option<i64>,
+}
+
+impl std::fmt::Debug for IconEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never dump the image data.
+        f.debug_struct("IconEntry")
+            .field("png_len", &self.png.as_ref().map(String::len))
+            .field("fetched_at", &self.fetched_at)
+            .field("failed_at", &self.failed_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -193,6 +223,10 @@ pub struct ItemSummary {
     pub favorite: bool,
     pub has_totp: bool,
     pub folder_id: Option<String>,
+    /// Website icon as a `data:image/png;base64,…` URL. Only filled in by
+    /// the desktop app's browser bridge for a few rows (omitted otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Current time in Unix epoch milliseconds.
@@ -303,6 +337,7 @@ impl VaultItem {
             favorite: self.favorite,
             has_totp,
             folder_id: self.folder_id.clone(),
+            icon: None,
         }
     }
 }

@@ -24,11 +24,18 @@ tauri-plugin-single-instance = "2"
 # the update is the signed setup.exe itself, not an archive.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2"
-# Only to learn the HTTP status of `latest.json` when the updater reports "no
-# release" (it drops the status): same versions and features as the plugin's,
-# so nothing extra is compiled. `rustls-no-provider` → ring is installed as the
-# process default first (as the plugin does).
+# To learn the HTTP status of `latest.json` when the updater reports "no
+# release" (it drops the status), and for the website-icon fetcher
+# (`src/icons.rs`, no proxy, own DNS check): same versions and features as the
+# plugin's, so nothing extra is compiled. `rustls-no-provider` → ring is
+# installed as the process default first (as the plugin does).
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# Website icons: decoders for what sites serve as favicons (no SVG); resized
+# to 64×64 and stored as PNG. `png` is already compiled for Tauri.
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp"] }
+# The icon fetcher's DNS lookup, parallel downloads and per-site deadline
+# (tokio is Tauri's runtime; listed for the features used directly).
+tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 time = { version = "0.3", features = ["formatting"] }

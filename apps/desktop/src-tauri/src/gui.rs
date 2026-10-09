@@ -10,7 +10,7 @@ use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
-use crate::{bridge, commands, extension, monitor, platform, tray, update, BACKGROUND_ARG};
+use crate::{bridge, commands, extension, import_flow, monitor, platform, tray, update, BACKGROUND_ARG};
 
 /// Runs the desktop app; returns the process exit code.
 pub fn run(background: bool) -> i32 {
@@ -62,6 +62,10 @@ pub fn run(background: bool) -> i32 {
             commands::delete_vault,
             commands::legacy_scan,
             commands::import_data,
+            import_flow::analyze_import,
+            import_flow::commit_import,
+            import_flow::cancel_import,
+            import_flow::show_export,
             commands::export_data,
             commands::get_settings,
             commands::save_settings,
@@ -77,6 +81,8 @@ pub fn run(background: bool) -> i32 {
             commands::check_update,
             commands::pending_update,
             commands::install_update,
+            crate::icons::get_icons,
+            crate::icons::clear_icons,
         ])
         .setup(move |app| {
             setup(app.handle(), background);
@@ -165,6 +171,8 @@ fn setup(app: &AppHandle, background: bool) {
         .name("keystead-extension".into())
         .spawn(move || extension::deploy_logged(&data_dir));
     update::spawn_background_checks(app.clone(), &core);
+    // Website icons: fetched in the background while a vault is open.
+    crate::icons::spawn_scheduler(&core);
 
     // Start hidden for `--background` (native host) and "start in tray" –
     // the latter only if there is a tray icon to bring the window back.
