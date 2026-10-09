@@ -1,8 +1,8 @@
 {
-  "name": "vaultx-desktop",
+  "name": "keystead-desktop",
   "private": true,
   "version": "2.0.0",
-  "description": "VaultX 2 desktop UI (React + TypeScript, runs inside Tauri 2)",
+  "description": "Keystead desktop UI (React + TypeScript, runs inside Tauri 2)",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -4,7 +4,7 @@
 //
 // Two demo vaults ("Privat", "Arbeit"), master password "demo" for both.
 // URL parameters: `?mock=empty` starts without any vault (first-run screen).
-// `window.__vaultxMock` exposes helpers to simulate backend events.
+// `window.__keysteadMock` exposes helpers to simulate backend events.
 
 import type {
   AppInfo,
@@ -102,11 +102,11 @@ function bool(args: Record<string, unknown>, key: string): boolean {
 }
 
 function dataDir(portable: boolean): string {
-  return portable ? "D:\\VaultX\\VaultX-Data" : "C:\\Users\\Demo\\AppData\\Local\\VaultX\\v2";
+  return portable ? "D:\\Keystead\\Keystead-Data" : "C:\\Users\\Demo\\AppData\\Local\\Keystead\\v2";
 }
 
 function vaultPath(id: string, portable: boolean): string {
-  return `${dataDir(portable)}\\vaults\\${id}.vaultx`;
+  return `${dataDir(portable)}\\vaults\\${id}.keystead`;
 }
 
 function makeRecoveryKey(): string {
@@ -276,12 +276,12 @@ export interface MockDevHelpers {
 
 declare global {
   interface Window {
-    __vaultxMock?: MockDevHelpers;
+    __keysteadMock?: MockDevHelpers;
   }
 }
 
 function installDevHelpers(): void {
-  window.__vaultxMock = {
+  window.__keysteadMock = {
     triggerPairing: (clientName?: string) => requestPairing(clientName),
     simulateTimeoutLock: () => lock("timeout"),
     simulateExternalChange: () => emit("vault://changed", {}),
@@ -703,7 +703,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
             warnings: ["Die alte Zwei-Faktor-Entsperrung (TotpSecret) wurde nicht übernommen."],
           };
           break;
-        case "vaultx":
+        case "keystead":
           if (password !== DEMO_PASSWORD) fail("wrong_password");
           report = { imported: importItems(vault, legacyImportItems(now).slice(0, 2)), skipped: 0, warnings: [] };
           break;
@@ -729,8 +729,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       str(args, "path");
       await sleep(400);
       if (str(args, "masterPassword") !== vault.password) fail("wrong_password");
-      if (!["vaultx", "csv", "bitwarden_json"].includes(format)) fail(`unsupported:${String(format)}`);
-      if (format === "vaultx" && !password) fail("invalid_input:password_required");
+      if (!["keystead", "csv", "bitwarden_json"].includes(format)) fail(`unsupported:${String(format)}`);
+      if (format === "keystead" && !password) fail("invalid_input:password_required");
       return null;
     }
 
@@ -812,12 +812,12 @@ export async function mockPickOpenFile(filters?: { name: string; extensions: str
   const names: Record<string, string> = {
     json: "vault_export.json",
     csv: "passwords.csv",
-    vaultx: "VaultX-Export.vaultx",
+    keystead: "Keystead-Export.keystead",
   };
   return `C:\\Users\\Demo\\Downloads\\${names[ext] ?? `import.${ext}`}`;
 }
 
 export async function mockPickSaveFile(defaultPath?: string): Promise<string | null> {
   await sleep(150);
-  return `C:\\Users\\Demo\\Documents\\${defaultPath ?? "VaultX-Export"}`;
+  return `C:\\Users\\Demo\\Documents\\${defaultPath ?? "Keystead-Export"}`;
 }

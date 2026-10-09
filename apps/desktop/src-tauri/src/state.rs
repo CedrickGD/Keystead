@@ -14,10 +14,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use vaultx_bridge::{Dispatcher, ServerHandle};
-use vaultx_core::model::VaultInfo;
-use vaultx_core::settings::Settings;
-use vaultx_core::{clipboard, Error as CoreError, UnlockedVault, VaultStore};
+use keystead_bridge::{Dispatcher, ServerHandle};
+use keystead_core::model::VaultInfo;
+use keystead_core::settings::Settings;
+use keystead_core::{clipboard, Error as CoreError, UnlockedVault, VaultStore};
 
 use crate::error::{AppError, AppResult};
 use crate::monitor::MonitorSignal;
@@ -58,7 +58,7 @@ struct EmptyPayload {}
 /// broken stderr (Windows GUI subsystem) is ignored.
 pub fn log(message: impl std::fmt::Display) {
     use std::io::Write as _;
-    let _ = writeln!(std::io::stderr().lock(), "[vaultx] {message}");
+    let _ = writeln!(std::io::stderr().lock(), "[keystead] {message}");
 }
 
 /// Everything guarded by the state mutex.
@@ -327,7 +327,7 @@ impl Core {
     /// reloaded and `f` retried once; the UI then gets `vault://changed`.
     pub fn mutate<T>(
         &self,
-        mut f: impl FnMut(&mut UnlockedVault) -> vaultx_core::Result<T>,
+        mut f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
     ) -> AppResult<T> {
         let (result, reloaded) = {
             let mut st = self.state();

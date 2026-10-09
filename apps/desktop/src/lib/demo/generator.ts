@@ -1,5 +1,5 @@
 // Password / passphrase generator for the mock backend (the real one lives in
-// vaultx-core). Uses crypto.getRandomValues with rejection sampling so every
+// keystead-core). Uses crypto.getRandomValues with rejection sampling so every
 // character is picked uniformly.
 
 import type { GeneratorOptions } from "../types";

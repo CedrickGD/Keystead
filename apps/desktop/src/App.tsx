@@ -230,7 +230,7 @@ function AppRoot({
   if (screen === "loading" || !ctx) {
     return (
       <div className="splash" aria-busy="true">
-        <Logo size={56} title="VaultX" />
+        <Logo size={56} title="Keystead" />
       </div>
     );
   }

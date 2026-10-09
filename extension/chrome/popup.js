@@ -1,4 +1,4 @@
-// VaultX popup. States: host missing → app unavailable → not paired (pairing)
+// Keystead popup. States: host missing → app unavailable → not paired (pairing)
 // → locked → unlocked (tabs "Diese Seite", "Suche", "Generator", add login).
 // All work happens in the service worker; this page only renders.
 // `?demo=<state>` swaps in lib/demo.js (fake data, no storage, no native host).
@@ -267,7 +267,7 @@ function brandArt(size = 56, extraClass = "") {
 }
 
 function versionFooter() {
-  return h("div", { class: "meta" }, `VaultX · ${t("versionLabel", api.version)}`);
+  return h("div", { class: "meta" }, `Keystead · ${t("versionLabel", api.version)}`);
 }
 
 function showLoading() {
@@ -564,7 +564,7 @@ function showLocked() {
 
 function showUnlocked(status, initialTab = "page") {
   const ctx = {
-    vaultName: status?.vaultName || "VaultX",
+    vaultName: status?.vaultName || "Keystead",
     tab: initialTab,
     tabInfo: null,
     matches: null,
@@ -1128,7 +1128,7 @@ function field(label, id, control) {
 
 async function boot() {
   document.documentElement.lang = uiLanguage();
-  document.title = "VaultX";
+  document.title = "Keystead";
   const loadingTimer = setTimeout(showLoading, 150);
   try {
     const pairing = await api.pairState().catch(() => null);

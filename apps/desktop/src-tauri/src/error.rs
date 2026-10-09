@@ -2,17 +2,17 @@
 //! the string is a stable error code (see "Desktop backend ↔ frontend" in
 //! docs/ARCHITECTURE.md); [`AppError::code`] produces it.
 
-use vaultx_bridge::BridgeError;
+use keystead_bridge::BridgeError;
 
 /// Error of a backend operation.
 #[derive(Debug)]
 pub enum AppError {
     /// No vault is unlocked.
     Locked,
-    /// Error from `vaultx-core` (already has a stable code).
-    Core(vaultx_core::Error),
+    /// Error from `keystead-core` (already has a stable code).
+    Core(keystead_core::Error),
     /// Error of the bridge infrastructure.
-    Bridge(vaultx_bridge::Error),
+    Bridge(keystead_bridge::Error),
     /// A ready-made code, e.g. `invalid_input:lock_first`.
     Code(String),
 }
@@ -54,21 +54,21 @@ impl std::fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-impl From<vaultx_core::Error> for AppError {
-    fn from(e: vaultx_core::Error) -> Self {
+impl From<keystead_core::Error> for AppError {
+    fn from(e: keystead_core::Error) -> Self {
         AppError::Core(e)
     }
 }
 
-impl From<vaultx_bridge::Error> for AppError {
-    fn from(e: vaultx_bridge::Error) -> Self {
+impl From<keystead_bridge::Error> for AppError {
+    fn from(e: keystead_bridge::Error) -> Self {
         AppError::Bridge(e)
     }
 }
 
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
-        AppError::Core(vaultx_core::Error::Io(e))
+        AppError::Core(keystead_core::Error::Io(e))
     }
 }
 
@@ -85,7 +85,7 @@ impl From<AppError> for BridgeError {
         match e {
             AppError::Locked => BridgeError::Locked,
             AppError::Core(e) => BridgeError::from(e),
-            AppError::Bridge(vaultx_bridge::Error::Core(e)) => BridgeError::from(e),
+            AppError::Bridge(keystead_bridge::Error::Core(e)) => BridgeError::from(e),
             AppError::Bridge(_) => BridgeError::Internal,
             AppError::Code(code) => {
                 if code.starts_with("invalid_input") {
@@ -108,7 +108,7 @@ mod tests {
     fn codes() {
         assert_eq!(AppError::Locked.code(), "locked");
         assert_eq!(
-            AppError::from(vaultx_core::Error::WrongPassword).code(),
+            AppError::from(keystead_core::Error::WrongPassword).code(),
             "wrong_password"
         );
         assert_eq!(
@@ -123,7 +123,7 @@ mod tests {
             BridgeError::InvalidRequest
         );
         assert_eq!(
-            BridgeError::from(AppError::from(vaultx_core::Error::NotFound("i".into()))),
+            BridgeError::from(AppError::from(keystead_core::Error::NotFound("i".into()))),
             BridgeError::NotFound
         );
     }

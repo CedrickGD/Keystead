@@ -72,7 +72,7 @@ function createI18n(lang: Language): I18n {
       case "conflict":
         return t("error.conflict");
       case "invalid_input": {
-        // Known detail codes from vaultx-core get a friendly message of their own.
+        // Known detail codes from keystead-core get a friendly message of their own.
         const specific = `error.input.${detail}`;
         if (specific in messages) return messages[specific as MessageKey];
         return t("error.invalid_input", { detail });

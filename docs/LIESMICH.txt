@@ -1,12 +1,12 @@
-VaultX 2 – Schnellstart
+Keystead – Schnellstart
 =======================
 
-VaultX ist ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf
+Keystead ist ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf
 diesem Rechner – es gibt keinen Server und keine Cloud.
 
 1. Starten
 ----------
-VaultX.exe doppelklicken. Beim ersten Start einen Tresor anlegen und ein
+Keystead.exe doppelklicken. Beim ersten Start einen Tresor anlegen und ein
 starkes Master-Passwort wählen. Danach am besten gleich einen
 Wiederherstellungsschlüssel erstellen und sicher aufbewahren – ohne ihn ist ein
 vergessenes Master-Passwort NICHT wiederherstellbar.
@@ -18,26 +18,26 @@ wurde durch Windows geschützt“ erscheint: „Weitere Informationen“ →
 Alte VaultX-1.x-Tresore: beim Einrichten „Alten VaultX-Tresor importieren“
 wählen oder später unter Einstellungen → Daten → Importieren.
 
-Speicherort der Daten: %LOCALAPPDATA%\VaultX\v2
+Speicherort der Daten: %LOCALAPPDATA%\Keystead\v2
 Portabler Modus (Daten neben der EXE): Einstellungen → Daten → Portabler Modus,
-oder einfach einen Ordner "VaultX-Data" neben VaultX.exe anlegen.
+oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
 
 2. Browser-Erweiterung (Chrome, Edge, Brave)
 --------------------------------------------
-a) In VaultX: Einstellungen → Browser-Integration → beim Browser „Verbinden“.
+a) In Keystead: Einstellungen → Browser-Integration → beim Browser „Verbinden“.
 b) Im Browser chrome://extensions (bzw. edge://extensions) öffnen,
    „Entwicklermodus“ einschalten, „Entpackte Erweiterung laden“ und den Ordner
    "browser-extension" aus diesem ZIP auswählen.
    Erwartete Erweiterungs-ID: imfndemblnaalppnmdplagajjielnaok
-c) Auf das VaultX-Symbol in der Browserleiste klicken → „Mit VaultX verbinden“
+c) Auf das Keystead-Symbol in der Browserleiste klicken → „Mit Keystead verbinden“
    → den angezeigten Code in der App bestätigen.
 
 Wichtig: Den Ordner "browser-extension" nach dem Laden nicht verschieben oder
-löschen – der Browser lädt die Erweiterung von dort. Wenn du VaultX.exe
-verschiebst, einfach einmal VaultX starten; die Registrierung wird automatisch
+löschen – der Browser lädt die Erweiterung von dort. Wenn du Keystead.exe
+verschiebst, einfach einmal Keystead starten; die Registrierung wird automatisch
 aktualisiert.
 
 3. Terminal-Version
 -------------------
 In der App: Einstellungen → Terminal-Version öffnen.
-Oder in einer Konsole: vaultx-cli.exe  (Hilfe: vaultx-cli.exe --help)
+Oder in einer Konsole: keystead-cli.exe  (Hilfe: keystead-cli.exe --help)

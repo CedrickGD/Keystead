@@ -1,4 +1,4 @@
-//! `VaultX(.exe)` – one portable executable for everything (see "Executable
+//! `Keystead(.exe)` – one portable executable for everything (see "Executable
 //! modes" in docs/ARCHITECTURE.md):
 //!
 //! 1. native messaging host (an argument starts with `chrome-extension://`),
@@ -21,20 +21,20 @@ mod tray;
 use std::ffi::OsString;
 
 /// Starts the app without showing the window (used by the native host).
-pub const BACKGROUND_ARG: &str = vaultx_bridge::host::BACKGROUND_ARG;
+pub const BACKGROUND_ARG: &str = keystead_bridge::host::BACKGROUND_ARG;
 
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
     // 1. Native host mode: never initialise Tauri, stdout carries frames only.
-    if vaultx_bridge::host::is_host_invocation(&args) {
-        std::process::exit(vaultx_bridge::host::run());
+    if keystead_bridge::host::is_host_invocation(&args) {
+        std::process::exit(keystead_bridge::host::run());
     }
 
     // 2. Terminal mode.
     if args.first().is_some_and(|a| a == "--cli" || a == "cli") {
         platform::prepare_cli_console();
-        std::process::exit(vaultx_tui::run());
+        std::process::exit(keystead_tui::run());
     }
 
     // 3. Desktop app.

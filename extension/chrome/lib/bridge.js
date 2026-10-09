@@ -1,4 +1,4 @@
-// Native messaging client for the VaultX desktop app (host "com.vaultx.bridge").
+// Native messaging client for the Keystead desktop app (host "com.keystead.bridge").
 //
 // Protocol (docs/ARCHITECTURE.md, "Browser bridge protocol"):
 //   request  { id, type, clientId?, token?, ...payload }
@@ -6,7 +6,7 @@
 // The host answers the requests of one port in order. A `pair` request blocks
 // for up to 120 s, so it runs on a dedicated port (see `dedicated()`).
 
-export const HOST_NAME = "com.vaultx.bridge";
+export const HOST_NAME = "com.keystead.bridge";
 
 /** Default per-request timeout. */
 export const REQUEST_TIMEOUT_MS = 10_000;

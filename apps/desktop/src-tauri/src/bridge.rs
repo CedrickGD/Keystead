@@ -5,21 +5,21 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
-use vaultx_bridge::{
+use keystead_bridge::{
     register, start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, PairedClient,
     PairingRequest, VaultBackend,
 };
-use vaultx_core::generator::{self, GeneratorOptions};
-use vaultx_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
-use vaultx_core::totp::{self, TotpCode};
-use vaultx_core::{matching, Error as CoreError};
+use keystead_core::generator::{self, GeneratorOptions};
+use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
+use keystead_core::totp::{self, TotpCode};
+use keystead_core::{matching, Error as CoreError};
 
 use crate::error::{AppError, AppResult};
 use crate::state::{log, Core, LockReason};
 
 /// Debug builds only: auto-approve pairing requests (automated E2E tests).
 #[cfg(debug_assertions)]
-const AUTO_APPROVE_ENV: &str = "VAULTX_TEST_AUTO_APPROVE_PAIRING";
+const AUTO_APPROVE_ENV: &str = "KEYSTEAD_TEST_AUTO_APPROVE_PAIRING";
 
 /// The app side of the bridge. Holds a weak reference so the dispatcher
 /// (owned by the core) does not keep the core alive.
@@ -250,7 +250,7 @@ impl VaultBackend for Backend {
 }
 
 /// Starts the bridge server (no-op if it runs). Fails with
-/// `io:bridge_already_running` if another VaultX instance serves the
+/// `io:bridge_already_running` if another Keystead instance serves the
 /// endpoint.
 pub fn start(core: &Arc<Core>) -> AppResult<()> {
     if core.state().bridge.as_ref().is_some_and(|b| b.is_running()) {
@@ -320,7 +320,7 @@ pub fn reregister_if_needed() {
     }
 }
 
-/// The path of the running executable (the native host is VaultX itself).
+/// The path of the running executable (the native host is Keystead itself).
 pub fn current_exe() -> Option<PathBuf> {
     match std::env::current_exe() {
         Ok(exe) => Some(exe),

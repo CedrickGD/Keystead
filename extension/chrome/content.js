@@ -1,8 +1,8 @@
 /*
- * VaultX content script (classic script, runs after lib/forms.js in every
+ * Keystead content script (classic script, runs after lib/forms.js in every
  * http/https frame).
  *
- * - Detects login forms (lib/forms.js), shows a VaultX icon inside username /
+ * - Detects login forms (lib/forms.js), shows a Keystead icon inside username /
  *   password fields when the vault has matching logins or is locked; the icon
  *   opens a dropdown with the matching logins.
  * - Fills only after a user gesture (click in our dropdown, popup button,
@@ -16,11 +16,11 @@
 (() => {
   "use strict";
 
-  const Forms = globalThis.VaultXForms;
+  const Forms = globalThis.KeysteadForms;
   if (!Forms || !globalThis.chrome?.runtime?.id) return;
 
   // Re-injection after an extension update: replace the previous instance.
-  const previous = globalThis.__vaultxContent;
+  const previous = globalThis.__keysteadContent;
   if (previous && typeof previous.teardown === "function") {
     try {
       previous.teardown();
@@ -47,7 +47,7 @@
   };
 
   let alive = true;
-  /** Detected login forms (see VaultXForms.findLoginForms). */
+  /** Detected login forms (see KeysteadForms.findLoginForms). */
   let forms = [];
   /** { state, matches: [{ id, name, username }], insecure, at } from the service worker. */
   let pageInfo = null;
@@ -64,7 +64,7 @@
   let dropdown = null;
   const cleanups = [];
   const api = { teardown };
-  globalThis.__vaultxContent = api;
+  globalThis.__keysteadContent = api;
 
   class ContentError extends Error {
     constructor(code) {
@@ -274,7 +274,7 @@
     .dropdown {
       background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
       padding: 6px; max-height: 320px; overflow-y: auto; overscroll-behavior: contain;
-      animation: vx-pop 120ms ease-out;
+      animation: ks-pop 120ms ease-out;
     }
     .dd-head {
       display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; margin-bottom: 4px;
@@ -322,7 +322,7 @@
     .bar {
       display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px;
       background: var(--bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
-      animation: vx-slide 160ms ease-out;
+      animation: ks-slide 160ms ease-out;
     }
     .bar > svg { width: 28px; height: 28px; flex: none; }
     .bar .texts { gap: 1px; }
@@ -336,13 +336,13 @@
       display: flex; align-items: center; gap: 10px; width: max-content; max-width: min(380px, calc(100vw - 32px));
       padding: 10px 14px 10px 12px;
       background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
-      animation: vx-slide 160ms ease-out;
+      animation: ks-slide 160ms ease-out;
     }
     .toast svg { width: 20px; height: 20px; flex: none; }
     .leaving { opacity: 0; transition: opacity 180ms ease; }
 
-    @keyframes vx-pop { from { opacity: 0; transform: var(--pos) scale(0.98); } to { opacity: 1; transform: var(--pos); } }
-    @keyframes vx-slide { from { opacity: 0; transform: var(--pos) translateY(-6px); } to { opacity: 1; transform: var(--pos); } }
+    @keyframes ks-pop { from { opacity: 0; transform: var(--pos) scale(0.98); } to { opacity: 1; transform: var(--pos); } }
+    @keyframes ks-slide { from { opacity: 0; transform: var(--pos) translateY(-6px); } to { opacity: 1; transform: var(--pos); } }
     @media (prefers-reduced-motion: reduce) { .dropdown, .bar, .toast { animation: none; } }
   `;
 
@@ -354,7 +354,7 @@
     if (!host) {
       // Random tag: a page cannot pre-define it as a custom element or target it with CSS.
       const suffix = Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, "0")).join("");
-      host = document.createElement(`vaultx-${suffix}`);
+      host = document.createElement(`keystead-${suffix}`);
       for (const [property, value] of HOST_STYLE) host.style.setProperty(property, value, "important");
       shadow = host.attachShadow({ mode: "closed" });
       layer = document.createElement("div");
@@ -428,7 +428,7 @@
     return node;
   }
 
-  /** The VaultX mark (shield with keyhole on a rounded tile), as in the desktop app. */
+  /** The Keystead mark (shield with keyhole on a rounded tile), as in the desktop app. */
   function logo() {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 32 32");
@@ -543,7 +543,7 @@
     const button = el("button", "icon");
     button.type = "button";
     button.tabIndex = -1;
-    button.title = "VaultX";
+    button.title = "Keystead";
     button.setAttribute("aria-label", t("csIconLabel"));
     button.append(logo());
     // Keep the focus (and caret) in the page's field.
@@ -614,7 +614,7 @@
     closeDropdown();
     const node = el("div", "dropdown");
     node.setAttribute("role", "listbox");
-    node.setAttribute("aria-label", "VaultX");
+    node.setAttribute("aria-label", "Keystead");
     node.addEventListener("mousedown", (ev) => ev.preventDefault());
     dropdown = { field, node, index: 0 };
     ensureUi().append(node);
@@ -644,7 +644,7 @@
     node.replaceChildren();
 
     const head = el("div", "dd-head");
-    head.append(logo(), el("span", "", "VaultX"), el("span", "host", location.hostname.replace(/^www\./, "")));
+    head.append(logo(), el("span", "", "Keystead"), el("span", "host", location.hostname.replace(/^www\./, "")));
     node.append(head);
 
     if (pageInfo?.state === "locked") {
@@ -1100,7 +1100,7 @@
     dropdown = null;
     bar = null;
     snapshot = null;
-    if (globalThis.__vaultxContent === api) delete globalThis.__vaultxContent;
+    if (globalThis.__keysteadContent === api) delete globalThis.__keysteadContent;
   }
 
   chrome.runtime.onMessage.addListener(onMessage);

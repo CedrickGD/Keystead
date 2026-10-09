@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
-use vaultx_core::settings::Settings;
-use vaultx_core::{paths, VaultStore};
+use keystead_core::settings::Settings;
+use keystead_core::{paths, VaultStore};
 
 use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
 use crate::{bridge, commands, monitor, platform, tray, BACKGROUND_ARG};
@@ -136,7 +136,7 @@ fn setup(app: &AppHandle, background: bool) {
     if settings.browser_integration {
         // Registry/file work off the main thread.
         let _ = std::thread::Builder::new()
-            .name("vaultx-register".into())
+            .name("keystead-register".into())
             .spawn(bridge::reregister_if_needed);
     }
 

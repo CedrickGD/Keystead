@@ -1,6 +1,6 @@
-// VaultX extension service worker.
+// Keystead extension service worker.
 //
-// Owns the native messaging connection to the VaultX desktop app and is the
+// Owns the native messaging connection to the Keystead desktop app and is the
 // only place that sees secrets coming from the app. Popup and content scripts
 // talk to it with runtime messages ({ type, ... } → { ok, data | error }).
 // Credentials are only released to a content script for a login that the app
@@ -821,17 +821,17 @@ chrome.commands.onCommand.addListener((command, tab) => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "vaultx-generate") {
+  if (info.menuItemId === "keystead-generate") {
     generateInto(tab, Number.isInteger(info.frameId) ? info.frameId : 0, "context").catch(() => undefined);
-  } else if (info.menuItemId === "vaultx-open") {
+  } else if (info.menuItemId === "keystead-open") {
     openPopupOrApp().catch(() => undefined);
   }
 });
 
 async function setupContextMenus() {
   await chrome.contextMenus.removeAll();
-  chrome.contextMenus.create({ id: "vaultx-generate", title: t("ctxGenerate"), contexts: ["editable"] });
-  chrome.contextMenus.create({ id: "vaultx-open", title: t("ctxOpen"), contexts: ["editable"] });
+  chrome.contextMenus.create({ id: "keystead-generate", title: t("ctxGenerate"), contexts: ["editable"] });
+  chrome.contextMenus.create({ id: "keystead-open", title: t("ctxOpen"), contexts: ["editable"] });
 }
 
 /** Declared content scripts only reach pages loaded after install; inject into the open ones. */

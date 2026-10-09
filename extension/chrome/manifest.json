@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "VaultX",
-  "short_name": "VaultX",
+  "name": "Keystead",
+  "short_name": "Keystead",
   "version": "2.0.0",
   "description": "__MSG_extDescription__",
   "default_locale": "de",

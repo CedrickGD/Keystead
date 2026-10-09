@@ -65,7 +65,7 @@ pub fn open_folder(path: &Path) -> AppResult<()> {
 /// zombie process (Unix) and its handle is released (Windows).
 fn detach(mut child: Child) {
     let _ = std::thread::Builder::new()
-        .name("vaultx-child".into())
+        .name("keystead-child".into())
         .spawn(move || {
             let _ = child.wait();
         });

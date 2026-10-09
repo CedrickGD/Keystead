@@ -166,7 +166,7 @@ export function RecoveryKeyDialog({
 // Export
 // ---------------------------------------------------------------------------
 
-const EXPORT_EXT: Record<ExportFormat, string> = { vaultx: "vaultx", csv: "csv", bitwarden_json: "json" };
+const EXPORT_EXT: Record<ExportFormat, string> = { keystead: "keystead", csv: "csv", bitwarden_json: "json" };
 
 export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClose: () => void }) {
   const { t, errorText } = useT();
@@ -175,7 +175,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
   const exportPwId = useId();
   const exportPw2Id = useId();
   const formatId = useId();
-  const [format, setFormat] = useState<ExportFormat>("vaultx");
+  const [format, setFormat] = useState<ExportFormat>("keystead");
   const [exportPassword, setExportPassword] = useState("");
   const [exportPassword2, setExportPassword2] = useState("");
   const [master, setMaster] = useState("");
@@ -183,7 +183,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
   const [showErrors, setShowErrors] = useState(false);
   const [masterError, setMasterError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const encrypted = format === "vaultx";
+  const encrypted = format === "keystead";
 
   const exportPwProblem = encrypted
     ? !exportPassword
@@ -203,7 +203,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
       return;
     }
     const date = new Date().toISOString().slice(0, 10);
-    const safeName = vaultName.replace(/[^\p{L}\p{N}_-]+/gu, "_") || "VaultX";
+    const safeName = vaultName.replace(/[^\p{L}\p{N}_-]+/gu, "_") || "Keystead";
     let path: string | null;
     try {
       path = await pickSaveFile({
@@ -255,7 +255,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
           value={format}
           onChange={setFormat}
           options={[
-            { value: "vaultx", label: t("format.vaultxExport") },
+            { value: "keystead", label: t("format.keysteadExport") },
             { value: "csv", label: t("format.csvExport") },
             { value: "bitwarden_json", label: t("format.bitwardenExport") },
           ]}

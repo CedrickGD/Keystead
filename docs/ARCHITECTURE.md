@@ -1,6 +1,6 @@
-# VaultX 2 – Architecture & Contracts
+# Keystead – Architecture & Contracts
 
-VaultX 2 is a local-only password manager in the spirit of Bitwarden:
+Keystead is a local-only password manager in the spirit of Bitwarden:
 a desktop app (Tauri 2: Rust backend + React UI), a terminal UI, and a
 Chromium browser extension that talks to the desktop app via Native
 Messaging. **Nothing ever leaves the machine** – there is no server and no
@@ -11,13 +11,13 @@ an interface here, change every side.
 
 ```
 ┌────────────────────┐  native messaging   ┌──────────────────┐  local socket   ┌──────────────────────────┐
-│ Chrome/Edge/Brave  │ ─── stdin/stdout ──▶ │ VaultX.exe       │ ── named pipe ─▶│ VaultX.exe (desktop app, │
+│ Chrome/Edge/Brave  │ ─── stdin/stdout ──▶ │ Keystead.exe       │ ── named pipe ─▶│ Keystead.exe (desktop app, │
 │ extension (MV3)    │ ◀── length-prefixed ─│ (native host mode)│ ◀─ len-prefix ─ │ tray, holds unlocked     │
 └────────────────────┘     JSON             └──────────────────┘    JSON         │ vault in memory)         │
                                                                                  └──────────┬───────────────┘
-                                                                                            │ vaultx-core
+                                                                                            │ keystead-core
                                                  ┌──────────────────────┐                   ▼
-                                                 │ vaultx-cli / --cli   │──── vaultx-core ──▶ encrypted *.vaultx files
+                                                 │ keystead-cli / --cli   │──── keystead-core ──▶ encrypted *.keystead files
                                                  │ (ratatui TUI)        │
                                                  └──────────────────────┘
 ```
@@ -27,34 +27,34 @@ an interface here, change every side.
 | Path | What |
 |------|------|
 | `Cargo.toml` | Cargo workspace |
-| `crates/vaultx-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report. No UI, no IPC. |
-| `crates/vaultx-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
-| `crates/vaultx-tui` | Terminal UI (ratatui + crossterm). Library `vaultx_tui::run()` + binary `vaultx-cli`. |
-| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `VaultX`). |
+| `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report. No UI, no IPC. |
+| `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
+| `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
+| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). |
 | `legacy/` | The old PowerShell VaultX 1.x, kept for reference. |
 | `docs/` | This file + user docs. |
 
 ## Executable modes (`apps/desktop/src-tauri/src/main.rs`)
 
-One portable `VaultX.exe` (Windows GUI subsystem in release) does everything:
+One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
 
 1. **Native host mode** – if any CLI argument starts with `chrome-extension://`
    (Chrome passes the caller origin as first argument; on Windows it may also
-   pass `--parent-window=N`), run `vaultx_bridge::host::run()` and exit.
+   pass `--parent-window=N`), run `keystead_bridge::host::run()` and exit.
    Never initialise Tauri in this mode, never print anything to stdout except
    protocol frames.
 2. **Terminal mode** – `--cli` (or `cli` as first arg): on Windows call
    `FreeConsole()` + `AllocConsole()` so the TUI gets its own new console
-   window, then `vaultx_tui::run()`, exit. Additionally the console-subsystem
-   binary `vaultx-cli(.exe)` from `crates/vaultx-tui` runs the same TUI inside
+   window, then `keystead_tui::run()`, exit. Additionally the console-subsystem
+   binary `keystead-cli(.exe)` from `crates/keystead-tui` runs the same TUI inside
    an existing terminal.
 3. **GUI mode** – everything else. `--background` starts hidden in the tray
    (used when the native host has to launch the app). Uses
    `tauri-plugin-single-instance`: a second GUI launch focuses the first
    window (and a second `--background` launch does nothing).
 
-### Terminal UI & command line (`vaultx-tui`)
+### Terminal UI & command line (`keystead-tui`)
 `pub fn run() -> i32` / `pub fn run_with_args(Vec<String>) -> i32` (`args[0]`
 = program; a leading `--cli`/`cli` is ignored). The caller exits with the
 returned code: `0` success, `1` error, `2` invalid usage.
@@ -74,35 +74,35 @@ returned code: `0` success, `1` error, `2` invalid usage.
   --passphrase] [--words N] [--no-symbols] [--copy]`. `--copy` keeps the
   process alive until the clipboard is cleared (any key clears at once).
 * Master password: prompted on the TTY (`rpassword`), or – insecure, for
-  scripts – `$VAULTX_MASTER_PASSWORD`.
+  scripts – `$KEYSTEAD_MASTER_PASSWORD`.
 * Language from `Settings.language` (German default, English for `en`).
 
-## Data locations (`vaultx_core::paths`)
+## Data locations (`keystead_core::paths`)
 
 * `data_dir()`:
-  1. `$VAULTX_DATA_DIR` if set.
-  2. **Portable mode**: a folder named `VaultX-Data` next to the running
+  1. `$KEYSTEAD_DATA_DIR` if set.
+  2. **Portable mode**: a folder named `Keystead-Data` next to the running
      executable, if it exists (the user creates it, or Settings → "Portabler
      Modus" creates it and moves the vaults).
-  3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\VaultX\v2`,
-     Linux `~/.local/share/vaultx`, macOS `~/Library/Application Support/VaultX`.
-* Vault files: `<data_dir>/vaults/<vault-id>.vaultx` (+ `<vault-id>.vaultx.bak`
-  = previous good version, written before each save; `<vault-id>.vaultx.lock`
+  3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead\v2`,
+     Linux `~/.local/share/keystead`, macOS `~/Library/Application Support/Keystead`.
+* Vault files: `<data_dir>/vaults/<vault-id>.keystead` (+ `<vault-id>.keystead.bak`
+  = previous good version, written before each save; `<vault-id>.keystead.lock`
   = empty inter-process lock file held only while a save runs).
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
 * Legacy VaultX 1.x vaults: `%LOCALAPPDATA%\VaultX\accounts.json` +
   `vault_*.json` (Linux/macOS: none – only manual file import).
-  `$VAULTX_LEGACY_DIR` overrides this directory on every OS (tests).
+  `$KEYSTEAD_LEGACY_DIR` overrides this directory on every OS (tests).
 
-## Vault file format (version 3) – `vaultx_core::format`
+## Vault file format (version 3) – `keystead_core::format`
 
 UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 
 ```json
 {
-  "format": "vaultx",
+  "format": "keystead",
   "version": 3,
   "id": "uuid-v4",
   "name": "Privat",
@@ -118,14 +118,14 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 
 * A random 32-byte **vault key** encrypts the payload (`VaultData` as JSON)
   with **XChaCha20-Poly1305**. AAD for the payload = UTF-8 bytes of
-  `"vaultx:v3:payload:" + id + ":" + revision`.
+  `"keystead:v3:payload:" + id + ":" + revision`.
 * The master password → Argon2id (params above, salt 16 B) → 32-byte KEK →
-  wraps the vault key (XChaCha20-Poly1305, AAD `"vaultx:v3:key:" + id`).
+  wraps the vault key (XChaCha20-Poly1305, AAD `"keystead:v3:key:" + id`).
   Changing the master password re-wraps only the key.
 * Optional **recovery key**: random 25 chars of Crockford base32 shown as
   `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 bit). KEK_r = Argon2id(recovery code
   normalised to uppercase without dashes, own salt, same params) wraps the
-  vault key (AAD `"vaultx:v3:recovery:" + id`).
+  vault key (AAD `"keystead:v3:recovery:" + id`).
 * `revision` increments on every save; saving checks the on-disk revision
   equals the loaded one, otherwise `Error::Conflict` (another process – TUI or
   app – changed it). Callers reload and retry.
@@ -134,11 +134,11 @@ UTF-8 JSON, written atomically (write `*.tmp` in same dir → fsync → rename).
 * Argon2id default params: m = 64 MiB, t = 3, p = 4. Tests may use a cheaper
   `KdfParams::insecure_for_tests()`.
 
-## Core API – `vaultx-core` (Rust)
+## Core API – `keystead-core` (Rust)
 
 ```rust
 pub mod error;    // pub enum Error { Io, Json, WrongPassword, Corrupt(String), Conflict, NotFound(String), InvalidInput(String), Unsupported(String) }  pub type Result<T>
-pub mod model;    // see crates/vaultx-core/src/model.rs (the data contract)
+pub mod model;    // see crates/keystead-core/src/model.rs (the data contract)
 pub mod crypto;   // KdfParams, derive_key, seal/open (XChaCha20-Poly1305), random bytes
 pub mod format;   // VaultFile (serde of the JSON above), read/write atomic
 pub mod paths;    // data_dir(), vaults_dir(), settings_path(), legacy_dir(), is_portable()
@@ -148,8 +148,8 @@ pub mod generator;// GeneratorOptions, generate()
 pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
-pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, VaultX export
-pub mod export;   // encrypted .vaultx export, CSV, Bitwarden-compatible JSON
+pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export
+pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
 pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>) using arboard (shared by app & TUI)
 ```
@@ -239,14 +239,14 @@ pub fn legacy_scan() -> Vec<LegacyVaultInfo>;                       // reads %LO
 pub fn import_legacy_file(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<String> /*warnings*/)>; // VaultX 1.x format, master OR recovery password
 pub fn import_csv(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)>; // auto-detects Chrome/Edge/Firefox/Bitwarden/legacy-VaultX/generic headers, ',' or ';'
 pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)>; // unencrypted Bitwarden export
-pub fn import_vaultx_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)>;
+pub fn import_keystead_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)>;
 // export
 pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v3 file (own random key/salt), trash excluded
 pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded
 pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded
 ```
 
-### Core additions & behaviour details (implemented in `vaultx-core`)
+### Core additions & behaviour details (implemented in `keystead-core`)
 Additive helpers beyond the signatures above (all optional to use):
 ```rust
 // error
@@ -254,8 +254,8 @@ impl Error { pub fn code(&self) -> String }  // stable UI code; Json → "corrup
 // paths (all infallible)
 pub fn data_dir() -> PathBuf; pub fn vaults_dir() -> PathBuf; pub fn settings_path() -> PathBuf;
 pub fn legacy_dir() -> Option<PathBuf>; pub fn is_portable() -> bool;
-pub fn portable_dir() -> Option<PathBuf>;   // "<exe dir>/VaultX-Data", whether it exists or not
-pub fn default_data_dir() -> PathBuf;       // OS location, ignoring portable mode and $VAULTX_DATA_DIR
+pub fn portable_dir() -> Option<PathBuf>;   // "<exe dir>/Keystead-Data", whether it exists or not
+pub fn default_data_dir() -> PathBuf;       // OS location, ignoring portable mode and $KEYSTEAD_DATA_DIR
 // crypto
 impl KdfParams { pub fn validate(&self) -> Result<()> }  // file DoS guard: memory ≤ 1 GiB, t ≤ 20, p ≤ 16
 // store / vault
@@ -263,10 +263,10 @@ impl VaultStore { pub fn vaults_dir(&self) -> PathBuf }
 impl UnlockedVault { pub fn id(&self) -> &str; pub fn name(&self) -> &str; pub fn revision(&self) -> u64;
                      pub fn folders(&self) -> &[Folder]; pub fn generator_history(&self) -> &[GeneratedPassword] }
 // import / export: one call per Tauri `import_data` / `export_data` format string
-pub fn import::import_into(vault: &mut UnlockedVault, format: &str /*legacy|csv|bitwarden_json|vaultx*/,
+pub fn import::import_into(vault: &mut UnlockedVault, format: &str /*legacy|csv|bitwarden_json|keystead*/,
                            path: &Path, password: Option<&str>) -> Result<ImportReport>; // reads UTF-8/UTF-16/Windows-1252 text
 pub fn import::legacy_scan_dir(dir: &Path) -> Vec<LegacyVaultInfo>;
-pub fn export::export_to_file(data: &VaultData, format: &str /*vaultx|csv|bitwarden_json*/,
+pub fn export::export_to_file(data: &VaultData, format: &str /*keystead|csv|bitwarden_json*/,
                               path: &Path, password: Option<&str>) -> Result<()>;
 pub fn export::export_encrypted_with_params(data, path, password, kdf: KdfParams) -> Result<()>;
 // settings
@@ -294,7 +294,7 @@ Behaviour notes:
   Crockford look-alikes are accepted (`O`→`0`, `I`/`L`→`1`). A malformed
   code → `invalid_input:recovery_key_format`; a vault without recovery key →
   `not_found`.
-* Legacy import: an HMAC mismatch is reported as `wrong_password` (VaultX
+* Legacy import: an HMAC mismatch is reported as `wrong_password` (Keystead
   1.x could not distinguish either). Importers keep the source ids;
   `import_items` replaces them and merges imported folders into existing
   folders of the same name (case-insensitive).
@@ -332,7 +332,7 @@ ciphertext), optional `Mac` (b64 HMAC-SHA256 over IV‖ciphertext), optional
   field "Sonstiges". `TotpSecret` was the legacy *vault unlock* 2FA – it is
   ignored with a warning.
 
-## Settings (`vaultx_core::settings::Settings`, `<data_dir>/settings.json`)
+## Settings (`keystead_core::settings::Settings`, `<data_dir>/settings.json`)
 
 ```ts
 interface Settings {
@@ -387,8 +387,8 @@ the JS side (Tauri converts to snake_case).
 | `rename_vault` | `name` | `VaultInfo` |
 | `delete_vault` | `vaultId, masterPassword` | `null` (locks if it was the open vault) |
 | `legacy_scan` | – | `LegacyVaultInfo[]` |
-| `import_data` | `format: "legacy"\|"csv"\|"bitwarden_json"\|"vaultx", path, password: string \| null` | `ImportReport` (into the unlocked vault) |
-| `export_data` | `format: "vaultx"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
+| `import_data` | `format: "legacy"\|"csv"\|"bitwarden_json"\|"keystead", path, password: string \| null` | `ImportReport` (into the unlocked vault) |
+| `export_data` | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, browsers: BrowserInfo[], clients: PairedClient[] }` |
@@ -396,7 +396,7 @@ the JS side (Tauri converts to snake_case).
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
 | `revoke_client` | `clientId` | `BrowserStatus` |
 | `respond_pairing` | `requestId, approve: boolean` | `null` |
-| `open_terminal` | – | `null` (spawns `VaultX --cli` in a new console) |
+| `open_terminal` | – | `null` (spawns `Keystead --cli` in a new console) |
 | `open_data_dir` | – | `null` |
 | `set_portable_mode` | `enabled: boolean` | `AppInfo` (moves vault files; requires locked or re-unlock) |
 
@@ -418,7 +418,7 @@ sample data, password `demo`) when not running inside Tauri
 (`!("__TAURI_INTERNALS__" in window)`) – used for `npm run dev` in a browser
 and for automated screenshots. Mock-only extras: `?mock=empty` starts without
 any vault (first-run screen), `?lang=en` starts in English, and
-`window.__vaultxMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
+`window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
 `simulateExternalChange()` and `simulateUnlockRequest()`.
 
 Frontend integration requirements for `src-tauri`:
@@ -464,23 +464,23 @@ Frontend integration requirements for `src-tauri`:
   macOS Terminal via `osascript`.
 * `set_portable_mode` locks an open vault itself (no event; the UI checks
   `session_state` afterwards), stops the bridge, moves the whole data
-  directory (copy, commit by creating/renaming `VaultX-Data`, then delete
+  directory (copy, commit by creating/renaming `Keystead-Data`, then delete
   the old copy; `*.lock`/`*.tmp` are skipped), re-registers the native host
   and restarts the bridge. Errors: `unsupported:data_dir_override` (with
-  `$VAULTX_DATA_DIR`), `invalid_input:target_exists` (a vault file with the
+  `$KEYSTEAD_DATA_DIR`), `invalid_input:target_exists` (a vault file with the
   same id already exists at the destination), `io:…`.
 * Pairing requests that arrived before the page subscribed (app launched
   hidden by the native host) are re-sent ~1 s after the first
   `session_state` call of each page load; the UI de-duplicates by
   `requestId`.
-* Debug builds only: `VAULTX_TEST_AUTO_APPROVE_PAIRING=1` approves pairing
+* Debug builds only: `KEYSTEAD_TEST_AUTO_APPROVE_PAIRING=1` approves pairing
   requests automatically (no dialog) for automated end-to-end tests.
 * Window: links/`window.open` and any navigation away from the app open in
   the system browser (http/https only). Without a tray icon (Linux without
   AppIndicator) the close button quits even with `minimizeToTray`, and
   `startInTray` is ignored.
 
-## Browser bridge protocol – `vaultx-bridge`
+## Browser bridge protocol – `keystead-bridge`
 
 ### Framing
 Both legs (browser↔host via stdin/stdout, host↔app via local socket) use the
@@ -488,13 +488,13 @@ native-messaging framing: `u32` **little-endian** byte length + UTF-8 JSON.
 Max message 1 MiB (host → browser) / 4 MiB otherwise.
 
 ### Local socket
-* Windows: named pipe `\\.\pipe\vaultx-bridge-<USERNAME>` (via the
+* Windows: named pipe `\\.\pipe\keystead-bridge-<USERNAME>` (via the
   `interprocess` crate, `GenericNamespaced`), current-user only.
-* Unix: `$XDG_RUNTIME_DIR/vaultx-bridge.sock`, fallback
-  `/tmp/vaultx-bridge-<uid>.sock`, mode 0600.
+* Unix: `$XDG_RUNTIME_DIR/keystead-bridge.sock`, fallback
+  `/tmp/keystead-bridge-<uid>.sock`, mode 0600.
 * The host forwards each browser message to the app and the app's reply back.
   If it cannot connect, it launches the app (`<own exe> --background`, the
-  host *is* VaultX.exe) and retries for up to 8 s; if that fails it answers
+  host *is* Keystead.exe) and retries for up to 8 s; if that fails it answers
   `{ "id", "ok": false, "error": "app_unavailable" }`.
 
 ### Messages (extension → app)
@@ -525,10 +525,10 @@ and returns `{ clientId, token }` (token = 32 random bytes, base64url). The
 extension stores both in `chrome.storage.local`.
 
 ### Native host registration
-Host name: **`com.vaultx.bridge`**. Manifest file `com.vaultx.bridge.json`
+Host name: **`com.keystead.bridge`**. Manifest file `com.keystead.bridge.json`
 (written to `<data_dir>/native-host/`) with `"path"` = absolute path of the
 current exe, `"type": "stdio"`, `"allowed_origins": ["chrome-extension://imfndemblnaalppnmdplagajjielnaok/"]`.
-* Windows: registry `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.vaultx.bridge`,
+* Windows: registry `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.keystead.bridge`,
   `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\…`,
   `HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\…`,
   `HKCU\Software\Chromium\NativeMessagingHosts\…`,
@@ -544,7 +544,7 @@ current exe, `"type": "stdio"`, `"allowed_origins": ["chrome-extension://imfndem
 The extension's `manifest.json` contains a fixed public `key`, so the
 unpacked extension always has the ID **`imfndemblnaalppnmdplagajjielnaok`**.
 
-### Bridge behaviour details & Rust API (implemented in `vaultx-bridge`)
+### Bridge behaviour details & Rust API (implemented in `keystead-bridge`)
 Behaviour (additive to the table above):
 * Requests on one connection are answered in order and the host keeps a
   single connection, so a pending `pair` (≤ 120 s) delays later messages on
@@ -579,8 +579,8 @@ Behaviour (additive to the table above):
   reconnects to a restarted server (or launches the app).
 * Host: oversized browser frame → `invalid_request` and exit; app reply
   > 1 MiB → `internal`; after a failed launch, requests within 30 s fail fast
-  with `app_unavailable`. `$VAULTX_BRIDGE_SOCKET` overrides the endpoint
-  (Unix: socket path, Windows: pipe name), `$VAULTX_APP_EXE` the executable
+  with `app_unavailable`. `$KEYSTEAD_BRIDGE_SOCKET` overrides the endpoint
+  (Unix: socket path, Windows: pipe name), `$KEYSTEAD_APP_EXE` the executable
   the host launches.
 
 ```rust
@@ -600,7 +600,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError>;
     fn on_activity(&self) {}
 }
-impl From<vaultx_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal
+impl From<keystead_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal
 let dispatcher = Arc::new(Dispatcher::new(backend, ClientStore::open_default()?));
 let server: ServerHandle = start_server(dispatcher.clone())?;  // Err(Error::AlreadyRunning(_)) if another instance serves
 server.is_running(); server.stop();                            // Drop stops too
@@ -611,7 +611,7 @@ host::is_host_invocation(std::env::args_os().skip(1)) -> bool; host::run() -> i3
 register::browsers() -> Vec<BrowserInfo>; register::register(&[BrowserId], exe: &Path) -> Result<()>;
 register::unregister(&[BrowserId]) -> Result<()>; register::needs_reregister(exe: &Path) -> bool;
 register::registered_browsers() -> Vec<BrowserId>;            // re-register these when needs_reregister()
-// vaultx_bridge::Error { Io, FrameTooLarge, Json, AlreadyRunning, Core }, Error::code() → "io:…"/"corrupt:…"
+// keystead_bridge::Error { Io, FrameTooLarge, Json, AlreadyRunning, Core }, Error::code() → "io:…"/"corrupt:…"
 ```
 
 ## UI/UX principles (desktop + extension)

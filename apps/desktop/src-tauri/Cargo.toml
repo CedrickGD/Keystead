@@ -1,21 +1,21 @@
 [package]
-name = "vaultx-desktop"
+name = "keystead-desktop"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true
-description = "VaultX desktop app"
+description = "Keystead desktop app"
 
 [[bin]]
-name = "VaultX"
+name = "Keystead"
 path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-vaultx-core = { path = "../../../crates/vaultx-core" }
-vaultx-bridge = { path = "../../../crates/vaultx-bridge" }
-vaultx-tui = { path = "../../../crates/vaultx-tui" }
+keystead-core = { path = "../../../crates/keystead-core" }
+keystead-bridge = { path = "../../../crates/keystead-bridge" }
+keystead-tui = { path = "../../../crates/keystead-tui" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

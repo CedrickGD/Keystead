@@ -53,7 +53,7 @@ export const de = {
   "error.unknown": "Unerwarteter Fehler.",
   "error.unknown_detail": "Unerwarteter Fehler: {detail}",
 
-  "boot.errorTitle": "VaultX konnte nicht gestartet werden",
+  "boot.errorTitle": "Keystead konnte nicht gestartet werden",
   "boot.errorHint": "Die Verbindung zum lokalen Tresor-Dienst ist fehlgeschlagen.",
 
   // Copy feedback
@@ -88,7 +88,7 @@ export const de = {
   "lock.systemToast": "Tresor gesperrt, weil der Computer gesperrt wurde",
 
   // Welcome & wizard
-  "welcome.title": "Willkommen bei VaultX",
+  "welcome.title": "Willkommen bei Keystead",
   "welcome.titleAnother": "Weiteren Tresor anlegen",
   "welcome.subtitle": "Dein Passwort-Tresor – verschlüsselt und ausschließlich auf diesem Gerät gespeichert.",
   "welcome.backToUnlock": "Zurück zum Entsperren",
@@ -164,7 +164,7 @@ export const de = {
 
   // Import
   "import.title": "Importieren",
-  "import.desc": "Übernimm Einträge aus VaultX 1.x, Chrome, Edge, Firefox, Bitwarden oder einem VaultX-Export.",
+  "import.desc": "Übernimm Einträge aus VaultX 1.x, Chrome, Edge, Firefox, Bitwarden oder einem Keystead-Export.",
   "import.legacyTitle": "Alten Tresor auswählen",
   "import.legacyDesc": "Wähle deinen VaultX-1.x-Tresor und gib das alte Master-Passwort ein.",
   "import.source": "Quelle",
@@ -189,16 +189,16 @@ export const de = {
 
   "format.csv": "CSV (Chrome, Edge, Firefox, Bitwarden …)",
   "format.bitwardenJson": "Bitwarden JSON (unverschlüsselt)",
-  "format.vaultx": "VaultX-Export (.vaultx)",
+  "format.keystead": "Keystead-Export (.keystead)",
   "format.legacy": "VaultX 1.x (alter Tresor)",
-  "format.vaultxExport": "VaultX (.vaultx) – verschlüsselt, empfohlen",
+  "format.keysteadExport": "Keystead (.keystead) – verschlüsselt, empfohlen",
   "format.csvExport": "CSV – unverschlüsselt",
   "format.bitwardenExport": "Bitwarden JSON – unverschlüsselt",
 
   // Export
   "export.title": "Exportieren",
   "export.subtitle": "Erstellt eine Sicherung deiner Einträge (ohne Papierkorb).",
-  "export.desc": "Sicherung als verschlüsselte .vaultx-Datei oder zum Umzug als CSV/JSON.",
+  "export.desc": "Sicherung als verschlüsselte .keystead-Datei oder zum Umzug als CSV/JSON.",
   "export.open": "Exportieren …",
   "export.format": "Format",
   "export.encryptedInfo": "Die Datei wird mit einem eigenen Export-Passwort verschlüsselt. Du brauchst es, um sie wieder zu importieren.",
@@ -461,7 +461,7 @@ export const de = {
 
   // Pairing
   "pairing.title": "Browser verbinden?",
-  "pairing.subtitle": "„{name}“ möchte sich mit VaultX verbinden.",
+  "pairing.subtitle": "„{name}“ möchte sich mit Keystead verbinden.",
   "pairing.codeAria": "Kopplungscode {code}",
   "pairing.hint": "Stimmt dieser Code mit dem in der Browser-Erweiterung überein? Nur dann auf „Verbinden“ klicken.",
   "pairing.expiresIn": "Die Anfrage läuft in {seconds} s ab.",
@@ -485,7 +485,7 @@ export const de = {
   "settings.language": "Sprache",
   "settings.languageDesc": "Sprache der Benutzeroberfläche.",
   "settings.minimizeToTray": "Beim Schließen im Infobereich bleiben",
-  "settings.minimizeToTrayDesc": "VaultX läuft weiter, damit die Browser-Erweiterung funktioniert.",
+  "settings.minimizeToTrayDesc": "Keystead läuft weiter, damit die Browser-Erweiterung funktioniert.",
   "settings.startInTray": "Im Infobereich starten",
   "settings.startInTrayDesc": "Beim Start kein Fenster öffnen.",
   "settings.security": "Sicherheit",
@@ -493,7 +493,7 @@ export const de = {
   "settings.autoLock": "Automatisch sperren",
   "settings.autoLockDesc": "Nach dieser Zeit ohne Aktivität wird der Tresor gesperrt.",
   "settings.lockOnSystemLock": "Beim Sperren des Computers sperren",
-  "settings.lockOnSystemLockDesc": "Sperrt VaultX, sobald du deinen Computer sperrst (unter Windows: Win + L).",
+  "settings.lockOnSystemLockDesc": "Sperrt Keystead, sobald du deinen Computer sperrst (unter Windows: Win + L).",
   "settings.clipboard": "Zwischenablage leeren",
   "settings.clipboardDesc": "Kopierte Passwörter und Codes werden danach automatisch entfernt.",
   "settings.never": "Nie",
@@ -513,16 +513,16 @@ export const de = {
   "settings.data": "Daten",
   "settings.dataDesc": "Import, Export und Speicherort.",
   "settings.terminal": "Terminal-Version",
-  "settings.terminalDesc": "VaultX ohne grafische Oberfläche.",
+  "settings.terminalDesc": "Keystead ohne grafische Oberfläche.",
   "settings.danger": "Gefahrenzone",
   "settings.dangerDesc": "Änderungen an diesem Tresor selbst.",
-  "settings.about": "Über VaultX",
+  "settings.about": "Über Keystead",
 
   "browser.enable": "Browser-Integration aktiv",
   "browser.serverRunning": "Lokaler Verbindungsdienst läuft",
   "browser.serverStopped": "Lokaler Verbindungsdienst ist aus",
   "browser.browsers": "Browser",
-  "browser.browsersDesc": "Erlaubt der VaultX-Erweiterung in diesem Browser, mit der App zu sprechen.",
+  "browser.browsersDesc": "Erlaubt der Keystead-Erweiterung in diesem Browser, mit der App zu sprechen.",
   "browser.registered": "Verbunden",
   "browser.notRegistered": "Nicht verbunden",
   "browser.connect": "Verbinden",
@@ -541,7 +541,7 @@ export const de = {
   "browser.step2TextD": "aus dem entpackten Release-ZIP.",
   "browser.extensionId": "Erwartete Erweiterungs-ID",
   "browser.step3Title": "Kopplung bestätigen",
-  "browser.step3Text": "Klicke in der Erweiterung auf „Verbinden“ und bestätige hier in VaultX den angezeigten 6-stelligen Code.",
+  "browser.step3Text": "Klicke in der Erweiterung auf „Verbinden“ und bestätige hier in Keystead den angezeigten 6-stelligen Code.",
   "browser.clients": "Gekoppelte Browser",
   "browser.clientsDesc": "Diese Erweiterungen dürfen auf deinen entsperrten Tresor zugreifen.",
   "browser.noClients": "Noch kein Browser gekoppelt.",
@@ -556,9 +556,9 @@ export const de = {
   "data.folder": "Datenordner",
   "data.openFolder": "Ordner öffnen",
   "data.portable": "Portabler Modus",
-  "data.portableDesc": "Speichert die Tresore im Ordner „VaultX-Data“ neben der VaultX.exe – ideal für einen USB-Stick.",
+  "data.portableDesc": "Speichert die Tresore im Ordner „Keystead-Data“ neben der Keystead.exe – ideal für einen USB-Stick.",
   "data.portableOnTitle": "Portablen Modus aktivieren?",
-  "data.portableOnText": "Deine Tresore werden in den Ordner „VaultX-Data“ neben der VaultX.exe verschoben. Eventuell musst du den Tresor danach erneut entsperren.",
+  "data.portableOnText": "Deine Tresore werden in den Ordner „Keystead-Data“ neben der Keystead.exe verschoben. Eventuell musst du den Tresor danach erneut entsperren.",
   "data.portableOn": "Aktivieren",
   "data.portableOffTitle": "Portablen Modus beenden?",
   "data.portableOffText": "Deine Tresore werden zurück in den Benutzerordner verschoben. Eventuell musst du den Tresor danach erneut entsperren.",
@@ -567,7 +567,7 @@ export const de = {
   "data.portableDisabled": "Portabler Modus beendet",
 
   "terminal.title": "Terminal-Version öffnen",
-  "terminal.desc": "Startet VaultX in einem eigenen Konsolenfenster – mit Tastatur bedienbar, ideal für Server oder schnelle Abfragen. Greift auf dieselben Tresore zu.",
+  "terminal.desc": "Startet Keystead in einem eigenen Konsolenfenster – mit Tastatur bedienbar, ideal für Server oder schnelle Abfragen. Greift auf dieselben Tresore zu.",
   "terminal.open": "Terminal öffnen",
 
   "danger.rename": "Tresor umbenennen",

@@ -62,7 +62,7 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
         {mode === "password" ? (
           <form onSubmit={submit} noValidate className="unlock-form">
             <div className="unlock-brand">
-              <Logo size={56} title="VaultX" />
+              <Logo size={56} title="Keystead" />
               <h1 className="auth-title">{t("unlock.title")}</h1>
               <p className="muted">{t("unlock.subtitle")}</p>
             </div>
@@ -125,7 +125,7 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
         )}
       </div>
       <div className="auth-footer">
-        VaultX {info.version} · {t("unlock.footer")}
+        Keystead {info.version} · {t("unlock.footer")}
       </div>
     </div>
   );

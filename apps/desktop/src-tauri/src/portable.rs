@@ -1,14 +1,14 @@
 //! Portable mode: moving the data directory between the OS location and the
-//! `VaultX-Data` folder next to the executable (see "Data locations" in
+//! `Keystead-Data` folder next to the executable (see "Data locations" in
 //! docs/ARCHITECTURE.md). `paths::data_dir()` picks the portable folder
 //! whenever it exists, so its creation/removal is the switch.
 //!
 //! The move is copy-then-commit, so an error never leaves the active data
 //! directory incomplete:
-//! * enable: copy everything into `VaultX-Data.partial`, then rename it to
-//!   `VaultX-Data` (commit), then delete the old copies;
+//! * enable: copy everything into `Keystead-Data.partial`, then rename it to
+//!   `Keystead-Data` (commit), then delete the old copies;
 //! * disable: copy everything into the OS directory (staged under
-//!   temporary names, then renamed), then rename `VaultX-Data` away
+//!   temporary names, then renamed), then rename `Keystead-Data` away
 //!   (commit) and delete it.
 //!
 //! Lock files (`*.lock`) and temporary files (`*.tmp`) are not moved. The
@@ -18,7 +18,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use vaultx_core::paths;
+use keystead_core::paths;
 
 use crate::error::{AppError, AppResult};
 use crate::state::log;
@@ -115,7 +115,7 @@ fn copy_file(from: &Path, to: &Path) -> AppResult<()> {
 }
 
 fn is_vault_file(rel: &Path) -> bool {
-    rel.extension().is_some_and(|ext| ext == "vaultx")
+    rel.extension().is_some_and(|ext| ext == "keystead")
 }
 
 fn enable(default: &Path, portable: &Path) -> AppResult<()> {
@@ -251,43 +251,43 @@ mod tests {
     fn enable_and_disable_move_everything() {
         let dir = tempfile::tempdir().unwrap();
         let tmp = dir.path();
-        let default = tmp.join("os").join("vaultx");
-        let portable = tmp.join("usb").join("VaultX-Data");
+        let default = tmp.join("os").join("keystead");
+        let portable = tmp.join("usb").join("Keystead-Data");
         fs::create_dir_all(portable.parent().unwrap()).unwrap();
-        write(&default.join("vaults/a.vaultx"), "A");
-        write(&default.join("vaults/a.vaultx.bak"), "A0");
-        write(&default.join("vaults/a.vaultx.lock"), "");
+        write(&default.join("vaults/a.keystead"), "A");
+        write(&default.join("vaults/a.keystead.bak"), "A0");
+        write(&default.join("vaults/a.keystead.lock"), "");
         write(&default.join("settings.json"), "{}");
-        write(&default.join("native-host/com.vaultx.bridge.json"), "{}");
+        write(&default.join("native-host/com.keystead.bridge.json"), "{}");
 
         enable(&default, &portable).unwrap();
         assert_eq!(
-            fs::read_to_string(portable.join("vaults/a.vaultx")).unwrap(),
+            fs::read_to_string(portable.join("vaults/a.keystead")).unwrap(),
             "A"
         );
         assert_eq!(
-            fs::read_to_string(portable.join("vaults/a.vaultx.bak")).unwrap(),
+            fs::read_to_string(portable.join("vaults/a.keystead.bak")).unwrap(),
             "A0"
         );
         assert!(portable.join("settings.json").is_file());
         assert!(portable
-            .join("native-host/com.vaultx.bridge.json")
+            .join("native-host/com.keystead.bridge.json")
             .is_file());
-        assert!(!portable.join("vaults/a.vaultx.lock").exists());
+        assert!(!portable.join("vaults/a.keystead.lock").exists());
         assert!(!default.exists(), "old data must be removed");
         assert!(!sibling(&portable, STAGING_SUFFIX).exists());
 
         // An unrelated vault already in the OS location is kept.
-        write(&default.join("vaults/b.vaultx"), "B");
+        write(&default.join("vaults/b.keystead"), "B");
         write(&default.join("settings.json"), "old");
         disable(&portable, &default).unwrap();
         assert!(!portable.exists());
         assert_eq!(
-            fs::read_to_string(default.join("vaults/a.vaultx")).unwrap(),
+            fs::read_to_string(default.join("vaults/a.keystead")).unwrap(),
             "A"
         );
         assert_eq!(
-            fs::read_to_string(default.join("vaults/b.vaultx")).unwrap(),
+            fs::read_to_string(default.join("vaults/b.keystead")).unwrap(),
             "B"
         );
         assert_eq!(
@@ -301,12 +301,12 @@ mod tests {
 
         // A vault with the same id on both sides is never overwritten.
         enable(&default, &portable).unwrap();
-        write(&default.join("vaults/a.vaultx"), "other");
+        write(&default.join("vaults/a.keystead"), "other");
         let err = disable(&portable, &default).unwrap_err();
         assert_eq!(err.code(), "invalid_input:target_exists");
-        assert!(portable.join("vaults/a.vaultx").is_file());
+        assert!(portable.join("vaults/a.keystead").is_file());
         assert_eq!(
-            fs::read_to_string(default.join("vaults/a.vaultx")).unwrap(),
+            fs::read_to_string(default.join("vaults/a.keystead")).unwrap(),
             "other"
         );
         assert!(!default.join("settings.json.vxmove").exists());

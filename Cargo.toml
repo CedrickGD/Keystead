@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/vaultx-core",
-    "crates/vaultx-bridge",
-    "crates/vaultx-tui",
+    "crates/keystead-core",
+    "crates/keystead-bridge",
+    "crates/keystead-tui",
     "apps/desktop/src-tauri",
 ]
 
@@ -11,7 +11,7 @@ members = [
 version = "2.0.0"
 edition = "2021"
 license-file = "LICENSE"
-repository = "https://github.com/CedrickGD/Vault-X"
+repository = "https://github.com/CedrickGD/Keystead"
 authors = ["CedrickGD"]
 
 [profile.release]

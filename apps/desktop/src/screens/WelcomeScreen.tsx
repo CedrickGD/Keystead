@@ -48,7 +48,7 @@ export function WelcomeScreen() {
           </button>
         )}
         <div className="welcome-hero">
-          <Logo size={64} title="VaultX" />
+          <Logo size={64} title="Keystead" />
           <h1>{firstRun ? t("welcome.title") : t("welcome.titleAnother")}</h1>
           <p>{t("welcome.subtitle")}</p>
         </div>

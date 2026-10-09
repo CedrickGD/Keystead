@@ -1,0 +1,35 @@
+[package]
+name = "keystead-core"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+description = "Keystead core: crypto, vault format, storage, import/export"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.21"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize", "parallel"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.4.3"
+base64 = "0.23.1"
+uuid = { version = "1.27.0", features = ["v4"] }
+zeroize = "1.9.1"
+subtle = "2.6.1"
+psl = "2.1.241"
+url = "2.5.8"
+zxcvbn = "3.1.1"
+csv = "1.4.0"
+pbkdf2 = "0.13.0"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+aes = "0.9.3"
+cbc = "0.2.1"
+data-encoding = "2.11.1"
+arboard = { version = "3.6.1", default-features = false }
+dirs = "7.0.0"
+sys-locale = "0.3.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -11,14 +11,14 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
-use vaultx_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_ID};
-use vaultx_core::generator::{self, GeneratorOptions};
-use vaultx_core::health::{self, HealthReport, Strength};
-use vaultx_core::import::{self, ImportReport, LegacyVaultInfo};
-use vaultx_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
-use vaultx_core::settings::Settings;
-use vaultx_core::totp::{self, TotpCode};
-use vaultx_core::{clipboard, export, paths, Error as CoreError, VaultStore};
+use keystead_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_ID};
+use keystead_core::generator::{self, GeneratorOptions};
+use keystead_core::health::{self, HealthReport, Strength};
+use keystead_core::import::{self, ImportReport, LegacyVaultInfo};
+use keystead_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
+use keystead_core::settings::Settings;
+use keystead_core::totp::{self, TotpCode};
+use keystead_core::{clipboard, export, paths, Error as CoreError, VaultStore};
 
 use crate::bridge;
 use crate::error::{AppError, AppResult};
@@ -580,7 +580,7 @@ pub async fn open_data_dir(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |c| platform::open_folder(&c.data_dir())).await
 }
 
-/// Moves the data between the OS data directory and `VaultX-Data` next to
+/// Moves the data between the OS data directory and `Keystead-Data` next to
 /// the exe. The open vault is locked first (its file moves); the UI then
 /// asks for the master password again.
 #[tauri::command]

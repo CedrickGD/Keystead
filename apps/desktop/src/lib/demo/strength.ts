@@ -1,5 +1,5 @@
 // A deliberately simple password strength heuristic for the mock backend.
-// The real app uses zxcvbn in vaultx-core; this only has to behave plausibly.
+// The real app uses zxcvbn in keystead-core; this only has to behave plausibly.
 
 import type { Strength } from "../types";
 

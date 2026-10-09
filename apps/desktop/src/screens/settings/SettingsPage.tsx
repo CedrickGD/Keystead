@@ -468,7 +468,7 @@ function BrowserSection() {
 const IMPORT_FORMATS: { value: ImportFormat; label: MessageKey; ext: string[]; needsPassword: boolean }[] = [
   { value: "csv", label: "format.csv", ext: ["csv"], needsPassword: false },
   { value: "bitwarden_json", label: "format.bitwardenJson", ext: ["json"], needsPassword: false },
-  { value: "vaultx", label: "format.vaultx", ext: ["vaultx"], needsPassword: true },
+  { value: "keystead", label: "format.keystead", ext: ["keystead"], needsPassword: true },
   { value: "legacy", label: "format.legacy", ext: ["json"], needsPassword: true },
 ];
 
@@ -744,7 +744,7 @@ function AboutSection() {
         <Logo size={44} />
         <div>
           <div className="about-name">
-            VaultX <span className="about-version">{info.version}</span>
+            Keystead <span className="about-version">{info.version}</span>
             {IS_MOCK && <span className="chip accent">{t("settings.demo")}</span>}
           </div>
           <p className="muted">{t("about.tagline")}</p>

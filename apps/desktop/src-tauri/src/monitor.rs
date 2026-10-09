@@ -37,7 +37,7 @@ pub enum MonitorSignal {
 /// exits.
 pub fn spawn(core: Weak<Core>, signals: Receiver<MonitorSignal>) {
     let result = std::thread::Builder::new()
-        .name("vaultx-monitor".into())
+        .name("keystead-monitor".into())
         .spawn(move || run(&core, &signals));
     if let Err(e) = result {
         log(format_args!("could not start the monitor thread: {e}"));

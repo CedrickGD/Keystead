@@ -1,4 +1,4 @@
-/** The VaultX mark: a shield with a keyhole on a rounded tile. */
+/** The Keystead mark: a shield with a keyhole on a rounded tile. */
 export function Logo({ size = 32, title }: { size?: number; title?: string }) {
   return (
     <svg

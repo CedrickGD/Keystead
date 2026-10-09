@@ -127,7 +127,7 @@ export function searchTerms(query: string): string[] {
 }
 
 /**
- * Mirrors `UnlockedVault::search` in vaultx-core: matches name, username,
+ * Mirrors `UnlockedVault::search` in keystead-core: matches name, username,
  * URIs, notes and card brand; every term must match somewhere.
  */
 export function matchesSearch(item: VaultItem, terms: string[]): boolean {
@@ -239,14 +239,14 @@ export function classNames(...parts: (string | false | null | undefined)[]): str
 export const localPrefs = {
   get(key: string): string | null {
     try {
-      return window.localStorage.getItem(`vaultx.${key}`);
+      return window.localStorage.getItem(`keystead.${key}`);
     } catch {
       return null;
     }
   },
   set(key: string, value: string): void {
     try {
-      window.localStorage.setItem(`vaultx.${key}`, value);
+      window.localStorage.setItem(`keystead.${key}`, value);
     } catch {
       /* ignore */
     }

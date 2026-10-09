@@ -1,4 +1,4 @@
-// Small stroke icons (24×24 grid) and the VaultX mark, built as DOM nodes.
+// Small stroke icons (24×24 grid) and the Keystead mark, built as DOM nodes.
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -72,7 +72,7 @@ export function icon(name, className = "ico") {
   return svg;
 }
 
-/** The VaultX mark (shield with keyhole on a rounded tile), as in the desktop app. */
+/** The Keystead mark (shield with keyhole on a rounded tile), as in the desktop app. */
 export function logo(size = 32) {
   const svg = svgElement("svg", { viewBox: "0 0 32 32", width: size, height: size, class: "logo", "aria-hidden": "true" });
   svg.append(

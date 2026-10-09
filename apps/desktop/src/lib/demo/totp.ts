@@ -1,5 +1,5 @@
 // RFC 6238 TOTP (and RFC 4226 HOTP) implemented with WebCrypto.
-// Used by the mock backend; the real app computes codes in vaultx-core.
+// Used by the mock backend; the real app computes codes in keystead-core.
 
 import type { TotpCode } from "../types";
 

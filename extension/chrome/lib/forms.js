@@ -1,9 +1,9 @@
 /*
- * VaultX – login form detection and filling.
+ * Keystead – login form detection and filling.
  *
  * Pure DOM helpers without any extension API, so they can be loaded on their
  * own in a test page. This is a classic script (manifest content scripts
- * cannot be ES modules): it defines `globalThis.VaultXForms`. In the extension
+ * cannot be ES modules): it defines `globalThis.KeysteadForms`. In the extension
  * it runs in the content script's isolated world, before content.js.
  */
 (() => {
@@ -337,7 +337,7 @@
     );
   }
 
-  /** Fields that get the inline VaultX icon (signup forms get none). */
+  /** Fields that get the inline Keystead icon (signup forms get none). */
   function iconFields(forms) {
     const fields = [];
     for (const form of forms) {
@@ -462,7 +462,7 @@
     return SUBMIT_TEXT.test(text) ? btn : null;
   }
 
-  globalThis.VaultXForms = Object.freeze({
+  globalThis.KeysteadForms = Object.freeze({
     findLoginForms,
     formForElement,
     iconFields,

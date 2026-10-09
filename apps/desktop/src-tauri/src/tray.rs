@@ -1,4 +1,4 @@
-//! System tray icon: "VaultX öffnen" / "Sperren" / "Beenden" (labels follow
+//! System tray icon: "Keystead öffnen" / "Sperren" / "Beenden" (labels follow
 //! the language setting); a left click opens the window.
 
 use std::sync::Arc;
@@ -6,11 +6,11 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
-use vaultx_core::settings::Language;
+use keystead_core::settings::Language;
 
 use crate::state::{log, show_main_window, Core, LockReason};
 
-const TRAY_ID: &str = "vaultx-tray";
+const TRAY_ID: &str = "keystead-tray";
 const MENU_OPEN: &str = "tray-open";
 const MENU_LOCK: &str = "tray-lock";
 const MENU_QUIT: &str = "tray-quit";
@@ -33,16 +33,16 @@ struct Labels {
 fn labels(language: Language) -> Labels {
     match language {
         Language::De => Labels {
-            open: "VaultX öffnen",
+            open: "Keystead öffnen",
             lock: "Sperren",
             quit: "Beenden",
-            tooltip: "VaultX",
+            tooltip: "Keystead",
         },
         Language::En => Labels {
-            open: "Open VaultX",
+            open: "Open Keystead",
             lock: "Lock",
             quit: "Quit",
-            tooltip: "VaultX",
+            tooltip: "Keystead",
         },
     }
 }

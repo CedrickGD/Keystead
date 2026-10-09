@@ -1,4 +1,4 @@
-// Mirrors crates/vaultx-core/src/model.rs and docs/ARCHITECTURE.md.
+// Mirrors crates/keystead-core/src/model.rs and docs/ARCHITECTURE.md.
 // Keep both sides in sync.
 
 export type ItemType = "login" | "card" | "identity" | "note";
@@ -192,8 +192,8 @@ export interface LegacyVaultInfo {
   path: string;
 }
 
-export type ImportFormat = "legacy" | "csv" | "bitwarden_json" | "vaultx";
-export type ExportFormat = "vaultx" | "csv" | "bitwarden_json";
+export type ImportFormat = "legacy" | "csv" | "bitwarden_json" | "keystead";
+export type ExportFormat = "keystead" | "csv" | "bitwarden_json";
 
 export type ThemeSetting = "system" | "light" | "dark";
 export type Language = "de" | "en";
