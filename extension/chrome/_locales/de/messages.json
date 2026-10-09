@@ -151,5 +151,12 @@
   "errorNoFields": { "message": "Auf der Seite wurde kein Login-Formular gefunden. Lade die Seite ggf. neu." },
   "errorInsecure": { "message": "Nicht ausgefüllt: unverschlüsselte Seite (http), das Login ist für https gespeichert." },
   "errorNotFound": { "message": "Dieses Login passt nicht zu der Seite." },
-  "errorGeneric": { "message": "Das hat nicht geklappt ($CODE$).", "placeholders": { "code": { "content": "$1" } } }
+  "errorGeneric": { "message": "Das hat nicht geklappt ($CODE$).", "placeholders": { "code": { "content": "$1" } } },
+
+  "extUpdateReloading": { "message": "Plugin wird auf Version $VERSION$ aktualisiert …", "placeholders": { "version": { "content": "$1" } } },
+  "extUpdateTitle": { "message": "Neue Plugin-Version verfügbar ($VERSION$)", "placeholders": { "version": { "content": "$1" } } },
+  "extUpdateText": { "message": "Dieses Plugin wurde aus einem anderen Ordner geladen. Die Keystead-App hält es hier aktuell:" },
+  "extUpdateHint": { "message": "Einmalig umstellen: chrome://extensions öffnen → „Entpackte Erweiterung laden“ → diesen Ordner wählen. Danach aktualisiert sich das Plugin mit der App." },
+  "extUpdateCopyPath": { "message": "Pfad kopieren" },
+  "extUpdatePathCopied": { "message": "Pfad kopiert" }
 }

@@ -7,6 +7,7 @@ import "./styles/base.css";
 import "./styles/components.css";
 import "./styles/layout.css";
 import "./styles/pages.css";
+import "./styles/update.css";
 
 // Apply the last effective theme before the first paint (settings load async).
 const cachedTheme = localPrefs.get("theme");

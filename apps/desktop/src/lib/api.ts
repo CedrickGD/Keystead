@@ -21,6 +21,8 @@ import type {
   Settings,
   Strength,
   TotpCode,
+  UpdateInfo,
+  UpdateProgress,
   VaultInfo,
   VaultItem,
 } from "./types";
@@ -168,7 +170,20 @@ export const api = {
 
   openTerminal: () => call<null>("open_terminal"),
   openDataDir: () => call<null>("open_data_dir"),
+  /** Opens the folder the app keeps the browser extension in. */
+  openExtensionDir: () => call<null>("open_extension_dir"),
   setPortableMode: (enabled: boolean) => call<AppInfo>("set_portable_mode", { enabled }),
+
+  /** Checks the configured update channel now (network errors → `io:<detail>`). */
+  checkUpdate: () => call<UpdateInfo>("check_update"),
+  /** The update the last (background) check found, without a network request. */
+  pendingUpdate: () => call<UpdateInfo | null>("pending_update"),
+  /**
+   * Downloads, verifies and installs the update, locks the vault and restarts
+   * the app. Progress via `update://progress` / `update://ready`; only
+   * answers on failure (or once the restart is under way).
+   */
+  installUpdate: () => call<null>("install_update"),
 };
 
 // ---------------------------------------------------------------------------
@@ -202,6 +217,13 @@ export const events = {
   onPairingClosed: (handler: (payload: { requestId: string }) => void) =>
     subscribe<{ requestId: string }>("bridge://pairing-closed", handler),
   onUnlockRequest: (handler: () => void) => subscribe<Record<string, never>>("bridge://unlock-request", () => handler()),
+  /** The background check found a version not announced before. */
+  onUpdateAvailable: (handler: (info: UpdateInfo) => void) => subscribe<UpdateInfo>("update://available", handler),
+  onUpdateProgress: (handler: (progress: UpdateProgress) => void) =>
+    subscribe<UpdateProgress>("update://progress", handler),
+  /** Downloaded and verified; the app installs it and restarts. */
+  onUpdateReady: (handler: (payload: { version: string }) => void) =>
+    subscribe<{ version: string }>("update://ready", handler),
 };
 
 /**

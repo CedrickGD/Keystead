@@ -5,6 +5,7 @@
 // States: host_missing, app_unavailable, not_paired, pairing, paired, denied,
 // locked, locked_single, unlocked (default), unlocked_single, unlocked_empty,
 // not_web, insecure. "_single": the app has only one vault (else three).
+// `&ext=notice` / `&ext=reloading` adds the "new extension version" notice.
 
 import { ApiError } from "./popup-api.js";
 
@@ -87,7 +88,12 @@ export function createDemoApi(state) {
       const known = ["host_missing", "app_unavailable", "not_paired", "locked", "unlocked"];
       const shown = known.includes(current) ? current : "not_paired";
       const open = shown === "unlocked" ? openVault : null;
-      return { state: shown, vaultName: vaultName(open), vaultId: open, appVersion: "2.0.0", error: null };
+      const ext = new URLSearchParams(location.search).get("ext");
+      const extensionUpdate =
+        ext === "notice" || ext === "reloading"
+          ? { version: "2.0.0.42", dir: "C:\\Users\\Max\\AppData\\Local\\Keystead\\browser-extension", reloading: ext === "reloading" }
+          : null;
+      return { state: shown, vaultName: vaultName(open), vaultId: open, appVersion: "2.0.0", error: null, extensionUpdate };
     },
     async listVaults() {
       await delay(60);

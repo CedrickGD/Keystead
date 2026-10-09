@@ -1,0 +1,219 @@
+/* ---------- In-app updates: banner above the main window / unlock screen ---------- */
+
+.app-frame {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-frame-body {
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+}
+
+/* The screens fill the space below the banner instead of the viewport. */
+.app-frame-body > .shell,
+.app-frame-body > .auth-screen {
+  height: 100%;
+}
+
+.update-banner {
+  flex: none;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-soft-border);
+  animation: fade-in 200ms var(--ease);
+}
+
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 12px 8px 16px;
+}
+
+.update-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent-soft-border);
+  color: var(--accent-text);
+}
+
+.update-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.update-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.update-text strong {
+  font-weight: 600;
+}
+
+.update-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.update-sub .link-btn {
+  padding: 0 2px;
+  gap: 2px;
+}
+
+.update-sub .chev {
+  width: 13px;
+  height: 13px;
+  transition: transform var(--dur) var(--ease);
+}
+
+.update-sub .chev.open {
+  transform: rotate(180deg);
+}
+
+.update-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.update-notes {
+  padding: 0 16px 12px 58px;
+}
+
+.update-notes-date {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.update-notes-text {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.update-progress {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  background: var(--accent-soft-border);
+}
+
+.update-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms var(--ease);
+}
+
+.update-progress.indeterminate > span {
+  width: 30% !important;
+  animation: update-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes update-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+.update-banner.error {
+  background: var(--danger-soft);
+  border-bottom-color: var(--danger-border);
+}
+
+.update-banner.error .update-icon {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ---------- Settings → Über Keystead: updates ---------- */
+
+.update-check-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.update-check-result svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.update-check-result.ok svg {
+  color: var(--success-icon);
+}
+
+.update-check-result.available svg {
+  color: var(--accent-text);
+}
+
+.update-check-result.error {
+  color: var(--danger-text);
+}
+
+.update-check-result .btn {
+  margin-top: 8px;
+}
+
+/* ---------- Settings → Browser-Integration: the app-managed extension folder ---------- */
+
+.ext-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ext-folder-path {
+  display: block;
+  padding: 7px 10px;
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ext-folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

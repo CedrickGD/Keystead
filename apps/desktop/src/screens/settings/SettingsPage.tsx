@@ -7,6 +7,9 @@ import {
   ExternalLink,
   FileUp,
   FolderOpen,
+  RefreshCw,
+  CircleArrowUp,
+  CircleAlert,
   Globe,
   Info,
   KeyRound,
@@ -23,7 +26,16 @@ import {
   Zap,
 } from "lucide-react";
 import { ApiError, IS_MOCK, api, pickOpenFile } from "../../lib/api";
-import type { BrowserInfo, BrowserStatus, ImportFormat, ImportReport, Language, ThemeSetting } from "../../lib/types";
+import type {
+  BrowserInfo,
+  BrowserStatus,
+  ImportFormat,
+  ImportReport,
+  Language,
+  ThemeSetting,
+  UpdateChannel,
+  UpdateInfo,
+} from "../../lib/types";
 import { useT, type MessageKey } from "../../i18n";
 import { useApp, useCopy } from "../../state/app";
 import { useToast } from "../../components/Toasts";
@@ -31,6 +43,8 @@ import { useConfirm } from "../../components/Confirm";
 import { Button, Field, PasswordInput, Segmented, Select, Switch } from "../../components/Controls";
 import { LegacySourcePicker } from "../../components/LegacySourcePicker";
 import { Logo } from "../../components/Logo";
+import { useUpdateErrorText } from "../../components/UpdateBanner";
+import { useUpdate } from "../../state/update";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
 
 // ---------------------------------------------------------------------------
@@ -340,6 +354,14 @@ function BrowserSection() {
     if (await updateSettings({ browserIntegration: enabled })) void refresh();
   };
 
+  const openExtensionFolder = async () => {
+    try {
+      await api.openExtensionDir();
+    } catch (err) {
+      toast.error(errorText(err));
+    }
+  };
+
   const detected = status?.browsers.filter((b) => b.detected) ?? [];
   const missing = status?.browsers.filter((b) => !b.detected) ?? [];
   const extensionId = status?.extensionId || info.extensionId;
@@ -379,8 +401,30 @@ function BrowserSection() {
           <GuideStep n={2} done={clients.length > 0} title={t("browser.step2Title")}>
             <p>
               {t("browser.step2TextA")} <code>chrome://extensions</code> {t("browser.step2TextB")} <code>edge://extensions</code>
-              {t("browser.step2TextC")} <code>browser-extension</code> {t("browser.step2TextD")}
+              {t("browser.step2TextC")}
             </p>
+            <div className="ext-folder">
+              <code className="ext-folder-path selectable" aria-label={t("browser.folderLabel")}>
+                {status?.extensionDir ?? t("common.loading")}
+              </code>
+              <div className="ext-folder-actions">
+                <Button size="sm" variant="secondary" icon={<FolderOpen />} onClick={() => void openExtensionFolder()}>
+                  {t("browser.openFolder")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<Copy />}
+                  disabled={!status?.extensionDir}
+                  onClick={() => {
+                    if (status?.extensionDir) void copy(status.extensionDir, { label: t("browser.folderLabel"), sensitive: false });
+                  }}
+                >
+                  {t("browser.copyPath")}
+                </Button>
+              </div>
+              <p className="subtle">{t("browser.step2Folder")}</p>
+            </div>
             <div className="ext-id">
               <span className="ext-id-label">{t("browser.extensionId")}</span>
               <code className="selectable">{extensionId}</code>
@@ -740,10 +784,81 @@ function VaultSection() {
   );
 }
 
+type CheckResult = { kind: "uptodate" | "none"; info: UpdateInfo } | { kind: "available"; info: UpdateInfo } | { kind: "error"; text: string };
+
+function UpdateCheckResult({ result }: { result: CheckResult }) {
+  const { t } = useT();
+  const update = useUpdate();
+  if (result.kind === "error") {
+    return (
+      <div className="update-check-result error" role="alert">
+        <CircleAlert />
+        <span>{result.text}</span>
+      </div>
+    );
+  }
+  if (result.kind === "available") {
+    const busy = update.phase === "downloading" || update.phase === "restarting";
+    return (
+      <div className="update-check-result available" role="status">
+        <CircleArrowUp />
+        <div>
+          <div>{t("update.foundAvailable", { version: result.info.version ?? "" })}</div>
+          {result.info.canInstall ? (
+            <Button size="sm" variant="primary" icon={<Download />} loading={busy} onClick={() => void update.install()}>
+              {t("update.installNow")}
+            </Button>
+          ) : (
+            <Button size="sm" variant="primary" icon={<ExternalLink />} onClick={() => void update.install()}>
+              {t("update.download")}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="update-check-result ok" role="status">
+      <CircleCheck />
+      <span>
+        {result.kind === "uptodate" ? t("update.upToDate", { version: result.info.currentVersion }) : t("update.noRelease")}
+      </span>
+    </div>
+  );
+}
+
 function AboutSection() {
   const { t } = useT();
-  const { info } = useApp();
+  const { info, settings, updateSettings } = useApp();
+  const update = useUpdate();
+  const updateErrorText = useUpdateErrorText();
+  const channelId = useId();
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<CheckResult | null>(null);
   const platform = info.platform === "windows" ? "Windows" : info.platform === "macos" ? "macOS" : "Linux";
+
+  const check = async () => {
+    setChecking(true);
+    setResult(null);
+    try {
+      const found = await update.check();
+      setResult({ kind: found.available ? "available" : found.version ? "uptodate" : "none", info: found });
+    } catch (err) {
+      setResult({ kind: "error", text: updateErrorText(err) });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const changeChannel = async (updateChannel: UpdateChannel) => {
+    if (updateChannel === settings.updateChannel) return;
+    // The backend checks the new channel in the background.
+    if (await updateSettings({ updateChannel })) {
+      update.reset();
+      setResult(null);
+    }
+  };
+
   return (
     <SettingsSection id="about" title={t("settings.about")}>
       <div className="about">
@@ -759,6 +874,33 @@ function AboutSection() {
           </p>
         </div>
       </div>
+      <SettingRow
+        title={t("update.checkTitle")}
+        description={result ? <UpdateCheckResult result={result} /> : t("update.checkDesc", { version: info.version })}
+      >
+        <Button variant="secondary" icon={<RefreshCw />} loading={checking} onClick={() => void check()}>
+          {t("update.checkNow")}
+        </Button>
+      </SettingRow>
+      <SettingRow title={t("update.auto")} description={t("update.autoDesc")}>
+        <Switch
+          checked={settings.updateCheck}
+          onChange={(updateCheck) => void updateSettings({ updateCheck })}
+          label={t("update.auto")}
+        />
+      </SettingRow>
+      <SettingRow title={t("update.channel")} description={t("update.channelDesc")} htmlFor={channelId}>
+        <Select<UpdateChannel>
+          id={channelId}
+          value={settings.updateChannel}
+          onChange={(channel) => void changeChannel(channel)}
+          options={[
+            { value: "beta", label: t("update.channelBeta") },
+            { value: "stable", label: t("update.channelStable") },
+          ]}
+          className="setting-select"
+        />
+      </SettingRow>
     </SettingsSection>
   );
 }

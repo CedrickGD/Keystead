@@ -151,5 +151,12 @@
   "errorNoFields": { "message": "No login form found on the page. Try reloading the page." },
   "errorInsecure": { "message": "Not filled: unencrypted page (http), but the login is stored for https." },
   "errorNotFound": { "message": "This login doesn't match the page." },
-  "errorGeneric": { "message": "That didn't work ($CODE$).", "placeholders": { "code": { "content": "$1" } } }
+  "errorGeneric": { "message": "That didn't work ($CODE$).", "placeholders": { "code": { "content": "$1" } } },
+
+  "extUpdateReloading": { "message": "Updating the extension to version $VERSION$ …", "placeholders": { "version": { "content": "$1" } } },
+  "extUpdateTitle": { "message": "New extension version available ($VERSION$)", "placeholders": { "version": { "content": "$1" } } },
+  "extUpdateText": { "message": "This extension was loaded from another folder. The Keystead app keeps it up to date here:" },
+  "extUpdateHint": { "message": "Switch once: open chrome://extensions → “Load unpacked” → choose this folder. From then on the extension updates with the app." },
+  "extUpdateCopyPath": { "message": "Copy path" },
+  "extUpdatePathCopied": { "message": "Path copied" }
 }

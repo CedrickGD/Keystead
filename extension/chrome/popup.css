@@ -969,6 +969,64 @@ code {
   color: var(--success-icon);
 }
 
+/* Extension update notice (above every screen) */
+
+.ext-update {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-soft-border);
+  color: var(--accent-text);
+  font-size: 12.5px;
+}
+
+.ext-update.notice-card {
+  display: block;
+  padding: 10px 14px 11px;
+  background: var(--warning-soft);
+  border-bottom-color: var(--warning-border);
+  color: var(--text-2);
+}
+
+.ext-update-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--warning-text);
+  margin-bottom: 3px;
+}
+
+.ext-update-head .ico {
+  color: var(--warning-icon);
+}
+
+.ext-update-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0;
+  padding: 3px 3px 3px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ext-update-path code {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  line-height: 1.35;
+  user-select: all;
+}
+
+.ext-update-hint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 /* Notices */
 
 .notice {

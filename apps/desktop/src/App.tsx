@@ -10,6 +10,8 @@ import { ConfirmProvider } from "./components/Confirm";
 import { Button } from "./components/Controls";
 import { Logo } from "./components/Logo";
 import { AppContext, type AppContextValue } from "./state/app";
+import { UpdateProvider } from "./state/update";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
@@ -45,7 +47,9 @@ export function App() {
     <I18nProvider lang={lang}>
       <ToastProvider>
         <ConfirmProvider>
-          <AppRoot settings={settings} setSettings={setSettings} />
+          <UpdateProvider>
+            <AppRoot settings={settings} setSettings={setSettings} />
+          </UpdateProvider>
         </ConfirmProvider>
       </ToastProvider>
     </I18nProvider>
@@ -296,9 +300,15 @@ function AppRoot({
 
   return (
     <AppContext.Provider value={ctx}>
-      {screen === "welcome" && <WelcomeScreen />}
-      {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
-      {screen === "main" && vault && <MainScreen key={vault.id} />}
+      <div className="app-frame">
+        {/* New versions: above the main window and the unlock screen. */}
+        {(screen === "main" || screen === "unlock") && <UpdateBanner />}
+        <div className="app-frame-body">
+          {screen === "welcome" && <WelcomeScreen />}
+          {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
+          {screen === "main" && vault && <MainScreen key={vault.id} />}
+        </div>
+      </div>
       {currentPairing && (
         <PairingModal
           key={currentPairing.requestId}

@@ -4,6 +4,10 @@
 //
 // Two demo vaults ("Privat", "Arbeit"), master password "demo" for both.
 // URL parameters: `?mock=empty` starts without any vault (first-run screen).
+// `?update=available` announces a fake update ~1 s after start (banner),
+// `?update=portable` the same for a portable copy (download link instead of
+// install), `?update=none` makes "Nach Updates suchen" find nothing; by
+// default only the manual check finds the fake update.
 // `window.__keysteadMock` exposes helpers to simulate backend events.
 
 import type {
@@ -23,6 +27,7 @@ import type {
   PairingRequest,
   SessionState,
   Settings,
+  UpdateInfo,
   VaultData,
   VaultInfo,
   VaultItem,
@@ -168,9 +173,11 @@ function initState(): MockState {
       browserIntegration: true,
       lastVaultId: empty ? null : "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d",
       showIcons: false,
+      updateCheck: true,
+      updateChannel: "beta",
     },
     appInfo: {
-      version: "2.0.0",
+      version: installedMockVersion(),
       dataDir: dataDir(false),
       portable: false,
       platform: "windows",
@@ -196,8 +203,101 @@ function getState(): MockState {
     state = initState();
     startAutoLockTimer();
     installDevHelpers();
+    scheduleMockUpdateAnnouncement();
   }
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Fake updates (see the header comment)
+// ---------------------------------------------------------------------------
+
+const MOCK_CURRENT_VERSION = "2.0.0-beta.4";
+const MOCK_NEW_VERSION = "2.0.0-beta.5";
+const MOCK_INSTALLED_KEY = "keystead.mock.installedVersion";
+const MOCK_UPDATE_NOTES = [
+  "– Updates direkt in der App: signiert, geprüft und mit einem Klick installiert.",
+  "– Die Browser-Erweiterung liegt in einem eigenen Ordner der App und aktualisiert sich mit.",
+  "– Behoben: Ein kopiertes Passwort wird beim Sperren zuverlässig aus der Zwischenablage gelöscht.",
+].join("\n");
+
+/** The version the mock "runs": a fake update installed in this tab survives the simulated restart. */
+function installedMockVersion(): string {
+  try {
+    return sessionStorage.getItem(MOCK_INSTALLED_KEY) ?? MOCK_CURRENT_VERSION;
+  } catch {
+    return MOCK_CURRENT_VERSION;
+  }
+}
+
+function mockUpdateMode(): string {
+  return new URLSearchParams(window.location.search).get("update") ?? "";
+}
+
+let mockPendingUpdate: UpdateInfo | null = null;
+let mockInstalling = false;
+
+/** What the fake update server answers for the current settings. */
+function mockUpdateInfo(portable = mockUpdateMode() === "portable"): UpdateInfo {
+  const s = getState();
+  const current = s.appInfo.version;
+  const offered = mockUpdateMode() !== "none" && s.settings.updateChannel === "beta" && current !== MOCK_NEW_VERSION;
+  return {
+    available: offered,
+    currentVersion: current,
+    version: s.settings.updateChannel === "beta" ? MOCK_NEW_VERSION : null,
+    notes: s.settings.updateChannel === "beta" ? MOCK_UPDATE_NOTES : null,
+    date: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    canInstall: offered && !portable,
+    releaseUrl: `https://github.com/CedrickGD/Keystead/releases${s.settings.updateChannel === "beta" ? `/tag/v${MOCK_NEW_VERSION}` : ""}`,
+  };
+}
+
+function announceMockUpdate(portable?: boolean): void {
+  const info = mockUpdateInfo(portable);
+  if (!info.available) return;
+  mockPendingUpdate = info;
+  emit("update://available", clone(info));
+}
+
+function scheduleMockUpdateAnnouncement(): void {
+  const mode = mockUpdateMode();
+  if (mode !== "available" && mode !== "portable") return;
+  window.setTimeout(() => {
+    if (state?.settings.updateCheck) announceMockUpdate();
+  }, 1_000);
+}
+
+/** Fake download (~9 MB, a few seconds), then "restart" (reload with the new version). */
+async function installMockUpdate(): Promise<null> {
+  const info = mockUpdateInfo();
+  if (!info.available) fail("not_found");
+  if (!info.canInstall) fail("unsupported:update_portable");
+  if (mockInstalling) fail("invalid_input:update_in_progress");
+  mockInstalling = true;
+  const total = 9_437_184;
+  const params = new URLSearchParams(window.location.search);
+  // `?updateSpeed=slow` keeps the progress on screen (screenshots).
+  const step = params.get("updateSpeed") === "slow" ? 90_000 : 480_000;
+  for (let done = 0; done < total; ) {
+    await sleep(120);
+    done = Math.min(total, done + step);
+    emit("update://progress", { downloaded: done, total });
+  }
+  emit("update://ready", { version: info.version });
+  // Like the backend: the vault is closed without an event (the banner shows the restart).
+  getState().unlockedId = null;
+  if (params.get("updateSpeed") !== "slow") {
+    window.setTimeout(() => {
+      try {
+        sessionStorage.setItem(MOCK_INSTALLED_KEY, info.version ?? MOCK_NEW_VERSION);
+      } catch {
+        /* the restart then shows the old version again */
+      }
+      window.location.reload();
+    }, 2_500);
+  }
+  return null;
 }
 
 function openVault(): MockVault {
@@ -272,6 +372,8 @@ export interface MockDevHelpers {
   simulateTimeoutLock: () => void;
   simulateExternalChange: () => void;
   simulateUnlockRequest: () => void;
+  /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
+  simulateUpdate: (portable?: boolean) => void;
 }
 
 declare global {
@@ -286,6 +388,7 @@ function installDevHelpers(): void {
     simulateTimeoutLock: () => lock("timeout"),
     simulateExternalChange: () => emit("vault://changed", {}),
     simulateUnlockRequest: () => emit("bridge://unlock-request", {}),
+    simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),
   };
 }
 
@@ -383,6 +486,8 @@ function browserStatus(): BrowserStatus {
   return {
     serverRunning: s.settings.browserIntegration,
     extensionId: EXTENSION_ID,
+    extensionDir: `${s.appInfo.dataDir}\\browser-extension`,
+    extensionVersion: "2.0.0.4",
     browsers: clone(s.browsers),
     clients: clone(s.clients),
   };
@@ -405,6 +510,8 @@ function validateSettings(input: unknown): Settings {
   if (!["de", "en"].includes(s.language)) fail("invalid_input:language");
   if (!Number.isInteger(s.autoLockMinutes) || s.autoLockMinutes < 0) fail("invalid_input:autoLockMinutes");
   if (!Number.isInteger(s.clipboardClearSeconds) || s.clipboardClearSeconds < 0) fail("invalid_input:clipboardClearSeconds");
+  if (typeof s.updateCheck !== "boolean") fail("invalid_input:settings");
+  if (!["beta", "stable"].includes(s.updateChannel)) fail("invalid_input:settings");
   return clone(s);
 }
 
@@ -782,7 +889,21 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
 
     case "open_terminal":
     case "open_data_dir":
+    case "open_extension_dir":
       return null;
+
+    case "check_update": {
+      await sleep(600);
+      const info = mockUpdateInfo();
+      mockPendingUpdate = info.available ? info : null;
+      return clone(info);
+    }
+
+    case "pending_update":
+      return mockPendingUpdate ? clone(mockPendingUpdate) : null;
+
+    case "install_update":
+      return installMockUpdate();
 
     case "set_portable_mode": {
       const enabled = bool(args, "enabled");

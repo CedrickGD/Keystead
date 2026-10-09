@@ -258,6 +258,10 @@ export interface PairedClient {
 export interface BrowserStatus {
   serverRunning: boolean;
   extensionId: string;
+  /** The folder the app keeps the browser extension in (load it unpacked from there). */
+  extensionDir: string;
+  /** Version of the extension the app delivers. */
+  extensionVersion: string;
   browsers: BrowserInfo[];
   clients: PairedClient[];
 }
