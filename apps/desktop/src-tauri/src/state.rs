@@ -460,7 +460,7 @@ impl Core {
             // Read under the state lock: `lock_for_update` sets the flag
             // before it takes the vault under this lock, so a vault opened
             // concurrently is either refused here or closed there.
-            if false && self.update_locked.load(Ordering::SeqCst) {
+            if self.update_locked.load(Ordering::SeqCst) {
                 drop(st);
                 drop(vault);
                 return Err(AppError::invalid("update_in_progress"));
@@ -820,8 +820,12 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let refused = Arc::new(AtomicUsize::new(0));
         let unlocker = {
-            let (core, stop, refused, id) =
-                (Arc::clone(&core), Arc::clone(&stop), Arc::clone(&refused), id.clone());
+            let (core, stop, refused, id) = (
+                Arc::clone(&core),
+                Arc::clone(&stop),
+                Arc::clone(&refused),
+                id.clone(),
+            );
             std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     if core.unlock(&id, "master").is_err() {
@@ -832,8 +836,10 @@ mod tests {
         };
         std::thread::sleep(Duration::from_millis(30));
         core.lock_for_update();
-        // Keep unlocking well after the lock.
-        while refused.load(Ordering::SeqCst) < 5 {
+        // Keep unlocking well after the lock (bounded: without the guard
+        // nothing is ever refused).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while refused.load(Ordering::SeqCst) < 5 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         stop.store(true, Ordering::SeqCst);
@@ -842,6 +848,7 @@ mod tests {
             core.state().vault.is_none(),
             "an unlock finished after lock_for_update"
         );
+        assert!(refused.load(Ordering::SeqCst) >= 5);
     }
 
     /// `xvfb-run cargo test -p keystead-desktop -- --ignored clipboard`

@@ -785,7 +785,8 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
     and stable releases);
   * `stable` → `https://github.com/CedrickGD/Keystead/releases/latest/download/latest.json`
     (GitHub's "latest" = newest non-pre-release).
-  A channel without `latest.json` (404) means "nothing available", not an error.
+  A channel without `latest.json` (404/410) means "nothing available", not
+  an error.
 * **latest.json** (static format): `{ version, notes, pub_date (RFC 3339),
   platforms: { "windows-x86_64": { signature, url } } }` – `signature` = the
   content of the `.sig` file `tauri build` writes next to the NSIS setup,
@@ -810,9 +811,13 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
 * **Check** (`update::check`): fetches the channel's `latest.json` (30 s
   timeout). The version comparator records the release before the platform
   entry is looked up, so a release without a build for this OS is still
-  reported (`available`, `canInstall: false`). No manifest (any HTTP error
-  status, e.g. 404) → not available; network errors and an unreadable
-  manifest → `io:<detail>`.
+  reported (`available`, `canInstall: false`). The plugin reports every
+  non-2xx answer as "no release" and drops the status, so the app then
+  requests `latest.json` once more (`update::missing_release`): 404/410 → not
+  available; any other status (403/429 rate limit, 5xx) → `io:HTTP <status>`
+  (e.g. `io:HTTP 503 Service Unavailable`). Network errors and an unreadable
+  manifest → `io:<detail>`. The UI shows `io:` as "Der Update-Server ist
+  nicht erreichbar: <detail>"; the background check only logs it.
 * **Background check**: 15 s after start, then every 6 h, while
   `updateCheck` is on; turning it on or changing the channel checks at once.
   A version not announced before → `update://available`; errors are only
@@ -820,17 +825,28 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   for `pending_update`; changing the channel or turning the check on drops
   it and lets the next find be announced again.
 * **Install** (`install_update`): one at a time. Checks again, downloads
-  (`update://progress`), verifies, emits `update://ready`, then locks the
-  vault (wiping it, no `vault://locked` – the banner shows the restart) and
-  clears a copied secret still in the clipboard, then installs: on Windows
-  the plugin runs `on_before_exit` (`cleanup_before_exit`), starts the setup
-  with `/P /UPDATE /R /ARGS <current args>` (`installMode: passive`: progress
-  window, no questions) and ends the process with `exit(0)` – the setup
-  closes leftovers (native host processes) via the Restart Manager, replaces
-  the files in place and restarts Keystead. AppImage: the file is replaced and
+  (`update://progress`), verifies, emits `update://ready`, then
+  `Core::lock_for_update`: from now on no vault can be opened
+  (`Core::install_vault` – the one path of every unlock, recovery-key unlock
+  and new vault – answers `invalid_input:update_in_progress`, checked under
+  the state lock), the browser bridge stops (waiting pairings are denied),
+  the vault is locked (wiping it, no `vault://locked` – the banner shows the
+  restart) and a copied secret still in the clipboard is cleared. Then it
+  installs: on Windows the plugin writes the setup, runs our `on_before_exit`
+  hook (set in `update::build_updater`; it replaces the plugin's default, so
+  it calls `cleanup_before_exit` itself – tray icon, resources – after
+  repeating `lock_for_update`), starts the setup with `/P /UPDATE /R /ARGS
+  <current args>` (`installMode: passive`: progress window, no questions) and
+  ends the process with `exit(0)` – no `RunEvent::Exit`, so `Core::shutdown`
+  does not run; `lock_for_update` covers what matters of it. The setup closes
+  leftovers (native host processes) via the Restart Manager, replaces the
+  files in place and restarts Keystead. AppImage: the file is replaced and
   the app restarts (`AppHandle::request_restart`, i.e. `RunEvent::Exit` →
   `Core::shutdown` first). If the installation fails after the vault was
-  closed, `vault://locked {manual}` sends the UI back to the unlock screen.
+  closed (also when the setup cannot be started),
+  `Core::resume_after_failed_update` allows unlocking again and restarts the
+  bridge (if browser integration is on), and `vault://locked {manual}` sends
+  the UI back to the unlock screen.
   Vault files, settings and the extension folder are untouched by the setup
   (the NSIS uninstaller in update mode only replaces program files).
 * **UI** (`src/state/update.tsx`, `src/components/UpdateBanner.tsx`): banner
@@ -910,6 +926,19 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   private key file generated with `tauri signer generate` with an empty
   password; its public key is the `pubkey` above). Losing it means installed
   copies can no longer be updated in-app (a new key needs a manual update).
+* **Release checklist** (stable version `X.Y.Z`):
+  1. Tag the commit `vX.Y.Z` and push the tag → stable release (latest),
+     also offered on the beta channel.
+  2. Right after that, set `version` in `apps/desktop/src-tauri/tauri.conf.json`
+     to the next version (e.g. `X.Y.(Z+1)`) and commit it. Branch builds are
+     `<that version>-beta.<run>`; without the bump the next betas would be
+     `X.Y.Z-beta.<run>`, which sorts *below* the released `X.Y.Z` – no
+     updater would offer them (the beta channel keeps `X.Y.Z`). The windows
+     job checks this (`release-version.mjs --check-tags`: a `v*` tag above
+     the build's version) – a `::warning::`, and an error for builds that
+     publish (`[release]`), so no such pre-release is published.
+  The same holds for a release-candidate tag (`vX.Y.Z-rc.1` sorts above
+  `X.Y.Z-beta.<run>`).
 
 ## Browser bridge protocol – `keystead-bridge`
 

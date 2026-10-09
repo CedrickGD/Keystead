@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { compareSemver, parseSemver } from "./semver.mjs";
-import { appVersion, extensionVersion } from "./release-version.mjs";
+import { appVersion, checkAgainstReleases, extensionVersion, newerReleasedVersion } from "./release-version.mjs";
 import { latestManifest, releaseNotes, rfc3339 } from "./latest-json.mjs";
 
 test("semver order matches the updater", () => {
@@ -28,6 +28,31 @@ test("every build gets its own version", () => {
   assert.throws(() => appVersion({ ...base, ref: "refs/tags/vNext", refName: "vNext", runNumber: 1 }));
   assert.throws(() => appVersion({ baseVersion: "2.0.0-beta.1", ref: "refs/heads/main", runNumber: 1 }));
   assert.throws(() => appVersion({ ...base, ref: "refs/heads/main", runNumber: undefined }));
+});
+
+test("a beta of an already released version is caught", () => {
+  const tags = ["refs/tags/v1.4.2", "refs/tags/updater-beta", "refs/tags/v2.0.0-beta.57", "refs/tags/v2.0.0-beta.70", "refs/tags/vNext"];
+  // Before the stable release: the next beta is above every tag.
+  assert.equal(newerReleasedVersion("2.0.0-beta.71", tags), null);
+  // A re-run keeps the run number: its own tag is not "newer".
+  assert.equal(newerReleasedVersion("2.0.0-beta.70", tags), null);
+  // v2.0.0 released, tauri.conf.json still says 2.0.0.
+  const released = [...tags, "refs/tags/v2.0.0"];
+  assert.equal(newerReleasedVersion("2.0.0-beta.71", released), "2.0.0");
+  assert.equal(newerReleasedVersion("2.0.0-beta.71", [...released, "v2.0.1-rc.1"]), "2.0.1-rc.1");
+  // Bumped to 2.0.1: fine again.
+  assert.equal(newerReleasedVersion("2.0.1-beta.72", released), null);
+  // "beta" < "rc": a release candidate tag also hides later betas of that version.
+  assert.equal(newerReleasedVersion("2.1.0-beta.80", ["v2.1.0-rc.1"]), "2.1.0-rc.1");
+
+  assert.equal(checkAgainstReleases({ version: "2.0.1-beta.72", baseVersion: "2.0.1", tags: released, publish: true }), null);
+  const warning = checkAgainstReleases({ version: "2.0.0-beta.71", baseVersion: "2.0.0", tags: released, publish: false });
+  assert.equal(warning.level, "warning");
+  assert.match(warning.message, /v2\.0\.0 is already released/);
+  assert.match(warning.message, /e\.g\. 2\.0\.1/);
+  assert.match(warning.message, /apps\/desktop\/src-tauri\/tauri\.conf\.json/);
+  assert.equal(checkAgainstReleases({ version: "2.0.0-beta.71", baseVersion: "2.0.0", tags: released, publish: true }).level, "error");
+  assert.doesNotMatch(checkAgainstReleases({ version: "2.1.0-beta.80", baseVersion: "2.1.0", tags: ["v2.1.0-rc.1"], publish: false }).message, /e\.g\./);
 });
 
 test("extension versions are dotted integers and keep growing", () => {

@@ -369,6 +369,10 @@ Releases: CI (`.github/workflows/build.yml`) versions every build
 with the repository secret `TAURI_SIGNING_PRIVATE_KEY` and publishes pre-releases
 for commits with `[release]` (stable releases for tags without suffix); see
 "Releases & in-app updates" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**After tagging a stable `vX.Y.Z`, set `version` in
+`apps/desktop/src-tauri/tauri.conf.json` to the next version (e.g. `X.Y.(Z+1)`)** –
+otherwise later betas (`X.Y.Z-beta.<run>`) sort below the release and are never
+offered by the updater; CI warns, and refuses to publish such a beta.
 
 ### Project layout
 

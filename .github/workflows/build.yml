@@ -84,9 +84,14 @@ jobs:
       # version>-beta.<run number>. Written into tauri.conf.json (app, NSIS
       # setup, updater) and the extension manifest (<x.y.z>.<run number>)
       # before anything is built – the app embeds the extension.
+      # --check-tags: after a release vX.Y.Z, tauri.conf.json must name the next
+      # version, otherwise X.Y.Z-beta.<run> sorts below vX.Y.Z and is never
+      # offered by the updater – a warning, and an error for builds that publish.
       - name: Determine and set version
         id: version
-        run: node .github/scripts/release-version.mjs --write
+        env:
+          KEYSTEAD_PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]')) }}
+        run: node .github/scripts/release-version.mjs --write --check-tags
 
       - uses: dtolnay/rust-toolchain@stable
 

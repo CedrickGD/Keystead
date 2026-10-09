@@ -676,9 +676,15 @@ mod tests {
         for (status, detail) in [
             (StatusCode::FORBIDDEN, "HTTP 403 Forbidden"),
             (StatusCode::TOO_MANY_REQUESTS, "HTTP 429 Too Many Requests"),
-            (StatusCode::INTERNAL_SERVER_ERROR, "HTTP 500 Internal Server Error"),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "HTTP 500 Internal Server Error",
+            ),
             (StatusCode::BAD_GATEWAY, "HTTP 502 Bad Gateway"),
-            (StatusCode::SERVICE_UNAVAILABLE, "HTTP 503 Service Unavailable"),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "HTTP 503 Service Unavailable",
+            ),
             (StatusCode::UNAUTHORIZED, "HTTP 401 Unauthorized"),
         ] {
             assert_eq!(
