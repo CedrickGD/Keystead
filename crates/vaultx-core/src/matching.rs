@@ -193,17 +193,33 @@ mod tests {
     fn domain_match() {
         use UriMatch::Domain as D;
         assert!(check("https://example.com", D, "https://example.com/login"));
-        assert!(check("https://example.com", D, "https://login.example.com/x?y=1"));
+        assert!(check(
+            "https://example.com",
+            D,
+            "https://login.example.com/x?y=1"
+        ));
         assert!(check("https://www.example.com/a", D, "http://example.com"));
         assert!(check("example.com", D, "https://accounts.example.com/"));
         assert!(check("example.com", D, "http://example.com:8080/"));
         assert!(check("Example.COM", D, "https://EXAMPLE.com"));
-        assert!(check("https://a.example.co.uk", D, "https://b.example.co.uk"));
+        assert!(check(
+            "https://a.example.co.uk",
+            D,
+            "https://b.example.co.uk"
+        ));
         assert!(!check("https://example.com", D, "https://example.org"));
-        assert!(!check("https://example.com", D, "https://example.com.evil.org"));
+        assert!(!check(
+            "https://example.com",
+            D,
+            "https://example.com.evil.org"
+        ));
         assert!(!check("https://example.com", D, "https://notexample.com"));
         assert!(!check("https://a.example.co.uk", D, "https://other.co.uk"));
-        assert!(!check("https://alice.github.io", D, "https://bob.github.io"));
+        assert!(!check(
+            "https://alice.github.io",
+            D,
+            "https://bob.github.io"
+        ));
         assert!(check("münchen.de", D, "https://www.xn--mnchen-3ya.de/"));
     }
 
@@ -240,8 +256,16 @@ mod tests {
         assert!(check("https://example.com", H, "https://example.com/path"));
         assert!(check("example.com", H, "http://example.com/"));
         assert!(check("https://example.com:443", H, "https://example.com/"));
-        assert!(!check("https://example.com", H, "https://login.example.com"));
-        assert!(!check("https://example.com", H, "https://example.com:8443/"));
+        assert!(!check(
+            "https://example.com",
+            H,
+            "https://login.example.com"
+        ));
+        assert!(!check(
+            "https://example.com",
+            H,
+            "https://example.com:8443/"
+        ));
         assert!(check("example.com:8443", H, "https://example.com:8443/"));
         assert!(!check("example.com:8443", H, "https://example.com:9443/"));
         assert!(check("192.168.0.5:8080", H, "http://192.168.0.5:8080/x"));
@@ -263,31 +287,59 @@ mod tests {
             "https://example.com.evil.org/"
         ));
         assert!(!check("https://example.com/app", S, "https://example.com/"));
-        assert!(!check("https://example.com/app", S, "http://example.com/app"));
+        assert!(!check(
+            "https://example.com/app",
+            S,
+            "http://example.com/app"
+        ));
         assert!(check("example.com/app", S, "http://example.com/app/1"));
         assert!(check("example.com/app", S, "https://example.com/app/1"));
         assert!(!check("example.com/app", S, "ftp://example.com/app/1"));
         // Non-http page URLs are allowed for StartsWith/Exact.
-        assert!(check("ftp://files.example.com/", S, "ftp://files.example.com/a"));
+        assert!(check(
+            "ftp://files.example.com/",
+            S,
+            "ftp://files.example.com/a"
+        ));
         assert!(check("custom-thing", S, "custom-thing-and-more"));
     }
 
     #[test]
     fn exact() {
         use UriMatch::Exact as E;
-        assert!(check("https://example.com/login", E, "https://example.com/login"));
+        assert!(check(
+            "https://example.com/login",
+            E,
+            "https://example.com/login"
+        ));
         assert!(check("https://example.com", E, "https://example.com/"));
         assert!(check("https://EXAMPLE.com/a", E, "https://example.com/a"));
-        assert!(!check("https://example.com/login", E, "https://example.com/login?x"));
-        assert!(!check("https://example.com/login", E, "https://example.com/"));
+        assert!(!check(
+            "https://example.com/login",
+            E,
+            "https://example.com/login?x"
+        ));
+        assert!(!check(
+            "https://example.com/login",
+            E,
+            "https://example.com/"
+        ));
         assert!(check("example.com/login", E, "http://example.com/login"));
-        assert!(!check("example.com:80/login", E, "http://example.com/login"));
+        assert!(!check(
+            "example.com:80/login",
+            E,
+            "http://example.com/login"
+        ));
         assert!(check("chrome://settings", E, "chrome://settings"));
     }
 
     #[test]
     fn never_and_empty() {
-        assert!(!check("https://example.com", UriMatch::Never, "https://example.com"));
+        assert!(!check(
+            "https://example.com",
+            UriMatch::Never,
+            "https://example.com"
+        ));
         assert!(!check("", UriMatch::Domain, "https://example.com"));
         assert!(!check("   ", UriMatch::Exact, "   "));
         assert!(!check("https://example.com", UriMatch::Domain, ""));

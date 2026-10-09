@@ -6,7 +6,7 @@ import type { TotpCode } from "../types";
 export type TotpAlgorithm = "SHA-1" | "SHA-256" | "SHA-512";
 
 export interface TotpParams {
-  secret: Uint8Array;
+  secret: Uint8Array<ArrayBuffer>;
   algorithm: TotpAlgorithm;
   digits: number;
   period: number;
@@ -15,7 +15,7 @@ export interface TotpParams {
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 /** RFC 4648 base32 decoding (case-insensitive, ignores spaces, dashes and padding). */
-export function base32Decode(input: string): Uint8Array {
+export function base32Decode(input: string): Uint8Array<ArrayBuffer> {
   const clean = input.replace(/[\s-]/g, "").replace(/=+$/, "").toUpperCase();
   if (!clean) throw new Error("empty secret");
   const out: number[] = [];

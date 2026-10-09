@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Plus, Settings2, Star, Trash2, WandSparkles, X } from "lucide-react";
 import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatch, VaultItem } from "../../lib/types";
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
@@ -440,13 +440,6 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
     ...folders.map((f) => ({ value: f.id, label: f.name })),
   ];
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S" || e.key === "Enter")) {
-      e.preventDefault();
-      onSave();
-    }
-  };
-
   return (
     <form
       className="detail editing"
@@ -454,7 +447,6 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
         e.preventDefault();
         onSave();
       }}
-      onKeyDown={onKeyDown}
       noValidate
     >
       <header className="detail-header">
@@ -559,8 +551,15 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
 
       <footer className="detail-footer">
         {!isNew && (
-          <Button variant="danger-ghost" icon={<Trash2 />} onClick={onDelete} disabled={saving}>
-            {t("item.moveToTrash")}
+          <Button
+            variant="danger-ghost"
+            icon={<Trash2 />}
+            onClick={onDelete}
+            disabled={saving}
+            title={t("item.moveToTrash")}
+            aria-label={t("item.moveToTrash")}
+          >
+            <span className="hide-narrow">{t("item.moveToTrash")}</span>
           </Button>
         )}
         <span className="spacer" />

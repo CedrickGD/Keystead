@@ -167,7 +167,9 @@ function RecoveryUnlock({
       toast.success(t("recovery.unlocked"));
       enterVault(info);
     } catch (err) {
-      setError(err instanceof ApiError && err.code === "wrong_password" ? t("recovery.wrongKey") : errorText(err));
+      if (err instanceof ApiError && err.code === "wrong_password") setError(t("recovery.wrongKey"));
+      else if (err instanceof ApiError && err.code === "not_found") setError(t("recovery.noKeyForVault"));
+      else setError(errorText(err));
     } finally {
       setBusy(false);
     }

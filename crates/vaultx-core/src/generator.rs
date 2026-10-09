@@ -153,7 +153,10 @@ fn generate_password(opts: &GeneratorOptions) -> Result<String> {
     if required > u64::from(opts.length) {
         return Err(Error::invalid("minimums_exceed_length"));
     }
-    let all: Vec<char> = classes.iter().flat_map(|(set, _)| set.iter().copied()).collect();
+    let all: Vec<char> = classes
+        .iter()
+        .flat_map(|(set, _)| set.iter().copied())
+        .collect();
 
     let mut chars: Zeroizing<Vec<char>> = Zeroizing::new(Vec::with_capacity(opts.length as usize));
     for (set, min) in &classes {
@@ -220,9 +223,9 @@ mod tests {
         assert_eq!(list.len(), 7776);
         let unique: HashSet<_> = list.iter().collect();
         assert_eq!(unique.len(), 7776);
-        assert!(list.iter().all(|w| w
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c == '-')));
+        assert!(list
+            .iter()
+            .all(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-')));
         assert_eq!(list.first(), Some(&"abacus"));
         assert_eq!(list.last(), Some(&"zoom"));
     }

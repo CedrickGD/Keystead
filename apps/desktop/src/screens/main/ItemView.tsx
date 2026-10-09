@@ -156,7 +156,7 @@ function Notes({ item }: { item: VaultItem }) {
   if (!item.notes.trim()) return null;
   return (
     <Section title={t("field.notes")}>
-      <FieldRow label={t("field.notes")} value={item.notes} multiline copyLabel={t("field.notes")} sensitive={item.type === "note"} />
+      <FieldRow value={item.notes} multiline copyLabel={t("field.notes")} sensitive={item.type === "note"} />
     </Section>
   );
 }
@@ -185,7 +185,7 @@ function LoginBody({ item }: { item: VaultItem }) {
             return (
               <FieldRow
                 key={idx}
-                label={uris.length === 1 ? t("field.website") : t("field.websiteN", { n: idx + 1 })}
+                label={uris.length === 1 ? undefined : t("field.websiteN", { n: idx + 1 })}
                 value={u.uri}
                 href={href ?? undefined}
                 copyLabel={t("field.url")}
@@ -250,7 +250,7 @@ function IdentityBody({ item }: { item: VaultItem }) {
       )}
       {address && (
         <Section title={t("item.address")}>
-          <FieldRow label={t("field.address")} value={address} multiline copyLabel={t("field.address")} />
+          <FieldRow value={address} multiline copyLabel={t("field.address")} />
         </Section>
       )}
     </>

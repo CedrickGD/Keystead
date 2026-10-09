@@ -7,9 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 use vaultx_core::crypto::{b64_decode, b64_encode};
 use vaultx_core::format::VaultFile;
-use vaultx_core::model::{
-    CardData, Folder, ItemType, LoginData, LoginUri, UriMatch, VaultItem,
-};
+use vaultx_core::model::{CardData, Folder, ItemType, LoginData, LoginUri, UriMatch, VaultItem};
 use vaultx_core::{Error, KdfParams, UnlockedVault, VaultStore};
 
 const PW: &str = "correct horse battery staple";
@@ -45,6 +43,15 @@ fn login(name: &str, user: &str, password: &str, uri: &str) -> VaultItem {
 }
 
 #[test]
+fn types_are_thread_safe() {
+    // The desktop backend keeps these in shared state across threads.
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<UnlockedVault>();
+    assert_send_sync::<VaultStore>();
+    assert_send_sync::<Error>();
+}
+
+#[test]
 fn create_list_and_unlock() {
     let (_dir, store) = store();
     assert!(store.list_vaults().unwrap().is_empty());
@@ -64,8 +71,14 @@ fn create_list_and_unlock() {
     let v = store.unlock(b.id(), PW).unwrap();
     assert!(v.items().is_empty());
     assert_eq!(v.info(), b.info());
-    assert!(matches!(store.unlock(a.id(), "wrong"), Err(Error::WrongPassword)));
-    assert!(matches!(store.unlock(a.id(), ""), Err(Error::WrongPassword)));
+    assert!(matches!(
+        store.unlock(a.id(), "wrong"),
+        Err(Error::WrongPassword)
+    ));
+    assert!(matches!(
+        store.unlock(a.id(), ""),
+        Err(Error::WrongPassword)
+    ));
     assert!(matches!(
         store.unlock("00000000-0000-4000-8000-000000000000", PW),
         Err(Error::NotFound(_))
@@ -114,8 +127,13 @@ fn list_skips_foreign_and_broken_files() {
 fn plaintext_never_on_disk() {
     let (_dir, store) = store();
     let mut v = create(&store, "Geheim");
-    v.save_item(login("Bank", "max", "Sup3r-Geheim-Passwort", "bank.example"))
-        .unwrap();
+    v.save_item(login(
+        "Bank",
+        "max",
+        "Sup3r-Geheim-Passwort",
+        "bank.example",
+    ))
+    .unwrap();
     let raw = fs::read_to_string(v.path()).unwrap();
     assert!(!raw.contains("Sup3r-Geheim-Passwort"));
     assert!(!raw.contains("Bank"));
@@ -152,11 +170,37 @@ fn items_crud_and_persistence() {
     assert!(updated.updated_at >= saved.updated_at);
     assert_eq!(updated.password_history.len(), 1);
     assert_eq!(updated.password_history[0].password, "pw-1");
-    assert!(updated.login.as_ref().unwrap().password_revised_at.is_some());
+    assert!(updated
+        .login
+        .as_ref()
+        .unwrap()
+        .password_revised_at
+        .is_some());
 
-    // Unchanged password → no new history entry.
-    let same = v.save_item(updated.clone()).unwrap();
+    // Unchanged password → no new history entry; passwordRevisedAt is
+    // maintained by the core, whatever the client sends.
+    let mut unchanged = updated.clone();
+    if let Some(l) = unchanged.login.as_mut() {
+        l.password_revised_at = None;
+    }
+    let same = v.save_item(unchanged).unwrap();
     assert_eq!(same.password_history.len(), 1);
+    assert_eq!(
+        same.login.as_ref().unwrap().password_revised_at,
+        updated.login.as_ref().unwrap().password_revised_at
+    );
+    let mut fresh = login("Fresh", "f", "f", "");
+    if let Some(l) = fresh.login.as_mut() {
+        l.password_revised_at = Some(5);
+    }
+    assert_eq!(
+        v.save_item(fresh)
+            .unwrap()
+            .login
+            .unwrap()
+            .password_revised_at,
+        None
+    );
 
     // History is capped at 10, newest first.
     let mut cur = same;
@@ -202,7 +246,7 @@ fn items_crud_and_persistence() {
     v.trash_item(&odd.id).unwrap();
     assert_eq!(v.item(&odd.id).unwrap().deleted_at, trashed_at);
     assert!(v.summaries().iter().all(|s| s.id != odd.id));
-    assert_eq!(v.items().len(), 3);
+    assert_eq!(v.items().len(), 4);
     v.restore_item(&odd.id).unwrap();
     assert!(v.item(&odd.id).unwrap().deleted_at.is_none());
     // Saving keeps the server-side trash state.
@@ -332,7 +376,11 @@ fn generator_history_is_capped() {
         Err(Error::InvalidInput(_))
     ));
     v.clear_generator_history().unwrap();
-    assert!(store.unlock(v.id(), PW).unwrap().generator_history().is_empty());
+    assert!(store
+        .unlock(v.id(), PW)
+        .unwrap()
+        .generator_history()
+        .is_empty());
 }
 
 #[test]
@@ -353,7 +401,10 @@ fn change_master_password() {
     v.change_master_password(PW, "neues Passwort ✓").unwrap();
     assert!(v.verify_master_password("neues Passwort ✓"));
     assert!(!v.verify_master_password(PW));
-    assert!(matches!(store.unlock(v.id(), PW), Err(Error::WrongPassword)));
+    assert!(matches!(
+        store.unlock(v.id(), PW),
+        Err(Error::WrongPassword)
+    ));
     let again = store.unlock(v.id(), "neues Passwort ✓").unwrap();
     assert_eq!(again.items().len(), 1);
 }
@@ -375,10 +426,11 @@ fn recovery_key_flow() {
     assert!(store.list_vaults().unwrap()[0].has_recovery_key);
 
     // Wrong code / malformed code / empty new password.
+    let rest = &code[1..];
     let wrong = if code.starts_with('0') {
-        format!("1{}", &code[1..])
+        format!("1{rest}")
     } else {
-        format!("0{}", &code[1..])
+        format!("0{rest}")
     };
     assert!(matches!(
         store.unlock_with_recovery_key(v.id(), &wrong, "new"),
@@ -399,7 +451,10 @@ fn recovery_key_flow() {
         .unlock_with_recovery_key(v.id(), &typed, "after-recovery")
         .unwrap();
     assert_eq!(r.items().len(), 1);
-    assert!(matches!(store.unlock(v.id(), PW), Err(Error::WrongPassword)));
+    assert!(matches!(
+        store.unlock(v.id(), PW),
+        Err(Error::WrongPassword)
+    ));
     let mut u = store.unlock(v.id(), "after-recovery").unwrap();
     assert!(u.has_recovery_key());
     // The recovery key remains valid.
@@ -540,7 +595,8 @@ fn tamper_detection() {
     let original = fs::read(&path).unwrap();
 
     type Mutation = Box<dyn Fn(&mut Value)>;
-    let cases: Vec<(&str, Mutation, fn(&Error) -> bool)> = vec![
+    type Expect = fn(&Error) -> bool;
+    let cases: Vec<(&str, Mutation, Expect)> = vec![
         (
             "payload ciphertext first byte",
             Box::new(|j| flip_b64(&mut j["payload"]["ciphertext"], 0)),
@@ -616,7 +672,7 @@ fn tamper_detection() {
 
     // Truncated file.
     fs::write(&path, &original[..original.len() / 2]).unwrap();
-    assert!(store.unlock(&id, PW).is_err());
+    assert!(matches!(store.unlock(&id, PW), Err(Error::Corrupt(_))));
 
     // Changing the id consistently (file name too) breaks the key wrapping.
     fs::write(&path, &original).unwrap();
@@ -658,9 +714,9 @@ fn debug_output_has_no_secrets() {
     assert!(dbg.contains("UnlockedVault"));
 }
 
-/// Real-world parameters (64 MiB, t=3, p=4).
+/// Real-world parameters (64 MiB, t=3, p=4); ~0.4 s thanks to the
+/// opt-level overrides for the crypto crates in the workspace Cargo.toml.
 #[test]
-#[ignore = "slow: uses the default Argon2id parameters"]
 fn default_kdf_params_round_trip() {
     let (_dir, store) = store();
     let started = std::time::Instant::now();
@@ -670,6 +726,9 @@ fn default_kdf_params_round_trip() {
     assert_eq!(u.items().len(), 1);
     let file = VaultFile::read(v.path()).unwrap();
     assert_eq!(file.kdf_params(), KdfParams::default());
-    assert!(matches!(store.unlock(v.id(), "x"), Err(Error::WrongPassword)));
+    assert!(matches!(
+        store.unlock(v.id(), "x"),
+        Err(Error::WrongPassword)
+    ));
     eprintln!("default params: {:?}", started.elapsed());
 }

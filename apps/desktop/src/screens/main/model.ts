@@ -8,7 +8,11 @@ export type Filter =
   | { kind: "folder"; id: string }
   | { kind: "trash" };
 
-export type View = { kind: "vault"; filter: Filter } | { kind: "generator" } | { kind: "health" } | { kind: "settings" };
+export type View =
+  | { kind: "vault"; filter: Filter }
+  | { kind: "generator" }
+  | { kind: "health" }
+  | { kind: "settings"; section?: string };
 
 export type SortKey = "name" | "updated";
 

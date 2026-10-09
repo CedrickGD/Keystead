@@ -95,7 +95,7 @@ export function TotpValue({ totp }: { totp: LiveTotp }) {
       <span className="totp-code selectable" aria-label={t("item.totpCodeAria", { seconds: totp.remaining })}>
         {formatTotp(totp.code.code)}
       </span>
-      <TotpRing remaining={totp.remaining} period={totp.code.period} />
+      <TotpRing key={totp.code.code} remaining={totp.remaining} period={totp.code.period} />
     </div>
   );
 }

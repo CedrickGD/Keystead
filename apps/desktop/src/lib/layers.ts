@@ -45,14 +45,6 @@ export function hasModalLayer(): boolean {
   return layers.some((l) => l.modal);
 }
 
-export function hasAnyLayer(): boolean {
-  return layers.length > 0;
-}
-
-export function isTopLayer(id: number): boolean {
-  return layers[layers.length - 1]?.id === id;
-}
-
 /** Registers an Escape handler while `active` is true. */
 export function useEscapeLayer(onEscape: () => void, active = true, modal = false): void {
   const handler = useRef(onEscape);

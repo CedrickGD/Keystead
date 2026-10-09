@@ -14,8 +14,8 @@ use vaultx_core::import::{
     legacy_scan_dir,
 };
 use vaultx_core::model::{
-    CardData, CustomField, FieldKind, Folder, GeneratedPassword, IdentityData, ItemType,
-    LoginData, LoginUri, PasswordHistoryEntry, UriMatch, VaultData, VaultItem,
+    CardData, CustomField, FieldKind, Folder, GeneratedPassword, IdentityData, ItemType, LoginData,
+    LoginUri, PasswordHistoryEntry, UriMatch, VaultData, VaultItem,
 };
 use vaultx_core::{Error, KdfParams, VaultStore};
 
@@ -46,7 +46,10 @@ fn legacy_v2_with_mac() {
     let (items, warnings) =
         import_legacy_file(&fixture("legacy_v2.json"), "Korrekt-Pferd-42!").unwrap();
     assert_eq!(items.len(), 3);
-    assert!(warnings.iter().any(|w| w.contains("TotpSecret")), "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("TotpSecret")),
+        "{warnings:?}"
+    );
 
     let gh = &items[0];
     assert_eq!(gh.item_type, ItemType::Login);
@@ -182,9 +185,17 @@ fn legacy_scan_reads_accounts_and_vault_files() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     fs::copy(fixture("legacy_accounts.json"), d.join("accounts.json")).unwrap();
-    fs::copy(fixture("legacy_v2.json"), d.join("vault_Privat_1A2B3C4D.json")).unwrap();
+    fs::copy(
+        fixture("legacy_v2.json"),
+        d.join("vault_Privat_1A2B3C4D.json"),
+    )
+    .unwrap();
     fs::write(d.join("vault_Kaputt_00000000.json"), b"not json").unwrap();
-    fs::copy(fixture("legacy_v1.json"), d.join("vault_Extra_DEADBEEF.json")).unwrap();
+    fs::copy(
+        fixture("legacy_v1.json"),
+        d.join("vault_Extra_DEADBEEF.json"),
+    )
+    .unwrap();
     // Without AccountName the name comes from the file name.
     let text = fs::read_to_string(fixture("legacy_v1.json")).unwrap();
     let mut meta: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap();
@@ -335,7 +346,10 @@ fn csv_generic_aliases_and_excel_hint() {
 #[test]
 fn csv_errors() {
     assert!(matches!(import_csv(""), Err(Error::InvalidInput(_))));
-    assert!(matches!(import_csv("\u{feff}\n\n"), Err(Error::InvalidInput(_))));
+    assert!(matches!(
+        import_csv("\u{feff}\n\n"),
+        Err(Error::InvalidInput(_))
+    ));
     assert!(matches!(
         import_csv("foo,bar,baz\n1,2,3\n"),
         Err(Error::InvalidInput(_))
@@ -651,7 +665,10 @@ fn csv_round_trip() {
         "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp"
     ));
     assert!(!text.contains("Im Papierkorb"));
-    assert!(!text.contains("4111111111111111"), "cards are not exported to CSV");
+    assert!(
+        !text.contains("4111111111111111"),
+        "cards are not exported to CSV"
+    );
     let (items, folders, warnings) = import_csv(&text).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(items.len(), 2);
@@ -701,7 +718,11 @@ fn encrypted_export_round_trip() {
     assert_eq!(folders, data.folders);
     // Generator history is never exported.
     let key = file.unwrap_key("export-pw").unwrap();
-    assert!(file.decrypt_payload(&key).unwrap().generator_history.is_empty());
+    assert!(file
+        .decrypt_payload(&key)
+        .unwrap()
+        .generator_history
+        .is_empty());
     assert!(matches!(
         import_vaultx_export(&path, "wrong"),
         Err(Error::WrongPassword)
@@ -733,7 +754,9 @@ fn import_into_vault_and_export_files() {
     let csv_path = dir.path().join("bw.csv");
     // Windows-1252 encoded file (as Excel writes it) with an umlaut.
     let mut csv_bytes = b"folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\r\n".to_vec();
-    csv_bytes.extend_from_slice(b"Social,,login,M\xfcnchen,,,0,https://m.example,u,p,\r\n,,,,,,,,,,\r\n");
+    csv_bytes.extend_from_slice(
+        b"Social,,login,M\xfcnchen,,,0,https://m.example,u,p,\r\n,,,,,,,,,,\r\n",
+    );
     csv_bytes.extend_from_slice(b",,login,,,,0,,,,\r\n");
     fs::write(&csv_path, &csv_bytes).unwrap();
     let report = import_into(&mut vault, "csv", &csv_path, None).unwrap();
@@ -756,7 +779,11 @@ fn import_into_vault_and_export_files() {
     assert_eq!(report.skipped, 3);
     assert!(vault.folders().iter().any(|f| f.name == "Banking"));
     let bank = vault.items().iter().find(|i| i.name == "Bank").unwrap();
-    let banking = vault.folders().iter().find(|f| f.name == "Banking").unwrap();
+    let banking = vault
+        .folders()
+        .iter()
+        .find(|f| f.name == "Banking")
+        .unwrap();
     assert_eq!(bank.folder_id.as_deref(), Some(banking.id.as_str()));
 
     let report = import_into(
@@ -802,14 +829,16 @@ fn import_into_vault_and_export_files() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(out.join("x.csv")).unwrap().permissions().mode();
+        let mode = fs::metadata(out.join("x.csv"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o077, 0, "plain-text exports are private");
     }
 }
 
 /// Encrypted export with the real (default) KDF parameters.
 #[test]
-#[ignore = "slow: uses the default Argon2id parameters"]
 fn encrypted_export_default_params() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("e.vaultx");

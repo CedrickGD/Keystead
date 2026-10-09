@@ -123,10 +123,8 @@ pub fn health_report_at(data: &VaultData, now: i64) -> HealthReport {
             .push(item);
     }
 
-    let mut reused: Vec<Vec<&VaultItem>> = by_password
-        .into_values()
-        .filter(|g| g.len() >= 2)
-        .collect();
+    let mut reused: Vec<Vec<&VaultItem>> =
+        by_password.into_values().filter(|g| g.len() >= 2).collect();
     for g in &mut reused {
         g.sort_by_cached_key(|i| (i.name.to_lowercase(), i.id.clone()));
     }

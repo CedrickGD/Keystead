@@ -53,9 +53,9 @@ pub fn is_portable() -> bool {
 /// executable), whether or not it exists. `None` if the executable path
 /// cannot be determined.
 pub fn portable_dir() -> Option<PathBuf> {
+    // `current_exe` already resolves symlinks on Linux; it is deliberately
+    // not canonicalised (that would yield `\\?\` paths on Windows).
     let exe = std::env::current_exe().ok()?;
-    // Resolve symlinks so a linked binary uses the folder next to the real one.
-    let exe = exe.canonicalize().unwrap_or(exe);
     Some(exe.parent()?.join(PORTABLE_DIR_NAME))
 }
 
@@ -112,7 +112,7 @@ mod tests {
     fn portable_dir_is_next_to_exe() {
         let p = portable_dir().unwrap();
         assert_eq!(p.file_name().unwrap(), PORTABLE_DIR_NAME);
-        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let exe = std::env::current_exe().unwrap();
         assert_eq!(p.parent(), exe.parent());
     }
 

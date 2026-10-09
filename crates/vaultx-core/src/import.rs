@@ -450,10 +450,16 @@ pub fn import_legacy_file(path: &Path, password: &str) -> Result<(Vec<VaultItem>
 
 /// Display name of a legacy vault file `vault_<name>_<8 hex>.json`.
 fn legacy_name_from_file(file_name: &str) -> String {
-    let base = file_name
-        .strip_suffix(".json")
-        .or_else(|| file_name.strip_suffix(".JSON"))
-        .unwrap_or(file_name);
+    let base = match file_name.len().checked_sub(5) {
+        Some(i)
+            if file_name
+                .get(i..)
+                .is_some_and(|e| e.eq_ignore_ascii_case(".json")) =>
+        {
+            &file_name[..i]
+        }
+        _ => file_name,
+    };
     if let Some(rest) = base.strip_prefix("vault_") {
         if let Some((name, hash)) = rest.rsplit_once('_') {
             if hash.len() == 8 && hash.chars().all(|c| c.is_ascii_hexdigit()) && !name.is_empty() {
@@ -590,7 +596,14 @@ const ALIAS_USERNAME: &[&str] = &[
 const ALIAS_PASSWORD: &[&str] = &["password", "pass", "password_value", "passwords", "secret"];
 const ALIAS_EMAIL: &[&str] = &["email", "email_address", "e-mail"];
 const ALIAS_PHONE: &[&str] = &["phone", "phone_number", "tel"];
-const ALIAS_NOTES: &[&str] = &["notes", "note", "comment", "comments", "memo", "description"];
+const ALIAS_NOTES: &[&str] = &[
+    "notes",
+    "note",
+    "comment",
+    "comments",
+    "memo",
+    "description",
+];
 const ALIAS_OTHER: &[&str] = &["other", "extra", "misc"];
 const ALIAS_TOTP: &[&str] = &["totp", "otp", "login_totp", "otpauth", "2fa"];
 const ALIAS_FOLDER: &[&str] = &["folder", "group", "grouping"];
@@ -643,7 +656,11 @@ fn detect_delimiter(header_line: &str) -> u8 {
 }
 
 fn normalize_header(h: &str) -> String {
-    util::strip_bom(h).trim().trim_matches('"').trim().to_lowercase()
+    util::strip_bom(h)
+        .trim()
+        .trim_matches('"')
+        .trim()
+        .to_lowercase()
 }
 
 /// A CSV row addressed by (normalised) column name.
@@ -752,7 +769,8 @@ fn csv_bitwarden_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
     let name = row.get("name").trim().to_owned();
     let notes = row.get("notes");
     let fields = parse_bitwarden_csv_fields(&row.get("fields"));
-    let has_login = !username.is_empty() || !password.is_empty() || !uris.is_empty() || !totp.is_empty();
+    let has_login =
+        !username.is_empty() || !password.is_empty() || !uris.is_empty() || !totp.is_empty();
     if !has_login && name.is_empty() && notes.trim().is_empty() && fields.is_empty() {
         return None;
     }
@@ -769,7 +787,7 @@ fn csv_bitwarden_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
         favorite: truthy(&row.get("favorite")),
         folder_id: folders.id_for(&row.get("folder")),
         fields,
-        login: (item_type == ItemType::Login).then(|| LoginData {
+        login: (item_type == ItemType::Login).then_some(LoginData {
             username,
             password,
             uris,
@@ -829,9 +847,11 @@ fn csv_generic_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
     let notes = row.first_raw(ALIAS_NOTES);
     let other = row.first(ALIAS_OTHER);
     let totp = row.first(ALIAS_TOTP);
-    if [&title, &url, &username, &password, &email, &phone, &notes, &other, &totp]
-        .iter()
-        .all(|s| s.trim().is_empty())
+    if [
+        &title, &url, &username, &password, &email, &phone, &notes, &other, &totp,
+    ]
+    .iter()
+    .all(|s| s.trim().is_empty())
     {
         return None;
     }
@@ -850,7 +870,11 @@ fn csv_generic_row(row: &Row, folders: &mut FolderSet) -> Option<VaultItem> {
         fields.push(text_field("Sonstiges", &other));
     }
     let is_note = url.is_empty() && username.is_empty() && password.is_empty() && totp.is_empty();
-    let item_type = if is_note { ItemType::Note } else { ItemType::Login };
+    let item_type = if is_note {
+        ItemType::Note
+    } else {
+        ItemType::Login
+    };
     let mut item = VaultItem {
         item_type,
         name: if title.is_empty() { url.clone() } else { title },
@@ -1013,7 +1037,9 @@ fn bw_item(obj: &Map<String, Value>, out: &mut Parsed) {
         name.trim().to_owned()
     };
     if obj.get("deletedDate").is_some_and(|v| !v.is_null()) {
-        out.skip(format!("\"{label}\" skipped: it is in the Bitwarden trash."));
+        out.skip(format!(
+            "\"{label}\" skipped: it is in the Bitwarden trash."
+        ));
         return;
     }
     let item_type = match get_i64(obj.get("type")) {
@@ -1067,7 +1093,10 @@ fn bw_item(obj: &Map<String, Value>, out: &mut Parsed) {
                     .and_then(Value::as_str)
             })
             .map(str::to_owned),
-        favorite: obj.get("favorite").and_then(Value::as_bool).unwrap_or(false),
+        favorite: obj
+            .get("favorite")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         notes: get_str(obj, "notes"),
         created_at: timestamp(obj.get("creationDate")).unwrap_or(0),
         updated_at: timestamp(obj.get("revisionDate")).unwrap_or(0),

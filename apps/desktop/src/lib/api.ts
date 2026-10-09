@@ -164,6 +164,8 @@ export const events = {
   onVaultLocked: (handler: (payload: LockedPayload) => void) =>
     subscribe<LockedPayload>("vault://locked", handler),
   onVaultChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://changed", () => handler()),
+  /** The vault was unlocked outside the UI (browser extension). */
+  onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
   onPairingRequest: (handler: (payload: PairingRequest) => void) =>
     subscribe<PairingRequest>("bridge://pairing-request", handler),
   onUnlockRequest: (handler: () => void) => subscribe<Record<string, never>>("bridge://unlock-request", () => handler()),

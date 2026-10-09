@@ -319,11 +319,13 @@ function saveItem(input: VaultItem): VaultItem {
   const vault = openVault();
   if (!input || typeof input !== "object") fail("invalid_input:item");
   if (!["login", "card", "identity", "note"].includes(input.type)) fail("invalid_input:unknown item type");
-  if (!input.name?.trim()) fail("invalid_input:name must not be empty");
-  if (input.folderId && !vault.data.folders.some((f) => f.id === input.folderId)) fail("not_found");
+  if (!input.name?.trim()) fail("invalid_input:name_required");
+  if (input.name.trim().length > 200) fail("invalid_input:name_too_long");
   const now = Date.now();
   const item = normalizeItem(input);
   item.name = item.name.trim();
+  // Like the core: an unknown folder id is dropped instead of failing.
+  if (item.folderId && !vault.data.folders.some((f) => f.id === item.folderId)) item.folderId = null;
   const idx = item.id ? vault.data.items.findIndex((i) => i.id === item.id) : -1;
   const existing = idx >= 0 ? vault.data.items[idx] : undefined;
   if (!existing) {
@@ -466,8 +468,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "create_vault": {
       const name = str(args, "name").trim();
       const password = str(args, "masterPassword");
-      if (!name) fail("invalid_input:name must not be empty");
-      if (!password) fail("invalid_input:master password must not be empty");
+      if (!name) fail("invalid_input:name_required");
+      if (!password) fail("invalid_input:password_empty");
       await sleep(450);
       const id = uuid();
       const now = Date.now();
@@ -500,8 +502,10 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const newPassword = str(args, "newMasterPassword");
       await sleep(500);
       if (!vault) fail("not_found");
-      if (!vault.recoveryKey || normalizeRecovery(vault.recoveryKey) !== normalizeRecovery(key)) fail("wrong_password");
-      if (!newPassword) fail("invalid_input:master password must not be empty");
+      if (!/^[0-9A-Z]{25}$/.test(normalizeRecovery(key))) fail("invalid_input:recovery_key_format");
+      if (!vault.recoveryKey) fail("not_found");
+      if (normalizeRecovery(vault.recoveryKey) !== normalizeRecovery(key)) fail("wrong_password");
+      if (!newPassword) fail("invalid_input:password_empty");
       vault.password = newPassword;
       touch(vault);
       s.unlockedId = vault.info.id;
@@ -559,7 +563,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const vault = openVault();
       const folder = args.folder as Folder | undefined;
       const name = folder?.name?.trim() ?? "";
-      if (!folder || !name) fail("invalid_input:folder name must not be empty");
+      if (!folder || !name) fail("invalid_input:name_required");
       const existing = folder.id ? vault.data.folders.find((f) => f.id === folder.id) : undefined;
       if (existing) {
         existing.name = name;
@@ -614,7 +618,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       try {
         return await totpNow(str(args, "seed"));
       } catch {
-        fail("invalid_input:invalid TOTP secret");
+        fail("invalid_input:totp_secret");
       }
 
     case "copy_text":
@@ -630,7 +634,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const next = str(args, "newPassword");
       await sleep(400);
       if (current !== vault.password) fail("wrong_password");
-      if (!next) fail("invalid_input:master password must not be empty");
+      if (!next) fail("invalid_input:password_empty");
       vault.password = next;
       touch(vault);
       return null;
@@ -656,7 +660,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "rename_vault": {
       const vault = openVault();
       const name = str(args, "name").trim();
-      if (!name) fail("invalid_input:name must not be empty");
+      if (!name) fail("invalid_input:name_required");
       vault.info.name = name;
       touch(vault);
       return clone(vault.info);
@@ -686,7 +690,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const format = str(args, "format") as ImportFormat;
       const path = str(args, "path");
       const password = optStr(args, "password");
-      if (!path) fail("invalid_input:path must not be empty");
+      if (!path) fail("invalid_input:path_required");
       await sleep(500);
       const now = Date.now();
       let report: ImportReport;
@@ -726,7 +730,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       await sleep(400);
       if (str(args, "masterPassword") !== vault.password) fail("wrong_password");
       if (!["vaultx", "csv", "bitwarden_json"].includes(format)) fail(`unsupported:${String(format)}`);
-      if (format === "vaultx" && !password) fail("invalid_input:export password must not be empty");
+      if (format === "vaultx" && !password) fail("invalid_input:password_required");
       return null;
     }
 

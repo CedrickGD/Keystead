@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "VaultX",
+  "short_name": "VaultX",
+  "version": "2.0.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "de",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7AJ6+TGzIBUjiDnEfo1F9ZegyKL48J4jlxtaJ3KcDCwzjpHkujH88rYUoZX/driEkUo51ob53XUJteH4PXNqSeMfOxFUHg1KNr3XdeABicrr052cFcLBZ7cDdRt1kxe84QjnAxPEKGOmJHvVTd68+Z7ocui9kS6ls1A2MB3TXlS3BWAcGrKirxi5DN5YLjyCxeNskvF+Z/nafKfuHWwUOhFHmAZvt1wfB5QmOsMNF1NiwatgoMaq3LUJPrOW/AsSL8+cYr0y0wwMIxQ/taR/zMa4VMx5Ch//NWIkGZMusDBnn85oStbi0AdZNq91y7+MC8Qf7OeBrECUBT3dyXZRdwIDAQAB",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["nativeMessaging", "storage", "activeTab", "scripting", "contextMenus", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["lib/forms.js", "content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "__MSG_actionTitle__",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "__MSG_cmdOpenPopup__"
+    },
+    "autofill": {
+      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "description": "__MSG_cmdAutofill__"
+    },
+    "generate": {
+      "suggested_key": { "default": "Ctrl+Shift+9", "mac": "Command+Shift+9" },
+      "description": "__MSG_cmdGenerate__"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'"
+  }
+}

@@ -75,6 +75,9 @@ function AppRoot({
   settingsRef.current = settings;
   const vaultsRef = useRef<VaultInfo[]>([]);
   vaultsRef.current = boot?.vaults ?? [];
+  // Boot must run once – not again when the language (and thus errorText) changes.
+  const errorTextRef = useRef(errorText);
+  errorTextRef.current = errorText;
 
   const load = useCallback(async () => {
     setScreen("loading");
@@ -95,10 +98,10 @@ function AppRoot({
         setScreen(vaults.length === 0 ? "welcome" : "unlock");
       }
     } catch (err) {
-      setBootError(errorText(err));
+      setBootError(errorTextRef.current(err));
       setScreen("error");
     }
-  }, [errorText, setSettings]);
+  }, [setSettings]);
 
   useEffect(() => {
     void load();
@@ -175,6 +178,9 @@ function AppRoot({
     },
     [refreshVaults, updateSettings],
   );
+
+  // The browser extension unlocked the vault: leave the unlock screen.
+  useEffect(() => subscribeEffect(events.onVaultUnlocked((info) => enterVault(info))), [enterVault]);
 
   const lock = useCallback(async () => {
     try {

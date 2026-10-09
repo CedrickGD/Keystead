@@ -161,7 +161,10 @@ pub(crate) fn parse_timestamp_ms(s: &str) -> Option<i64> {
     if let Some(inner) = s
         .strip_prefix("/Date(")
         .and_then(|r| r.strip_suffix(")/"))
-        .or_else(|| s.strip_prefix("\\/Date(").and_then(|r| r.strip_suffix(")\\/")))
+        .or_else(|| {
+            s.strip_prefix("\\/Date(")
+                .and_then(|r| r.strip_suffix(")\\/"))
+        })
     {
         // An optional "+0100" suffix only describes the original time zone.
         let digits_end = inner
@@ -295,10 +298,7 @@ mod tests {
         assert_eq!(parse_timestamp_ms("2024-01-15T10:30:00"), Some(base));
         assert_eq!(parse_timestamp_ms("2024-01-15T10:30:00Z"), Some(base));
         assert_eq!(parse_timestamp_ms("2024-01-15 10:30"), Some(base));
-        assert_eq!(
-            parse_timestamp_ms("2024-01-15T11:30:00+01:00"),
-            Some(base)
-        );
+        assert_eq!(parse_timestamp_ms("2024-01-15T11:30:00+01:00"), Some(base));
         assert_eq!(parse_timestamp_ms("2024-01-15T05:30:00-0500"), Some(base));
         assert_eq!(
             parse_timestamp_ms("2024-01-15T10:30:00.1234567Z"),
@@ -309,10 +309,7 @@ mod tests {
             Some(base - (10 * 3600 + 1800) * 1000)
         );
         assert_eq!(parse_timestamp_ms("/Date(1705314600000)/"), Some(base));
-        assert_eq!(
-            parse_timestamp_ms("/Date(1705314600000+0100)/"),
-            Some(base)
-        );
+        assert_eq!(parse_timestamp_ms("/Date(1705314600000+0100)/"), Some(base));
         assert_eq!(parse_timestamp_ms("/Date(-1000)/"), Some(-1000));
     }
 

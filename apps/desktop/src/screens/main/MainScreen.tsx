@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MousePointerClick } from "lucide-react";
+import { FileUp, MousePointerClick } from "lucide-react";
 import { ApiError, api, events, subscribeEffect } from "../../lib/api";
 import type { Folder, ItemType, VaultItem } from "../../lib/types";
 import { cloneItem, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
@@ -10,7 +10,7 @@ import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
 import { EmptyState } from "../../components/EmptyState";
 import { Sidebar } from "./Sidebar";
-import { ItemList, NewItemButton } from "./ItemList";
+import { ItemList } from "./ItemList";
 import { ItemView } from "./ItemView";
 import { ItemEditor } from "./ItemEditor";
 import { countItems, filterItems, visibleItems, type Filter, type SortKey, type View } from "./model";
@@ -28,6 +28,9 @@ interface EditState {
 
 const ACTIVITY_THROTTLE_MS = 30_000;
 
+const folderCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+const byName = (a: Folder, b: Folder) => folderCollator.compare(a.name, b.name);
+
 export function MainScreen() {
   const { t, errorText } = useT();
   const toast = useToast();
@@ -44,7 +47,7 @@ export function MainScreen() {
   const [query, setQuery] = useState("");
   const [sort, setSortState] = useState<SortKey>(() => (localPrefs.get("sort") === "updated" ? "updated" : "name"));
   const searchRef = useRef<HTMLInputElement>(null);
-  const detailRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
 
   const setSort = (next: SortKey) => {
     setSortState(next);
@@ -57,7 +60,7 @@ export function MainScreen() {
     try {
       const [loadedItems, loadedFolders] = await Promise.all([api.listItems(), api.listFolders()]);
       setItems(loadedItems);
-      setFolders(loadedFolders);
+      setFolders([...loadedFolders].sort(byName));
     } catch (err) {
       if (err instanceof ApiError && err.code === "locked") return; // the lock event handles navigation
       toast.error(errorText(err));
@@ -92,7 +95,7 @@ export function MainScreen() {
 
   const allItems = useMemo(() => items ?? [], [items]);
   const counts = useMemo(() => countItems(allItems), [allItems]);
-  const filter: Filter = view.kind === "vault" ? view.filter : { kind: "all" };
+  const filter = useMemo<Filter>(() => (view.kind === "vault" ? view.filter : { kind: "all" }), [view]);
   const terms = useMemo(() => searchTerms(query), [query]);
   const visible = useMemo(() => visibleItems(allItems, filter, terms, sort), [allItems, filter, terms, sort]);
   const totalInFilter = useMemo(() => filterItems(allItems, filter).length, [allItems, filter]);
@@ -302,7 +305,7 @@ export function MainScreen() {
   const createFolder = async (name: string) => {
     try {
       const folder = await api.saveFolder({ id: "", name });
-      setFolders((list) => [...list, folder].sort((a, b) => a.name.localeCompare(b.name)));
+      setFolders((list) => [...list, folder].sort(byName));
       toast.success(t("folder.created", { name: folder.name }));
     } catch (err) {
       toast.error(errorText(err));
@@ -312,7 +315,7 @@ export function MainScreen() {
   const renameFolder = async (folder: Folder, name: string) => {
     try {
       const saved = await api.saveFolder({ ...folder, name });
-      setFolders((list) => list.map((f) => (f.id === saved.id ? saved : f)).sort((a, b) => a.name.localeCompare(b.name)));
+      setFolders((list) => list.map((f) => (f.id === saved.id ? saved : f)).sort(byName));
     } catch (err) {
       toast.error(errorText(err));
     }
@@ -346,7 +349,10 @@ export function MainScreen() {
     if (hasModalLayer()) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
-    if (mod && !e.shiftKey && !e.altKey && key === "f") {
+    if (editing && mod && (key === "s" || key === "enter")) {
+      e.preventDefault();
+      void saveEdit();
+    } else if (mod && !e.shiftKey && !e.altKey && key === "f") {
       e.preventDefault();
       if (view.kind !== "vault") {
         void guard(() => {
@@ -426,10 +432,15 @@ export function MainScreen() {
     if (items && counts.all === 0 && filter.kind !== "trash") {
       return (
         <EmptyState
-          icon={<MousePointerClick />}
+          icon={<FileUp />}
           title={t("detail.firstTitle")}
           hint={t("detail.firstHint")}
-          action={<NewItemButton onNew={startNew} />}
+          action={
+            <button type="button" className="btn btn-secondary" onClick={() => navigate({ kind: "settings", section: "data" })}>
+              <FileUp />
+              {t("detail.importCta")}
+            </button>
+          }
         />
       );
     }
@@ -507,7 +518,7 @@ export function MainScreen() {
           }}
         />
       )}
-      {view.kind === "settings" && <SettingsPage />}
+      {view.kind === "settings" && <SettingsPage initialSection={view.section} />}
     </div>
   );
 }

@@ -41,12 +41,8 @@ export function StrengthMeter({ password, strength: given }: { password: string;
   // One bar for "very weak", all four for "very strong".
   const filled = score < 0 ? 0 : Math.max(1, score);
   return (
-    <div
-      className="strength"
-      data-score={score >= 0 ? score : undefined}
-      title={strength?.crackTime ? t("strength.crackTime", { time: strength.crackTime }) : undefined}
-    >
-      <div className="strength-bars" aria-hidden>
+    <div className="strength" data-score={score >= 0 ? score : undefined}>
+      <div className="strength-bars" aria-hidden style={score < 0 ? { visibility: "hidden" } : undefined}>
         {[1, 2, 3, 4].map((i) => (
           <div key={i} className={`strength-bar ${i <= filled ? "on" : ""}`} />
         ))}

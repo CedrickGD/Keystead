@@ -59,7 +59,7 @@ function shuffle<T>(arr: T[]): T[] {
 
 export function generate(opts: GeneratorOptions): string {
   if (opts.kind === "passphrase") {
-    if (opts.words < 3 || opts.words > 20) throw new Error("invalid_input:words must be between 3 and 20");
+    if (opts.words < 3 || opts.words > 20) throw new Error("invalid_input:words");
     const words = Array.from({ length: opts.words }, () => {
       const word = WORDS[randomInt(WORDS.length)] ?? "word";
       return opts.capitalize ? word.charAt(0).toUpperCase() + word.slice(1) : word;
@@ -71,21 +71,21 @@ export function generate(opts: GeneratorOptions): string {
     return words.join(opts.separator);
   }
 
-  if (opts.length < 5 || opts.length > 128) throw new Error("invalid_input:length must be between 5 and 128");
+  if (opts.length < 5 || opts.length > 128) throw new Error("invalid_input:length");
   const strip = (s: string) => (opts.avoidAmbiguous ? s.replace(AMBIGUOUS, "") : s);
   const upper = opts.uppercase ? strip(UPPER) : "";
   const lower = opts.lowercase ? strip(LOWER) : "";
   const digits = opts.digits ? strip(DIGITS) : "";
   const symbols = opts.symbols ? SYMBOLS : "";
   const all = upper + lower + digits + symbols;
-  if (!all) throw new Error("invalid_input:select at least one character set");
+  if (!all) throw new Error("invalid_input:no_character_set");
 
   const chars: string[] = [];
   if (upper) chars.push(pick(upper));
   if (lower) chars.push(pick(lower));
   for (let i = 0; digits && i < Math.max(opts.minDigits, 1); i++) chars.push(pick(digits));
   for (let i = 0; symbols && i < Math.max(opts.minSymbols, 1); i++) chars.push(pick(symbols));
-  if (chars.length > opts.length) throw new Error("invalid_input:minimum counts exceed the length");
+  if (chars.length > opts.length) throw new Error("invalid_input:minimums_exceed_length");
   while (chars.length < opts.length) chars.push(pick(all));
   return shuffle(chars).join("");
 }

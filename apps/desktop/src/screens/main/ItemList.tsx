@@ -83,9 +83,10 @@ function SortButton({ sort, onSort }: { sort: SortKey; onSort: (sort: SortKey) =
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
+        title={t("list.sort")}
       >
         <ArrowUpDown />
-        {sort === "name" ? t("list.sortName") : t("list.sortUpdated")}
+        <span className="hide-narrow">{sort === "name" ? t("list.sortName") : t("list.sortUpdated")}</span>
       </button>
       {open && (
         <Menu label={t("list.sort")} anchorRef={ref} align="right" onClose={() => setOpen(false)}>
@@ -146,7 +147,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
   },
   searchRef,
 ) {
-  const { t, tp, formatRelative } = useT();
+  const { t, formatRelative } = useT();
   const listRef = useRef<HTMLDivElement>(null);
   const isTrash = filter.kind === "trash";
 
@@ -285,7 +286,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
               className="input search-input"
               type="search"
               value={query}
-              placeholder={t("list.searchIn", { where: title })}
+              placeholder={t("list.searchPlaceholder")}
               aria-label={t("list.search")}
               onChange={(e) => onQuery(e.target.value)}
               onKeyDown={onSearchKey}
@@ -308,13 +309,19 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
           <div className="list-title truncate">
             <span>{title}</span>
             <span className="list-count">
-              {terms.length ? t("list.countFiltered", { shown: items.length, total: totalInFilter }) : tp("list.count", items.length)}
+              {terms.length ? t("list.countFiltered", { shown: items.length, total: totalInFilter }) : items.length}
             </span>
           </div>
           {isTrash ? (
-            <button type="button" className="btn btn-danger-ghost btn-sm" onClick={onEmptyTrash} disabled={totalInFilter === 0}>
+            <button
+              type="button"
+              className="btn btn-danger-ghost btn-sm"
+              onClick={onEmptyTrash}
+              disabled={totalInFilter === 0}
+              title={t("trash.empty")}
+            >
               <Trash2 />
-              {t("trash.empty")}
+              {t("trash.emptyShort")}
             </button>
           ) : (
             <SortButton sort={sort} onSort={onSort} />

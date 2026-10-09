@@ -113,7 +113,12 @@ pub(crate) fn validate_name(name: &str, what: &str) -> Result<String> {
 }
 
 impl UnlockedVault {
-    pub(crate) fn from_parts(path: PathBuf, file: VaultFile, key: SecretKey, data: VaultData) -> Self {
+    pub(crate) fn from_parts(
+        path: PathBuf,
+        file: VaultFile,
+        key: SecretKey,
+        data: VaultData,
+    ) -> Self {
         UnlockedVault {
             path,
             file,
@@ -213,8 +218,7 @@ impl UnlockedVault {
     ///   history (max 10) and sets `passwordRevisedAt`.
     /// * login/card/identity are normalised to the item type; an unknown
     ///   folder id is cleared.
-    pub fn save_item(&mut self, item: VaultItem) -> Result<VaultItem> {
-        let mut item = item;
+    pub fn save_item(&mut self, mut item: VaultItem) -> Result<VaultItem> {
         item.name = validate_name(&item.name, "name")?;
         item.normalize();
         let now = now_ms();
@@ -235,6 +239,7 @@ impl UnlockedVault {
                     item.created_at = old.created_at;
                     item.deleted_at = old.deleted_at;
                     let old_password = zeroize::Zeroizing::new(old.password().to_owned());
+                    let old_revised = old.login.as_ref().and_then(|l| l.password_revised_at);
                     if let Some(login) = item.login.as_mut() {
                         if !old_password.is_empty() && *old_password != login.password {
                             item.password_history.insert(
@@ -245,6 +250,9 @@ impl UnlockedVault {
                                 },
                             );
                             login.password_revised_at = Some(now);
+                        } else {
+                            // Maintained by the core only.
+                            login.password_revised_at = old_revised;
                         }
                     }
                     item.password_history.truncate(PASSWORD_HISTORY_MAX);
@@ -256,6 +264,9 @@ impl UnlockedVault {
                     item.created_at = now;
                     item.updated_at = now;
                     item.deleted_at = None;
+                    if let Some(login) = item.login.as_mut() {
+                        login.password_revised_at = None;
+                    }
                     item.password_history.truncate(PASSWORD_HISTORY_MAX);
                     data.items.push(item.clone());
                 }
@@ -505,7 +516,9 @@ impl UnlockedVault {
             return Ok(false);
         }
         if on_disk.id != self.file.id {
-            return Err(Error::corrupt("vault file was replaced by a different vault"));
+            return Err(Error::corrupt(
+                "vault file was replaced by a different vault",
+            ));
         }
         let data = on_disk.decrypt_payload(&self.key)?;
         let mut old = std::mem::replace(&mut self.data, data);
@@ -543,7 +556,10 @@ impl UnlockedVault {
             if !self.path.exists() {
                 // Deleted by another process: never recreate it silently
                 // (and do not leave a stray lock file behind).
-                return Err(Error::NotFound(format!("vault file {}", self.path.display())));
+                return Err(Error::NotFound(format!(
+                    "vault file {}",
+                    self.path.display()
+                )));
             }
             let _lock = format::lock_vault_file(&self.path)?;
             let on_disk = VaultFile::read(&self.path)?;

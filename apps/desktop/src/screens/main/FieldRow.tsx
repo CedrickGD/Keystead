@@ -8,7 +8,8 @@ import { PasswordText } from "../../components/PasswordText";
 const MASK = "••••••••••••";
 
 export interface FieldRowProps {
-  label: string;
+  /** Omit when the surrounding section already names the value. */
+  label?: string;
   value: string;
   /** Rendered instead of `value` (when not masked). */
   display?: ReactNode;
@@ -58,9 +59,9 @@ export function FieldRow({
   else content = value;
 
   return (
-    <div className="fieldrow">
+    <div className={`fieldrow ${label ? "" : "no-label"}`}>
       <div className="fieldrow-main">
-        <div className="fieldrow-label">{label}</div>
+        {label && <div className="fieldrow-label">{label}</div>}
         <div className={`fieldrow-value selectable ${mono && !masked ? "mono" : ""} ${multiline ? "multiline" : ""}`}>
           {content}
         </div>
@@ -85,7 +86,7 @@ export function FieldRow({
             className="icon-btn"
             onClick={() => setRevealed((r) => !r)}
             title={revealed ? t("common.hide") : t("common.show")}
-            aria-label={`${revealed ? t("common.hide") : t("common.show")}: ${label}`}
+            aria-label={`${revealed ? t("common.hide") : t("common.show")}: ${label ?? copyLabel ?? ""}`}
             aria-pressed={revealed}
           >
             {revealed ? <EyeOff /> : <Eye />}

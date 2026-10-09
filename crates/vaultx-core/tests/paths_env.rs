@@ -61,7 +61,10 @@ fn environment_overrides() {
     // --- VAULTX_LEGACY_DIR -----------------------------------------------
     std::env::set_var(LEGACY_DIR_ENV, &legacy);
     assert_eq!(legacy_dir().as_deref(), Some(legacy.as_path()));
-    assert!(legacy_scan().is_empty(), "missing directory → nothing found");
+    assert!(
+        legacy_scan().is_empty(),
+        "missing directory → nothing found"
+    );
     fs::create_dir_all(&legacy).unwrap();
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

@@ -1,0 +1,383 @@
+//! Browser bridge integration: the [`VaultBackend`] the bridge dispatcher
+//! calls (working on the shared [`Core`] state) and starting/stopping the
+//! local socket server.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Weak};
+
+use vaultx_bridge::{
+    register, start_server, BridgeError, ClientStore, Dispatcher, LoginSecret, PairedClient,
+    PairingRequest, VaultBackend,
+};
+use vaultx_core::generator::{self, GeneratorOptions};
+use vaultx_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
+use vaultx_core::totp::{self, TotpCode};
+use vaultx_core::{matching, Error as CoreError};
+
+use crate::error::{AppError, AppResult};
+use crate::state::{log, Core, LockReason};
+
+/// Debug builds only: auto-approve pairing requests (automated E2E tests).
+#[cfg(debug_assertions)]
+const AUTO_APPROVE_ENV: &str = "VAULTX_TEST_AUTO_APPROVE_PAIRING";
+
+/// The app side of the bridge. Holds a weak reference so the dispatcher
+/// (owned by the core) does not keep the core alive.
+struct Backend {
+    core: Weak<Core>,
+}
+
+impl Backend {
+    fn core(&self) -> Result<Arc<Core>, BridgeError> {
+        self.core.upgrade().ok_or(BridgeError::Internal)
+    }
+}
+
+/// Picks the vault the bridge unlocks: the last used one if it still
+/// exists, otherwise the only vault.
+fn bridge_vault_id(core: &Core) -> AppResult<String> {
+    let (store, last) = {
+        let st = core.state();
+        (st.store.clone(), st.settings.last_vault_id.clone())
+    };
+    let vaults = store.list_vaults()?;
+    if let Some(last) = last.filter(|id| vaults.iter().any(|v| &v.id == id)) {
+        return Ok(last);
+    }
+    match vaults.as_slice() {
+        [only] => Ok(only.id.clone()),
+        _ => Err(AppError::Core(CoreError::NotFound("vault".into()))),
+    }
+}
+
+/// A display name for a login saved from the browser without a name.
+fn name_from_url(url: &str) -> String {
+    let url = url.trim();
+    let host = tauri::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .or_else(|| {
+            tauri::Url::parse(&format!("https://{url}"))
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_owned))
+        });
+    match host {
+        Some(host) => {
+            let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
+            matching::registrable_domain(&host).unwrap_or(host)
+        }
+        None => url.to_owned(),
+    }
+}
+
+impl VaultBackend for Backend {
+    fn app_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
+
+    fn unlocked_vault_name(&self) -> Option<String> {
+        let core = self.core.upgrade()?;
+        let st = core.state();
+        st.vault.as_ref().map(|v| v.name().to_owned())
+    }
+
+    fn unlock(&self, password: &str) -> Result<String, BridgeError> {
+        let core = self.core()?;
+        let vault_id = bridge_vault_id(&core)?;
+        {
+            // Already open: just check the password.
+            let st = core.state();
+            if let Some(vault) = st.vault.as_ref().filter(|v| v.id() == vault_id) {
+                return if vault.verify_master_password(password) {
+                    Ok(vault.name().to_owned())
+                } else {
+                    Err(BridgeError::WrongPassword)
+                };
+            }
+        }
+        let info = core.unlock(&vault_id, password)?;
+        core.emit_unlocked(&info);
+        Ok(info.name)
+    }
+
+    fn lock(&self) {
+        if let Some(core) = self.core.upgrade() {
+            core.lock(Some(LockReason::Manual));
+        }
+    }
+
+    fn focus_app(&self) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        core.show_main_window();
+        let locked = core.state().vault.is_none();
+        if locked {
+            core.emit_unlock_request();
+        }
+    }
+
+    fn request_pairing(&self, request_id: &str, client_name: &str, code: &str) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        #[cfg(debug_assertions)]
+        if std::env::var_os(AUTO_APPROVE_ENV).is_some_and(|v| v == "1") {
+            let dispatcher = core.state().dispatcher.clone();
+            if let Some(dispatcher) = dispatcher {
+                log(format_args!(
+                    "{AUTO_APPROVE_ENV}=1: auto-approving the pairing request of \"{client_name}\""
+                ));
+                let request_id = request_id.to_owned();
+                // The dispatcher waits for the answer after this returns.
+                std::thread::spawn(move || {
+                    dispatcher.respond_pairing(&request_id, true);
+                });
+                return;
+            }
+        }
+        core.emit_pairing_request(PairingRequest {
+            request_id: request_id.to_owned(),
+            client_name: client_name.to_owned(),
+            code: code.to_owned(),
+        });
+        core.show_main_window();
+    }
+
+    fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError> {
+        Ok(self.core()?.read(|v| v.logins_for_url(url))?)
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError> {
+        Ok(self.core()?.read(|v| v.search(query))?)
+    }
+
+    fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError> {
+        let core = self.core()?;
+        let secret = core.read(|v| {
+            let item = v
+                .item(item_id)
+                .filter(|i| i.item_type == ItemType::Login && !i.is_trashed())?;
+            let login = item.login.as_ref()?;
+            let totp = (!login.totp.trim().is_empty())
+                .then(|| totp::totp_now(&login.totp).ok())
+                .flatten();
+            Some(LoginSecret {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                username: login.username.clone(),
+                password: login.password.clone(),
+                totp,
+                uris: login.uris.iter().map(|u| u.uri.clone()).collect(),
+            })
+        })?;
+        secret.ok_or(BridgeError::NotFound)
+    }
+
+    fn get_totp(&self, item_id: &str) -> Result<TotpCode, BridgeError> {
+        let core = self.core()?;
+        let seed = core.read(|v| {
+            v.item(item_id)
+                .filter(|i| !i.is_trashed())
+                .and_then(|i| i.login.as_ref())
+                .map(|l| l.totp.clone())
+                .filter(|s| !s.trim().is_empty())
+        })?;
+        let seed = seed.ok_or(BridgeError::NotFound)?;
+        Ok(totp::totp_now(&seed)?)
+    }
+
+    fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> {
+        let core = self.core()?;
+        let password = generator::generate(&options)?;
+        match core.mutate(|v| v.add_generated_password(&password)) {
+            Ok(()) | Err(AppError::Locked) => Ok(password),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn save_login(
+        &self,
+        name: &str,
+        url: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<String, BridgeError> {
+        let core = self.core()?;
+        let name = if name.trim().is_empty() {
+            name_from_url(url)
+        } else {
+            name.trim().to_owned()
+        };
+        let mut item = VaultItem::new(ItemType::Login, name);
+        if let Some(login) = item.login.as_mut() {
+            login.username = username.to_owned();
+            login.password = password.to_owned();
+            if !url.trim().is_empty() {
+                login.uris.push(LoginUri {
+                    uri: url.trim().to_owned(),
+                    match_type: UriMatch::Domain,
+                });
+            }
+        }
+        let saved = core.mutate(|v| v.save_item(item.clone()))?;
+        core.emit_changed();
+        Ok(saved.id)
+    }
+
+    fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError> {
+        let core = self.core()?;
+        let saved = core.mutate(|v| {
+            let mut item = v
+                .item(item_id)
+                .filter(|i| i.item_type == ItemType::Login && !i.is_trashed())
+                .cloned()
+                .ok_or_else(|| CoreError::NotFound(format!("item {item_id}")))?;
+            if let Some(login) = item.login.as_mut() {
+                login.password = password.to_owned();
+            }
+            v.save_item(item)
+        })?;
+        core.emit_changed();
+        Ok(saved.id)
+    }
+
+    fn on_activity(&self) {
+        if let Some(core) = self.core.upgrade() {
+            core.touch_activity();
+        }
+    }
+}
+
+/// Starts the bridge server (no-op if it runs). Fails with
+/// `io:bridge_already_running` if another VaultX instance serves the
+/// endpoint.
+pub fn start(core: &Arc<Core>) -> AppResult<()> {
+    if core.state().bridge.as_ref().is_some_and(|b| b.is_running()) {
+        return Ok(());
+    }
+    // Drop a stale (stopped) handle first.
+    stop(core);
+    let clients = ClientStore::open_default()?;
+    let backend: Arc<dyn VaultBackend> = Arc::new(Backend {
+        core: Arc::downgrade(core),
+    });
+    let dispatcher = Arc::new(Dispatcher::new(backend, clients));
+    let handle = start_server(dispatcher.clone())?;
+    let mut st = core.state();
+    st.bridge = Some(handle);
+    st.dispatcher = Some(dispatcher);
+    Ok(())
+}
+
+/// Stops the bridge server (no-op if it is not running). Pending pairing
+/// requests are denied by the dispatcher when their connection closes.
+pub fn stop(core: &Core) {
+    let (handle, dispatcher) = {
+        let mut st = core.state();
+        (st.bridge.take(), st.dispatcher.take())
+    };
+    if let Some(mut handle) = handle {
+        handle.stop();
+    }
+    drop(dispatcher);
+}
+
+/// Starts the bridge if browser integration is enabled, logging failures
+/// (a second instance or a broken socket must not keep the app from
+/// starting).
+pub fn start_if_enabled(core: &Arc<Core>) {
+    if !core.state().settings.browser_integration {
+        return;
+    }
+    if let Err(e) = start(core) {
+        log(format_args!("browser bridge not started: {}", e.code()));
+    }
+}
+
+/// Re-registers the native host for all browsers that have a registration
+/// pointing elsewhere (e.g. the portable exe was moved).
+pub fn reregister_if_needed() {
+    let Some(exe) = current_exe() else {
+        return;
+    };
+    if !register::needs_reregister(&exe) {
+        return;
+    }
+    let browsers = register::registered_browsers();
+    if browsers.is_empty() {
+        return;
+    }
+    match register::register(&browsers, &exe) {
+        Ok(()) => log(format_args!(
+            "re-registered the native host for {} browser(s)",
+            browsers.len()
+        )),
+        Err(e) => log(format_args!(
+            "could not re-register the native host: {}",
+            e.code()
+        )),
+    }
+}
+
+/// The path of the running executable (the native host is VaultX itself).
+pub fn current_exe() -> Option<PathBuf> {
+    match std::env::current_exe() {
+        Ok(exe) => Some(exe),
+        Err(e) => {
+            log(format_args!("cannot determine the executable path: {e}"));
+            None
+        }
+    }
+}
+
+/// Paired clients – from the running dispatcher, else from the file.
+pub fn clients(core: &Core) -> AppResult<Vec<PairedClient>> {
+    let dispatcher = core.state().dispatcher.clone();
+    match dispatcher {
+        Some(d) => Ok(d.clients()),
+        None => Ok(ClientStore::open_default()?.list()),
+    }
+}
+
+/// Revokes a paired client; `not_found` if it does not exist.
+pub fn revoke(core: &Core, client_id: &str) -> AppResult<()> {
+    let dispatcher = core.state().dispatcher.clone();
+    let removed = match dispatcher {
+        Some(d) => d.revoke(client_id)?,
+        None => ClientStore::open_default()?.revoke(client_id)?,
+    };
+    if removed {
+        Ok(())
+    } else {
+        Err(AppError::Core(CoreError::NotFound(format!(
+            "client {client_id}"
+        ))))
+    }
+}
+
+/// Pairing requests waiting for the user.
+pub fn pending_pairings(core: &Core) -> Vec<PairingRequest> {
+    core.state()
+        .dispatcher
+        .clone()
+        .map(|d| d.pending_pairings())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::name_from_url;
+
+    #[test]
+    fn names_from_urls() {
+        assert_eq!(name_from_url("https://www.github.com/login"), "github.com");
+        assert_eq!(
+            name_from_url("https://accounts.google.co.uk/x"),
+            "google.co.uk"
+        );
+        assert_eq!(name_from_url("example.org/path"), "example.org");
+        assert_eq!(name_from_url("http://localhost:8080"), "localhost");
+        assert_eq!(name_from_url(""), "");
+    }
+}

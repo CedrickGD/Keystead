@@ -83,6 +83,13 @@ export interface GeneratedPassword {
   createdAt: number;
 }
 
+/** Decrypted vault payload (only used by the in-memory mock backend). */
+export interface VaultData {
+  items: VaultItem[];
+  folders: Folder[];
+  generatorHistory: GeneratedPassword[];
+}
+
 export interface VaultInfo {
   id: string;
   name: string;

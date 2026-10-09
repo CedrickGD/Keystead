@@ -1,0 +1,522 @@
+//! Request dispatch: authentication (pairing), lock state, pairing flow and
+//! unlock rate limiting on top of a [`VaultBackend`] implemented by the app.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde_json::Value;
+use vaultx_core::generator::GeneratorOptions;
+use vaultx_core::model::ItemSummary;
+use vaultx_core::totp::TotpCode;
+
+use crate::clients::{ClientStore, PairedClient};
+use crate::error::Result;
+use crate::protocol::{
+    BridgeError, IdData, LoginSecret, PairData, Payload, Request, Response, StatusData, UnlockData,
+    PAIRING_TIMEOUT, SEARCH_LIMIT,
+};
+use crate::server::BridgeHandler;
+use crate::util::{lock, log};
+
+/// Maximum length (in characters) of a client name.
+pub const MAX_CLIENT_NAME_CHARS: usize = 100;
+/// At most this many pairing requests can wait for the user at once.
+const MAX_PENDING_PAIRINGS: usize = 4;
+
+/// What the app provides to the bridge. Called from connection threads,
+/// possibly concurrently. Errors are protocol codes; `From<vaultx_core::Error>`
+/// is implemented for [`BridgeError`] to make `?` convenient.
+pub trait VaultBackend: Send + Sync + 'static {
+    /// The app version, e.g. `"2.0.0"`.
+    fn app_version(&self) -> String;
+    /// Name of the unlocked vault, `None` while locked.
+    fn unlocked_vault_name(&self) -> Option<String>;
+    /// Unlocks the vault the app would unlock (last used) with `password`;
+    /// returns its name. `WrongPassword` on a bad password.
+    fn unlock(&self, password: &str) -> std::result::Result<String, BridgeError>;
+    /// Locks the vault (no-op if locked).
+    fn lock(&self);
+    /// Shows and raises the app window.
+    fn focus_app(&self);
+    /// Asks the user to approve a pairing (emit `bridge://pairing-request`).
+    /// Must not block; the answer comes via [`Dispatcher::respond_pairing`].
+    fn request_pairing(&self, request_id: &str, client_name: &str, code: &str);
+    /// Logins matching the page URL (favorites first).
+    fn logins_for_url(&self, url: &str) -> std::result::Result<Vec<ItemSummary>, BridgeError>;
+    /// Search over the unlocked vault (the dispatcher caps the result at 50).
+    fn search(&self, query: &str) -> std::result::Result<Vec<ItemSummary>, BridgeError>;
+    /// Secrets of one login; `NotFound` for unknown ids and non-logins.
+    fn get_login(&self, item_id: &str) -> std::result::Result<LoginSecret, BridgeError>;
+    /// Current TOTP code of a login; `NotFound` if it has no TOTP seed.
+    fn get_totp(&self, item_id: &str) -> std::result::Result<TotpCode, BridgeError>;
+    /// Generates a password (and stores it in the generator history if
+    /// unlocked). Invalid options → `InvalidRequest`.
+    fn generate_password(
+        &self,
+        options: GeneratorOptions,
+    ) -> std::result::Result<String, BridgeError>;
+    /// Creates a new login; returns its id.
+    fn save_login(
+        &self,
+        name: &str,
+        url: &str,
+        username: &str,
+        password: &str,
+    ) -> std::result::Result<String, BridgeError>;
+    /// Replaces the password of a login; returns its id.
+    fn update_password(
+        &self,
+        item_id: &str,
+        password: &str,
+    ) -> std::result::Result<String, BridgeError>;
+    /// Called after a successful deliberate user action from the browser
+    /// (see [`Payload::is_user_action`]), e.g. to reset the auto-lock timer.
+    fn on_activity(&self) {}
+}
+
+/// Tunables (defaults per contract; tests use short timeouts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatcherConfig {
+    /// How long `pair` waits for the user (default 120 s).
+    pub pairing_timeout: Duration,
+    /// Wrong passwords in a row before unlocking is suspended (default 5).
+    pub max_unlock_failures: u32,
+    /// How long unlocking is suspended (default 30 s).
+    pub unlock_lockout: Duration,
+}
+
+impl Default for DispatcherConfig {
+    fn default() -> Self {
+        DispatcherConfig {
+            pairing_timeout: PAIRING_TIMEOUT,
+            max_unlock_failures: 5,
+            unlock_lockout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// A pairing request waiting for the user's decision (payload of the
+/// `bridge://pairing-request` event).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingRequest {
+    pub request_id: String,
+    pub client_name: String,
+    pub code: String,
+}
+
+#[derive(Debug, Default)]
+struct UnlockLimiter {
+    failures: u32,
+    blocked_until: Option<Instant>,
+}
+
+/// The [`BridgeHandler`] of the app. Share it as `Arc<Dispatcher>`: one
+/// clone goes to [`start_server`](crate::server::start_server), the app
+/// keeps another for [`Dispatcher::respond_pairing`], `clients` and `revoke`.
+pub struct Dispatcher {
+    backend: Arc<dyn VaultBackend>,
+    clients: Mutex<ClientStore>,
+    pairing: PairingBroker,
+    /// Held for the whole unlock attempt, so concurrent attempts cannot
+    /// slip past the rate limit.
+    unlock_limiter: Mutex<UnlockLimiter>,
+    config: DispatcherConfig,
+}
+
+impl Dispatcher {
+    /// A dispatcher with the default configuration.
+    pub fn new(backend: Arc<dyn VaultBackend>, clients: ClientStore) -> Dispatcher {
+        Dispatcher::with_config(backend, clients, DispatcherConfig::default())
+    }
+
+    pub fn with_config(
+        backend: Arc<dyn VaultBackend>,
+        clients: ClientStore,
+        config: DispatcherConfig,
+    ) -> Dispatcher {
+        Dispatcher {
+            backend,
+            clients: Mutex::new(clients),
+            pairing: PairingBroker::default(),
+            unlock_limiter: Mutex::new(UnlockLimiter::default()),
+            config,
+        }
+    }
+
+    /// Delivers the user's decision for a pending pairing request. Returns
+    /// false if the request is unknown, already answered or timed out.
+    pub fn respond_pairing(&self, request_id: &str, approve: bool) -> bool {
+        self.pairing.respond(request_id, approve)
+    }
+
+    /// Pairing requests currently waiting for the user (e.g. to re-show the
+    /// dialog after the window was reopened).
+    pub fn pending_pairings(&self) -> Vec<PairingRequest> {
+        self.pairing.pending()
+    }
+
+    /// All paired clients.
+    pub fn clients(&self) -> Vec<PairedClient> {
+        lock(&self.clients).list()
+    }
+
+    /// Removes a paired client; returns whether it existed.
+    pub fn revoke(&self, client_id: &str) -> Result<bool> {
+        lock(&self.clients).revoke(client_id)
+    }
+
+    /// Answers one request (same as [`BridgeHandler::handle`]).
+    pub fn dispatch(&self, request: Request) -> Response {
+        let Request {
+            id,
+            client_id,
+            token,
+            payload,
+        } = request;
+        let user_action = payload.is_user_action();
+        let result = self.execute(client_id.as_deref(), token.as_deref(), payload);
+        if result.is_ok() && user_action {
+            self.backend.on_activity();
+        }
+        match result {
+            Ok(data) => Response {
+                id,
+                ok: true,
+                data,
+                error: None,
+            },
+            Err(e) => Response::error(id, e),
+        }
+    }
+
+    /// Checks the credentials and updates `lastSeenAt` on success.
+    fn authenticate(&self, client_id: Option<&str>, token: Option<&str>) -> bool {
+        let (Some(client_id), Some(token)) = (client_id, token) else {
+            return false;
+        };
+        let mut clients = lock(&self.clients);
+        if !clients.verify(client_id, token) {
+            return false;
+        }
+        if let Err(e) = clients.touch(client_id) {
+            log(format_args!("could not update the paired client list: {e}"));
+        }
+        true
+    }
+
+    fn execute(
+        &self,
+        client_id: Option<&str>,
+        token: Option<&str>,
+        payload: Payload,
+    ) -> std::result::Result<Value, BridgeError> {
+        let paired = self.authenticate(client_id, token);
+        if payload.needs_pairing() && !paired {
+            return Err(BridgeError::NotPaired);
+        }
+        if payload.needs_unlocked() && self.backend.unlocked_vault_name().is_none() {
+            return Err(BridgeError::Locked);
+        }
+        let backend = &self.backend;
+        match payload {
+            Payload::Status => {
+                let vault_name = backend.unlocked_vault_name();
+                json(&StatusData {
+                    app_version: backend.app_version(),
+                    paired,
+                    unlocked: vault_name.is_some(),
+                    vault_name: vault_name.filter(|_| paired),
+                })
+            }
+            Payload::Pair { client_name, code } => json(&self.pair(&client_name, &code)?),
+            Payload::Unlock { password } => json(&UnlockData {
+                vault_name: self.unlock(&password)?,
+            }),
+            Payload::Lock => {
+                backend.lock();
+                Ok(Value::Null)
+            }
+            Payload::FocusApp => {
+                backend.focus_app();
+                Ok(Value::Null)
+            }
+            Payload::LoginsForUrl { url } => json(&backend.logins_for_url(&url)?),
+            Payload::Search { query } => {
+                let mut results = backend.search(&query)?;
+                results.truncate(SEARCH_LIMIT);
+                json(&results)
+            }
+            Payload::GetLogin { item_id } => json(&backend.get_login(&item_id)?),
+            Payload::GetTotp { item_id } => json(&backend.get_totp(&item_id)?),
+            Payload::GeneratePassword { options } => {
+                json(&backend.generate_password(options.unwrap_or_default())?)
+            }
+            Payload::SaveLogin {
+                name,
+                url,
+                username,
+                password,
+            } => json(&IdData {
+                id: backend.save_login(&name, &url, &username, &password)?,
+            }),
+            Payload::UpdatePassword { item_id, password } => json(&IdData {
+                id: backend.update_password(&item_id, &password)?,
+            }),
+        }
+    }
+
+    fn pair(&self, client_name: &str, code: &str) -> std::result::Result<PairData, BridgeError> {
+        let name = sanitize_client_name(client_name).ok_or(BridgeError::InvalidRequest)?;
+        if !is_pairing_code(code) {
+            return Err(BridgeError::InvalidRequest);
+        }
+        let ticket = self.pairing.begin(&name, code)?;
+        self.backend
+            .request_pairing(&ticket.request_id, &name, code);
+        if !ticket.wait(self.config.pairing_timeout) {
+            return Err(BridgeError::PairingDenied);
+        }
+        let (client, token) = lock(&self.clients).add(&name).map_err(|e| {
+            log(format_args!("could not store the paired client: {e}"));
+            BridgeError::Internal
+        })?;
+        Ok(PairData {
+            client_id: client.id,
+            token,
+        })
+    }
+
+    fn unlock(&self, password: &str) -> std::result::Result<String, BridgeError> {
+        let mut limiter = lock(&self.unlock_limiter);
+        if limiter
+            .blocked_until
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return Err(BridgeError::WrongPassword);
+        }
+        let result = self.backend.unlock(password);
+        match &result {
+            Ok(_) => *limiter = UnlockLimiter::default(),
+            Err(BridgeError::WrongPassword) => {
+                limiter.failures = limiter.failures.saturating_add(1);
+                // Once the limit is reached, every further failure (after the
+                // lockout expired) suspends unlocking again.
+                if limiter.failures >= self.config.max_unlock_failures {
+                    limiter.blocked_until = Some(Instant::now() + self.config.unlock_lockout);
+                }
+            }
+            Err(_) => {}
+        }
+        result
+    }
+}
+
+impl BridgeHandler for Dispatcher {
+    fn handle(&self, request: Request) -> Response {
+        self.dispatch(request)
+    }
+}
+
+impl Drop for Dispatcher {
+    fn drop(&mut self) {
+        if let Err(e) = lock(&self.clients).flush() {
+            log(format_args!("could not save the paired client list: {e}"));
+        }
+    }
+}
+
+fn json<T: Serialize + ?Sized>(data: &T) -> std::result::Result<Value, BridgeError> {
+    serde_json::to_value(data).map_err(|_| BridgeError::Internal)
+}
+
+/// Trimmed name with control characters replaced; `None` if empty or longer
+/// than [`MAX_CLIENT_NAME_CHARS`].
+fn sanitize_client_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let count = cleaned.chars().count();
+    (count > 0 && count <= MAX_CLIENT_NAME_CHARS).then_some(cleaned)
+}
+
+fn is_pairing_code(code: &str) -> bool {
+    code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit())
+}
+
+// ---------------------------------------------------------------------------
+// Pairing broker
+// ---------------------------------------------------------------------------
+
+struct PendingPairing {
+    client_name: String,
+    code: String,
+    reply: SyncSender<bool>,
+}
+
+type PendingMap = Arc<Mutex<HashMap<String, PendingPairing>>>;
+
+/// Pending pairing requests: request id → reply channel of the waiting
+/// connection thread.
+#[derive(Default)]
+struct PairingBroker {
+    pending: PendingMap,
+}
+
+/// Held by the waiting connection thread; withdraws the request from the
+/// pending map when dropped (also if the thread unwinds).
+struct PairingTicket {
+    request_id: String,
+    reply: Receiver<bool>,
+    pending: PendingMap,
+}
+
+impl PairingTicket {
+    /// Blocks until the user decided or `timeout` passed (→ denied).
+    fn wait(self, timeout: Duration) -> bool {
+        match self.reply.recv_timeout(timeout) {
+            Ok(approved) => approved,
+            Err(_) => {
+                let mut pending = lock(&self.pending);
+                if pending.remove(&self.request_id).is_some() {
+                    false
+                } else {
+                    // Answered between the timeout and taking the lock.
+                    self.reply.try_recv().unwrap_or(false)
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PairingTicket {
+    fn drop(&mut self) {
+        lock(&self.pending).remove(&self.request_id);
+    }
+}
+
+impl PairingBroker {
+    /// Registers a request. A still pending request with the same client
+    /// name is superseded (answered as denied): only the newest code shown
+    /// in the extension can be approved.
+    fn begin(
+        &self,
+        client_name: &str,
+        code: &str,
+    ) -> std::result::Result<PairingTicket, BridgeError> {
+        let mut pending = lock(&self.pending);
+        pending.retain(|_, p| {
+            if p.client_name == client_name {
+                let _ = p.reply.try_send(false);
+                false
+            } else {
+                true
+            }
+        });
+        if pending.len() >= MAX_PENDING_PAIRINGS {
+            return Err(BridgeError::PairingDenied);
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = mpsc::sync_channel(1);
+        pending.insert(
+            request_id.clone(),
+            PendingPairing {
+                client_name: client_name.to_owned(),
+                code: code.to_owned(),
+                reply: tx,
+            },
+        );
+        Ok(PairingTicket {
+            request_id,
+            reply: rx,
+            pending: Arc::clone(&self.pending),
+        })
+    }
+
+    /// Sends the decision while holding the lock, so [`PairingTicket::wait`]
+    /// either sees the entry (and withdraws it) or finds the answer queued.
+    fn respond(&self, request_id: &str, approve: bool) -> bool {
+        let mut pending = lock(&self.pending);
+        match pending.remove(request_id) {
+            Some(p) => p.reply.try_send(approve).is_ok(),
+            None => false,
+        }
+    }
+
+    fn pending(&self) -> Vec<PairingRequest> {
+        lock(&self.pending)
+            .iter()
+            .map(|(id, p)| PairingRequest {
+                request_id: id.clone(),
+                client_name: p.client_name.clone(),
+                code: p.code.clone(),
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_name_and_code_validation() {
+        assert_eq!(
+            sanitize_client_name("  Chrome – PC "),
+            Some("Chrome – PC".into())
+        );
+        assert_eq!(sanitize_client_name("a\nb"), Some("a b".into()));
+        assert_eq!(sanitize_client_name("   "), None);
+        assert_eq!(sanitize_client_name(&"x".repeat(101)), None);
+        assert!(sanitize_client_name(&"ä".repeat(100)).is_some());
+        assert!(is_pairing_code("012345"));
+        assert!(!is_pairing_code("12345"));
+        assert!(!is_pairing_code("1234567"));
+        assert!(!is_pairing_code("12a456"));
+        assert!(!is_pairing_code("١٢٣٤٥٦"));
+    }
+
+    #[test]
+    fn broker_timeout_and_late_answer() {
+        let broker = PairingBroker::default();
+        let ticket = broker.begin("a", "123456").unwrap();
+        let id = ticket.request_id.clone();
+        assert!(!ticket.wait(Duration::from_millis(10)));
+        assert!(
+            !broker.respond(&id, true),
+            "answer after timeout is rejected"
+        );
+        assert!(broker.pending().is_empty());
+    }
+
+    #[test]
+    fn broker_supersedes_same_name_and_caps_pending() {
+        let broker = PairingBroker::default();
+        let first = broker.begin("a", "111111").unwrap();
+        let second = broker.begin("a", "222222").unwrap();
+        // The first one was answered "denied" immediately.
+        assert!(!first.wait(Duration::from_secs(5)));
+        assert_eq!(broker.pending().len(), 1);
+        assert_eq!(broker.pending()[0].code, "222222");
+        assert!(broker.respond(&second.request_id, true));
+        assert!(second.wait(Duration::from_secs(5)));
+        assert!(broker.pending().is_empty());
+
+        let tickets: Vec<_> = (0..MAX_PENDING_PAIRINGS)
+            .map(|i| broker.begin(&format!("c{i}"), "123456").unwrap())
+            .collect();
+        assert!(matches!(
+            broker.begin("one too many", "123456"),
+            Err(BridgeError::PairingDenied)
+        ));
+        // Dropped tickets (e.g. a panicking thread) free their slots.
+        drop(tickets);
+        assert!(broker.pending().is_empty());
+        assert!(broker.begin("again", "123456").is_ok());
+    }
+}

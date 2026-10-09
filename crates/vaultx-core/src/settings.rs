@@ -130,7 +130,11 @@ impl Settings {
         take(&obj, "language", &mut s.language);
         take(&obj, "autoLockMinutes", &mut s.auto_lock_minutes);
         take(&obj, "lockOnSystemLock", &mut s.lock_on_system_lock);
-        take(&obj, "clipboardClearSeconds", &mut s.clipboard_clear_seconds);
+        take(
+            &obj,
+            "clipboardClearSeconds",
+            &mut s.clipboard_clear_seconds,
+        );
         take(&obj, "minimizeToTray", &mut s.minimize_to_tray);
         take(&obj, "startInTray", &mut s.start_in_tray);
         take(&obj, "browserIntegration", &mut s.browser_integration);

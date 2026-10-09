@@ -88,7 +88,10 @@ pub fn decode_base32_secret(s: &str) -> Result<Zeroizing<Vec<u8>>> {
 /// Parses a TOTP seed: a bare base32 secret or an `otpauth://totp/…` URI.
 pub fn parse(seed: &str) -> Result<TotpParams> {
     let seed = seed.trim();
-    if seed.len() >= 10 && seed[..10].eq_ignore_ascii_case("otpauth://") {
+    if seed
+        .get(..10)
+        .is_some_and(|p| p.eq_ignore_ascii_case("otpauth://"))
+    {
         return parse_uri(seed);
     }
     Ok(TotpParams {
@@ -330,6 +333,8 @@ mod tests {
             "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=0",
             "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=abc",
             "otpauth://foo/x?secret=JBSWY3DPEHPK3PXP",
+            "ääääääääääää",
+            "otpauth:/äää",
         ] {
             assert!(
                 matches!(totp_now(s), Err(Error::InvalidInput(_))),

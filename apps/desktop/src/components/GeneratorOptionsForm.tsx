@@ -159,7 +159,7 @@ export function GeneratorOptionsForm({
             {charsetToggle("uppercase", "A–Z", t("generator.uppercase"))}
             {charsetToggle("lowercase", "a–z", t("generator.lowercase"))}
             {charsetToggle("digits", "0–9", t("generator.digits"))}
-            {charsetToggle("symbols", "!@#$%^&*", t("generator.symbols"))}
+            {charsetToggle("symbols", "!@#", t("generator.symbols"))}
           </div>
           {!compact && (
             <div className="gen-row">

@@ -54,6 +54,29 @@ One portable `VaultX.exe` (Windows GUI subsystem in release) does everything:
    `tauri-plugin-single-instance`: a second GUI launch focuses the first
    window (and a second `--background` launch does nothing).
 
+### Terminal UI & command line (`vaultx-tui`)
+`pub fn run() -> i32` / `pub fn run_with_args(Vec<String>) -> i32` (`args[0]`
+= program; a leading `--cli`/`cli` is ignored). The caller exits with the
+returned code: `0` success, `1` error, `2` invalid usage.
+* No subcommand → interactive full-screen UI (needs a terminal on stdout,
+  else exit 1): vault picker (> 1 vault; preselects `lastVaultId`, which an
+  unlock updates), master-password prompt, item list + details; copy
+  (`u`/`p`/`t`, secrets via `clipboard::copy_secret` with
+  `clipboardClearSeconds`, pending secret cleared on lock/quit), `o` open
+  http(s) website, `n`/`e` edit, `d` trash, `g` generator (copies are added
+  to the vault's generator history), auto-lock after `autoLockMinutes`, file
+  re-checked every 5 s (`reload_if_changed`), `Conflict` → reload + retry once.
+  `--vault NAME|ID` preselects a vault. Creating a vault is possible when none
+  exists (`n` in the picker).
+* Subcommands (all accept `--vault NAME|ID`; default: the only vault, else
+  `lastVaultId`): `vaults`, `list`, `get <id|name|search terms>
+  [--field password|username|totp|notes|uri] [--copy]`, `generate [--length N |
+  --passphrase] [--words N] [--no-symbols] [--copy]`. `--copy` keeps the
+  process alive until the clipboard is cleared (any key clears at once).
+* Master password: prompted on the TTY (`rpassword`), or – insecure, for
+  scripts – `$VAULTX_MASTER_PASSWORD`.
+* Language from `Settings.language` (German default, English for `en`).
+
 ## Data locations (`vaultx_core::paths`)
 
 * `data_dir()`:
@@ -64,12 +87,14 @@ One portable `VaultX.exe` (Windows GUI subsystem in release) does everything:
   3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\VaultX\v2`,
      Linux `~/.local/share/vaultx`, macOS `~/Library/Application Support/VaultX`.
 * Vault files: `<data_dir>/vaults/<vault-id>.vaultx` (+ `<vault-id>.vaultx.bak`
-  = previous good version, written before each save).
+  = previous good version, written before each save; `<vault-id>.vaultx.lock`
+  = empty inter-process lock file held only while a save runs).
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
 * Legacy VaultX 1.x vaults: `%LOCALAPPDATA%\VaultX\accounts.json` +
   `vault_*.json` (Linux/macOS: none – only manual file import).
+  `$VAULTX_LEGACY_DIR` overrides this directory on every OS (tests).
 
 ## Vault file format (version 3) – `vaultx_core::format`
 
@@ -221,6 +246,67 @@ pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV
 pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded
 ```
 
+### Core additions & behaviour details (implemented in `vaultx-core`)
+Additive helpers beyond the signatures above (all optional to use):
+```rust
+// error
+impl Error { pub fn code(&self) -> String }  // stable UI code; Json → "corrupt:<d>", NotFound(_) → "not_found"
+// paths (all infallible)
+pub fn data_dir() -> PathBuf; pub fn vaults_dir() -> PathBuf; pub fn settings_path() -> PathBuf;
+pub fn legacy_dir() -> Option<PathBuf>; pub fn is_portable() -> bool;
+pub fn portable_dir() -> Option<PathBuf>;   // "<exe dir>/VaultX-Data", whether it exists or not
+pub fn default_data_dir() -> PathBuf;       // OS location, ignoring portable mode and $VAULTX_DATA_DIR
+// crypto
+impl KdfParams { pub fn validate(&self) -> Result<()> }  // file DoS guard: memory ≤ 1 GiB, t ≤ 20, p ≤ 16
+// store / vault
+impl VaultStore { pub fn vaults_dir(&self) -> PathBuf }
+impl UnlockedVault { pub fn id(&self) -> &str; pub fn name(&self) -> &str; pub fn revision(&self) -> u64;
+                     pub fn folders(&self) -> &[Folder]; pub fn generator_history(&self) -> &[GeneratedPassword] }
+// import / export: one call per Tauri `import_data` / `export_data` format string
+pub fn import::import_into(vault: &mut UnlockedVault, format: &str /*legacy|csv|bitwarden_json|vaultx*/,
+                           path: &Path, password: Option<&str>) -> Result<ImportReport>; // reads UTF-8/UTF-16/Windows-1252 text
+pub fn import::legacy_scan_dir(dir: &Path) -> Vec<LegacyVaultInfo>;
+pub fn export::export_to_file(data: &VaultData, format: &str /*vaultx|csv|bitwarden_json*/,
+                              path: &Path, password: Option<&str>) -> Result<()>;
+pub fn export::export_encrypted_with_params(data, path, password, kdf: KdfParams) -> Result<()>;
+// settings
+impl Settings { pub fn load() -> Settings; pub fn load_from(&Path) -> Settings; pub fn save(&self) -> Result<()>;
+                pub fn save_to(&self, &Path) -> Result<()> }   // + free fns settings::load(), settings::save(&Settings)
+// clipboard
+pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // excluded from clipboard history
+pub fn copy_text(text: &str) -> Result<()>;            // non-secret, no auto-clear
+pub fn clear_pending_secret() -> Result<bool>;         // e.g. on lock: clears now if our secret is still there
+// totp
+pub fn parse(seed: &str) -> Result<TotpParams>;        // secret, algorithm, digits, period, issuer, account
+// health
+pub fn health_report_at(data: &VaultData, now_ms: i64) -> HealthReport;
+```
+Behaviour notes:
+* `save_item`: an empty/whitespace name → `invalid_input:name_required`
+  (> 200 chars → `name_too_long`); `createdAt`, `deletedAt` and
+  `passwordRevisedAt` of existing items are kept by the core (trash state
+  changes only via trash/restore); unknown `folderId` → `null`.
+* Every mutation is committed to memory only after the file was written,
+  so after `conflict` the in-memory state is unchanged: call
+  `reload_if_changed()` and retry. A save never recreates a deleted vault
+  file (`not_found`).
+* Recovery codes are normalised to uppercase without dashes/whitespace;
+  Crockford look-alikes are accepted (`O`→`0`, `I`/`L`→`1`). A malformed
+  code → `invalid_input:recovery_key_format`; a vault without recovery key →
+  `not_found`.
+* Legacy import: an HMAC mismatch is reported as `wrong_password` (VaultX
+  1.x could not distinguish either). Importers keep the source ids;
+  `import_items` replaces them and merges imported folders into existing
+  folders of the same name (case-insensitive).
+* `invalid_input` details used by the core: `name_required`, `name_too_long`,
+  `password_empty`, `password_required`, `kdf_params`, `recovery_key_format`,
+  `length`, `words`, `separator`, `no_character_set`,
+  `minimums_exceed_length`, `totp_secret`, `totp_secret_empty`, `totp_uri`,
+  `totp_digits`, `totp_period`, `csv_empty`, `csv_unknown_columns`,
+  `bitwarden_json`, `json: …`, `csv: …`, `format <x>`.
+* Strength texts (`crackTime`, `warning`, `suggestions`) and import warnings
+  are English.
+
 ### Legacy VaultX 1.x format (for `import_legacy_file`)
 JSON object with `Version` (1|2), `Salt` (b64, 16 B), `Iterations` (int,
 usually 100000), `IV` (b64, 16 B), `Data` (b64 AES-256-CBC/PKCS7
@@ -322,12 +408,77 @@ the JS side (Tauri converts to snake_case).
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
 * `bridge://unlock-request` – payload `{}` – extension asked to open the app; UI focuses the unlock screen.
+* `vault://unlocked` – payload `VaultInfo` – the vault was unlocked outside
+  the UI (extension `unlock`); the UI switches to the unlocked view. Not
+  sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
 
 The frontend's `src/lib/api.ts` wraps every command with typed functions and
 falls back to an in-memory **mock backend** (`src/lib/mock.ts`, realistic
 sample data, password `demo`) when not running inside Tauri
 (`!("__TAURI_INTERNALS__" in window)`) – used for `npm run dev` in a browser
-and for automated screenshots.
+and for automated screenshots. Mock-only extras: `?mock=empty` starts without
+any vault (first-run screen), `?lang=en` starts in English, and
+`window.__vaultxMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
+`simulateExternalChange()` and `simulateUnlockRequest()`.
+
+Frontend integration requirements for `src-tauri`:
+* File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
+  `tauri-plugin-dialog` and grant `dialog:allow-open` + `dialog:allow-save`
+  (plus `core:default` for events) to the main window's capability.
+* Website links call `window.open(url, "_blank")` (http/https only); the app
+  must route new-window requests to the system browser (e.g. via
+  `tauri-plugin-opener`) instead of opening a webview window.
+* The UI uses React inline `style` attributes and `data:` SVGs in CSS, so a
+  CSP needs `style-src 'self' 'unsafe-inline'` and `img-src 'self' data:`.
+* Build: `devUrl` `http://localhost:1420`, `frontendDist` `../dist`,
+  `beforeDevCommand` `npm run dev`, `beforeBuildCommand` `npm run build`.
+
+### Desktop backend behaviour details (implemented in `src-tauri`)
+* Commands run on the blocking thread pool; complex arguments (`item`,
+  `folder`, `options`, `settings`) that do not parse → `invalid_input:item`
+  / `folder` / `options` / `settings`. Mutations that hit `conflict` reload
+  the vault and retry once (the UI then also gets `vault://changed`).
+* Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
+  mutations, `copy_text`, generator, import/export, settings, …) and bridge
+  user actions. Polled/passive commands (`totp_code`, `browser_status`,
+  `session_state`, `app_info`, `list_*`, `get_settings`) do **not** reset
+  the timer. The monitor checks every 5 s (idle time includes sleep).
+* `lockOnSystemLock`: Windows uses session notifications
+  (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`) and `PBT_APMSUSPEND`; on every
+  OS a clock jump > 2 min between the monitor's 1-s ticks (suspend /
+  hibernate) locks with reason `system`. Linux/macOS do not detect a plain
+  screen lock without suspend.
+* The vault file is checked every 2 s (`reload_if_changed`) → `vault://changed`.
+* Locking (any reason) also clears a secret still pending in the clipboard;
+  so does quitting the app. `lock_vault` (the UI's own request) emits no event;
+  tray "Sperren" and the extension's `lock` emit `vault://locked {manual}`.
+* Every unlock/create stores the vault as `lastVaultId`. The extension's
+  `unlock` opens `lastVaultId` if it exists, else the only vault (else
+  `not_found`).
+* `import_data` emits `vault://changed` after a successful import.
+* `delete_vault` / `respond_pairing` / `revoke_client`: unknown ids →
+  `not_found`.
+* `open_terminal`: Windows `CREATE_NEW_CONSOLE`; Linux tries `$TERMINAL`,
+  `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`,
+  `kitty`, `alacritty`, `foot`, `xterm` (none → `unsupported:no_terminal`);
+  macOS Terminal via `osascript`.
+* `set_portable_mode` locks an open vault itself (no event; the UI checks
+  `session_state` afterwards), stops the bridge, moves the whole data
+  directory (copy, commit by creating/renaming `VaultX-Data`, then delete
+  the old copy; `*.lock`/`*.tmp` are skipped), re-registers the native host
+  and restarts the bridge. Errors: `unsupported:data_dir_override` (with
+  `$VAULTX_DATA_DIR`), `invalid_input:target_exists` (a vault file with the
+  same id already exists at the destination), `io:…`.
+* Pairing requests that arrived before the page subscribed (app launched
+  hidden by the native host) are re-sent ~1 s after the first
+  `session_state` call of each page load; the UI de-duplicates by
+  `requestId`.
+* Debug builds only: `VAULTX_TEST_AUTO_APPROVE_PAIRING=1` approves pairing
+  requests automatically (no dialog) for automated end-to-end tests.
+* Window: links/`window.open` and any navigation away from the app open in
+  the system browser (http/https only). Without a tray icon (Linux without
+  AppIndicator) the close button quits even with `minimizeToTray`, and
+  `startInTray` is ignored.
 
 ## Browser bridge protocol – `vaultx-bridge`
 
@@ -393,6 +544,76 @@ current exe, `"type": "stdio"`, `"allowed_origins": ["chrome-extension://imfndem
 The extension's `manifest.json` contains a fixed public `key`, so the
 unpacked extension always has the ID **`imfndemblnaalppnmdplagajjielnaok`**.
 
+### Bridge behaviour details & Rust API (implemented in `vaultx-bridge`)
+Behaviour (additive to the table above):
+* Requests on one connection are answered in order and the host keeps a
+  single connection, so a pending `pair` (≤ 120 s) delays later messages on
+  the same native-messaging port.
+* Credentials are checked before the lock state (`not_paired` wins over
+  `locked`). Unknown fields are ignored; missing/mistyped fields, an unknown
+  `type` or a non-object → `invalid_request` (with the request's `id` if it
+  is a string, else `""`).
+* `status`: `vaultName` is only revealed to paired clients (else `null`);
+  invalid credentials just give `paired: false`.
+* `pair`: `clientName` trimmed, 1–100 chars; `code` exactly 6 ASCII digits,
+  else `invalid_request` (the app is not asked). A new `pair` with the same
+  `clientName` supersedes a pending one (the older gets `pairing_denied`); at
+  most 4 pending requests; deny/timeout → `pairing_denied`.
+* `unlock`: after 5 wrong passwords in a row it answers `wrong_password` for
+  30 s without trying; every further failure restarts the 30 s, a success
+  resets the counter. Attempts are serialised.
+* `VaultBackend::on_activity` runs after successful *user actions* only
+  (`unlock`, `search`, `get_login`, `get_totp`, `generate_password`,
+  `save_login`, `update_password`) – `status` polling and the automatic
+  `logins_for_url` must not keep the vault from auto-locking.
+* `bridge-clients.json` = `{ "version": 1, "clients": [ { id, name,
+  tokenSha256, createdAt, lastSeenAt } ] }`; `tokenSha256` = lowercase hex
+  SHA-256 of the UTF-8 token string; atomic writes (0600 on Unix);
+  `lastSeenAt` is persisted at most once a minute. A corrupt file is moved to
+  `bridge-clients.json.corrupt` (browsers must pair again).
+* Server: never displaces a live server (second instance → `AlreadyRunning`);
+  removes stale Unix socket files; both ends check the peer uid on Unix.
+  Windows: pipe DACL = current user's SID only (best effort, falls back to
+  default pipe security), remote clients rejected. After `stop()` open
+  connections are closed unanswered on their next request, so the host
+  reconnects to a restarted server (or launches the app).
+* Host: oversized browser frame → `invalid_request` and exit; app reply
+  > 1 MiB → `internal`; after a failed launch, requests within 30 s fail fast
+  with `app_unavailable`. `$VAULTX_BRIDGE_SOCKET` overrides the endpoint
+  (Unix: socket path, Windows: pipe name), `$VAULTX_APP_EXE` the executable
+  the host launches.
+
+```rust
+pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop app
+    fn app_version(&self) -> String;
+    fn unlocked_vault_name(&self) -> Option<String>;
+    fn unlock(&self, password: &str) -> Result<String, BridgeError>;            // → vault name
+    fn lock(&self);
+    fn focus_app(&self);
+    fn request_pairing(&self, request_id: &str, client_name: &str, code: &str); // emit bridge://pairing-request, don't block
+    fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError>;
+    fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError>;     // capped to 50 by the dispatcher
+    fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError>;
+    fn get_totp(&self, item_id: &str) -> Result<TotpCode, BridgeError>;
+    fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError>;
+    fn save_login(&self, name: &str, url: &str, username: &str, password: &str) -> Result<String, BridgeError>;
+    fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError>;
+    fn on_activity(&self) {}
+}
+impl From<vaultx_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal
+let dispatcher = Arc::new(Dispatcher::new(backend, ClientStore::open_default()?));
+let server: ServerHandle = start_server(dispatcher.clone())?;  // Err(Error::AlreadyRunning(_)) if another instance serves
+server.is_running(); server.stop();                            // Drop stops too
+dispatcher.respond_pairing(&request_id, approve) -> bool;      // false: unknown/expired
+dispatcher.pending_pairings() -> Vec<PairingRequest>;          // { requestId, clientName, code }
+dispatcher.clients() -> Vec<PairedClient>; dispatcher.revoke(&client_id) -> Result<bool>;
+host::is_host_invocation(std::env::args_os().skip(1)) -> bool; host::run() -> i32;  // native host mode
+register::browsers() -> Vec<BrowserInfo>; register::register(&[BrowserId], exe: &Path) -> Result<()>;
+register::unregister(&[BrowserId]) -> Result<()>; register::needs_reregister(exe: &Path) -> bool;
+register::registered_browsers() -> Vec<BrowserId>;            // re-register these when needs_reregister()
+// vaultx_bridge::Error { Io, FrameTooLarge, Json, AlreadyRunning, Core }, Error::code() → "io:…"/"corrupt:…"
+```
+
 ## UI/UX principles (desktop + extension)
 
 * Look & feel of a modern password manager (Bitwarden/1Password-like):
@@ -405,7 +626,8 @@ unpacked extension always has the ID **`imfndemblnaalppnmdplagajjielnaok`**.
   system theme by default.
 * Everything important is one click away: copy buttons next to every field,
   "eye" toggle for secrets, a generate button in every password field,
-  keyboard shortcuts (Ctrl+F search, Ctrl+N new, Ctrl+L lock, Ctrl+C on a
-  selected item copies password, Ctrl+U username).
+  keyboard shortcuts (Ctrl+F search, Ctrl+N new, Ctrl+L lock,
+  Ctrl+Shift+C on a selected item copies its password, Ctrl+B the username,
+  Ctrl+S saves while editing, Esc cancels editing / closes dialogs).
 * German first, English second (`src/i18n/de.ts`, `src/i18n/en.ts`).
 * No hidden options: settings is one page with clear sections.

@@ -158,8 +158,14 @@ impl VaultFile {
     /// Parses and validates a vault file from raw bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let bytes = util::strip_bom_bytes(bytes);
-        let probe: Probe = serde_json::from_slice(bytes)
-            .map_err(|_| Error::Unsupported("not a VaultX vault file".into()))?;
+        let probe: Probe = serde_json::from_slice(bytes).map_err(|_| {
+            // Damaged JSON (e.g. truncated) vs. some other kind of file.
+            if bytes.trim_ascii_start().starts_with(b"{") {
+                Error::corrupt("vault file is not valid JSON")
+            } else {
+                Error::Unsupported("not a VaultX vault file".into())
+            }
+        })?;
         if probe.format.as_ref().and_then(|v| v.as_str()) != Some(FORMAT_NAME) {
             return Err(Error::Unsupported("not a VaultX vault file".into()));
         }
@@ -294,8 +300,7 @@ impl VaultFile {
         let kek = crypto::derive_key(code.as_bytes(), &salt, &self.kdf_params())?;
         let nonce = crypto::b64_decode(&recovery.nonce)?;
         let ct = crypto::b64_decode(&recovery.ciphertext)?;
-        crypto::open_key(&kek, &nonce, &ct, &self.recovery_aad())
-            .map_err(|_| Error::WrongPassword)
+        crypto::open_key(&kek, &nonce, &ct, &self.recovery_aad()).map_err(|_| Error::WrongPassword)
     }
 
     /// Wraps `key` with a new master password (fresh salt).
@@ -590,6 +595,10 @@ mod tests {
             VaultFile::parse(b"not json"),
             Err(Error::Unsupported(_))
         ));
+        assert!(matches!(
+            VaultFile::parse(b"\n{\"format\": \"vaultx\", \"vers"),
+            Err(Error::Corrupt(_))
+        ));
         let (file, _, _) = sample_file("pw");
         let mut v: serde_json::Value = serde_json::from_slice(&file.to_json().unwrap()).unwrap();
         v["version"] = 4.into();
@@ -649,9 +658,7 @@ mod tests {
             Err(Error::NotFound(_))
         ));
         file.set_recovery_code(&key, &code).unwrap();
-        let k = file
-            .unwrap_key_with_recovery(&code.to_lowercase())
-            .unwrap();
+        let k = file.unwrap_key_with_recovery(&code.to_lowercase()).unwrap();
         assert_eq!(*k, *key);
         let other = generate_recovery_code().unwrap();
         assert!(matches!(
