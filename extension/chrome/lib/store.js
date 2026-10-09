@@ -5,7 +5,9 @@
 // * chrome.storage.local   – pairing credentials, "never save" sites, last
 //                            used login per site, generator options, the id
 //                            of the vault last unlocked from this browser
-//                            (written by the popup, lib/popup-api.js).
+//                            (written by the popup, lib/popup-api.js), the
+//                            extension version a self-update reload was
+//                            attempted for (lib/version.js).
 // * chrome.storage.session – cached status, pairing progress, pending save
 //                            prompts (contain a password; in memory only and
 //                            not readable by content scripts), per-tab hints.
@@ -96,6 +98,20 @@ export async function getPairing() {
 export async function setPairing(pairing) {
   if (pairing) await session.set({ pairing });
   else await session.remove("pairing");
+}
+
+// ---------------------------------------------------------------------------
+// Self-update after an app update (see lib/version.js)
+// ---------------------------------------------------------------------------
+
+/** The app's extension version a reload was last attempted for, or null. */
+export async function getReloadedFor() {
+  const value = await getKey(local, "extensionReloadedFor", null);
+  return typeof value === "string" ? value : null;
+}
+
+export async function setReloadedFor(version) {
+  await local.set({ extensionReloadedFor: version });
 }
 
 // ---------------------------------------------------------------------------

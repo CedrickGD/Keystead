@@ -14,6 +14,7 @@
 import { NativeBridge, BridgeError, PAIR_TIMEOUT_MS } from "./lib/bridge.js";
 import * as store from "./lib/store.js";
 import { parseWebUrl, siteKey, displayHost } from "./lib/sites.js";
+import { extensionUpdateAction, parseVersion } from "./lib/version.js";
 
 const bridge = new NativeBridge();
 const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
@@ -24,6 +25,8 @@ const BACKOFF_MS = { host_missing: 60_000, host_forbidden: 60_000, app_unavailab
 const AUTOFILL_WINDOW_MS = 6_000;
 /** Requests that work without pairing. */
 const UNPAIRED_TYPES = new Set(["status", "pair", "focus_app"]);
+/** Delay before the extension reloads itself after the app delivered a newer version (lets an open popup say so). */
+const SELF_UPDATE_DELAY_MS = 2_500;
 /** Requests whose success proves the vault is unlocked. */
 const UNLOCKED_TYPES = new Set([
   "logins_for_url",
@@ -64,7 +67,18 @@ function stateForError(code) {
 
 async function updateStatus(patch) {
   const previous = (await store.getStatus()) || {};
-  const status = { state: "unknown", vaultName: null, vaultId: null, appVersion: "", error: null, ...previous, ...patch, ts: Date.now() };
+  const status = {
+    state: "unknown",
+    vaultName: null,
+    vaultId: null,
+    appVersion: "",
+    extensionVersion: null,
+    extensionDir: null,
+    error: null,
+    ...previous,
+    ...patch,
+    ts: Date.now(),
+  };
   await store.setStatus(status);
   const wasUnlocked = previous.state === "unlocked";
   // Badge counts belong to the vault that was open: drop them when it is
@@ -182,13 +196,18 @@ async function refreshStatus() {
     const paired = data?.paired === true;
     if (!paired && credentials) await clearCredentialsIfCurrent(credentials);
     const state = !paired ? "not_paired" : data.unlocked === true ? "unlocked" : "locked";
-    return await updateStatus({
+    const status = await updateStatus({
       state,
       error: null,
       vaultName: state === "unlocked" && typeof data.vaultName === "string" ? data.vaultName : null,
       vaultId: state === "unlocked" && typeof data.vaultId === "string" ? data.vaultId : null,
       appVersion: typeof data?.appVersion === "string" ? data.appVersion : "",
+      // Only paired clients get these (older apps: absent).
+      extensionVersion: paired && parseVersion(data.extensionVersion) ? data.extensionVersion : null,
+      extensionDir: paired && typeof data.extensionDir === "string" ? data.extensionDir.slice(0, 1024) : null,
     });
+    await maybeSelfUpdate(status).catch(() => undefined);
+    return status;
   } catch (err) {
     const code = errorCode(err);
     return updateStatus({ state: stateForError(code), error: code, vaultName: null, vaultId: null });
@@ -202,6 +221,43 @@ function publicStatus(status) {
     vaultId: status?.vaultId ?? null,
     appVersion: status?.appVersion ?? "",
     error: status?.error ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Self-update: the app keeps this extension's folder up to date
+// ---------------------------------------------------------------------------
+
+let selfUpdateScheduled = false;
+
+/**
+ * The app delivers a newer extension version than the one running (it has
+ * rewritten its extension folder – most likely the one we were loaded from):
+ * reload once for that version. A reload that did not help (loaded from
+ * another folder) is not repeated; the popup shows a notice instead.
+ */
+async function maybeSelfUpdate(status) {
+  if (selfUpdateScheduled || !status?.extensionVersion) return;
+  const running = chrome.runtime.getManifest().version;
+  const action = extensionUpdateAction(status.extensionVersion, running, await store.getReloadedFor());
+  if (action !== "reload") return;
+  // Never interrupt a pairing that waits for the user's confirmation.
+  if ((await store.getPairing())?.state === "pending") return;
+  await store.setReloadedFor(status.extensionVersion);
+  selfUpdateScheduled = true;
+  setTimeout(() => chrome.runtime.reload(), SELF_UPDATE_DELAY_MS);
+}
+
+/** For the popup: { version, dir, reloading } if the app delivers a newer extension, else null. */
+async function extensionUpdateInfo(status) {
+  if (!status?.extensionVersion) return null;
+  const running = chrome.runtime.getManifest().version;
+  const action = extensionUpdateAction(status.extensionVersion, running, await store.getReloadedFor());
+  if (action === "current") return null;
+  return {
+    version: status.extensionVersion,
+    dir: status.extensionDir ?? "",
+    reloading: selfUpdateScheduled,
   };
 }
 
@@ -665,11 +721,13 @@ async function tabInfo() {
 /** Messages from extension pages (the popup). */
 const popupHandlers = {
   "popup:status": async (msg) => {
+    let status = null;
     if (!msg.fresh) {
       const cached = await store.getStatus();
-      if (cached && Date.now() - cached.ts < 3000) return publicStatus(cached);
+      if (cached && Date.now() - cached.ts < 3000) status = cached;
     }
-    return publicStatus(await refreshStatus());
+    status ??= await refreshStatus();
+    return { ...publicStatus(status), extensionUpdate: await extensionUpdateInfo(status) };
   },
   "popup:pair-start": (msg) => startPairing(msg.code, msg.clientName),
   "popup:pair-state": () => getPairingState(),

@@ -209,6 +209,9 @@ const pairingKey = (pairing) => (pairing ? `${pairing.state}:${pairing.code}` : 
 /** Counts mounted screens (except the loading screen), so async screen builders can tell they were overtaken. */
 let mountSeq = 0;
 
+/** Notice about a newer extension version the app delivers (shown above every screen), or null. */
+let extensionNotice = null;
+
 function mount(node, name) {
   if (name !== "pairing") {
     stopPairingWatch?.();
@@ -218,7 +221,51 @@ function mount(node, name) {
   }
   if (name !== "loading") mountSeq += 1;
   app.dataset.screen = name;
-  app.replaceChildren(node);
+  app.replaceChildren(...(extensionNotice && name !== "loading" ? [extensionNotice] : []), node);
+}
+
+/**
+ * The app has a newer version of this extension in its extension folder
+ * (`status.extensionUpdate`): either the service worker is about to reload
+ * from there, or – it was loaded from another folder – the user has to load
+ * the app's folder once.
+ */
+function setExtensionUpdate(update) {
+  if (!update || typeof update.version !== "string") {
+    extensionNotice = null;
+    return;
+  }
+  if (update.reloading) {
+    extensionNotice = h(
+      "div",
+      { class: "ext-update", role: "status" },
+      icon("refresh"),
+      h("span", { text: t("extUpdateReloading", update.version) }),
+    );
+    return;
+  }
+  const dir = typeof update.dir === "string" ? update.dir : "";
+  extensionNotice = h(
+    "div",
+    { class: "ext-update notice-card", role: "status" },
+    h("div", { class: "ext-update-head" }, icon("alert"), h("strong", { text: t("extUpdateTitle", update.version) })),
+    h("p", { text: t("extUpdateText") }),
+    dir
+      ? h(
+          "div",
+          { class: "ext-update-path" },
+          h("code", { text: dir, title: dir }),
+          iconButton("copy", t("extUpdateCopyPath"), () =>
+            api
+              .copy(dir)
+              .then(() => toast(t("extUpdatePathCopied")))
+              .catch(() => toast(t("errorGeneric", "clipboard"), "error")),
+            "sm",
+          ),
+        )
+      : null,
+    h("p", { class: "ext-update-hint", text: t("extUpdateHint") }),
+  );
 }
 
 function route(status) {
@@ -241,6 +288,7 @@ async function recheck() {
   try {
     const status = await api.status(true);
     clearTimeout(loadingTimer);
+    setExtensionUpdate(status?.extensionUpdate);
     route(status);
   } catch (err) {
     clearTimeout(loadingTimer);
@@ -1384,6 +1432,7 @@ async function boot() {
     }
     const status = await api.status(true);
     clearTimeout(loadingTimer);
+    setExtensionUpdate(status?.extensionUpdate);
     route(status);
   } catch (err) {
     clearTimeout(loadingTimer);
