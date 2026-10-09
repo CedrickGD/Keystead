@@ -16,6 +16,7 @@ import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
 import { PairingModal } from "./screens/PairingModal";
+import { FileDropProvider } from "./components/import/FileDrop";
 
 type Screen = "loading" | "error" | "welcome" | "unlock" | "main";
 
@@ -300,22 +301,25 @@ function AppRoot({
 
   return (
     <AppContext.Provider value={ctx}>
-      <div className="app-frame">
-        {/* New versions: above the main window and the unlock screen. */}
-        {(screen === "main" || screen === "unlock") && <UpdateBanner />}
-        <div className="app-frame-body">
-          {screen === "welcome" && <WelcomeScreen />}
-          {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
-          {screen === "main" && vault && <MainScreen key={vault.id} />}
+      {/* Files dragged onto the window: the import dialog (unlocked) or a hint. */}
+      <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>
+        <div className="app-frame">
+          {/* New versions: above the main window and the unlock screen. */}
+          {(screen === "main" || screen === "unlock") && <UpdateBanner />}
+          <div className="app-frame-body">
+            {screen === "welcome" && <WelcomeScreen />}
+            {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
+            {screen === "main" && vault && <MainScreen key={vault.id} />}
+          </div>
         </div>
-      </div>
-      {currentPairing && (
-        <PairingModal
-          key={currentPairing.requestId}
-          request={currentPairing}
-          onDone={() => setPairings((list) => list.filter((r) => r.requestId !== currentPairing.requestId))}
-        />
-      )}
+        {currentPairing && (
+          <PairingModal
+            key={currentPairing.requestId}
+            request={currentPairing}
+            onDone={() => setPairings((list) => list.filter((r) => r.requestId !== currentPairing.requestId))}
+          />
+        )}
+      </FileDropProvider>
     </AppContext.Provider>
   );
 }

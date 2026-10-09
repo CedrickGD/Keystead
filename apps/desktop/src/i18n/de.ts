@@ -202,6 +202,8 @@ export const de = {
   "import.file": "Datei",
   "import.chooseFile": "Datei auswählen …",
   "import.wrongPassword": "Das Passwort für diese Datei ist falsch.",
+  "import.open": "Importieren …",
+  "import.dropTip": "Oder die Datei einfach ins Fenster ziehen – das Format wird automatisch erkannt.",
 
   "format.csv": "CSV (Chrome, Edge, Firefox, Bitwarden …)",
   "format.bitwardenJson": "Bitwarden JSON (unverschlüsselt)",

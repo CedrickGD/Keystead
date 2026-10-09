@@ -194,6 +194,8 @@ export const en: Record<MessageKey, string> = {
   "import.file": "File",
   "import.chooseFile": "Choose file …",
   "import.wrongPassword": "The password for this file is incorrect.",
+  "import.open": "Import …",
+  "import.dropTip": "Or simply drag the file into the window – the format is detected automatically.",
 
   "format.csv": "CSV (Chrome, Edge, Firefox, Bitwarden …)",
   "format.bitwardenJson": "Bitwarden JSON (unencrypted)",

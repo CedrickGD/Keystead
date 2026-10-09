@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileDown,
   FileUp,
   FolderOpen,
   RefreshCw,
@@ -25,23 +26,22 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { ApiError, IS_MOCK, api, pickOpenFile } from "../../lib/api";
+import { IS_MOCK, api } from "../../lib/api";
 import type {
   BrowserInfo,
   BrowserStatus,
-  ImportFormat,
-  ImportReport,
   Language,
   ThemeSetting,
   UpdateChannel,
   UpdateInfo,
 } from "../../lib/types";
-import { useT, type MessageKey } from "../../i18n";
+import { useT } from "../../i18n";
 import { useApp, useCopy } from "../../state/app";
 import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
-import { Button, Field, PasswordInput, Segmented, Select, Switch } from "../../components/Controls";
-import { LegacySourcePicker } from "../../components/LegacySourcePicker";
+import { Button, Segmented, Select, Switch } from "../../components/Controls";
+import { useOpenImport } from "../../components/import/ImportDialog";
+import { extensionDownloadUrl } from "../../lib/links";
 import { Logo } from "../../components/Logo";
 import { useUpdateErrorText } from "../../components/UpdateBanner";
 import { useUpdate } from "../../state/update";
@@ -422,6 +422,18 @@ function BrowserSection() {
                 >
                   {t("browser.copyPath")}
                 </Button>
+                {/* Just in case the folder does not work: the same extension from the release. */}
+                <a
+                  className="ext-download"
+                  href={extensionDownloadUrl(info.version)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={t("browser.downloadTitle")}
+                >
+                  <Download aria-hidden />
+                  {t("browser.download")}
+                  <ExternalLink className="ext-download-external" aria-hidden />
+                </a>
               </div>
               <p className="subtle">{t("browser.step2Folder")}</p>
             </div>
@@ -485,157 +497,31 @@ function BrowserSection() {
   );
 }
 
-const IMPORT_FORMATS: { value: ImportFormat; label: MessageKey; ext: string[]; needsPassword: boolean }[] = [
-  { value: "csv", label: "format.csv", ext: ["csv"], needsPassword: false },
-  { value: "bitwarden_json", label: "format.bitwardenJson", ext: ["json"], needsPassword: false },
-  { value: "legacy", label: "format.legacy", ext: ["json"], needsPassword: true },
-  { value: "keystead", label: "format.keystead", ext: ["keystead"], needsPassword: true },
-];
-
 function ImportExportSection() {
-  const { t, tp, errorText } = useT();
-  const toast = useToast();
+  const { t } = useT();
   const { vault } = useApp();
-  const formatId = useId();
-  const pwId = useId();
-  const sourceId = useId();
-  const [format, setFormat] = useState<ImportFormat>("csv");
-  const [path, setPath] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [report, setReport] = useState<ImportReport | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  const openImport = useOpenImport();
   const [exportOpen, setExportOpen] = useState(false);
-  const spec = IMPORT_FORMATS.find((f) => f.value === format) ?? IMPORT_FORMATS[0];
-  const formatTouched = useRef(false);
-
-  // Coming from VaultX 1.x is the most likely import: preselect it when an old vault exists.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .legacyScan()
-      .then((found) => {
-        if (!cancelled && found.length > 0 && !formatTouched.current) setFormat("legacy");
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const pick = async () => {
-    try {
-      const picked = await pickOpenFile({
-        title: t("import.pickFile"),
-        filters: spec ? [{ name: t(spec.label), extensions: spec.ext }] : undefined,
-      });
-      if (picked) {
-        setPath(picked);
-        setReport(null);
-        setImportError(null);
-      }
-    } catch (err) {
-      toast.error(errorText(err));
-    }
-  };
-
-  const runImport = async () => {
-    if (!path || !spec) return;
-    setBusy(true);
-    setReport(null);
-    setImportError(null);
-    try {
-      const result = await api.importData(format, path, spec.needsPassword ? password : null);
-      setReport(result);
-      setPassword("");
-      setPath(null);
-      toast.success(tp("import.imported", result.imported));
-    } catch (err) {
-      setImportError(err instanceof ApiError && err.code === "wrong_password" ? t("import.wrongPassword") : errorText(err));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <SettingsSection id="data" title={t("settings.data")} description={t("settings.dataDesc")}>
-      <div className="setting-row stacked">
-        <div className="setting-text">
-          <div className="setting-title">
+      <SettingRow
+        title={
+          <>
             <Upload size={15} className="inline-icon" />
             {t("import.title")}
-          </div>
-          <div className="setting-desc">{t("import.desc")}</div>
-        </div>
-        <div className="import-form">
-          <Field label={t("import.format")} htmlFor={formatId}>
-            <Select<ImportFormat>
-              id={formatId}
-              value={format}
-              onChange={(f) => {
-                formatTouched.current = true;
-                setFormat(f);
-                setPath(null);
-                setReport(null);
-                setImportError(null);
-              }}
-              options={IMPORT_FORMATS.map((f) => ({ value: f.value, label: t(f.label) }))}
-            />
-          </Field>
-          {format === "legacy" ? (
-            <div className="field">
-              <span className="field-label" id={sourceId}>
-                {t("import.source")}
-              </span>
-              <LegacySourcePicker path={path} onPath={setPath} onError={setImportError} labelledBy={sourceId} />
-            </div>
-          ) : (
-            <Field label={t("import.file")}>
-              <button type="button" className="file-pick" onClick={() => void pick()} title={path ?? undefined}>
-                <FileUp />
-                <span className="truncate">{path ?? t("import.chooseFile")}</span>
-              </button>
-            </Field>
-          )}
-          {spec?.needsPassword && (
-            <Field
-              label={format === "legacy" ? t("import.legacyPassword") : t("import.filePassword")}
-              htmlFor={pwId}
-              hint={format === "legacy" ? t("import.legacyPasswordHint") : undefined}
-            >
-              <PasswordInput id={pwId} value={password} onChange={setPassword} mono={false} />
-            </Field>
-          )}
-          {importError && <div className="field-error">{importError}</div>}
-          {report && (
-            <div className="callout callout-success">
-              <CircleCheck />
-              <div>
-                <strong>{tp("import.imported", report.imported)}</strong>
-                {report.skipped > 0 && <span> · {tp("import.skipped", report.skipped)}</span>}
-                {report.warnings.length > 0 && (
-                  <ul className="plain-list">
-                    {report.warnings.map((w, i) => (
-                      <li key={i}>{w}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
-          <div>
-            <Button
-              variant="primary"
-              onClick={() => void runImport()}
-              loading={busy}
-              disabled={!path || (spec?.needsPassword && !password)}
-              icon={<Upload />}
-            >
-              {t("import.importButton")}
-            </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+        description={
+          <>
+            {t("import.desc")} {t("import.dropTip")}
+          </>
+        }
+      >
+        <Button variant="secondary" icon={<FileUp />} onClick={() => openImport?.()} disabled={!openImport}>
+          {t("import.open")}
+        </Button>
+      </SettingRow>
 
       <SettingRow
         title={
@@ -646,7 +532,7 @@ function ImportExportSection() {
         }
         description={t("export.desc")}
       >
-        <Button variant="secondary" onClick={() => setExportOpen(true)}>
+        <Button variant="secondary" icon={<FileDown />} onClick={() => setExportOpen(true)}>
           {t("export.open")}
         </Button>
       </SettingRow>

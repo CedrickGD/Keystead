@@ -1,23 +1,27 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   ChevronRight,
   FolderInput,
+  FolderOpen,
   HardDrive,
   KeyRound,
   LifeBuoy,
   Plug,
+  Puzzle,
   TriangleAlert,
 } from "lucide-react";
 import { api } from "../lib/api";
-import type { ImportReport, VaultInfo } from "../lib/types";
+import type { VaultInfo } from "../lib/types";
 import { useT } from "../i18n";
 import { useApp } from "../state/app";
 import { Logo } from "../components/Logo";
-import { Button, Field, PasswordInput } from "../components/Controls";
+import { Button, Field } from "../components/Controls";
 import { RecoveryKeyReveal } from "../components/RecoveryKey";
-import { LegacySourcePicker } from "../components/LegacySourcePicker";
+import { ImportFlow } from "../components/import/ImportFlow";
+import { startOnSettings } from "../lib/startView";
 import {
   MasterPasswordFields,
   masterPasswordProblem,
@@ -131,8 +135,13 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
     { id: "recovery", label: t("wizard.stepRecovery") },
   ];
 
+  // "Anleitung" on the last step: Settings → Browser-Integration once the vault opens.
+  const [extensionGuide, setExtensionGuide] = useState(false);
+
   const finish = () => {
-    if (created) enterVault(created);
+    if (!created) return;
+    if (extensionGuide) startOnSettings("browser");
+    enterVault(created);
   };
 
   return (
@@ -160,8 +169,15 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
             }}
           />
         )}
-        {step === "import" && <LegacyImportStep onDone={() => setStep("recovery")} />}
-        {step === "recovery" && <RecoveryStep onDone={finish} />}
+        {step === "import" && <ImportStep onDone={() => setStep("recovery")} />}
+        {step === "recovery" && (
+          <RecoveryStep
+            onDone={finish}
+            extension={
+              <ExtensionCard guideQueued={extensionGuide} onToggleGuide={() => setExtensionGuide((queued) => !queued)} />
+            }
+          />
+        )}
       </div>
     </div>
   );
@@ -247,93 +263,101 @@ function CreateVaultStep({
   );
 }
 
-function LegacyImportStep({ onDone }: { onDone: () => void }) {
-  const { t, tp, errorText } = useT();
-  const pwId = useId();
-  const sourceId = useId();
-  const [path, setPath] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<ImportReport | null>(null);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!path || !password) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setReport(await api.importData("legacy", path, password));
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (report) {
-    return (
-      <div className="wizard-body">
-        <div className="wizard-heading">
-          <div className="success-badge">
-            <Check />
-          </div>
-          <h1 className="auth-title">{t("import.doneTitle")}</h1>
-          <p className="muted">
-            {tp("import.imported", report.imported)}
-            {report.skipped > 0 && ` · ${tp("import.skipped", report.skipped)}`}
-          </p>
-        </div>
-        {report.warnings.length > 0 && (
-          <div className="callout callout-warning">
-            <TriangleAlert />
-            <ul className="plain-list">
-              {report.warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <Button variant="primary" size="lg" block onClick={onDone} autoFocus>
-          {t("common.continue")}
-        </Button>
-      </div>
-    );
-  }
-
+/** The setup wizard's import step: the import dialog's flow inline (skippable). */
+function ImportStep({ onDone }: { onDone: () => void }) {
   return (
-    <form className="wizard-body" onSubmit={submit} noValidate>
-      <div className="wizard-heading">
-        <h1 className="auth-title">{t("import.legacyTitle")}</h1>
-        <p className="muted">{t("import.legacyDesc")}</p>
-      </div>
-
-      <div className="field">
-        <span className="field-label" id={sourceId}>
-          {t("import.source")}
-        </span>
-        <LegacySourcePicker path={path} onPath={setPath} onError={setError} labelledBy={sourceId} />
-      </div>
-
-      <Field label={t("import.legacyPassword")} htmlFor={pwId} hint={t("import.legacyPasswordHint")}>
-        <PasswordInput id={pwId} value={password} onChange={setPassword} size="lg" />
-      </Field>
-
-      {error && <div className="field-error">{error}</div>}
-
-      <div className="wizard-actions">
-        <Button variant="ghost" onClick={onDone}>
-          {t("common.skip")}
-        </Button>
-        <Button type="submit" variant="primary" size="lg" loading={busy} disabled={!path || !password}>
-          {t("import.importButton")}
-        </Button>
-      </div>
-    </form>
+    <ImportFlow variant="wizard" onFinish={onDone}>
+      {(layout) => (
+        <form
+          className="wizard-body"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            layout.onSubmit();
+          }}
+        >
+          <div className="wizard-heading">
+            <h1 className="auth-title">{layout.title}</h1>
+            {layout.subtitle && <p className="muted">{layout.subtitle}</p>}
+          </div>
+          {layout.body}
+          <div className="wizard-actions">{layout.footer}</div>
+        </form>
+      )}
+    </ImportFlow>
   );
 }
 
-function RecoveryStep({ onDone }: { onDone: () => void }) {
+/**
+ * Optional pointer to the browser extension on the wizard's last step: the
+ * folder the app keeps it in and the full guide (Settings →
+ * Browser-Integration), which opens once the wizard is finished.
+ */
+function ExtensionCard({ guideQueued, onToggleGuide }: { guideQueued: boolean; onToggleGuide: () => void }) {
+  const { t, errorText } = useT();
+  const [dir, setDir] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .browserStatus()
+      .then((status) => {
+        if (!cancelled) setDir(status.extensionDir);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openFolder = async () => {
+    setError(null);
+    try {
+      await api.openExtensionDir();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+
+  return (
+    <section className="wizard-ext" aria-labelledby="wizard-ext-title">
+      <span className="wizard-ext-icon" aria-hidden>
+        <Puzzle />
+      </span>
+      <div className="wizard-ext-body">
+        <div className="wizard-ext-title" id="wizard-ext-title">
+          {t("wizard.extTitle")}
+          <span className="chip">{t("wizard.extOptional")}</span>
+        </div>
+        <div className="wizard-ext-text">{t("wizard.extText")}</div>
+        {dir && (
+          <code className="wizard-ext-path selectable" title={dir}>
+            {dir}
+          </code>
+        )}
+        <div className="wizard-ext-actions">
+          <Button size="sm" variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
+            {t("browser.openFolder")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={guideQueued ? <Check /> : <BookOpen />}
+            aria-pressed={guideQueued}
+            onClick={onToggleGuide}
+          >
+            {guideQueued ? t("wizard.extGuideQueued") : t("wizard.extGuide")}
+          </Button>
+        </div>
+        {guideQueued && <div className="wizard-ext-hint">{t("wizard.extGuideHint")}</div>}
+        {error && <div className="field-error">{error}</div>}
+      </div>
+    </section>
+  );
+}
+
+function RecoveryStep({ onDone, extension }: { onDone: () => void; extension: ReactNode }) {
   const { t, errorText } = useT();
   const [key, setKey] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -394,6 +418,7 @@ function RecoveryStep({ onDone }: { onDone: () => void }) {
           {t("recovery.create")}
         </Button>
       </div>
+      {extension}
     </div>
   );
 }

@@ -200,11 +200,21 @@ impl VaultBackend for Backend {
     }
 
     fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError> {
-        Ok(self.core()?.read(|v| v.logins_for_url(url))?)
+        Ok(self.core()?.read(|v| {
+            let mut rows = v.logins_for_url(url);
+            crate::icons::attach_icons(v, &mut rows);
+            rows
+        })?)
     }
 
     fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError> {
-        Ok(self.core()?.read(|v| v.search(query))?)
+        Ok(self.core()?.read(|v| {
+            let mut rows = v.search(query);
+            // The dispatcher keeps the first 50 rows; icons go to the first
+            // few of those.
+            crate::icons::attach_icons(v, &mut rows);
+            rows
+        })?)
     }
 
     fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError> {

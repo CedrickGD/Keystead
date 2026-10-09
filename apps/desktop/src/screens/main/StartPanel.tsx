@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import { useT, type MessageKey } from "../../i18n";
 import { useApp } from "../../state/app";
 import { Logo } from "../../components/Logo";
+import { useOpenImport } from "../../components/import/ImportDialog";
 
 function ActionTile({
   icon,
@@ -86,6 +87,7 @@ export function StartPanel({
 }) {
   const { t } = useT();
   const { vault, settings } = useApp();
+  const openImport = useOpenImport();
   const [browserPaired, setBrowserPaired] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -134,7 +136,12 @@ export function StartPanel({
           kbd="Ctrl N"
           onClick={onNewLogin}
         />
-        <ActionTile icon={<FileUp />} title={t("start.import")} desc={t("start.importDesc")} onClick={() => onSettings("data")} />
+        <ActionTile
+          icon={<FileUp />}
+          title={t("start.import")}
+          desc={t("start.importDesc")}
+          onClick={() => (openImport ? openImport() : onSettings("data"))}
+        />
         <ActionTile icon={<WandSparkles />} title={t("start.generate")} desc={t("start.generateDesc")} onClick={onGenerator} />
       </div>
 

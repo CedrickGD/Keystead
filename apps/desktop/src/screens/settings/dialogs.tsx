@@ -1,11 +1,11 @@
-import { useId, useState } from "react";
-import { FileDown, KeyRound, LifeBuoy, ShieldAlert, Trash2, TriangleAlert } from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
+import { Braces, Check, FileDown, FileLock2, FileSpreadsheet, KeyRound, LifeBuoy, Trash2, TriangleAlert } from "lucide-react";
 import { ApiError, api, pickSaveFile } from "../../lib/api";
 import type { ExportFormat, VaultInfo } from "../../lib/types";
-import { useT } from "../../i18n";
+import { useT, type MessageKey } from "../../i18n";
 import { useToast } from "../../components/Toasts";
 import { Modal } from "../../components/Modal";
-import { Button, Field, PasswordInput, Select } from "../../components/Controls";
+import { Button, Field, PasswordInput } from "../../components/Controls";
 import { RecoveryKeyReveal } from "../../components/RecoveryKey";
 import {
   MasterPasswordFields,
@@ -168,13 +168,39 @@ export function RecoveryKeyDialog({
 
 const EXPORT_EXT: Record<ExportFormat, string> = { keystead: "keystead", csv: "csv", bitwarden_json: "json" };
 
+const EXPORT_FORMATS: {
+  value: ExportFormat;
+  icon: ReactNode;
+  title: MessageKey;
+  desc: MessageKey;
+  file: MessageKey;
+}[] = [
+  { value: "keystead", icon: <FileLock2 />, title: "export.cardKeystead", desc: "export.cardKeysteadDesc", file: "export.fileKeystead" },
+  { value: "csv", icon: <FileSpreadsheet />, title: "export.cardCsv", desc: "export.cardCsvDesc", file: "export.fileCsv" },
+  { value: "bitwarden_json", icon: <Braces />, title: "export.cardBitwarden", desc: "export.cardBitwardenDesc", file: "export.fileJson" },
+];
+
+/** `<vault>-<YYYY-MM-DD>` in local time, safe as a file name. */
+function exportBaseName(vaultName: string): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const safeName = vaultName.trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "") || "Tresor";
+  return `Keystead-${safeName}-${date}`;
+}
+
+/**
+ * Export in one step: pick a format card, set an export password (encrypted)
+ * or read the warning (unencrypted), confirm with the master password,
+ * "Speichern unter …". The toast offers "Im Ordner anzeigen".
+ */
 export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClose: () => void }) {
   const { t, errorText } = useT();
   const toast = useToast();
   const masterId = useId();
   const exportPwId = useId();
   const exportPw2Id = useId();
-  const formatId = useId();
+  const formatName = useId();
   const [format, setFormat] = useState<ExportFormat>("keystead");
   const [exportPassword, setExportPassword] = useState("");
   const [exportPassword2, setExportPassword2] = useState("");
@@ -184,6 +210,7 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
   const [masterError, setMasterError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const encrypted = format === "keystead";
+  const spec = EXPORT_FORMATS.find((f) => f.value === format) ?? EXPORT_FORMATS[0];
 
   const exportPwProblem = encrypted
     ? !exportPassword
@@ -202,14 +229,12 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
       setMasterError(t("master.required"));
       return;
     }
-    const date = new Date().toISOString().slice(0, 10);
-    const safeName = vaultName.replace(/[^\p{L}\p{N}_-]+/gu, "_") || "Keystead";
     let path: string | null;
     try {
       path = await pickSaveFile({
-        title: t("export.title"),
-        defaultPath: `${safeName}-${date}.${EXPORT_EXT[format]}`,
-        filters: [{ name: format.toUpperCase(), extensions: [EXPORT_EXT[format]] }],
+        title: t("export.saveAs"),
+        defaultPath: `${exportBaseName(vaultName)}.${EXPORT_EXT[format]}`,
+        filters: spec ? [{ name: t(spec.file), extensions: [EXPORT_EXT[format]] }] : undefined,
       });
     } catch (err) {
       setError(errorText(err));
@@ -219,7 +244,17 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
     setBusy(true);
     try {
       await api.exportData(format, path, encrypted ? exportPassword : null, master);
-      toast.success(t("export.done", { path }));
+      toast.show({
+        kind: "success",
+        message: t("export.done", { path }),
+        duration: 8000,
+        action: {
+          label: t("export.showInFolder"),
+          onClick: () => {
+            api.showExport().catch((err: unknown) => toast.error(errorText(err)));
+          },
+        },
+      });
       onClose();
     } catch (err) {
       if (err instanceof ApiError && err.code === "wrong_password") setMasterError(t("master.currentWrong"));
@@ -243,31 +278,46 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t("common.cancel")}
           </Button>
-          <Button type="submit" variant={encrypted ? "primary" : "danger"} loading={busy}>
-            {t("export.button")}
+          <Button type="submit" variant={encrypted ? "primary" : "danger"} loading={busy} icon={<FileDown />}>
+            {t("export.saveAs")}
           </Button>
         </>
       }
     >
-      <Field label={t("export.format")} htmlFor={formatId}>
-        <Select
-          id={formatId}
-          value={format}
-          onChange={setFormat}
-          options={[
-            { value: "keystead", label: t("format.keysteadExport") },
-            { value: "csv", label: t("format.csvExport") },
-            { value: "bitwarden_json", label: t("format.bitwardenExport") },
-          ]}
-        />
-      </Field>
+      <div className="export-formats" role="radiogroup" aria-label={t("export.format")}>
+        {EXPORT_FORMATS.map((option) => (
+          <label key={option.value} className={`export-format ${format === option.value ? "selected" : ""}`}>
+            <input
+              type="radio"
+              name={formatName}
+              value={option.value}
+              checked={format === option.value}
+              onChange={() => {
+                setFormat(option.value);
+                setError(null);
+              }}
+            />
+            <span className="export-format-icon" aria-hidden>
+              {option.icon}
+            </span>
+            <span className="export-format-text">
+              <span className="export-format-title">
+                {t(option.title)}
+                {option.value === "keystead" && <span className="chip success">{t("export.recommended")}</span>}
+              </span>
+              <span className="export-format-desc">{t(option.desc)}</span>
+            </span>
+            <Check className="export-format-check" aria-hidden />
+          </label>
+        ))}
+      </div>
       {encrypted ? (
-        <>
-          <div className="callout callout-info">
-            <ShieldAlert />
-            <span>{t("export.encryptedInfo")}</span>
-          </div>
-          <Field label={t("export.password")} htmlFor={exportPwId} error={showErrors && exportPwProblem === t("export.passwordRequired") ? exportPwProblem : null}>
+        <div className="export-fields">
+          <Field
+            label={t("export.password")}
+            htmlFor={exportPwId}
+            error={showErrors && exportPwProblem === t("export.passwordRequired") ? exportPwProblem : null}
+          >
             <PasswordInput id={exportPwId} value={exportPassword} onChange={setExportPassword} />
             <StrengthMeter password={exportPassword} emptyHint={t("export.passwordHint")} />
           </Field>
@@ -278,9 +328,9 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
           >
             <PasswordInput id={exportPw2Id} value={exportPassword2} onChange={setExportPassword2} />
           </Field>
-        </>
+        </div>
       ) : (
-        <div className="callout callout-danger">
+        <div className="callout callout-danger" role="note">
           <TriangleAlert />
           <span>
             <strong>{t("export.unencryptedTitle")}</strong> {t("export.unencryptedText")}

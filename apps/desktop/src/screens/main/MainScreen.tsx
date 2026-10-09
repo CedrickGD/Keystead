@@ -16,6 +16,10 @@ import { countItems, filterItems, visibleItems, type Filter, type SortKey, type 
 import { GeneratorPage } from "../GeneratorPage";
 import { HealthPage } from "../HealthPage";
 import { SettingsPage } from "../settings/SettingsPage";
+import { ImportDialog, ImportLauncherContext } from "../../components/import/ImportDialog";
+import { useFileDropTarget } from "../../components/import/FileDrop";
+import type { ImportRequest } from "../../components/import/ImportFlow";
+import { clearStartSection, peekStartSection } from "../../lib/startView";
 
 interface EditState {
   draft: VaultItem;
@@ -43,7 +47,22 @@ export function MainScreen() {
 
   const [items, setItems] = useState<VaultItem[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
-  const [view, setView] = useState<View>({ kind: "vault", filter: { kind: "all" } });
+  const [view, setView] = useState<View>(() => {
+    // E.g. the setup wizard's "Anleitung" for the browser extension.
+    const section = peekStartSection();
+    return section ? { kind: "settings", section } : { kind: "vault", filter: { kind: "all" } };
+  });
+  useEffect(() => clearStartSection(), []);
+
+  // The import dialog: opened from the start panel / settings, or by a file
+  // dropped onto the window (`request` = that file).
+  const [importDialog, setImportDialog] = useState<{ request: ImportRequest | null } | null>(null);
+  const importSeq = useRef(0);
+  const openImport = useCallback((path?: string) => {
+    importSeq.current += 1;
+    setImportDialog({ request: path ? { path, seq: importSeq.current } : null });
+  }, []);
+  useFileDropTarget((path) => openImport(path));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -454,55 +473,58 @@ export function MainScreen() {
   };
 
   return (
-    <div className="shell">
-      <Sidebar
-        vaultName={vault?.name ?? ""}
-        view={view}
-        counts={counts}
-        folders={folders}
-        onNavigate={navigate}
-        onLock={() => void lock()}
-        onCreateFolder={(name) => void createFolder(name)}
-        onRenameFolder={(folder, name) => void renameFolder(folder, name)}
-        onDeleteFolder={(folder) => void deleteFolder(folder)}
-      />
-      {view.kind === "vault" && (
-        <div className="vault-view">
-          <ItemList
-            ref={searchRef}
-            title={filterTitle(filter)}
-            filter={filter}
-            items={visible}
-            loading={items === null}
-            totalInFilter={totalInFilter}
-            selectedId={editing && !editing.isNew ? editing.draft.id : selectedId}
-            onSelect={select}
-            onOpen={focusDetail}
-            query={query}
-            onQuery={setQuery}
-            terms={terms}
-            sort={sort}
-            onSort={setSort}
-            onNew={startNew}
-            onEmptyTrash={() => void emptyTrash()}
-          />
-          <main className="detail-pane" ref={detailRef} aria-label={t("detail.label")}>
-            {renderDetail()}
-          </main>
-        </div>
-      )}
-      {view.kind === "generator" && <GeneratorPage />}
-      {view.kind === "health" && (
-        <HealthPage
-          items={allItems}
-          onOpenItem={(id) => {
-            setView({ kind: "vault", filter: { kind: "all" } });
-            setQuery("");
-            setSelectedId(id);
-          }}
+    <ImportLauncherContext.Provider value={openImport}>
+      <div className="shell">
+        <Sidebar
+          vaultName={vault?.name ?? ""}
+          view={view}
+          counts={counts}
+          folders={folders}
+          onNavigate={navigate}
+          onLock={() => void lock()}
+          onCreateFolder={(name) => void createFolder(name)}
+          onRenameFolder={(folder, name) => void renameFolder(folder, name)}
+          onDeleteFolder={(folder) => void deleteFolder(folder)}
         />
-      )}
-      {view.kind === "settings" && <SettingsPage initialSection={view.section} />}
-    </div>
+        {view.kind === "vault" && (
+          <div className="vault-view">
+            <ItemList
+              ref={searchRef}
+              title={filterTitle(filter)}
+              filter={filter}
+              items={visible}
+              loading={items === null}
+              totalInFilter={totalInFilter}
+              selectedId={editing && !editing.isNew ? editing.draft.id : selectedId}
+              onSelect={select}
+              onOpen={focusDetail}
+              query={query}
+              onQuery={setQuery}
+              terms={terms}
+              sort={sort}
+              onSort={setSort}
+              onNew={startNew}
+              onEmptyTrash={() => void emptyTrash()}
+            />
+            <main className="detail-pane" ref={detailRef} aria-label={t("detail.label")}>
+              {renderDetail()}
+            </main>
+          </div>
+        )}
+        {view.kind === "generator" && <GeneratorPage />}
+        {view.kind === "health" && (
+          <HealthPage
+            items={allItems}
+            onOpenItem={(id) => {
+              setView({ kind: "vault", filter: { kind: "all" } });
+              setQuery("");
+              setSelectedId(id);
+            }}
+          />
+        )}
+        {view.kind === "settings" && <SettingsPage initialSection={view.section} />}
+        {importDialog && <ImportDialog request={importDialog.request} onClose={() => setImportDialog(null)} />}
+      </div>
+    </ImportLauncherContext.Provider>
   );
 }

@@ -912,6 +912,9 @@ pub(crate) fn icon_candidates(html: &str, page: &Url) -> Vec<Candidate> {
             }
         } else {
             let Ok(url) = base.join(href) else { continue };
+            if !matches!(url.scheme(), "http" | "https") {
+                continue;
+            }
             let path = url.path().to_ascii_lowercase();
             if path.ends_with(".svg") || path.ends_with(".svgz") {
                 continue;
