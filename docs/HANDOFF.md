@@ -48,7 +48,7 @@ WebView2 (ist auf Win 10/11 vorhanden).
   Erweiterung lädt sich nach App-Updates selbst neu. Der Besitzer hat sie seit
   beta.7 aus diesem Ordner geladen.
 
-Veröffentlicht: beta.2 … **beta.7** (letzte: Sicherheits-Block). Der Besitzer
+Veröffentlicht: beta.2 … **beta.8** (beta.7: Sicherheits-Block, beta.8: Plugin smarter). Der Besitzer
 testet unter Windows (Installer-Version, Brave/Chromium-Browser) und bekommt
 neue Betas per In-App-Update.
 
@@ -75,40 +75,28 @@ neue Betas per In-App-Update.
   Schlüsselrotation beim Master-Passwort-Wechsel inkl. neuem
   Wiederherstellungsschlüssel.
 
-## Laufende Arbeit: Block 2 „Plugin smarter machen“
+## Abgeschlossen: Block 2 „Plugin smarter machen“ (beta.8)
 
-Gebaut (auf dem Branch, siehe `git log`): Passwortvorschlag auf Registrierungs-
-und Passwort-ändern-Seiten, 2FA-Code nach dem Ausfüllen kopieren +
-„2FA-Code einfügen“ am Code-Feld, Erkennung in offenen Shadow Roots
-(Web-Components), sichtbare Rückmeldung bei zu frühen/verdeckten Klicks,
-2FA-Countdown + Tastatursteuerung im Popup, Plugin-Einstellungen; Bridge:
+Passwortvorschlag auf Registrierungs- und Passwort-ändern-Seiten,
+2FA-Code nach dem Ausfüllen kopieren + „2FA-Code einfügen“ am Code-Feld,
+Erkennung in offenen Shadow Roots (Web-Components), sichtbare Rückmeldung bei zu
+frühen/verdeckten Klicks, 2FA-Countdown + Tastatursteuerung im Popup,
+Plugin-Einstellungen (Popup → Einstellungen); Bridge:
 `generate_password.remember`, `remember_generated`.
 
-Funde der zweiten Prüfrunde – behoben (Unit-Tests + echter Browser):
-1. Div-basierte Registrierung (ohne `<form>`, Benutzername in eigenem
-   Abschnitt nach dem Passwort, GitHub-artig): Ein Feld, dessen Container
-   (Formular, sonst nächstes Element mit Button) ein Passwortfeld eines
-   erkannten Formulars enthält, ist kein Login-Schritt mehr.
-2. „Konto erstellen“-Seite mit zuerst nur E-Mail + „Weiter“: Liest sich der
-   Schritt nach Registrierung, ist es kein Login-Schritt. Es entscheiden die
-   nächsten Wörter (Anmelden/Anmeldung gewinnt bei beidem): erst die eigenen
-   des Schritts (Action, ID, Name, Submit-Buttons – ein „Konto erstellen“
-   neben einem reinen „Weiter“ zählt nicht), dann seine Überschriften, dann
-   die Überschrift über dem Formular, zuletzt die Seite (Titel, Pfad). So
-   bleibt der Registrierungsschritt eines Shops neben dessen Login auch
-   unter dem Titel „Kasse – Anmelden“ eine Registrierung, und „Anmelden
-   oder Konto erstellen“ sowie Google („Konto erstellen“-Button neben
-   „Weiter“, Titel „Anmeldung – Google Konten“) bleiben Login-Schritte.
-3. Entscheidung umgesetzt: Popup-„Ausfüllen“ (explizite Auswahl) füllt auch
-   ein als Registrierung erkanntes Formular, wenn die Seite kein anderes hat
-   (Benutzername + Passwort ins Neues-Passwort-Feld und die Bestätigung).
-   Inline-Icon/-Menü und `Strg+Umschalt+L` bleiben dort aus;
-   `Strg+Umschalt+L` weist per Hinweis auf das Popup hin.
+Erkennung Registrierung vs. Login (`extension/chrome/lib/forms.js`, Tests in
+`extension/tests/forms.test.mjs`): Ein einzelnes Benutzer-/E-Mail-Feld ist
+kein Login-Schritt, wenn sein Container schon ein Passwortfeld eines erkannten
+Formulars hält (GitHub-artige Registrierung) oder wenn sich der Schritt nach
+Registrierung liest. Es entscheiden die nächsten Wörter (Login-Wörter gewinnen
+bei beidem): eigene Wörter des Schritts → seine Überschriften → die Überschrift
+direkt über ihm auf seiner eigenen Vorfahren-Kette (nicht aus Seitenleisten,
+`<aside>`/`<header>`-Promos oder Nachbarspalten) → Seitentitel/Pfad.
+Popup-„Ausfüllen“ füllt auf ausdrücklichen Wunsch auch ein als Registrierung
+erkanntes Formular; Inline-Menü und `Strg+Umschalt+L` bleiben dort aus.
 
-**Wenn im `git log` ein Commit „… [release]“ nach „Smarter browser extension“
-(beta.8) steht, ist Block 2 abgeschlossen.** Sonst: die Änderungen
-(`extension/chrome/lib/forms.js`, `content.js`, `background.js`, Locales,
-Tests, Doku) committen und mit `[release]` veröffentlichen.
+Bekannte Grenze: Die Erkennung ist heuristisch. Fehlklassifizierte Seiten
+lassen sich immer über das Popup ausfüllen.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 

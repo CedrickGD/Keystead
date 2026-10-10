@@ -560,16 +560,42 @@
    */
   function headingBefore(scope, tree) {
     const doc = scope.ownerDocument;
+    const chain = new Set();
     let node = composedParent(scope);
     for (let depth = 0; node && node !== doc.body && node !== doc.documentElement && depth < 3; depth += 1) {
+      chain.add(node);
       const inputs = queryDeep(tree, node, "input");
       if (inputs.length > 40) return "";
       if (inputs.some((i) => !composedContains(scope, i) && (isPasswordCandidate(i) || isUsernameCandidate(i)))) return "";
-      const before = queryDeep(tree, node, HEADINGS, true).filter((h) => !composedContains(scope, h) && precedes(h, scope));
+      const before = queryDeep(tree, node, HEADINGS, true).filter(
+        (h) => !composedContains(scope, h) && precedes(h, scope) && onStepChain(h, chain, tree),
+      );
       if (before.length) return headingText(before[before.length - 1]).toLowerCase();
       node = composedParent(node);
     }
     return "";
+  }
+
+  const SECTIONING_ASIDE = /^(ASIDE|HEADER|NAV|FOOTER)$/;
+
+  /**
+   * Only a heading on the step's own ancestor chain describes it: a direct
+   * child of one of those ancestors, or inside a heading-only wrapper (no
+   * fields, buttons or links – e.g. Google's heading area) that is. A heading
+   * in a sibling column, an <aside>, a <header> promo or a nav ("Neu hier?
+   * Jetzt registrieren" beside a login step) is about something else.
+   */
+  function onStepChain(heading, chain, tree) {
+    const parent = composedParent(heading);
+    if (!parent) return false;
+    if (chain.has(parent)) return true;
+    const grand = composedParent(parent);
+    return (
+      !!grand &&
+      chain.has(grand) &&
+      !SECTIONING_ASIDE.test(parent.tagName || "") &&
+      queryDeep(tree, parent, "input, button, select, textarea, a, form").length === 0
+    );
   }
 
   /** "login" if the words say log in / anmelden (also beside signup words), "signup" if they only say sign up, else null. */

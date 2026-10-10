@@ -465,6 +465,23 @@ test("a heading after the step (a signup column beside a login step) or above an
   assert.deepEqual(stepsOf(shared).kinds, ["login", "username"]);
 });
 
+test("headings in a sidebar, header promo or sibling column do not describe a step", () => {
+  const step = `<form action="/auth/identify"><input type="email" id="em" name="email" autocomplete="username"><button>Weiter</button></form>`;
+  // A registration teaser in an <aside> before the login step.
+  const sidebar = page(`<div class="wrap"><aside><h2>Neu hier? Jetzt registrieren</h2><a href="/register">Registrieren</a></aside>
+    <main>${step}</main></div>`, { title: "Mein Konto – Shop", path: "/konto" });
+  assert.deepEqual(stepsOf(sidebar).kinds, ["username"]);
+  // A promo heading in the page <header>.
+  const promo = page(`<div id="app"><header><h1>Jetzt kostenlos registrieren und 10 % sparen</h1></header>
+    <main>${step}</main></div>`, { title: "Mein Konto", path: "/konto" });
+  assert.deepEqual(stepsOf(promo).kinds, ["username"]);
+  // Mirror case: a login teaser column before a registration step stays a registration (its own heading decides).
+  const mirror = page(`<div class="row"><div class="col"><h2>Schon Kunde? Anmelden</h2><a href="/login">Anmelden</a></div>
+    <div class="col"><h2>Neues Kundenkonto erstellen</h2><form action="/k"><input type="email" name="email" placeholder="E-Mail"><button>Weiter</button></form></div></div>`,
+    { title: "Mein Konto", path: "/konto" });
+  assert.deepEqual(stepsOf(mirror).kinds, ["signup"]);
+});
+
 test("popup 'Ausfüllen' (explicit pick) also fills a form taken for a registration; Ctrl+Shift+L does not", () => {
   // A login whose password field says new-password and whose button says nothing: taken for a signup.
   const doc = page(`<form action="/session"><input name="user" placeholder="Benutzername">
