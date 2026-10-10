@@ -12,7 +12,10 @@
 // * chrome.storage.session – cached status, pairing progress, pending save
 //                            prompts (contain a password; in memory only and
 //                            not readable by content scripts), 2FA offers
-//                            (item ids only), per-tab hints.
+//                            (item ids only), hashes of the password
+//                            suggestions shown in a tab, per-tab hints.
+
+import { normalizeSettings } from "./settings.js";
 
 const local = chrome.storage.local;
 const session = chrome.storage.session;
@@ -23,13 +26,9 @@ export const PENDING_TTL_MS = 2 * 60_000;
 const USERNAME_STEP_TTL_MS = 5 * 60_000;
 /** How long "2FA-Code einfügen" is offered after a login with TOTP was filled. */
 export const TOTP_OFFER_TTL_MS = 2 * 60_000;
-/** Extension settings (popup → "Einstellungen") and their defaults. */
-export const SETTINGS_DEFAULTS = Object.freeze({
-  /** Copy the current 2FA code (through the app) after filling a login that has one. */
-  autoCopyTotp: true,
-  /** Suggest a strong password in signup / password change forms. */
-  suggestPasswords: true,
-});
+/** How long a shown password suggestion may still be taken (and remembered). */
+const SUGGESTION_TTL_MS = 30 * 60_000;
+const MAX_SUGGESTIONS_PER_TAB = 10;
 const MAX_LAST_USED = 300;
 const MAX_NEVER_SITES = 1000;
 
@@ -189,16 +188,9 @@ export async function getGeneratorOptions() {
   return value && typeof value === "object" ? value : null;
 }
 
-/** The extension settings: stored values of the known keys over SETTINGS_DEFAULTS. */
+/** The extension settings (lib/settings.js; written by the popup). */
 export async function getSettings() {
-  const stored = await getKey(local, "settings", null);
-  const settings = { ...SETTINGS_DEFAULTS };
-  if (stored && typeof stored === "object") {
-    for (const key of Object.keys(SETTINGS_DEFAULTS)) {
-      if (typeof stored[key] === typeof SETTINGS_DEFAULTS[key]) settings[key] = stored[key];
-    }
-  }
-  return settings;
+  return normalizeSettings(await getKey(local, "settings", null));
 }
 
 // ---------------------------------------------------------------------------
@@ -231,11 +223,11 @@ export async function removePending(tabId, id = null) {
   });
 }
 
-/** Drops every pending save prompt and 2FA offer (vault locked or switched). */
+/** Drops every pending save prompt, 2FA offer and issued suggestion (vault locked or switched). */
 export async function clearAllPending() {
   try {
     const all = await session.get(null);
-    const keys = Object.keys(all).filter((key) => key.startsWith("pending:") || key.startsWith("totp:"));
+    const keys = Object.keys(all).filter((key) => key.startsWith("pending:") || key.startsWith("totp:") || key.startsWith("suggest:"));
     if (keys.length) await session.remove(keys);
   } catch {
     // Best effort.
@@ -261,6 +253,33 @@ export async function removeTotpOffer(tabId) {
   await session.remove(tabKey("totp", tabId));
 }
 
+/**
+ * Remembers that a password suggestion (by its SHA-256, `hash`) was shown in
+ * a tab for vault `vaultId`: only such a suggestion goes into the generator
+ * history when the page reports it as taken (see takeSuggestion).
+ */
+export function addSuggestion(tabId, hash, vaultId) {
+  return withLock(tabKey("suggest", tabId), async () => {
+    const now = Date.now();
+    const list = (await getKey(session, tabKey("suggest", tabId), [])).filter((s) => s && now - s.at < SUGGESTION_TTL_MS && s.hash !== hash);
+    list.push({ hash, vaultId, at: now });
+    await session.set({ [tabKey("suggest", tabId)]: list.slice(-MAX_SUGGESTIONS_PER_TAB) });
+  });
+}
+
+/** Removes and returns the suggestion `hash` shown in a tab ({ hash, vaultId, at }), or null. */
+export function takeSuggestion(tabId, hash) {
+  return withLock(tabKey("suggest", tabId), async () => {
+    const now = Date.now();
+    const list = (await getKey(session, tabKey("suggest", tabId), [])).filter((s) => s && now - s.at < SUGGESTION_TTL_MS);
+    const found = list.find((s) => s.hash === hash) ?? null;
+    const rest = list.filter((s) => s !== found);
+    if (rest.length) await session.set({ [tabKey("suggest", tabId)]: rest });
+    else await session.remove(tabKey("suggest", tabId));
+    return found;
+  });
+}
+
 export async function getUsernameStep(tabId, site) {
   const step = await getKey(session, tabKey("username", tabId), null);
   if (!step || step.site !== site || Date.now() - step.at > USERNAME_STEP_TTL_MS) return "";
@@ -282,7 +301,13 @@ export async function setFocusedFrame(tabId, frameId) {
 
 /** Drops everything remembered for a closed tab. */
 export async function forgetTab(tabId) {
-  await session.remove([tabKey("pending", tabId), tabKey("totp", tabId), tabKey("username", tabId), tabKey("focus", tabId)]);
+  await session.remove([
+    tabKey("pending", tabId),
+    tabKey("totp", tabId),
+    tabKey("suggest", tabId),
+    tabKey("username", tabId),
+    tabKey("focus", tabId),
+  ]);
 }
 
 /** Removes expired per-tab entries (called on service worker start). */
@@ -295,6 +320,7 @@ export async function pruneSession() {
         if (key.startsWith("pending:")) return !value || now - value.createdAt > PENDING_TTL_MS;
         if (key.startsWith("username:")) return !value || now - value.at > USERNAME_STEP_TTL_MS;
         if (key.startsWith("totp:")) return !value || !(value.expiresAt > now);
+        if (key.startsWith("suggest:")) return !Array.isArray(value) || !value.some((s) => s && now - s.at < SUGGESTION_TTL_MS);
         return false;
       })
       .map(([key]) => key);

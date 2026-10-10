@@ -650,34 +650,47 @@ async function generatePassword(rawOptions) {
   return password;
 }
 
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * A password suggestion for a signup / password change field: generated with
  * the user's generator options from the popup (else the app's defaults: 20
  * characters, all classes) as a preview – `remember: false`, so it is
  * neither stored in the generator history nor counted as activity until the
- * user takes it (cs:suggestion-used). Only while the vault is unlocked.
+ * user takes it (cs:suggestion-used). Only while the vault is unlocked. The
+ * tab keeps its hash (and the vault) so only a suggestion really shown there
+ * can be remembered later.
  */
 async function suggestPassword(sender) {
-  if (!parseWebUrl(sender.url)) throw new BridgeError("invalid_request");
+  const tabId = sender.tab?.id;
+  if (tabId === undefined || !parseWebUrl(sender.url)) throw new BridgeError("invalid_request");
   if (!(await store.getSettings()).suggestPasswords) throw new BridgeError("disabled");
   const status = await store.getStatus();
   if (status?.state !== "unlocked") throw new BridgeError(status?.state === "not_paired" ? "not_paired" : "locked");
   const options = sanitizeGeneratorOptions(await store.getGeneratorOptions());
   const password = await call("generate_password", { options, remember: false }, { auto: true });
   if (typeof password !== "string" || !password || password.length > MAX_SUGGESTION_CHARS) throw new BridgeError("internal");
-  return { password, vaultId: openVaultId(status) };
+  await store.addSuggestion(tabId, await sha256Hex(password), openVaultId(status));
+  return { password };
 }
 
 /**
  * The user took a suggestion ("Verwenden"): into the generator history of the
- * vault it was suggested for. Apps without `remember_generated` stored the
- * preview already (they ignore `remember: false`).
+ * vault it was suggested for – only a suggestion this tab was shown (used
+ * once), and not after another vault was opened. Apps without
+ * `remember_generated` stored the preview already (they ignore
+ * `remember: false`).
  */
-async function suggestionUsed(msg) {
+async function suggestionUsed(msg, sender) {
+  const tabId = sender.tab?.id;
   const password = requireString(msg.password, MAX_SUGGESTION_CHARS);
-  if (!password) throw new BridgeError("invalid_request");
-  const open = openVaultId(await store.getStatus());
-  if (typeof msg.vaultId === "string" && msg.vaultId && open && open !== msg.vaultId) return { remembered: false };
+  if (tabId === undefined || !password) throw new BridgeError("invalid_request");
+  const issued = await store.takeSuggestion(tabId, await sha256Hex(password));
+  if (!issued) return { remembered: false };
+  if (pendingVaultState(issued, await store.getStatus()) === "stale") return { remembered: false };
   try {
     await call("remember_generated", { password });
     return { remembered: true };
@@ -1002,7 +1015,7 @@ const contentHandlers = {
     }
   },
   "cs:suggest-password": (_msg, sender) => suggestPassword(sender),
-  "cs:suggestion-used": (msg) => suggestionUsed(msg),
+  "cs:suggestion-used": (msg, sender) => suggestionUsed(msg, sender),
   "cs:otp-offer": async (_msg, sender) => {
     const offer = await frameTotpOffer(sender);
     return offer ? { available: true, expiresIn: Math.max(0, offer.expiresAt - Date.now()) } : { available: false };

@@ -23,6 +23,10 @@
   const MAX_SHADOW_ROOTS = 400;
   /** Upper bound of elements visited while looking for shadow roots. */
   const MAX_WALK = 60_000;
+  /** The periodic shadow-root sweep (every 3 s) walks the page on each of its first sweeps (30 s) … */
+  const SWEEP_FULL_RATE = 10;
+  /** … and up to this many (60 s) while custom elements wait for their definition; then on every 4th. */
+  const SWEEP_UPGRADE_WAIT = 20;
   /** Node.DOCUMENT_POSITION_FOLLOWING */
   const FOLLOWING = 4;
   /** Input types that can hold a username. */
@@ -37,6 +41,11 @@
   const USERNAME_HINT = /user|login|logon|e-?mail|account|signin|benutzer|anmeld|kennung|identifi|nutzer|konto|nick|member|kunde|customer|uid\b/;
   /** Hints that rule a field out as username (other personal data). */
   const NOT_USERNAME_HINT = /first.?name|last.?name|full.?name|vorname|nachname|surname|street|stra(ss|ß)e|address|adresse|city|stadt|zip|postal|plz|birth|geburt|company|firma|amount|betrag|iban|card|karte/;
+  /**
+   * An e-mail address ("E-Mail-Adresse", "emailAddress", "adresse e-mail") is
+   * no postal address: removed before NOT_USERNAME_HINT is applied.
+   */
+  const EMAIL_ADDRESS = /mail[\s_.\-\u2010\u2011]*(?:adresse|address)|(?:adresse|address)[\s_.\-\u2010\u2011]*(?:e-?\s*mail|mail|[ée]lectronique)/g;
   /** Fields that are never login fields (search, captcha, one-time codes …). */
   const EXCLUDED_HINT = /search|suche|captcha|one.?time|\botp\b|totp|2fa|mfa|verification|verif|sms.?code|auth.?code|coupon|promo|gutschein|newsletter|subscribe|abonn/;
   /** Context that marks a lone e-mail/username field as the first step of a login. */
@@ -157,6 +166,26 @@
     }
     visit(root);
     return [...found];
+  }
+
+  /**
+   * Whether the `count`-th periodic sweep for open shadow roots (content.js:
+   * every 3 s, counted while the page is visible) walks the document: the
+   * first 10 (30 s) do, up to the 20th (60 s) while custom elements still
+   * wait for their definition (a component defined late attaches its shadow
+   * root without any DOM mutation), then every 4th (12 s). Elements that are
+   * never defined (Angular's <app-root>, any unregistered hyphenated tag) do
+   * not keep the full rate for good – on a large page a sweep walks up to
+   * MAX_WALK elements.
+   */
+  function shadowSweepDue(count, doc = document) {
+    if (count % 4 === 0 || count <= SWEEP_FULL_RATE) return true;
+    if (count > SWEEP_UPGRADE_WAIT) return false;
+    try {
+      return !!doc.querySelector(":not(:defined)");
+    } catch {
+      return false; // :defined unsupported
+    }
   }
 
   /** Where fields are looked up: a document and the open shadow roots in it. */
@@ -343,6 +372,11 @@
     );
   }
 
+  /** True if hints name other personal data (a postal address, a name …) – an e-mail address does not count. */
+  function notUsernameHint(hints) {
+    return NOT_USERNAME_HINT.test(hints.replace(EMAIL_ADDRESS, " "));
+  }
+
   /** How strongly a field looks like a username/e-mail login field. */
   function usernameScore(el) {
     const tokens = autocompleteTokens(el);
@@ -354,7 +388,7 @@
     const labels = labelHints(el);
     if (USERNAME_HINT.test(ids)) score += 35;
     else if (USERNAME_HINT.test(labels)) score += 25;
-    if (NOT_USERNAME_HINT.test(ids) || NOT_USERNAME_HINT.test(labels)) score -= 60;
+    if (notUsernameHint(ids) || notUsernameHint(labels)) score -= 60;
     return score;
   }
 
@@ -474,6 +508,12 @@
     return LOGIN_CONTEXT.test(scopeContext(scope, tree));
   }
 
+  /** True if the form's own words (buttons, action …) say "log in" and nothing about signing up. */
+  function clearlyLogin(scope, tree) {
+    const own = ownContext(scope, tree);
+    return LOGIN_ACTION.test(own) && !SIGNUP_CONTEXT.test(own);
+  }
+
   /** "signup" if a form without field hints reads like a registration, else "login". */
   function formIntent(scope, tree) {
     const own = ownContext(scope, tree);
@@ -489,8 +529,10 @@
 
   /**
    * The kind of a form from its visible password fields:
-   * - one field: "signup" if it asks for a new password (or the form reads
-   *   like a registration), else "login";
+   * - one field: "signup" if it asks for a new password (unless the form
+   *   clearly logs in – some sites mark login fields "new-password" to keep
+   *   browsers from filling them) or the form reads like a registration,
+   *   else "login";
    * - two fields: "change" if the first asks for the current password, else
    *   "signup" (the second one confirms the first);
    * - three or more: "change" (current, new, confirmation) unless the first
@@ -499,7 +541,7 @@
   function classify(passwords, scope, tree) {
     const roles = passwords.map(passwordRole);
     if (passwords.length === 1) {
-      if (roles[0] === "new") return "signup";
+      if (roles[0] === "new") return clearlyLogin(scope, tree) ? "login" : "signup";
       if (roles[0] === "current") return "login";
       return formIntent(scope, tree);
     }
@@ -543,8 +585,13 @@
       if (username) used.add(username);
     }
 
+    // Username-only login steps. A field inside a form found above belongs to
+    // that form (e.g. the username asked for after the password on a signup
+    // form, a customer number beside a login's username): no login step.
+    const passwordForms = forms.slice();
     for (const input of inputs) {
-      if (used.has(input) || !isUsernameStepField(input, tree)) continue;
+      if (used.has(input) || passwordForms.some((f) => composedContains(f.scope, input))) continue;
+      if (!isUsernameStepField(input, tree)) continue;
       forms.push({ scope: stepScopeFor(input, tree), kind: "username", username: input, password: null, passwords: [], newPasswords: [] });
       used.add(input);
     }
@@ -583,12 +630,18 @@
       .map((f) => ({ form: f, field: f.newPasswords[0], confirm: f.newPasswords.slice(1) }));
   }
 
-  /** Forms ordered by how likely they are the one to autofill. */
+  /**
+   * The forms a stored login may be filled into (popup "Ausfüllen",
+   * Ctrl+Shift+L), most likely first: the form with the focus, then login,
+   * change (its current-password field), username step. Signup forms never
+   * take a stored login – they ask for a new password, which Keystead
+   * suggests instead (see suggestionTargets).
+   */
   function rankForms(forms, activeElement) {
-    const priority = { login: 0, change: 1, username: 2, signup: 3 };
+    const priority = { login: 0, change: 1, username: 2 };
     const active = formForElement(forms, activeElement);
     return forms
-      .filter((f) => (f.username && isFillableNow(f.username)) || f.passwords.some(isFillableNow))
+      .filter((f) => f.kind !== "signup" && ((f.username && isFillableNow(f.username)) || f.passwords.some(isFillableNow)))
       .sort((a, b) => (b === active) - (a === active) || priority[a.kind] - priority[b.kind]);
   }
 
@@ -700,7 +753,9 @@
 
   /**
    * Fills a login form with `{ username, password }`. Only writes into fields
-   * that are visible and editable. Returns the number of filled fields.
+   * that are visible and editable; a stored password never goes into a field
+   * that asks for a new one (signup forms get the username at most). Returns
+   * the number of filled fields.
    */
   function fillForm(form, credentials) {
     let filled = 0;
@@ -709,6 +764,7 @@
     if (form.username && username && isFillableNow(form.username)) {
       if (setValue(form.username, username)) filled += 1;
     }
+    if (form.kind === "signup") return filled;
     const passwordField = form.password || form.passwords[0] || null;
     if (passwordField && password && isFillableNow(passwordField)) {
       if (setValue(passwordField, password)) filled += 1;
@@ -829,6 +885,7 @@
     isUsernameCandidate,
     usernameScore,
     openShadowRoots,
+    shadowSweepDue,
     composedContains,
     composedParent,
     compareComposed,

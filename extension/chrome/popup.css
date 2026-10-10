@@ -1251,6 +1251,94 @@ code {
   cursor: default;
 }
 
+/* Rows with 2FA on "Diese Seite": the copy buttons move left of the countdown. */
+.row.with-fill.with-totp .row-copy {
+  right: 126px;
+}
+
+/* Keyboard selection (↑/↓, Enter fills) */
+.row.active {
+  background: var(--row-hover);
+}
+
+.row.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+.kbd-hint {
+  margin: 10px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+/* 2FA countdown: a ring that empties until the code changes; a click copies it. */
+.totp-ring {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--accent-text);
+  transition: background-color var(--dur) var(--ease);
+}
+
+.totp-ring:hover {
+  background: var(--bg-hover);
+}
+
+.totp-ring:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.totp-ring svg {
+  position: absolute;
+  inset: 3px;
+  width: 24px;
+  height: 24px;
+  transform: rotate(-90deg);
+}
+
+.totp-ring circle {
+  fill: none;
+  stroke-width: 2.2;
+}
+
+.totp-ring .track {
+  stroke: var(--border);
+}
+
+.totp-ring .progress {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 950ms linear;
+}
+
+.totp-ring.pending .progress {
+  opacity: 0;
+}
+
+.totp-ring .totp-sec {
+  position: relative;
+  font: 700 10.5px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.totp-ring.low {
+  color: var(--warning-icon);
+}
+
 /* Skeleton rows while loading */
 
 .skeleton {
@@ -1578,6 +1666,42 @@ code {
 
 .switch input:focus-visible + .track {
   box-shadow: var(--focus-ring);
+}
+
+/* Settings */
+
+.settings .setting {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 12px 13px 14px;
+  cursor: pointer;
+}
+
+.settings .setting + .setting {
+  border-top: 1px solid var(--border);
+}
+
+.setting-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.setting-label {
+  font-weight: 600;
+}
+
+.setting-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings .switch {
+  margin-top: 1px;
 }
 
 /* Add login */

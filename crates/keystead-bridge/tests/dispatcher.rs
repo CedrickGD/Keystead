@@ -783,7 +783,9 @@ fn password_previews_are_remembered_only_when_taken() {
     f.backend.set_unlocked(true);
     let r = call(
         d,
-        c(json!({"id": "1", "type": "generate_password", "remember": false, "options": {"length": 24}})),
+        c(
+            json!({"id": "1", "type": "generate_password", "remember": false, "options": {"length": 24}}),
+        ),
     );
     let preview = r.data_as::<String>().unwrap();
     assert_eq!(preview.chars().count(), 24);
@@ -792,7 +794,9 @@ fn password_previews_are_remembered_only_when_taken() {
     // Invalid options are still rejected.
     let r = call(
         d,
-        c(json!({"id": "2", "type": "generate_password", "remember": false, "options": {"length": 2}})),
+        c(
+            json!({"id": "2", "type": "generate_password", "remember": false, "options": {"length": 2}}),
+        ),
     );
     assert_eq!(err(&r), BridgeError::InvalidRequest);
 
@@ -807,7 +811,10 @@ fn password_previews_are_remembered_only_when_taken() {
     // Without `remember` (and with `true`): stored right away, as before.
     for (id, req) in [
         ("4", json!({"id": "4", "type": "generate_password"})),
-        ("5", json!({"id": "5", "type": "generate_password", "remember": true})),
+        (
+            "5",
+            json!({"id": "5", "type": "generate_password", "remember": true}),
+        ),
     ] {
         let r = call(d, c(req));
         assert!(r.ok, "{id}");

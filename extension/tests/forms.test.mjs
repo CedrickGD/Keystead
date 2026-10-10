@@ -97,6 +97,17 @@ test("a single unmarked password field is a signup field only if the form reads 
   assert.equal(Forms.findLoginForms(login)[0].kind, "login");
 });
 
+test("a login field marked new-password (to stop browser autofill) stays a login if the form says so", () => {
+  const login = page(`<form action="/session"><input name="user" autocomplete="off">
+    <input name="pw" type="password" autocomplete="new-password"><button>Anmelden</button></form>`);
+  assert.equal(Forms.findLoginForms(login)[0].kind, "login");
+  // A real signup form with the same field: no login words on its own buttons.
+  const signup = page(`<form action="/join"><input name="user" autocomplete="username">
+    <input name="pw" type="password" autocomplete="new-password"><button>Create account</button></form>`,
+  { title: "Sign in or create an account" });
+  assert.equal(Forms.findLoginForms(signup)[0].kind, "signup");
+});
+
 test("password change: current, new and confirmation", () => {
   const doc = page(`
     <form>
@@ -167,6 +178,94 @@ test("captured signup credentials use the confirmed new password", () => {
   assert.deepEqual(Forms.readCredentials(form), { username: "neu@example.com", password: "S3cret!", kind: "signup" });
   byName(doc, "n2").value = "different";
   assert.equal(Forms.readCredentials(form), null, "a confirmation that does not match is not offered");
+});
+
+test("GitHub-style signup (e-mail, password, then username): no login step, no login icon, no stored login", () => {
+  const doc = page(`
+    <header><input type="text" name="q" placeholder="Search or jump to…"></header>
+    <form id="signup" action="/signup" method="post">
+      <label for="email">Enter your email</label><input type="email" name="user[email]" id="email" autocomplete="off">
+      <label for="password">Create a password</label><input type="password" name="user[password]" id="password">
+      <label for="login">Enter a username</label><input type="text" name="user[login]" id="login" autocomplete="off">
+      <button type="submit">Create account</button>
+    </form>`, { title: "Join GitHub · GitHub", path: "/signup" });
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["signup"], "the username after the password is no username-only login step");
+  assert.deepEqual(Forms.iconFields(forms), [], "no login icon anywhere on the signup form");
+  const [target] = Forms.suggestionTargets(forms);
+  assert.equal(target.field, byName(doc, "user[password]"));
+  // Popup "Ausfüllen" / Ctrl+Shift+L: a signup form is no fill target, even with the focus in it.
+  byName(doc, "user[email]").focus();
+  assert.deepEqual(Forms.rankForms(forms, doc.activeElement), []);
+  // And a stored password never goes into a field asking for a new one.
+  assert.equal(Forms.fillForm(forms[0], { username: "tom@example.com", password: "Tom-Pw-7" }), 1);
+  assert.equal(byName(doc, "user[email]").value, "tom@example.com");
+  assert.equal(byName(doc, "user[password]").value, "");
+  assert.equal(byName(doc, "user[login]").value, "");
+});
+
+test("a second identifier inside a login form is no separate login step", () => {
+  const doc = page(`
+    <form action="/portal">
+      <label>Kundennummer <input name="kundennummer"></label>
+      <label>Benutzername <input name="benutzername"></label>
+      <label>Passwort <input name="passwort" type="password"></label>
+      <button>Anmelden</button>
+    </form>`);
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["login"]);
+  assert.deepEqual(names(Forms.iconFields(forms)), ["benutzername", "passwort"]);
+});
+
+test("pages with a login and a signup form: a stored login goes to the login form, whatever has the focus", () => {
+  const doc = page(`
+    <form action="/login"><input name="user" autocomplete="username"><input name="pw" type="password"><button>Anmelden</button></form>
+    <form action="/register"><input name="mail" type="email"><input name="n1" type="password" autocomplete="new-password">
+      <input name="n2" type="password" autocomplete="new-password"><button>Registrieren</button></form>`);
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["login", "signup"]);
+  byName(doc, "mail").focus();
+  assert.deepEqual(Forms.rankForms(forms, doc.activeElement).map((f) => f.kind), ["login"]);
+});
+
+test("Amazon-style first login step: 'E-Mail-Adresse oder Mobiltelefonnummer' is a username, not a postal address", () => {
+  const doc = page(`
+    <form name="signIn" action="/ap/signin" method="post">
+      <label for="ap_email">E-Mail-Adresse oder Mobiltelefonnummer</label>
+      <input type="email" id="ap_email" name="email" maxlength="128">
+      <button type="submit" id="continue">Weiter</button>
+    </form>`, { title: "Amazon Anmelden" });
+  const forms = Forms.findLoginForms(doc);
+  assert.equal(forms.length, 1);
+  assert.equal(forms[0].kind, "username");
+  assert.equal(forms[0].username, byName(doc, "email"));
+  assert.deepEqual(names(Forms.iconFields(forms)), ["email"], "the step gets the login icon");
+  assert.deepEqual(Forms.rankForms(forms, null), forms, "Ctrl+Shift+L fills the step");
+  byName(doc, "email").value = "tom@example.com";
+  assert.deepEqual(Forms.readCredentials(forms[0]), { username: "tom@example.com", password: "", kind: "username" });
+});
+
+test("e-mail address wordings keep their username score; postal addresses still rule a field out", () => {
+  const doc = page(`
+    <input name="a" type="email" aria-label="E-Mail-Adresse">
+    <input name="emailAddress" type="email">
+    <input name="b" placeholder="Email address">
+    <input name="c" placeholder="Adresse e-mail">
+    <input name="d" placeholder="Mailadresse oder Benutzername">
+    <input name="street_address" placeholder="Straße und Hausnummer">
+    <input name="e" placeholder="Lieferadresse">
+    <input name="f" placeholder="Mailing address">
+    <input name="email_billing" placeholder="E-Mail-Adresse, Rechnungsadresse">`);
+  const score = (name) => Forms.usernameScore(byName(doc, name));
+  assert.equal(score("a"), 40 + 25, "type=email + label 'E-Mail-Adresse'");
+  assert.equal(score("emailAddress"), 40 + 35, "name emailAddress");
+  assert.equal(score("b"), 25);
+  assert.equal(score("c"), 25);
+  assert.equal(score("d"), 25);
+  assert.ok(score("street_address") < 0, "street address");
+  assert.ok(score("e") < 0, "Lieferadresse");
+  assert.ok(score("f") < 0, "a mailing address is a postal address");
+  assert.ok(score("email_billing") < 35, "an e-mail field that also mentions a billing address");
 });
 
 test("fillSuggestion writes the field and its confirmation with input/change events", () => {
@@ -347,6 +446,29 @@ test("one-time code field in a web component", () => {
   assert.ok(target, "found inside the shadow root");
   assert.equal(Forms.fillOtp(target, "112233"), true);
   assert.equal(target.field.value, "112233");
+});
+
+test("shadow-root sweep: full rate for 30 s, up to 60 s while custom elements wait for their definition, then every 4th", () => {
+  let queries = 0;
+  const undefinedTags = { querySelector: () => (queries++, {}) };
+  const allDefined = { querySelector: () => (queries++, null) };
+  const due = (count, doc) => Forms.shadowSweepDue(count, doc);
+  // Sweeps 1–10 (30 s while visible): every one, without looking at the page.
+  for (let i = 1; i <= 10; i += 1) assert.equal(due(i, allDefined), true, `sweep ${i}`);
+  assert.equal(queries, 0);
+  // Sweeps 11–20 (up to 60 s): full rate only while elements wait for their definition.
+  assert.equal(due(11, allDefined), false);
+  assert.equal(due(11, undefinedTags), true);
+  assert.equal(due(20, undefinedTags), true);
+  assert.equal(due(12, allDefined), true, "every 4th sweep runs anyway");
+  // Later, elements that are never defined (<app-root>) no longer keep the full rate.
+  queries = 0;
+  const runs = [];
+  for (let i = 21; i <= 60; i += 1) if (due(i, undefinedTags)) runs.push(i);
+  assert.deepEqual(runs, [24, 28, 32, 36, 40, 44, 48, 52, 56, 60], "every 4th sweep (12 s)");
+  assert.equal(queries, 0, "and the page is not even queried any more");
+  const broken = { querySelector: () => { throw new Error(":defined unsupported"); } };
+  assert.equal(due(13, broken), false);
 });
 
 test("composed document order: a host precedes its shadow content, siblings keep their order", () => {

@@ -54,7 +54,11 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Automatische Sperre** nach Inaktivität und beim Sperren des Computers;
   kopierte Passwörter werden aus der Zwischenablage gelöscht.
 - **Browser-Erweiterung** für Chrome, Edge, Brave, Chromium und Vivaldi: Logins
-  ausfüllen, neue Logins speichern, Passwörter generieren.
+  ausfüllen (auch in Web-Komponenten), neue Logins speichern, Passwörter
+  generieren – bei der Registrierung schlägt sie direkt im Feld ein starkes
+  Passwort vor. Nach dem Ausfüllen eines Logins mit 2FA kopiert die App den
+  aktuellen Code (wird automatisch wieder gelöscht), und das Code-Feld der
+  nächsten Seite bietet „2FA-Code einfügen“ an.
 - **Terminal-Version** (`keystead-cli`) mit Vollbild-Oberfläche und Befehlen für Skripte.
 - **Import** aus VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) und
   Keystead-Exporten – Datei einfach ins Fenster ziehen, das Format wird erkannt.
@@ -238,8 +242,11 @@ and also available in English.
 - **Recovery key** in case the master password is forgotten.
 - **Auto-lock** after inactivity and when the computer is locked; copied secrets are
   cleared from the clipboard.
-- **Browser extension** for Chrome, Edge, Brave, Chromium and Vivaldi: fill logins,
-  save new logins, generate passwords.
+- **Browser extension** for Chrome, Edge, Brave, Chromium and Vivaldi: fill logins
+  (also in web components), save new logins, generate passwords – signup forms get
+  a strong password suggested right in the field. After filling a login with 2FA
+  the app copies the current code (cleared again automatically), and the code field
+  of the next page offers "2FA-Code einfügen" (insert 2FA code).
 - **Terminal version** (`keystead-cli`) with a full-screen UI and script-friendly commands.
 - **Import** from VaultX 1.x, Chrome, Edge, Firefox, Bitwarden (CSV/JSON) and Keystead
   exports – just drag the file into the window, the format is detected. A preview shows

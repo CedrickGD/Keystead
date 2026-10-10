@@ -744,10 +744,7 @@ mod tests {
         assert_eq!(history(&core), vec![generated, preview]);
 
         core.lock(None);
-        assert_eq!(
-            backend.remember_generated("pw"),
-            Err(BridgeError::Locked)
-        );
+        assert_eq!(backend.remember_generated("pw"), Err(BridgeError::Locked));
     }
 
     #[test]

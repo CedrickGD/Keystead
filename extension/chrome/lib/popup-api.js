@@ -1,5 +1,7 @@
 // Popup → service worker messaging (see background.js "popupHandlers").
 
+import { normalizeSettings } from "./settings.js";
+
 export class ApiError extends Error {
   constructor(code) {
     super(code);
@@ -54,6 +56,8 @@ export function createApi() {
     fill: (tabId, itemId) => call("popup:fill", { tabId, itemId }),
     generate: (options) => call("popup:generate", { options }),
     fillGenerated: (tabId, password) => call("popup:fill-generated", { tabId, password }),
+    /** Countdown data of 2FA codes: [{ id, period, remaining }] (the codes stay in the service worker). */
+    totpTimers: (itemIds) => call("popup:totp-timers", { itemIds }),
     saveLogin: (login) => call("popup:save-login", login),
     neverRemove: (hostname) => call("popup:never-remove", { hostname }),
 
@@ -71,6 +75,18 @@ export function createApi() {
       } catch {
         // Options are a convenience; generation still works with the current values.
       }
+    },
+    /** Extension settings (lib/settings.js); the service worker and the pages pick up changes. */
+    async loadSettings() {
+      try {
+        const { settings } = await chrome.storage.local.get("settings");
+        return normalizeSettings(settings);
+      } catch {
+        return normalizeSettings(null);
+      }
+    },
+    async saveSettings(settings) {
+      await chrome.storage.local.set({ settings: normalizeSettings(settings) });
     },
     /** Id of the vault last unlocked from this browser (preselected when locked), or null. */
     async loadChosenVault() {

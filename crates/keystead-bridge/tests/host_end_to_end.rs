@@ -404,10 +404,7 @@ fn browser_to_vault_through_host_and_socket() {
     ));
     let preview = r.data.as_str().unwrap().to_owned();
     assert_eq!(preview.chars().count(), 20);
-    let history = |b: &CoreBackend| {
-        b.with_vault(|v| Ok(v.generator_history().len()))
-            .unwrap()
-    };
+    let history = |b: &CoreBackend| b.with_vault(|v| Ok(v.generator_history().len())).unwrap();
     assert_eq!(history(&backend), 0);
     let r = browser.send(auth(
         json!({"id": "b7b", "type": "remember_generated", "password": preview}),

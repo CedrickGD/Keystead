@@ -49,6 +49,12 @@ const ICONS = {
   shield: [["path", { d: "M12 3.5 19 6v5.5c0 4.4-2.9 7.9-7 9.5-4.1-1.6-7-5.1-7-9.5V6l7-2.5z" }]],
   wand: [["path", { d: "m4 20 10-10M14 4v3M12.5 5.5h3M19 9v3M17.5 10.5h3M18 3.5l.01.01" }]],
   chevron: [["path", { d: "m6 9 6 6 6-6" }]],
+  // Two sliders: the extension settings.
+  sliders: [
+    ["path", { d: "M4 7.5h8.5M17.5 7.5H20M4 16.5h2.5M11.5 16.5H20" }],
+    ["circle", { cx: 15, cy: 7.5, r: 2.5 }],
+    ["circle", { cx: 9, cy: 16.5, r: 2.5 }],
+  ],
   // A safe (body, dial, handle, feet) – stays legible at 14–16 px.
   vault: [
     ["rect", { x: 3.5, y: 4, width: 17, height: 14.5, rx: 2.5 }],

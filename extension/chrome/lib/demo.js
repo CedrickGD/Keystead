@@ -8,6 +8,7 @@
 // `&ext=notice` / `&ext=reloading` adds the "new extension version" notice.
 
 import { ApiError } from "./popup-api.js";
+import { normalizeSettings } from "./settings.js";
 import { DEMO_ICONS } from "./demo-icons.js";
 
 const LOGINS = [
@@ -81,6 +82,7 @@ export function createDemoApi(state) {
   if (state === "paired") pairing = { state: "success", code: "482913", clientName: "Chrome – Windows", startedAt: Date.now() };
   if (state === "denied") pairing = { state: "denied", code: "482913", clientName: "Chrome – Windows", startedAt: Date.now() };
   let generatorOptions = null;
+  let settings = normalizeSettings(null);
 
   const requireUnlocked = () => {
     if (current !== "unlocked") throw new ApiError("locked");
@@ -188,6 +190,21 @@ export function createDemoApi(state) {
     },
     async fillGenerated() {
       return { filled: 1 };
+    },
+    async totpTimers(itemIds) {
+      requireUnlocked();
+      await delay(60);
+      // GitHub: 30 s codes, Sparkasse: 60 s (the countdown follows the clock like real TOTP).
+      return itemIds.map((id) => {
+        const period = id === "d6" ? 60 : 30;
+        return { id, period, remaining: period - (Math.floor(Date.now() / 1000) % period) };
+      });
+    },
+    async loadSettings() {
+      return { ...settings };
+    },
+    async saveSettings(next) {
+      settings = normalizeSettings(next);
     },
     async saveLogin() {
       requireUnlocked();

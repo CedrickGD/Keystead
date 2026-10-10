@@ -213,7 +213,8 @@ fn partial_generator_options() {
         }
     );
     // `remember: null` is the same as leaving it out (the old behaviour).
-    let req = parse(r#"{"id":"1","type":"generate_password","remember":null,"options":{"length":24}}"#);
+    let req =
+        parse(r#"{"id":"1","type":"generate_password","remember":null,"options":{"length":24}}"#);
     assert!(matches!(
         req.payload,
         Payload::GeneratePassword {

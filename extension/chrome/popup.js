@@ -1,6 +1,8 @@
 // Keystead popup. States: host missing → app unavailable → not paired (pairing)
-// → locked → unlocked (tabs "Diese Seite", "Suche", "Generator", add login).
-// All work happens in the service worker; this page only renders.
+// → locked → unlocked (tabs "Diese Seite", "Suche", "Generator", add login,
+// settings). All work happens in the service worker; this page only renders.
+// Lists: ↑/↓ select a login, Enter fills it; logins with 2FA show a countdown
+// of the current code (the code itself never reaches the popup).
 // `?demo=<state>` swaps in lib/demo.js (fake data, no storage, no native host).
 
 import { t, uiLanguage } from "./lib/i18n.js";
@@ -60,6 +62,14 @@ function button(label, { kind = "secondary", iconName, onclick, type = "button",
     iconName ? icon(iconName) : null,
     h("span", { text: label }),
   );
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+  return node;
 }
 
 function iconButton(name, label, onclick, size = "") {
@@ -765,6 +775,10 @@ function showUnlocked(status, initialTab = "page") {
     matches: null,
     matchIds: new Set(),
     query: "",
+    /** itemId → { period, remaining } of logins with 2FA (countdown only). */
+    totp: new Map(),
+    /** Index of the selected row of the shown list (keyboard). */
+    active: 0,
   };
 
   // Becomes a vault switcher once the app reports more than one vault (setupVaultSwitcher).
@@ -793,6 +807,7 @@ function showUnlocked(status, initialTab = "page") {
           showLocked();
         }),
       ),
+      iconButton("sliders", t("settings"), () => showSettings(ctx)),
     ),
   );
 
@@ -809,6 +824,7 @@ function showUnlocked(status, initialTab = "page") {
   mount(screen, "unlocked");
 
   function select(tab) {
+    if (tab !== ctx.tab) ctx.active = 0;
     ctx.tab = tab;
     for (const node of tabs) node.setAttribute("aria-selected", String(node.dataset.tab === tab));
     content.replaceChildren();
@@ -876,24 +892,133 @@ function showUnlocked(status, initialTab = "page") {
     });
   }
 
+  // --- 2FA countdown ------------------------------------------------------------
+
+  const RING_LENGTH = 2 * Math.PI * 9.5;
+
+  /** Countdown ring of a login's 2FA code ("Diese Seite"); a click copies the code through the app. */
+  function totpRing(item) {
+    const progress = svg("circle", { class: "progress", cx: 12, cy: 12, r: 9.5, "stroke-dasharray": RING_LENGTH.toFixed(2) });
+    const ring = svg("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+    ring.append(svg("circle", { class: "track", cx: 12, cy: 12, r: 9.5 }), progress);
+    const node = h("button", { class: "totp-ring pending", type: "button", "data-totp": item.id, onclick: () => copyTotp(item) }, ring, h("span", { class: "totp-sec" }));
+    updateRing(node);
+    return node;
+  }
+
+  /** Seconds left follow the clock (TOTP periods start at multiples of the period since 1970). */
+  function updateRing(node) {
+    const timer = ctx.totp.get(node.dataset.totp);
+    const progress = node.querySelector(".progress");
+    const label = node.querySelector(".totp-sec");
+    if (!timer) {
+      node.title = t("copyTotp");
+      node.setAttribute("aria-label", t("copyTotp"));
+      progress.style.strokeDashoffset = RING_LENGTH.toFixed(2);
+      return;
+    }
+    const remaining = timer.period - (Math.floor(Date.now() / 1000) % timer.period);
+    node.classList.remove("pending");
+    node.classList.toggle("low", remaining <= 5);
+    label.textContent = String(remaining);
+    // A new code: jump back to full instead of animating backwards.
+    progress.style.transition = remaining === timer.period || node.dataset.shown !== "1" ? "none" : "";
+    progress.style.strokeDashoffset = (RING_LENGTH * (1 - remaining / timer.period)).toFixed(2);
+    node.dataset.shown = "1";
+    node.title = t("totpCountdown", String(remaining));
+    node.setAttribute("aria-label", node.title);
+  }
+
+  function updateRings() {
+    for (const node of content.querySelectorAll(".totp-ring")) updateRing(node);
+  }
+
+  async function loadTotpTimers(items) {
+    const ids = items.filter((item) => item.hasTotp && !ctx.totp.has(item.id)).map((item) => item.id);
+    if (!ids.length) return;
+    try {
+      const timers = await api.totpTimers(ids);
+      for (const timer of Array.isArray(timers) ? timers : []) {
+        if (timer && typeof timer.id === "string" && Number.isInteger(timer.period) && timer.period > 0) ctx.totp.set(timer.id, timer);
+      }
+      updateRings();
+    } catch {
+      // The rings stay empty; copying the code still works.
+    }
+  }
+
+  const ticker = setInterval(() => {
+    if (!screen.isConnected) {
+      clearInterval(ticker);
+      return;
+    }
+    updateRings();
+  }, 1000);
+
+  // --- Keyboard: ↑/↓ select a login, Enter fills it -------------------------------
+
+  function listRows() {
+    return [...content.querySelectorAll(".list .row")];
+  }
+
+  function setActive(index, scroll = true) {
+    const rows = listRows();
+    if (!rows.length) return;
+    ctx.active = Math.max(0, Math.min(rows.length - 1, index));
+    rows.forEach((row, i) => {
+      row.classList.toggle("active", i === ctx.active);
+      row.setAttribute("aria-selected", String(i === ctx.active));
+    });
+    if (scroll) rows[ctx.active].scrollIntoView({ block: "nearest" });
+  }
+
+  function onListKeys(ev) {
+    if (!screen.isConnected) {
+      document.removeEventListener("keydown", onListKeys);
+      return;
+    }
+    if (ev.defaultPrevented || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey || ctx.tab === "generator") return;
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp" && ev.key !== "Enter") return;
+    const target = ev.target;
+    const inSearch = target instanceof HTMLInputElement && target.type === "search";
+    // Buttons, menus and other inputs keep their own keys.
+    if (!inSearch && target !== document.body && !target?.closest?.(".list")) return;
+    const rows = listRows();
+    if (!rows.length) return;
+    if (ev.key === "Enter") {
+      if (target instanceof HTMLButtonElement) return;
+      const fillButton = rows[ctx.active]?.querySelector(".btn-fill");
+      if (!fillButton || fillButton.disabled) return;
+      ev.preventDefault();
+      fillButton.click();
+      return;
+    }
+    ev.preventDefault();
+    setActive(ctx.active + (ev.key === "ArrowDown" ? 1 : -1));
+  }
+  document.addEventListener("keydown", onListKeys);
+
   function loginRow(item) {
     const canFill = ctx.tabInfo?.web === true && ctx.matchIds.has(item.id);
+    const ring = ctx.tab === "page" && item.hasTotp ? totpRing(item) : null;
     const copyButtons = h(
       "div",
       { class: "row-copy" },
       item.subtitle ? iconButton("user", t("copyUsername"), () => copy(item.subtitle, t("copiedUsername")), "sm") : null,
       iconButton("key", t("copyPassword"), () => copyPassword(item), "sm"),
-      item.hasTotp ? iconButton("clock", t("copyTotp"), () => copyTotp(item), "sm") : null,
+      item.hasTotp && !ring ? iconButton("clock", t("copyTotp"), () => copyTotp(item), "sm") : null,
     );
     const actions = h("div", { class: "row-actions" });
     if (canFill) {
-      actions.append(h("button", { class: "btn-fill", type: "button", onclick: (ev) => fill(item, ev.currentTarget) }, t("fill")));
+      actions.append(...[ring, h("button", { class: "btn-fill", type: "button", onclick: (ev) => fill(item, ev.currentTarget) }, t("fill"))].filter(Boolean));
     } else {
-      actions.append(copyButtons);
+      actions.append(...[copyButtons, ring].filter(Boolean));
     }
+    let rowClass = "row";
+    if (canFill) rowClass += ring ? " with-fill with-totp" : " with-fill";
     return h(
       "div",
-      { class: canFill ? "row with-fill" : "row" },
+      { class: rowClass, role: "option", "aria-selected": "false" },
       avatar(item.name, "", item.icon),
       h(
         "div",
@@ -907,7 +1032,7 @@ function showUnlocked(status, initialTab = "page") {
   }
 
   function list(items) {
-    return h("div", { class: "list" }, items.map(loginRow));
+    return h("div", { class: "list", role: "listbox", "aria-label": t("tabPage") }, items.map(loginRow));
   }
 
   // --- "Diese Seite" -------------------------------------------------------------
@@ -940,8 +1065,11 @@ function showUnlocked(status, initialTab = "page") {
     if (info.insecure) content.append(h("div", { class: "notice warning" }, icon("alert"), h("span", { text: t("insecurePage") })));
 
     if (!ctx.matches) content.append(skeletonList(2));
-    else if (ctx.matches.length) content.append(list(ctx.matches));
-    else content.append(emptyState("key", t("noPageLoginsTitle"), t("noPageLoginsText")));
+    else if (ctx.matches.length) {
+      content.append(list(ctx.matches));
+      setActive(ctx.active, false);
+      if (ctx.matches.some((m) => ctx.matchIds.has(m.id))) content.append(h("p", { class: "kbd-hint", text: t("keyboardHint") }));
+    } else content.append(emptyState("key", t("noPageLoginsTitle"), t("noPageLoginsText")));
 
     if (info.neverSave) {
       content.append(
@@ -998,6 +1126,7 @@ function showUnlocked(status, initialTab = "page") {
         const found = await api.search(query);
         if (mine !== seq || ctx.tab !== "search") return;
         results.replaceChildren(found.length ? list(found) : emptyState("search", t("noResults", query), ""));
+        setActive(0, false);
       } catch (err) {
         if (mine === seq && !routeError(err)) results.replaceChildren(emptyState("alert", errorText(err?.code), ""));
       }
@@ -1201,6 +1330,7 @@ function showUnlocked(status, initialTab = "page") {
       ctx.matches = ctx.tabInfo.web ? await api.matches(ctx.tabInfo.tabId) : [];
       ctx.matchIds = new Set(ctx.matches.map((m) => m.id));
       if (ctx.tab === "page") select("page");
+      loadTotpTimers(ctx.matches);
     } catch (err) {
       if (!routeError(err)) {
         ctx.matches = [];
@@ -1362,6 +1492,61 @@ function renderPassword(node, password) {
     run += ch;
   }
   flush();
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/** The extension's settings (lib/settings.js): stored right away when a switch changes. */
+async function showSettings(ctx) {
+  const settings = await api.loadSettings();
+  const back = () => showUnlocked({ state: "unlocked", vaultName: ctx.vaultName, vaultId: ctx.vaultId }, ctx.tab);
+  const setting = (key, label, hint) => {
+    const input = h("input", { type: "checkbox", role: "switch", "aria-describedby": `hint-${key}` });
+    input.checked = settings[key] === true;
+    input.addEventListener("change", async () => {
+      settings[key] = input.checked;
+      try {
+        await api.saveSettings({ ...settings });
+        toast(t("settingsSaved"));
+      } catch {
+        input.checked = !input.checked;
+        settings[key] = input.checked;
+        toast(errorText("storage"), "error");
+      }
+    });
+    return h(
+      "label",
+      { class: "setting" },
+      h(
+        "span",
+        { class: "setting-text" },
+        h("span", { class: "setting-label", text: label }),
+        h("span", { class: "setting-hint", id: `hint-${key}`, text: hint }),
+      ),
+      h("span", { class: "switch" }, input, h("span", { class: "track", "aria-hidden": "true" })),
+    );
+  };
+  mount(
+    h(
+      "section",
+      { class: "screen main" },
+      h("header", { class: "subbar" }, iconButton("back", t("back"), back), h("h1", { text: t("settingsTitle") })),
+      h(
+        "div",
+        { class: "content" },
+        h(
+          "div",
+          { class: "panel settings" },
+          setting("autoCopyTotp", t("settingTotpCopy"), t("settingTotpCopyHint")),
+          setting("suggestPasswords", t("settingSuggest"), t("settingSuggestHint")),
+        ),
+        versionFooter(),
+      ),
+    ),
+    "settings",
+  );
 }
 
 // ---------------------------------------------------------------------------

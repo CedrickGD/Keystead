@@ -35,7 +35,7 @@ an interface here, change every side.
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
-| `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`). |
+| `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `legacy/` | The old PowerShell VaultX 1.x, kept for reference. |
@@ -1387,7 +1387,8 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 | `search` | yes, unlocked | `query` | `ItemSummary[]` (max 50; optional `icon`) |
 | `get_login` | yes, unlocked | `itemId` | `{ id, name, username, password, totp: TotpCode\|null, uris: string[] }` |
 | `get_totp` | yes, unlocked | `itemId` | `TotpCode` |
-| `generate_password` | yes | `options?` (GeneratorOptions partial) | `string` (uses defaults + stored in generator history if unlocked) |
+| `generate_password` | yes | `options?` (GeneratorOptions partial), `remember?: bool` | `string` (uses defaults; stored in generator history if unlocked – unless `remember: false`: a preview, not stored, no user activity) |
+| `remember_generated` | yes, unlocked | `password` (1–1024 chars) | `null` – adds a password the user took from a preview to the open vault's generator history |
 | `save_login` | yes, unlocked | `name, url, username, password` | `{ id }` (creates new login) |
 | `update_password` | yes, unlocked | `itemId, password` | `{ id }` |
 | `check_login_password` | yes, unlocked | `itemId, password` | `bool` – whether `password` equals the stored password (the secret is never returned; used for the save/update prompt) |
@@ -1472,11 +1473,22 @@ Behaviour (additive to the table above):
   `invalid_request`; an unknown id → `not_found` (does not count as a
   failure). A failed unlock never closes the open vault.
 * `VaultBackend::on_activity` runs after successful *user actions* only
-  (`unlock`, `search`, `get_login`, `get_totp`, `generate_password`,
-  `save_login`, `update_password`, `copy_field`, `copy_secret`) – `status`
-  polling, the automatic `logins_for_url` and `check_login_password` (a page
-  can trigger it by submitting forms) must not keep the vault from
-  auto-locking.
+  (`unlock`, `search`, `get_login`, `get_totp`, `generate_password` unless
+  `remember: false`, `remember_generated`, `save_login`, `update_password`,
+  `copy_field`, `copy_secret`) – `status` polling, the automatic
+  `logins_for_url`, `check_login_password` (a page can trigger it by
+  submitting forms) and password previews (a page can focus its signup field)
+  must not keep the vault from auto-locking.
+* `generate_password` with `remember: false` calls
+  `VaultBackend::preview_password` (default: the core generator, nothing
+  stored); absent, `null` or `true` keep the old behaviour
+  (`generate_password`: stored in the history if unlocked). Older apps ignore
+  the field (unknown fields are ignored) and store the preview; they answer
+  `remember_generated` with `invalid_request` (unknown type), which the
+  extension treats as "already stored". `remember_generated` checks the
+  length (empty or > 1024 characters → `invalid_request`) and calls
+  `VaultBackend::remember_generated` (default `invalid_request`; the desktop
+  app adds it to the open vault's history like the generator view does).
 * `copy_secret` calls `VaultBackend::copy_secret`, `copy_field` calls
   `VaultBackend::copy_field` (default: `get_login` / `get_totp`, then
   `copy_secret`). The default `copy_secret`
@@ -1496,7 +1508,8 @@ Behaviour (additive to the table above):
   switch and never saves it into another vault (see
   `extension/chrome/README.md`).
 * Memory hygiene (best effort): request passwords (`unlock`, `save_login`,
-  `update_password`, `check_login_password`, `copy_secret`) are held in
+  `update_password`, `check_login_password`, `copy_secret`,
+  `remember_generated`) are held in
   `Zeroizing<String>`; `LoginSecret` wipes username, password and TOTP code
   on drop (so its fields cannot be moved out); a `Response` wipes every
   string in `data` on drop (`protocol::wipe_value`). Transient copies inside
@@ -1539,7 +1552,9 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError>;     // capped to 50 by the dispatcher
     fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError>;
     fn get_totp(&self, item_id: &str) -> Result<TotpCode, BridgeError>;
-    fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError>;
+    fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError>; // + stored in the history if unlocked
+    fn preview_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> { /* default: core generator, not stored */ }
+    fn remember_generated(&self, password: &str) -> Result<(), BridgeError> { /* default: Err(InvalidRequest) */ }
     fn save_login(&self, name: &str, url: &str, username: &str, password: &str) -> Result<String, BridgeError>;
     fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError>;
     fn copy_secret(&self, text: &str) -> Result<(), BridgeError> { /* default: core clipboard::copy_secret, clipboardClearSeconds from settings.json */ }
@@ -1560,6 +1575,73 @@ register::unregister(&[BrowserId]) -> Result<()>; register::needs_reregister(exe
 register::registered_browsers() -> Vec<BrowserId>;            // re-register these when needs_reregister()
 // keystead_bridge::Error { Io, FrameTooLarge, Json, AlreadyRunning, Core }, Error::code() → "io:…"/"corrupt:…"
 ```
+
+## Browser extension behaviour (`extension/chrome`)
+
+The extension's security model and file roles are in
+`extension/chrome/README.md`; the behaviour other components rely on:
+
+* **Form detection** (`lib/forms.js`, pure DOM helpers): password fields are
+  grouped by their `<form>` or the nearest container with another login field
+  (or a button). A field's role: `autocomplete="new-password"` / name, id or
+  label words new, confirm, repeat, neu, wiederholen, bestätigen … → *new*;
+  `current-password` / current, old, aktuell, alt … → *current*. One field →
+  `login` (or `signup` if it asks for a new password and the form's own words
+  do not clearly say "log in", or the form – else the page title/path without
+  login words – reads like a registration); two →
+  `change` if the first asks for the current password, else `signup`
+  (password + confirmation); three or more → `change`. A lone e-mail/username
+  field with login context (form/button words, title, path) is a `username`
+  step (multi-step logins) – unless it lies inside a password form found
+  before (a signup form's username after the password, a second identifier
+  of a login). "E-Mail-Adresse"/"email address" does not count as a postal
+  address. Login icons go to username/current-password fields, password
+  suggestions to the first new-password field of `signup`/`change` forms
+  (never to login forms, username steps or search fields). A stored login
+  (popup *Ausfüllen*, `Ctrl+Shift+L`, `rankForms`) goes to the focused
+  `login`/`change`/`username` form, else the first by that order – never to
+  a `signup` form (no form → `no_fields` toast), and `fillForm` never writes
+  a stored password into a signup form's new-password field.
+* **Web components**: everything above also works inside *open* shadow roots
+  (composed tree: a shadow root's content belongs to its host; a host's
+  `name`/`id`/`label`/`autocomplete` are hints for its input). The content
+  script finds roots in added subtrees, in the composed path of trusted
+  focus/input events and with a throttled sweep (no main-world
+  `attachShadow` hook; while the page is visible every 3 s for 30 s, up to
+  60 s while custom elements wait for their definition, then every 12 s –
+  `shadowSweepDue`), observes them and listens for `submit` in them.
+  Closed shadow roots are not traversed. Filling uses the native value setter
+  and `composed` input/change/keyup events.
+* **Password suggestion**: on a focus that follows a user gesture
+  (transient user activation) on a suggestion field while unlocked, the
+  service worker generates a preview (`generate_password`, `remember: false`,
+  the popup's generator options or the app's defaults) and the page shows it
+  masked in a bubble in the closed shadow root. *Verwenden* (trusted click,
+  500 ms dwell) fills the field and its confirmation fields, counts as user
+  input for the save prompt and sends `remember_generated` (skipped if
+  another vault was opened meanwhile). Locked / not paired: only a click on
+  the field icon explains how to get suggestions.
+* **2FA after a fill**: when a login with a TOTP seed is filled (popup,
+  dropdown, `Ctrl+Shift+L`) the service worker stores a 2FA offer for the tab
+  (`chrome.storage.session` `totp:<tabId>` = item id, site, vault id, expiry
+  in 2 minutes – never the code) and, if the setting *2FA-Code nach dem
+  Ausfüllen kopieren* is on (default), has the app copy the code
+  (`copy_field` `totp`); the top frame shows a toast with the seconds left.
+  One-time code fields (`autocomplete="one-time-code"`, otp/totp/2fa/code …
+  names with a 6–8 character limit, or 6–8 single-digit boxes) of the same
+  site get *2FA-Code einfügen*; its click (trusted, dwell) makes the service
+  worker check the offer and the login's match against that frame's URL, read
+  the current code (`get_login`) and drop the offer. Lock or vault switch
+  drops all offers.
+* **Clickjacking dwell feedback**: our controls act only after 500 ms fully
+  visible (IntersectionObserver v2) and with our host at the click point;
+  a rejected click shakes the control and shows "Einen Moment …" or
+  "Verdeckt – Seite blockiert Keystead-Menü" (then the layer is raised again);
+  dropdown items show a progress ring during the 500 ms.
+* **Popup**: 2FA countdown per login on "Diese Seite" (`popup:totp-timers`:
+  the service worker calls `get_totp` and passes on only period and seconds
+  left), ↑/↓/Enter to pick and fill, settings screen (`chrome.storage.local`
+  `settings`: `autoCopyTotp`, `suggestPasswords`).
 
 ## UI/UX principles (desktop + extension)
 
