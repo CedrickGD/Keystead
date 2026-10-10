@@ -55,6 +55,7 @@ export function newItem(type: ItemType, folderId: string | null): VaultItem {
     folderId,
     favorite: false,
     notes: "",
+    tags: [],
     login: type === "login" ? { username: "", password: "", uris: [{ uri: "", match: "domain" }], totp: "", passwordRevisedAt: null } : null,
     card: type === "card" ? emptyCard() : null,
     identity: type === "identity" ? emptyIdentity() : null,
@@ -129,9 +130,9 @@ export function searchTerms(query: string): string[] {
 
 /**
  * Mirrors `UnlockedVault::search` in keystead-core: matches name, username,
- * URIs, notes and card brand (plus identity name / e-mail); every term must
- * match somewhere. Only non-secret fields: the list holds no passwords, TOTP
- * keys, card numbers or hidden field values (searching by them was never
+ * URIs, notes, tags and card brand (plus identity name / e-mail); every term
+ * must match somewhere. Only non-secret fields: the list holds no passwords,
+ * TOTP keys, card numbers or hidden field values (searching by them was never
  * supported).
  */
 export function matchesSearch(item: ItemListEntry, terms: string[]): boolean {
@@ -141,6 +142,7 @@ export function matchesSearch(item: ItemListEntry, terms: string[]): boolean {
     item.login?.username ?? "",
     ...(item.login?.uris.map((u) => u.uri) ?? []),
     item.notes,
+    ...item.tags,
     item.card?.brand ?? "",
     item.identity ? identityFullName(item.identity) : "",
     item.identity?.email ?? "",

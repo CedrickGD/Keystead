@@ -208,10 +208,17 @@
 }
 
 .nav-edit-icon {
+  display: inline-flex;
+  flex: none;
   width: 16px;
   height: 16px;
   color: var(--text-3);
   margin-right: 6px;
+}
+
+.nav-edit-icon svg {
+  width: 100%;
+  height: 100%;
 }
 
 .nav-edit-input {
@@ -230,6 +237,15 @@
 
 .nav-hint:hover {
   color: var(--accent-text);
+}
+
+/* Like .nav-hint, but plain text (nothing to click). */
+.nav-note {
+  margin: 0;
+  padding: 4px 10px 6px 36px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-3);
 }
 
 .sidebar-footer {
@@ -1120,6 +1136,97 @@
 
 .note-textarea {
   min-height: 200px;
+}
+
+/* Tag editor: chips and the input share one input-like box. */
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  cursor: text;
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.tag-editor:hover:not(:focus-within) {
+  border-color: var(--text-3);
+}
+
+.tag-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.tag-editor.invalid,
+.tag-editor.invalid:focus-within {
+  border-color: var(--danger);
+}
+
+.tag-editor.invalid:focus-within {
+  box-shadow: 0 0 0 3px rgba(209, 36, 47, 0.2);
+}
+
+.tag-chip {
+  height: 24px;
+  max-width: 100%;
+  padding-right: 2px;
+  cursor: default;
+}
+
+.tag-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tag-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-3);
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.tag-chip-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tag-chip-remove:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.tag-chip-remove:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.tag-input {
+  flex: 1;
+  min-width: 140px;
+  height: 26px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+
+.tag-input::placeholder {
+  color: var(--text-3);
+  opacity: 1;
 }
 
 .add-btn {

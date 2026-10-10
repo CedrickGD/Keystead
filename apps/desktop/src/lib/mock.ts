@@ -429,8 +429,87 @@ export function mockTriggerPairing(): void {
 // Domain logic
 // ---------------------------------------------------------------------------
 
+// Tags, like `vault::normalize_tags` in keystead-core.
+const TAG_MAX_CHARS = 50;
+const TAGS_MAX = 20;
+
+/** Tags are compared case-insensitively ("Bank" and "bank" are one tag). */
+function tagEq(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function hasTag(tags: string[], tag: string): boolean {
+  return tags.some((t) => tagEq(t, tag));
+}
+
+/** `tag_required` / `tag_too_long` for a single tag, trimmed. */
+function validateTag(tag: string): string {
+  const trimmed = tag.trim();
+  if (!trimmed) fail("invalid_input:tag_required");
+  if ([...trimmed].length > TAG_MAX_CHARS) fail("invalid_input:tag_too_long");
+  return trimmed;
+}
+
+/**
+ * Tags as the user typed them: trimmed, empty ones dropped, duplicates
+ * removed case-insensitively (the first spelling stays), order kept;
+ * `tag_too_long` / `tags_too_many` like the core.
+ */
+function normalizeTags(input: unknown): string[] {
+  const out: string[] = [];
+  for (const raw of Array.isArray(input) ? input : []) {
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const tag = validateTag(raw);
+    if (hasTag(out, tag)) continue;
+    if (out.length === TAGS_MAX) fail("invalid_input:tags_too_many");
+    out.push(tag);
+  }
+  return out;
+}
+
+/** `normalizeTags` for imported items: nothing is refused, too long is shortened, too many are dropped. */
+function normalizeTagsLossy(input: unknown): string[] {
+  const out: string[] = [];
+  for (const raw of Array.isArray(input) ? input : []) {
+    if (typeof raw !== "string") continue;
+    const tag = [...raw.trim()].slice(0, TAG_MAX_CHARS).join("").trim();
+    if (!tag || hasTag(out, tag)) continue;
+    if (out.length === TAGS_MAX) break;
+    out.push(tag);
+  }
+  return out;
+}
+
+/**
+ * `rename_tag` (`to` a string) / `delete_tag` (`to` null) over every item
+ * incl. trash, like `retag_item` in the core: an item that already carries
+ * `to` in another spelling keeps that one and only loses `from`; otherwise
+ * `from` is replaced in place. Returns the number of changed items.
+ */
+function retagItems(items: VaultItem[], from: string, to: string | null): number {
+  let changed = 0;
+  for (const item of items) {
+    if (!hasTag(item.tags, from)) continue;
+    const merge = to !== null && item.tags.some((t) => !tagEq(t, from) && tagEq(t, to));
+    const tags: string[] = [];
+    let replaced = false;
+    for (const tag of item.tags) {
+      if (!tagEq(tag, from)) tags.push(tag);
+      else if (to !== null && !merge && !replaced) {
+        tags.push(to);
+        replaced = true;
+      }
+    }
+    if (tags.length === item.tags.length && tags.every((t, i) => t === item.tags[i])) continue;
+    item.tags = tags;
+    changed += 1;
+  }
+  return changed;
+}
+
 function normalizeItem(input: VaultItem): VaultItem {
   const item = clone(input);
+  if (!Array.isArray(item.tags)) item.tags = [];
   if (item.type !== "login") item.login = null;
   else
     item.login ??= { username: "", password: "", uris: [], totp: "", passwordRevisedAt: null };
@@ -455,6 +534,7 @@ function saveItem(input: VaultItem): VaultItem {
   const now = Date.now();
   const item = normalizeItem(input);
   item.name = item.name.trim();
+  item.tags = normalizeTags(item.tags);
   // Like the core: an unknown folder id is dropped instead of failing.
   if (item.folderId && !vault.data.folders.some((f) => f.id === item.folderId)) item.folderId = null;
   const idx = item.id ? vault.data.items.findIndex((i) => i.id === item.id) : -1;
@@ -606,6 +686,7 @@ function importItems(vault: MockVault, items: VaultItem[], folders: Folder[] = [
   for (const item of items) {
     const copy = normalizeItem(item);
     copy.id = uuid();
+    copy.tags = normalizeTagsLossy(copy.tags);
     copy.folderId = copy.folderId ? folderMap.get(copy.folderId) ?? null : null;
     vault.data.items.push(copy);
   }
@@ -877,6 +958,26 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       });
       touch(vault);
       return null;
+    }
+
+    case "rename_tag": {
+      const vault = openVault();
+      if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      const to = validateTag(str(args, "to"));
+      const from = str(args, "from").trim();
+      // Like the core: no change, no new revision (and no event either way).
+      const changed = from ? retagItems(vault.data.items, from, to) : 0;
+      if (changed > 0) touch(vault);
+      return changed;
+    }
+
+    case "delete_tag": {
+      const vault = openVault();
+      if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      const tag = str(args, "tag").trim();
+      const changed = tag ? retagItems(vault.data.items, tag, null) : 0;
+      if (changed > 0) touch(vault);
+      return changed;
     }
 
     case "generate_password": {

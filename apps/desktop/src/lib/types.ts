@@ -63,6 +63,8 @@ export interface VaultItem {
   folderId: string | null;
   favorite: boolean;
   notes: string;
+  /** Free labels such as "Bank"; the backend normalises them (see "Tags" in ARCHITECTURE.md). */
+  tags: string[];
   login: LoginData | null;
   card: CardData | null;
   identity: IdentityData | null;
@@ -128,6 +130,8 @@ export interface ItemListEntry {
   folderId: string | null;
   favorite: boolean;
   notes: string;
+  /** Not secret: as stored. */
+  tags: string[];
   login: LoginListData | null;
   card: CardListData | null;
   identity: IdentityData | null;

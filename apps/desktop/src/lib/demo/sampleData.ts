@@ -21,6 +21,7 @@ interface Base {
   folderId?: string | null;
   favorite?: boolean;
   notes?: string;
+  tags?: string[];
   fields?: CustomField[];
   history?: PasswordHistoryEntry[];
   /** Days since creation. */
@@ -36,6 +37,7 @@ function base(now: number, b: Base): Omit<VaultItem, "type" | "login" | "card" |
     folderId: b.folderId ?? null,
     favorite: b.favorite ?? false,
     notes: b.notes ?? "",
+    tags: b.tags ?? [],
     fields: b.fields ?? [],
     passwordHistory: b.history ?? [],
     createdAt: now - b.created * DAY,
@@ -121,16 +123,17 @@ export function privateVault(now: number): SampleVault {
     }),
     login(now, {
       id: "p-netflix", name: "Netflix", username: mail, password: "Sommer2019!", uris: ["https://www.netflix.com"],
-      created: 760,
+      created: 760, tags: ["Familie", "Streaming"],
     }),
     login(now, {
       id: "p-sparkasse", name: "Sparkasse Online-Banking", username: "MM47110815", password: "K9#vR2m!Lp8@sQ4x",
       folderId: fin, favorite: true, uris: ["https://www.sparkasse.de"], created: 1200, updated: 30, revised: 30,
-      notes: "Legitimations-ID steht auf dem Brief vom März. TAN-Verfahren: S-pushTAN.",
+      notes: "Legitimations-ID steht auf dem Brief vom März. TAN-Verfahren: S-pushTAN.", tags: ["Bank"],
     }),
     login(now, {
       id: "p-paypal", name: "PayPal", username: mail, password: "pP!7xQz#4mNw2Lk9Rt", folderId: fin,
       uris: ["https://www.paypal.com/signin"], totp: "MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U", created: 980, updated: 90, revised: 90,
+      tags: ["Bank"],
     }),
     login(now, {
       id: "p-instagram", name: "Instagram", username: "max.muster", password: "hallo123", folderId: soc,
@@ -142,7 +145,7 @@ export function privateVault(now: number): SampleVault {
     }),
     login(now, {
       id: "p-linkedin", name: "LinkedIn", username: mail, password: "Ln#8vB2!qZ5mX7rT", folderId: soc,
-      uris: ["https://www.linkedin.com/login"], created: 300, updated: 300,
+      uris: ["https://www.linkedin.com/login"], created: 300, updated: 300, tags: ["Arbeit"],
     }),
     login(now, {
       id: "p-zalando", name: "Zalando", username: mail, password: "zalando2020", folderId: shop,
@@ -154,12 +157,12 @@ export function privateVault(now: number): SampleVault {
     }),
     login(now, {
       id: "p-bahn", name: "Deutsche Bahn", username: mail, password: "Zug#Fahrt7!Rhein2Mosel", favorite: true,
-      uris: ["https://www.bahn.de"], created: 200, updated: 20,
+      uris: ["https://www.bahn.de"], created: 200, updated: 20, tags: ["Reisen"],
       fields: [{ name: "BahnCard-Nummer", value: "7081 4112 3456 7890", kind: "text" }],
     }),
     login(now, {
       id: "p-spotify", name: "Spotify", username: mail, password: "S9!pot#Fy2xQ7mLw", uris: ["https://accounts.spotify.com"],
-      created: 450, updated: 45,
+      created: 450, updated: 45, tags: ["Streaming"],
     }),
     login(now, {
       id: "p-fritzbox", name: "FRITZ!Box 7590", username: "", password: "Fr1tz!Box#Heim2024", uris: ["http://fritz.box"],
@@ -182,6 +185,7 @@ export function privateVault(now: number): SampleVault {
     login(now, {
       id: "p-microsoft", name: "Microsoft-Konto", username: mail, password: "Ms#9vQ2!xLp7Rk4w", favorite: false,
       uris: ["https://login.live.com"], totp: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", created: 700, updated: 75, revised: 75,
+      tags: ["Arbeit"],
     }),
     login(now, {
       id: "p-telekom", name: "Telekom Kundencenter", username: "max.mustermann@t-online.de", password: "T3l#kom!8vQ2xMz",
@@ -190,10 +194,10 @@ export function privateVault(now: number): SampleVault {
     card(now, {
       id: "p-visa", name: "DKB Visa", folderId: fin, favorite: true, created: 600, updated: 200,
       card: { cardholderName: "Max Mustermann", brand: "Visa", number: "4111111111111111", expMonth: "08", expYear: "2028", code: "737" },
-      notes: "Sperr-Hotline: 116 116",
+      notes: "Sperr-Hotline: 116 116", tags: ["Bank", "Reisen"],
     }),
     card(now, {
-      id: "p-mastercard", name: "Barclays Mastercard", folderId: fin, created: 420,
+      id: "p-mastercard", name: "Barclays Mastercard", folderId: fin, created: 420, tags: ["Bank"],
       card: { cardholderName: "Max Mustermann", brand: "Mastercard", number: "5555555555554444", expMonth: "03", expYear: "2027", code: "214" },
     }),
     card(now, {
@@ -210,14 +214,14 @@ export function privateVault(now: number): SampleVault {
       },
     }),
     identity(now, {
-      id: "p-id-erika", name: "Erika Mustermann", created: 340,
+      id: "p-id-erika", name: "Erika Mustermann", created: 340, tags: ["Familie"],
       identity: {
         title: "Frau", firstName: "Erika", lastName: "Mustermann", email: "erika.mustermann@web.de", phone: "+49 171 7654321",
         company: "Musterfirma GmbH", address1: "Musterstraße 12", postalCode: "10115", city: "Berlin", country: "Deutschland",
       },
     }),
     note(now, {
-      id: "p-note-pass", name: "Reisepass", created: 800, updated: 210,
+      id: "p-note-pass", name: "Reisepass", created: 800, updated: 210, tags: ["Reisen", "Familie"],
       notes: "Reisepass-Nr.: C01X00T47\nAusgestellt: 14.03.2021, Bürgeramt Mitte\nGültig bis: 13.03.2031",
     }),
     note(now, {
@@ -225,7 +229,7 @@ export function privateVault(now: number): SampleVault {
       notes: "Office 2021 Home: XXXXX-7HQ2K-…\nAffinity Photo: AP2-4471-0099\nWindows 11 Pro: an Gerät gebunden",
     }),
     note(now, {
-      id: "p-note-wifi", name: "WLAN für Gäste", folderId: null, created: 120,
+      id: "p-note-wifi", name: "WLAN für Gäste", folderId: null, created: 120, tags: ["Familie"],
       notes: "Netzwerk: Mustermann-Gast\nPasswort: Kaffee-und-Kuchen-2024",
     }),
   ];
@@ -267,16 +271,16 @@ export function workVault(now: number): SampleVault {
       }),
       login(now, {
         id: "w-gitlab", name: "GitLab", username: "mmustermann", password: "Gl#8qV!2xRm7Kp4", folderId: tools,
-        uris: ["https://gitlab.musterfirma.de"], totp: "JBSWY3DPEHPK3PXP", created: 280,
+        uris: ["https://gitlab.musterfirma.de"], totp: "JBSWY3DPEHPK3PXP", created: 280, tags: ["Entwicklung"],
       }),
       login(now, {
         id: "w-aws", name: "AWS Console", username: "m.mustermann", password: "Aws!9#xQv2Lm7Rk", folderId: srv,
         uris: ["https://console.aws.amazon.com"], totp: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", created: 200, favorite: true,
-        fields: [{ name: "Account-ID", value: "4410-2291-7735", kind: "text" }],
+        fields: [{ name: "Account-ID", value: "4410-2291-7735", kind: "text" }], tags: ["Cloud", "Entwicklung"],
       }),
       login(now, {
         id: "w-vpn", name: "Firmen-VPN", username: "mmustermann", password: "Winter2023!", folderId: srv,
-        uris: ["https://vpn.musterfirma.de"], created: 700,
+        uris: ["https://vpn.musterfirma.de"], created: 700, tags: ["Intern"],
       }),
       login(now, {
         id: "w-slack", name: "Slack", username: mail, password: "Winter2023!", folderId: tools,

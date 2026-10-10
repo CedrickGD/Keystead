@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Folder as FolderIcon, Plus, Settings2, Star, Trash2, WandSparkles, X } from "lucide-react";
+import { ChevronDown, Folder as FolderIcon, Plus, Settings2, Star, Tag, Trash2, WandSparkles, X } from "lucide-react";
 import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatch, VaultItem } from "../../lib/types";
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
 import { useT } from "../../i18n";
@@ -404,12 +404,137 @@ function CustomFieldsEditor({ fields, onChange }: { fields: CustomField[]; onCha
 }
 
 // ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+// The limits of `vault::normalize_tags` in keystead-core, checked here first
+// so the backend's `tag_too_long` / `tags_too_many` stay rare.
+const TAG_MAX_CHARS = 50;
+const TAGS_MAX = 20;
+
+function TagsEditor({
+  tags,
+  suggestions,
+  onChange,
+}: {
+  tags: string[];
+  /** The vault's other tags (datalist). */
+  suggestions: string[];
+  onChange: (tags: string[]) => void;
+}) {
+  const { t } = useT();
+  const listId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [input, setInput] = useState("");
+  const has = (list: string[], tag: string) => list.some((x) => x.toLowerCase() === tag.toLowerCase());
+  const tooLong = [...input.trim()].length > TAG_MAX_CHARS;
+  const full = tags.length >= TAGS_MAX;
+  const error = tooLong ? t("tags.tooLong") : full && input.trim() ? t("tags.tooMany") : null;
+
+  /** Adds `parts` like the core normalises them (trimmed, deduplicated case-insensitively); returns what hit a limit. */
+  const addAll = (parts: string[]): string[] => {
+    const next = [...tags];
+    const rejected: string[] = [];
+    for (const part of parts) {
+      const tag = part.trim();
+      if (!tag || has(next, tag)) continue;
+      if ([...tag].length > TAG_MAX_CHARS || next.length >= TAGS_MAX) {
+        rejected.push(tag);
+        continue;
+      }
+      next.push(tag);
+    }
+    if (next.length !== tags.length) onChange(next);
+    return rejected;
+  };
+
+  const onInput = (value: string) => {
+    if (!value.includes(",")) {
+      setInput(value);
+      return;
+    }
+    // A comma finishes the tag in front of it (a pasted list may hold several); what was refused stays in the input.
+    const parts = value.split(",");
+    const tail = parts.pop() ?? "";
+    const rejected = addAll(parts);
+    setInput([...rejected, tail.trimStart()].filter(Boolean).join(", "));
+  };
+
+  /** Enter / blur: the typed text becomes a tag unless it is over a limit (the message stays visible then). */
+  const commitInput = () => {
+    if (error || !input.trim()) return;
+    addAll([input]);
+    setInput("");
+  };
+
+  return (
+    <EditSection title={t("tags.title")}>
+      <div
+        className={`tag-editor ${error ? "invalid" : ""}`}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) inputRef.current?.focus();
+        }}
+      >
+        {tags.map((tag) => (
+          <span key={tag} className="chip tag-chip">
+            <Tag aria-hidden />
+            <span className="tag-chip-label">{tag}</span>
+            <button
+              type="button"
+              className="tag-chip-remove"
+              onClick={() => onChange(tags.filter((x) => x !== tag))}
+              title={t("tags.remove", { name: tag })}
+              aria-label={t("tags.remove", { name: tag })}
+            >
+              <X />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          className="tag-input"
+          value={input}
+          list={listId}
+          placeholder={tags.length === 0 ? t("tags.addPlaceholder") : ""}
+          aria-label={t("tags.addPlaceholder")}
+          aria-invalid={error !== null}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => onInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+              // Plain Enter adds the tag; Ctrl+Enter still saves (window shortcut).
+              e.preventDefault();
+              commitInput();
+            } else if (e.key === "Backspace" && input === "" && tags.length > 0) {
+              e.preventDefault();
+              onChange(tags.slice(0, -1));
+            }
+          }}
+          onBlur={commitInput}
+        />
+        <datalist id={listId}>
+          {suggestions
+            .filter((s) => !has(tags, s))
+            .map((s) => (
+              <option key={s} value={s} />
+            ))}
+        </datalist>
+      </div>
+      {error ? <div className="field-error">{error}</div> : <div className="field-hint">{t("tags.hint")}</div>}
+    </EditSection>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
 
 export interface ItemEditorProps {
   draft: VaultItem;
   folders: Folder[];
+  /** The vault's tags, suggested while typing. */
+  knownTags: string[];
   isNew: boolean;
   saving: boolean;
   showErrors: boolean;
@@ -419,7 +544,7 @@ export interface ItemEditorProps {
   onDelete: () => void;
 }
 
-export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange, onSave, onCancel, onDelete }: ItemEditorProps) {
+export function ItemEditor({ draft, folders, knownTags, isNew, saving, showErrors, onChange, onSave, onCancel, onDelete }: ItemEditorProps) {
   const { t } = useT();
   const nameRef = useRef<HTMLInputElement>(null);
   const notesId = useId();
@@ -545,6 +670,7 @@ export function ItemEditor({ draft, folders, isNew, saving, showErrors, onChange
           </EditSection>
         )}
 
+        <TagsEditor tags={draft.tags} suggestions={knownTags} onChange={(tags) => set({ tags })} />
         <CustomFieldsEditor fields={draft.fields} onChange={(fields) => set({ fields })} />
       </div>
 

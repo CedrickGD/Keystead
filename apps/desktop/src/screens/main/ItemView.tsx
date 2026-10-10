@@ -8,6 +8,7 @@ import {
   Pencil,
   RotateCcw,
   Star,
+  Tag,
   Trash2,
   X,
 } from "lucide-react";
@@ -234,9 +235,11 @@ export interface ItemViewProps {
   onRestore: () => void;
   onDeleteForever: () => void;
   onToggleFavorite: () => void;
+  /** A tag chip was clicked: show the items with that tag. */
+  onOpenTag: (tag: string) => void;
 }
 
-export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteForever, onToggleFavorite }: ItemViewProps) {
+export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteForever, onToggleFavorite, onOpenTag }: ItemViewProps) {
   const { t, formatDateTime, formatRelative } = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLButtonElement>(null);
@@ -262,6 +265,19 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
                 {folder.name}
               </span>
             )}
+            {item.tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className="chip chip-btn"
+                onClick={() => onOpenTag(tag)}
+                title={t("tags.show", { name: tag })}
+                aria-label={t("tags.show", { name: tag })}
+              >
+                <Tag />
+                {tag}
+              </button>
+            ))}
           </div>
         </div>
         {!trashed && (

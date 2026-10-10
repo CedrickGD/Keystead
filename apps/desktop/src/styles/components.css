@@ -683,6 +683,24 @@ textarea.input {
   color: var(--accent-text);
 }
 
+/* A chip that acts (e.g. a tag in the detail header that opens its filter). */
+.chip-btn {
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.chip-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.chip-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .status-dot {
   width: 8px;
   height: 8px;

@@ -157,6 +157,10 @@ export const api = {
   emptyTrash: () => call<number>("empty_trash", { pageVaultId }),
   saveFolder: (folder: Folder) => call<Folder>("save_folder", { folder, pageVaultId }),
   deleteFolder: (id: string) => call<null>("delete_folder", { id, pageVaultId }),
+  /** Renames a tag on every item incl. trash (case-insensitive); answers the number of changed items. No event: refetch `listItems`. */
+  renameTag: (from: string, to: string) => call<number>("rename_tag", { from, to, pageVaultId }),
+  /** Removes a tag from every item incl. trash (case-insensitive); answers the number of changed items. No event: refetch `listItems`. */
+  deleteTag: (tag: string) => call<number>("delete_tag", { tag, pageVaultId }),
 
   generatePassword: (options: GeneratorOptions, remember: boolean) =>
     call<string>("generate_password", { options, remember, pageVaultId }),

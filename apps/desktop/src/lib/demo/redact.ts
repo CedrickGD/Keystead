@@ -21,6 +21,7 @@ export function redactItem(item: VaultItem): ItemListEntry {
     folderId: item.folderId,
     favorite: item.favorite,
     notes: item.notes,
+    tags: [...item.tags],
     login: item.login
       ? {
           username: item.login.username,

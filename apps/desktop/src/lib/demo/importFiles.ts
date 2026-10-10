@@ -28,6 +28,7 @@ function login(now: number, name: string, url: string, username: string, passwor
     folderId: null,
     favorite: false,
     notes: "",
+    tags: [],
     login: { username, password, uris: url ? [{ uri: url, match: "domain" }] : [], totp: "", passwordRevisedAt: null },
     card: null,
     identity: null,

@@ -810,7 +810,7 @@ item; copying never sends it there.
   secret, so unchanged: name, folder, favourite, notes (notes are still
   copied as sensitive), tags, username, websites, cardholder, brand, expiry,
   identity, dates. The UI's search filters these non-secret fields only
-  (name, username, websites, notes, card brand, identity name / e-mail);
+  (name, username, websites, notes, tags, card brand, identity name / e-mail);
   searching by a password, TOTP key, card number or hidden value is not
   supported – it never was (`UnlockedVault::search` has the same fields).
 * **`SecretField`** (JSON, serde externally tagged): `"password"`, `"totp"`
@@ -1709,9 +1709,18 @@ The extension's security model and file roles are in
 ## UI/UX principles (desktop + extension)
 
 * Look & feel of a modern password manager (Bitwarden/1Password-like):
-  left sidebar (Alle Elemente, Favoriten, Typen, Ordner, Papierkorb,
+  left sidebar (Alle Elemente, Favoriten, Typen, Ordner, Tags, Papierkorb,
   Werkzeuge: Generator, Sicherheitsbericht), middle item list with search,
   right detail pane. Edit inline in the detail pane.
+* Tags: the sidebar group lists every tag outside the trash (stored
+  spelling, item count) with rename / delete on hover (`rename_tag` /
+  `delete_tag`, then `list_items` is refetched; a tag filter whose last item
+  loses the tag falls back to "Alle Elemente"); the detail header shows an
+  item's tags as chips that open that filter; the editor has a "Tags" section
+  (chips, Enter / comma adds, Backspace on the empty input removes the last
+  one, the vault's tags as suggestions, the 50-character / 20-tag limits
+  checked inline before the backend sees them); a new item created inside a
+  tag filter starts with that tag. List rows show no tags.
 * Calm, clean design: system font stack (Segoe UI Variable / Inter
   fallback), 8-px spacing grid, 1 accent colour (blue `#3b82f6`-ish), soft
   borders, no gradients, light + dark theme via CSS variables, follows

@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Star,
   StickyNote,
+  Tag,
   Trash2,
   WandSparkles,
   X,
@@ -22,7 +23,7 @@ import type { Folder, ItemType } from "../../lib/types";
 import { useT } from "../../i18n";
 import { Logo } from "../../components/Logo";
 import { useEscapeLayer } from "../../lib/layers";
-import { sameFilter, type Counts, type Filter, type View } from "./model";
+import { sameFilter, type Counts, type Filter, type TagCount, type View } from "./model";
 
 function NavItem({
   icon,
@@ -46,14 +47,19 @@ function NavItem({
   );
 }
 
-function FolderNameInput({
+/** Inline name editor of a sidebar row (new / renamed folder, renamed tag). */
+function NameInput({
+  icon,
   initial,
   placeholder,
+  maxLength,
   onCommit,
   onCancel,
 }: {
+  icon: ReactNode;
   initial: string;
   placeholder: string;
+  maxLength: number;
   onCommit: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -81,13 +87,13 @@ function FolderNameInput({
   };
   return (
     <div className="nav-edit">
-      <FolderIcon className="nav-edit-icon" />
+      <span className="nav-edit-icon">{icon}</span>
       <input
         ref={ref}
         className="input nav-edit-input"
         value={value}
         placeholder={placeholder}
-        maxLength={60}
+        maxLength={maxLength}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
@@ -113,24 +119,31 @@ export function Sidebar({
   view,
   counts,
   folders,
+  tags,
   onNavigate,
   onLock,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
+  onRenameTag,
+  onDeleteTag,
 }: {
   vaultName: string;
   view: View;
   counts: Counts;
   folders: Folder[];
+  tags: TagCount[];
   onNavigate: (view: View) => void;
   onLock: () => void;
   onCreateFolder: (name: string) => void;
   onRenameFolder: (folder: Folder, name: string) => void;
   onDeleteFolder: (folder: Folder) => void;
+  onRenameTag: (tag: string, name: string) => void;
+  onDeleteTag: (tag: string) => void;
 }) {
   const { t } = useT();
   const [editing, setEditing] = useState<string | "new" | null>(null);
+  const [editingTag, setEditingTag] = useState<string | null>(null);
 
   const isFilter = (filter: Filter) => view.kind === "vault" && sameFilter(view.filter, filter);
   const go = (filter: Filter) => onNavigate({ kind: "vault", filter });
@@ -205,10 +218,12 @@ export function Sidebar({
         <div className="nav-group">
           {folders.map((folder) =>
             editing === folder.id ? (
-              <FolderNameInput
+              <NameInput
                 key={folder.id}
+                icon={<FolderIcon />}
                 initial={folder.name}
                 placeholder={t("folder.name")}
+                maxLength={60}
                 onCommit={(name) => {
                   setEditing(null);
                   if (name !== folder.name) onRenameFolder(folder, name);
@@ -248,9 +263,11 @@ export function Sidebar({
             ),
           )}
           {editing === "new" && (
-            <FolderNameInput
+            <NameInput
+              icon={<FolderIcon />}
               initial=""
               placeholder={t("folder.name")}
+              maxLength={60}
               onCommit={(name) => {
                 setEditing(null);
                 onCreateFolder(name);
@@ -263,6 +280,58 @@ export function Sidebar({
               {t("folder.emptyHint")}
             </button>
           )}
+        </div>
+
+        {/* Tags are created in the item editor; here they are listed, renamed and removed. */}
+        <div className="nav-section-title">{t("tags.title")}</div>
+        <div className="nav-group">
+          {tags.map(({ tag, count }) =>
+            editingTag === tag ? (
+              <NameInput
+                key={tag}
+                icon={<Tag />}
+                initial={tag}
+                placeholder={t("tags.name")}
+                maxLength={50}
+                onCommit={(name) => {
+                  setEditingTag(null);
+                  if (name !== tag) onRenameTag(tag, name);
+                }}
+                onCancel={() => setEditingTag(null)}
+              />
+            ) : (
+              <div key={tag} className="nav-row">
+                <NavItem
+                  icon={<Tag />}
+                  label={tag}
+                  count={count}
+                  active={isFilter({ kind: "tag", tag })}
+                  onClick={() => go({ kind: "tag", tag })}
+                />
+                <div className="nav-row-actions">
+                  <button
+                    type="button"
+                    className="icon-btn sm"
+                    onClick={() => setEditingTag(tag)}
+                    title={t("tags.rename")}
+                    aria-label={t("tags.renameNamed", { name: tag })}
+                  >
+                    <Pencil />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn sm danger"
+                    onClick={() => onDeleteTag(tag)}
+                    title={t("tags.delete")}
+                    aria-label={t("tags.deleteNamed", { name: tag })}
+                  >
+                    <Trash2 />
+                  </button>
+                </div>
+              </div>
+            ),
+          )}
+          {tags.length === 0 && <p className="nav-note">{t("tags.emptyHint")}</p>}
         </div>
 
         <div className="nav-group nav-group-spaced">

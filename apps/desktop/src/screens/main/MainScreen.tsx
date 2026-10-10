@@ -12,7 +12,7 @@ import { ItemList } from "./ItemList";
 import { ItemView } from "./ItemView";
 import { ItemEditor } from "./ItemEditor";
 import { StartPanel } from "./StartPanel";
-import { countItems, filterItems, visibleItems, type Filter, type SortKey, type View } from "./model";
+import { countItems, filterItems, tagList, visibleItems, type Filter, type SortKey, type View } from "./model";
 import { GeneratorPage } from "../GeneratorPage";
 import { HealthPage } from "../HealthPage";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -57,6 +57,9 @@ export function MainScreen() {
     return section ? { kind: "settings", section } : { kind: "vault", filter: { kind: "all" } };
   });
   useEffect(() => clearStartSection(), []);
+  // For effects and async handlers that must see the current view without re-running on every change.
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   // The import dialog: opened from the start panel / settings, or by a file
   // dropped onto the window (`request` = that file).
@@ -134,6 +137,8 @@ export function MainScreen() {
 
   const allItems = useMemo(() => items ?? [], [items]);
   const counts = useMemo(() => countItems(allItems), [allItems]);
+  const tags = useMemo(() => tagList(counts), [counts]);
+  const tagNames = useMemo(() => tags.map((x) => x.tag), [tags]);
   const filter = useMemo<Filter>(() => (view.kind === "vault" ? view.filter : { kind: "all" }), [view]);
   const terms = useMemo(() => searchTerms(query), [query]);
   const visible = useMemo(() => visibleItems(allItems, filter, terms, sort), [allItems, filter, terms, sort]);
@@ -153,8 +158,22 @@ export function MainScreen() {
         return t(`type.${f.type}.plural` as MessageKey);
       case "folder":
         return folders.find((x) => x.id === f.id)?.name ?? t("nav.folders");
+      case "tag":
+        return f.tag;
     }
   };
+
+  // A tag exists only on its items: when the last one loses it (edit, trash,
+  // rename, delete, a change from elsewhere) the filter falls back to all
+  // items, like a deleted folder. Only item changes can make a tag vanish,
+  // so this runs on those alone (the view is read through the ref).
+  useEffect(() => {
+    if (!items) return;
+    const current = viewRef.current;
+    if (current.kind === "vault" && current.filter.kind === "tag" && !counts.tags.has(current.filter.tag)) {
+      setView({ kind: "vault", filter: { kind: "all" } });
+    }
+  }, [items, counts]);
 
   // ------------------------------------------------------- edit guarding
 
@@ -207,6 +226,7 @@ export function MainScreen() {
       const folderId = filter.kind === "folder" ? filter.id : null;
       const draft = newItem(type, folderId);
       if (filter.kind === "favorites") draft.favorite = true;
+      if (filter.kind === "tag") draft.tags = [filter.tag];
       if (view.kind !== "vault" || filter.kind === "trash") setView({ kind: "vault", filter: { kind: "all" } });
       setEditing({ draft, baseline: cloneItem(draft), isNew: true, showErrors: false });
       setSelectedId(null);
@@ -253,6 +273,7 @@ export function MainScreen() {
     draft.name = draft.name.trim();
     if (draft.login) draft.login.uris = draft.login.uris.filter((u) => u.uri.trim()).map((u) => ({ ...u, uri: u.uri.trim() }));
     draft.fields = draft.fields.filter((f) => f.name.trim() || f.value.trim());
+    draft.tags = draft.tags.map((tag) => tag.trim()).filter(Boolean);
     setSaving(true);
     try {
       const saved = await api.saveItem(draft);
@@ -396,6 +417,44 @@ export function MainScreen() {
     }
   };
 
+  // ---------------------------------------------------------------- tags
+  // Both commands send no event; the list is refetched afterwards.
+
+  const renameTag = async (from: string, to: string) => {
+    try {
+      const changed = await api.renameTag(from, to);
+      // Follow the tag. Should no item end up with this spelling (merged into
+      // another one), the refetch below falls back to all items.
+      const current = viewRef.current;
+      if (current.kind === "vault" && current.filter.kind === "tag" && current.filter.tag === from) {
+        setView({ kind: "vault", filter: { kind: "tag", tag: to } });
+      }
+      await reload();
+      toast.success(tp("tags.renamed", changed, { from, to }));
+    } catch (err) {
+      toast.error(errorText(err));
+    }
+  };
+
+  const deleteTag = async (tag: string) => {
+    // Like the backend: every spelling, the trash included.
+    const affected = allItems.filter((i) => i.tags.some((x) => x.toLowerCase() === tag.toLowerCase())).length;
+    const ok = await confirm({
+      title: t("tags.deleteTitle", { name: tag }),
+      message: tp("tags.deleteText", affected),
+      confirmLabel: t("tags.delete"),
+      tone: "danger",
+    });
+    if (!ok) return;
+    try {
+      const changed = await api.deleteTag(tag);
+      await reload();
+      toast.success(tp("tags.deleted", changed, { name: tag }));
+    } catch (err) {
+      toast.error(errorText(err));
+    }
+  };
+
   // ------------------------------------------------------------ shortcuts
 
   const shortcuts = useRef<(e: KeyboardEvent) => void>(() => undefined);
@@ -460,6 +519,7 @@ export function MainScreen() {
           key={editing.draft.id || "new"}
           draft={editing.draft}
           folders={folders}
+          knownTags={tagNames}
           isNew={editing.isNew}
           saving={saving}
           showErrors={editing.showErrors}
@@ -484,6 +544,7 @@ export function MainScreen() {
           onRestore={() => void restore(selected)}
           onDeleteForever={() => void deleteForever(selected)}
           onToggleFavorite={() => void toggleFavorite(selected)}
+          onOpenTag={(tag) => navigate({ kind: "vault", filter: { kind: "tag", tag } })}
         />
       );
     }
@@ -506,11 +567,14 @@ export function MainScreen() {
           view={view}
           counts={counts}
           folders={folders}
+          tags={tags}
           onNavigate={navigate}
           onLock={() => void lock()}
           onCreateFolder={(name) => void createFolder(name)}
           onRenameFolder={(folder, name) => void renameFolder(folder, name)}
           onDeleteFolder={(folder) => void deleteFolder(folder)}
+          onRenameTag={(tag, name) => void renameTag(tag, name)}
+          onDeleteTag={(tag) => void deleteTag(tag)}
         />
         {view.kind === "vault" && (
           <div className="vault-view">
