@@ -82,6 +82,8 @@ pub(crate) fn wipe_data(data: &mut VaultData) {
         g.password.zeroize();
     }
     icons::wipe_icons(&mut data.icons);
+    // Unknown fields of a later format version may hold secrets too.
+    data.extra.0.values_mut().for_each(import::wipe_value);
 }
 
 /// Overwrites the secret strings of items before the memory is freed.

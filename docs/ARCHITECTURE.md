@@ -200,8 +200,16 @@ files, settings, plain-text exports) share this.
   with attachments and not written yet – the upcoming attachments feature
   writes it only for such vaults, so builds without this reader refuse them
   (`unsupported:vault format version 2`) instead of silently dropping what
-  they do not know. Any other version → `unsupported:vault format version
-  <n>`; a missing one → `corrupt:missing format version`.
+  they do not know. A build with this reader does not drop it either:
+  header keys (`VaultFile.extra`) and top-level payload keys
+  (`VaultData.extra` – e.g. a later `attachments` map with its blob keys)
+  it does not know are kept as they are (`model::UnknownFields`,
+  `#[serde(flatten)]`) and written back with every save, re-encryption
+  included; their `Debug` shows only the key names, `wipe_data` blanks
+  their strings, and the Keystead export leaves them out (a standalone
+  version-1 file). Unknown keys *inside* items, folders, icons etc. are not
+  kept. Any other version → `unsupported:vault format version <n>`; a
+  missing one → `corrupt:missing format version`.
 
 ## Core API – `keystead-core` (Rust)
 
@@ -407,7 +415,10 @@ Behaviour notes:
   `tag_required` / `tag_too_long`; an item that already has `to` in any
   spelling just loses `from`) and return the number of changed items –
   nothing to change → `Ok(0)` and no new revision, so a retry after a
-  `conflict` (`reload_if_changed`, then call again) is safe. The Keystead
+  `conflict` (`reload_if_changed`, then call again) is safe. The desktop
+  UI groups spellings the same way: the sidebar shows one row per tag (the
+  most frequent spelling, counts summed) and the tag filter matches any
+  spelling (`tagKey` / `sameTag` in `screens/main/model.ts`). The Keystead
   export carries tags and brings them back (normalised lossily on import);
   CSV and Bitwarden JSON have no field for them and leave them out, their
   importers never set them, and duplicate/conflict detection ignores them.
@@ -1730,15 +1741,23 @@ The extension's security model and file roles are in
   left sidebar (Alle Elemente, Favoriten, Typen, Ordner, Tags, Papierkorb,
   Werkzeuge: Generator, Sicherheitsbericht), middle item list with search,
   right detail pane. Edit inline in the detail pane.
-* Tags: the sidebar group lists every tag outside the trash (stored
-  spelling, item count) with rename / delete on hover (`rename_tag` /
-  `delete_tag`, then `list_items` is refetched; a tag filter whose last item
-  loses the tag falls back to "Alle Elemente"); the detail header shows an
-  item's tags as chips that open that filter; the editor has a "Tags" section
-  (chips, Enter / comma adds, Backspace on the empty input removes the last
-  one, the vault's tags as suggestions, the 50-character / 20-tag limits
-  checked inline before the backend sees them); a new item created inside a
-  tag filter starts with that tag. List rows show no tags.
+* Tags: the sidebar group lists every tag outside the trash – one row per
+  tag whatever its spellings ("Bank" and "bank", as the core compares them),
+  showing the most frequent spelling and the summed item count – with
+  rename / delete on hover (`rename_tag` / `delete_tag`, then `list_items`
+  is refetched; an item open in the editor gets the same change in its draft
+  and baseline, so saving it cannot bring the old tag back; a tag filter
+  whose last item loses the tag falls back to "Alle Elemente"); the tag
+  filter matches any spelling and is titled with the shown one; the detail
+  header shows an item's tags as chips that open that filter (plain chips on
+  a trashed item: the filter never shows the trash, and a tag only the trash
+  carries has no filter); the editor has a "Tags" section (chips, Enter /
+  comma adds, Backspace on the empty input removes the last one, the
+  vault's tags as suggestions, the 50-character / 20-tag limits checked
+  inline before the backend sees them; text still in the tag input joins the
+  item on blur and on Ctrl+S / Ctrl+Enter, like a click on "Speichern"); a
+  new item created inside a tag filter starts with that tag. List rows show
+  no tags.
 * Calm, clean design: system font stack (Segoe UI Variable / Inter
   fallback), 8-px spacing grid, 1 accent colour (blue `#3b82f6`-ish), soft
   borders, no gradients, light + dark theme via CSS variables, follows

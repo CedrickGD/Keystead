@@ -67,11 +67,14 @@ neue Betas per In-App-Update.
 - Tags zusätzlich zu Ordnern: freie Schlagwörter je Eintrag (höchstens 20 à
   50 Zeichen; der Core trimmt, entfernt leere und doppelte – ohne Rücksicht
   auf Groß-/Kleinschreibung, die erste Schreibweise bleibt). Sidebar-Gruppe
-  „Tags“ mit Zähler als Filter, Umbenennen/Löschen eines Tags über alle
-  Einträge inkl. Papierkorb, Chips in der Detailansicht (klickbar → Filter)
-  und im Editor (Enter/Komma, Vorschläge, Limits inline), die Suche findet
-  Tags, ein neuer Eintrag im Tag-Filter startet mit dem Tag. Keystead-Export
-  nimmt Tags mit, CSV/Bitwarden-JSON nicht. Die TUI zeigt sie nur an (Zeile
+  „Tags“ mit Zähler als Filter (Schreibweisen „Bank“/„bank“ sind eine Zeile
+  und ein Filter, wie im Core), Umbenennen/Löschen eines Tags über alle
+  Einträge inkl. Papierkorb (ein offener Editor übernimmt die Änderung),
+  Chips in der Detailansicht (klickbar → Filter; im Papierkorb nur Anzeige)
+  und im Editor (Enter/Komma, Vorschläge, Limits inline; Strg+S übernimmt
+  noch getippten Text wie der Speichern-Knopf), die Suche findet Tags, ein
+  neuer Eintrag im Tag-Filter startet mit dem Tag. Keystead-Export nimmt
+  Tags mit, CSV/Bitwarden-JSON nicht. Die TUI zeigt sie nur an (Zeile
   „Tags: …“ unter der Typzeile) und bewahrt sie beim Bearbeiten. Noch nicht
   veröffentlicht (geht mit dem nächsten `[release]` raus).
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
@@ -138,16 +141,20 @@ Außerdem liegt in `docs/BLOCK3-DESIGN.md` der zusammengeführte Entwurf für
 Block 3 (Anhänge, HIBP, Tags, Assistent) mit den Entscheidungen D1–D8. Tags
 und die Assistenten-Zeile sind umgesetzt und in `ARCHITECTURE.md`
 festgehalten (mit D1: der Tresordatei-Leser akzeptiert schon Version 1 und
-2, geschrieben wird weiter 1; D7: Umbenennen/Löschen über die Sidebar); die
-Teile zu Anhängen und HIBP wandern nach der Entscheidung des Besitzers
-ebenfalls dorthin.
+2, geschrieben wird weiter 1, und unbekannte Felder in Kopf und Payload –
+später die Anhang-Schlüssel – überleben jedes Speichern
+(`model::UnknownFields`); D7: Umbenennen/Löschen über die Sidebar; D8:
+Schalter im Assistenten, Standard an); offen sind nur noch D2–D6 zu
+Anhängen und HIBP, deren Teile nach der Entscheidung des Besitzers ebenfalls
+dorthin wandern.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
 3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern sind fertig
    (siehe „Was fertig ist“; geplant als beta.9). Offen: verschlüsselte
    Dateianhänge an Einträgen (z. B. Ausweis-Scan; die Tresordatei bekommt
-   dafür Version 2, der Leser dafür ist schon drin), optionale Prüfung auf
+   dafür Version 2 – der Leser dafür ist schon drin und bewahrt die noch
+   unbekannten Felder beim Speichern), optionale Prüfung auf
    geleakte Passwörter (Have I Been Pwned, k-Anonymität – nur die ersten
    5 Zeichen des SHA-1 gehen raus; standardmäßig aus oder nur auf Knopfdruck).
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash

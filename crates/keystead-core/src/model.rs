@@ -21,6 +21,25 @@ pub struct VaultData {
     /// the desktop app. Kept inside the encrypted payload – the set of hosts
     /// would reveal the user's accounts. Never exported or imported.
     pub icons: BTreeMap<String, IconEntry>,
+    /// Top-level payload keys this build does not know (a later format
+    /// version's fields, e.g. an `attachments` map with its blob keys),
+    /// kept as they are and written back with every save so that opening
+    /// such a vault here never loses them. Not exported.
+    #[serde(flatten)]
+    pub extra: UnknownFields,
+}
+
+/// JSON keys of a vault file or payload that this build does not know,
+/// round-tripped unchanged (see [`VaultData::extra`]). `Debug` prints only
+/// the key names – the values may be a later version's secrets.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UnknownFields(pub BTreeMap<String, serde_json::Value>);
+
+impl std::fmt::Debug for UnknownFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 /// A website icon stored in the vault ([`VaultData::icons`]).
@@ -426,6 +445,30 @@ mod tests {
         let tagged: VaultItem =
             serde_json::from_str(r#"{"type":"note","name":"n","tags":["a","b"]}"#).unwrap();
         assert_eq!(tagged.tags, ["a", "b"]);
+    }
+
+    /// A payload key of a later format version survives parse → serialise
+    /// at the top level, and `Debug` never shows its value.
+    #[test]
+    fn unknown_payload_fields_round_trip() {
+        let json = r#"{"items":[],"attachments":{"a1":{"key":"c2VjcmV0"}},"future":1}"#;
+        let data: VaultData = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            data.extra.0.keys().collect::<Vec<_>>(),
+            ["attachments", "future"]
+        );
+        let v = serde_json::to_value(&data).unwrap();
+        assert_eq!(v["attachments"]["a1"]["key"], "c2VjcmV0");
+        assert_eq!(v["future"], 1);
+        assert!(v["extra"].is_null());
+        let debug = format!("{data:?}");
+        assert!(
+            debug.contains("attachments") && !debug.contains("c2VjcmV0"),
+            "{debug}"
+        );
+        let plain: VaultData = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(plain.extra.0.is_empty());
+        assert_eq!(VaultData::default(), plain);
     }
 
     #[test]

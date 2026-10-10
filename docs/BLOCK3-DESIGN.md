@@ -1,4 +1,4 @@
-<!-- Arbeitsdokument, Stand 2026-10-10. Entwurf aus drei unabhängigen Design-Durchgängen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; Code-Verweise (Datei:Zeile) wurden gegen den Branch claude/quirky-archimedes-i4qa3j geprüft. Die Entscheidungen D1–D8 sind noch offen und werden mit dem Besitzer geklärt; danach wandern die festgelegten Teile nach ARCHITECTURE.md und dieses Dokument wird entfernt oder gekürzt. -->
+<!-- Arbeitsdokument, Stand 2026-10-10. Entwurf aus drei unabhängigen Design-Durchgängen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; Code-Verweise (Datei:Zeile) wurden gegen den Branch claude/quirky-archimedes-i4qa3j geprüft. Entschieden und umgesetzt: D1 (a – Leser für Version 1 und 2, geschrieben wird 1; unbekannte Felder in Kopf und Payload überleben jedes Speichern), D7 (a – Umbenennen/Löschen über die Sidebar) und D8 (a – Schalter im Tresor-Schritt, Standard an); die Abschnitte „Tags“ und „Einrichtungsassistent“ sind damit in ARCHITECTURE.md festgehalten und stehen hier nur noch als Begründung. Offen sind D2–D6 (Anhänge, HIBP); sie werden mit dem Besitzer geklärt, danach wandern auch diese Teile nach ARCHITECTURE.md und dieses Dokument wird entfernt oder gekürzt. -->
 
 # Block 3 „Neue Funktionen“ – zusammengeführter Entwurf
 
@@ -65,7 +65,7 @@ Der Payload wird vom Monitor alle 2 s komplett gelesen und zweimal geparst (moni
 
 ---
 
-## Tags
+## Tags (umgesetzt – verbindlich ist ARCHITECTURE.md, Abschnitte „Tags“ und „UI/UX principles“)
 
 ### Gewählter Entwurf
 - **Modell:** `VaultItem.tags: Vec<String>` (Container `#[serde(default)]` macht ältere Payloads kompatibel, model.rs:60-61). Normalisierung **im Core** (`normalize_tags`, aufgerufen in `save_item` nach `validate_name`, vault.rs:253-258, und verlustbehaftet in `add_imported`): trimmen, Leerstrings weg, 50 Zeichen (`invalid_input:tag_too_long`), 20 pro Element (`invalid_input:tags_too_many`), Duplikate **groß-/kleinschreibungsunabhängig** entfernen und die erste Schreibweise behalten, Reihenfolge unverändert (der Dirty-Check `itemsEqual` ist reihenfolgeabhängig). Tags werden in `wipe_item`, `Wipe for VaultItem`, `Wipe for ItemListEntry` genullt (persönlich wie Notizen).
@@ -74,7 +74,7 @@ Der Payload wird vom Monitor alle 2 s komplett gelesen und zweimal geparst (moni
 - **UI:** Sidebar-Gruppe „Tags“ zwischen Ordnern und Papierkorb (ein `NavItem` pro Tag mit Zähler, abgeleitet aus den Items, Zählung ohne Papierkorb, Sortierung mit dem vorhandenen `Intl.Collator`); Filtermodell `{ kind: 'tag', tag }` in `model.ts` inkl. `sameFilter`/`filterItems`/`Counts.tags`; `startNew` übernimmt den Tag des aktiven Filters; wird der gefilterte Tag leer, zurück auf „Alle“ (wie bei gelöschtem Ordner). Detailansicht: klickbare Chips im Kopf → Tag-Filter. Editor: eigener Abschnitt „Tags“ vor den Zusatzfeldern mit Chips (X zum Entfernen), Eingabe mit Enter/Komma, Backspace entfernt den letzten Chip, Vorschläge aus den vorhandenen Tags des Tresors; Limit-Feedback inline. Listenzeilen bleiben ruhig (keine Chips).
 - **TUI:** eine Zeile `Tags: Bank, Familie` **nach** der Meta-Zeile (hält den Rendering-Test `Login · * Favorit`, ui/tests.rs:79), neuer `M::FieldTags`-Schlüssel; keine Bearbeitung in der TUI (reiht sich in HANDOFF Z. 123 ein; `try_build` bewahrt Tags bei Edits).
 - **Export/Import:** Keystead-Export trägt Tags automatisch und bringt sie zurück (normalisiert); CSV/Bitwarden-JSON lassen sie weg (dokumentiert, Hinweis im Export-Dialog); `dedup_key`/`take_over` bleiben tag-blind.
-- **Umbenennen/Löschen eines Tags** über die Sidebar (Entscheidung D7, empfohlen): `rename_tag`/`delete_tag` als Core-Methoden über **alle** Items inkl. Papierkorb in einem `mutate_if_changed` (idempotent, Retry-sicher) plus zwei Dagger-Commands nach dem Vorbild `delete_folder`.
+- **Umbenennen/Löschen eines Tags** über die Sidebar (Entscheidung D7 a, umgesetzt): `rename_tag`/`delete_tag` als Core-Methoden über **alle** Items inkl. Papierkorb in einem `mutate_if_changed` (idempotent, Retry-sicher) plus zwei Dagger-Commands nach dem Vorbild `delete_folder`. Die Sidebar fasst Schreibweisen wie der Core zusammen (eine Zeile, häufigste Schreibweise, Summe), ein offener Editor übernimmt die Änderung in Entwurf und Vergleichsstand.
 
 ### Begründung
 Freie Strings auf dem Item brauchen keine Id-Tabelle, keine neuen CRUD-Commands, wandern automatisch durch den Keystead-Export und können nicht „baumeln“. Normalisierung im Core schützt jeden Schreiber (TUI, Bridge, Importe). Das ist das kleinste Feature und übt einmal jede Spiegelschicht – deshalb kommt es zuerst.
@@ -85,10 +85,10 @@ Freie Strings auf dem Item brauchen keine Id-Tabelle, keine neuen CRUD-Commands,
 
 ---
 
-## Einrichtungsassistent: Website-Icons
+## Einrichtungsassistent: Website-Icons (umgesetzt – verbindlich ist ARCHITECTURE.md)
 
 ### Gewählter Entwurf
-Ja – **ein `Switch`-Zeile im ersten Schritt „Tresor“** (`CreateVaultStep`, WelcomeScreen.tsx:191-269, zwischen Passwortfeldern und Warn-Callout), **nur beim allerersten Start** (`vaults.length === 0`; die Einstellung ist global), vorbelegt mit `settings.websiteIcons`, gespeichert über `updateSettings({ websiteIcons })` aus `useApp()` **bevor** `api.createVault` läuft. Texte: vorhandener Titel `settings.websiteIcons`, ein kurzer neuer Hinweis `wizard.websiteIconsHint` („Dafür kontaktiert Keystead jede gespeicherte Website … jederzeit änderbar unter Einstellungen → Allgemein“). Kein Backend-Code, ~30 Zeilen UI, Prüfung manuell mit `?mock=empty`. Standardwert bleibt **an** (Entscheidung D8).
+Ja – **ein `Switch`-Zeile im ersten Schritt „Tresor“** (`CreateVaultStep`, WelcomeScreen.tsx:191-269, zwischen Passwortfeldern und Warn-Callout), **nur beim allerersten Start** (`vaults.length === 0`; die Einstellung ist global), vorbelegt mit `settings.websiteIcons`, gespeichert über `updateSettings({ websiteIcons })` aus `useApp()` **bevor** `api.createVault` läuft. Texte: vorhandener Titel `settings.websiteIcons`, ein kurzer neuer Hinweis `wizard.websiteIconsHint` („Dafür kontaktiert Keystead jede gespeicherte Website … jederzeit änderbar unter Einstellungen → Allgemein“). Kein Backend-Code, ~30 Zeilen UI, Prüfung manuell mit `?mock=empty`. Standardwert bleibt **an** (Entscheidung D8 a, umgesetzt).
 
 ### Begründung
 Timing ist das ganze Argument, und es ist verifiziert: `install_vault_since` ruft `icons.vault_opened()` (state.rs:565, `OPEN_DELAY` 5 s, icons.rs:64) – harmlos, weil ein frischer Tresor keine Logins hat –, aber **jeder erfolgreiche `mutate_with` ruft `icons.vault_changed()`** (state.rs:646-649, `CHANGE_DELAY` 2 s, icons.rs:67), also auch `commit_import` im Import-Schritt des Assistenten. Im Pfad „Von VaultX umsteigen“ werden damit alle importierten Hosts kontaktiert, während der Nutzer noch den Schritt „Absicherung“ sieht – bevor er Einstellungen → Allgemein je erreichen kann. Eine Karte auf dem letzten Schritt (wie die Erweiterungs-Karte) käme zu spät; ein eigener Schritt bläht den bewusst schlanken Assistenten auf. Der Tresor-Schritt ist die einzige Stelle, die in beiden Pfaden vor dem Import liegt und schon ein Formular ist.
@@ -100,10 +100,10 @@ Eigener „Privatsphäre“-Schritt, Karte auf dem letzten Schritt, Checklisten-
 
 ## Entscheidungen für dich
 
-Nur Punkte, bei denen deine Antwort die Umsetzung wirklich ändert. Alles andere ist oben festgelegt und wird bei Widerspruch gern angepasst.
+Nur Punkte, bei denen deine Antwort die Umsetzung wirklich ändert. Alles andere ist oben festgelegt und wird bei Widerspruch gern angepasst. **D1, D7 und D8 sind entschieden (jeweils a) und umgesetzt**; offen sind D2–D6.
 
-**D1 – Formatversion bei Anhängen (Block: Anhänge, blockierend für den Anhang-Core).** Ein älteres Binary (v. a. eine alte `keystead-cli.exe` aus einem älteren ZIP – die liegt separat im Portable-Paket, build.yml:155), das den Tresor speichert, wirft unbekannte Felder still weg (serde ignoriert unbekannte Schlüssel). Bei Tags ist das ärgerlich, bei der Anhang-Map **unwiederbringlich** (Schlüssel weg → Blobs unlesbar).
-- a) **Empfohlen:** Tresordatei bekommt `version: 2`, sobald die Anhang-Map nicht leer ist; der Leser für 1 **und** 2 wird schon mit dem Tags-Release ausgeliefert. Ältere Builds verweigern dann solche Tresore sauber (`unsupported:vault format version 2`, format.rs:185-191) statt Schlüssel zu vernichten; Tresore ohne Anhänge bleiben v1 und überall öffenbar.
+**D1 – Formatversion bei Anhängen (Block: Anhänge). Entschieden: a, umgesetzt.** Ein älteres Binary (v. a. eine alte `keystead-cli.exe` aus einem älteren ZIP – die liegt separat im Portable-Paket, build.yml:155), das den Tresor speichert, wirft unbekannte Felder still weg (serde ignoriert unbekannte Schlüssel). Bei Tags ist das ärgerlich, bei der Anhang-Map **unwiederbringlich** (Schlüssel weg → Blobs unlesbar).
+- a) **Gewählt:** Tresordatei bekommt `version: 2`, sobald die Anhang-Map nicht leer ist; der Leser für 1 **und** 2 wird schon mit dem Tags-Release ausgeliefert. Ältere Builds verweigern dann solche Tresore sauber (`unsupported:vault format version 2`, format.rs:185-191) statt Schlüssel zu vernichten; Tresore ohne Anhänge bleiben v1 und überall öffenbar. Ergänzung aus der Prüfung: Damit das Tags-Release selbst (das Version 2 schon öffnet) die Anhang-Schlüssel nicht beim nächsten Speichern verwirft, bewahrt es unbekannte Schlüssel des Dateikopfs (`VaultFile.extra`) und der obersten Payload-Ebene (`VaultData.extra`, `model::UnknownFields`, `#[serde(flatten)]`) und schreibt sie bei jedem Speichern zurück; der Keystead-Export lässt sie weg. Die Anhang-Map muss deshalb – wie oben entworfen – auf `VaultData` liegen, nicht auf `VaultItem` (dort bleiben unbekannte Felder nicht erhalten).
 - b) Bei Version 1 bleiben, Risiko in README/LIESMICH/HANDOFF dokumentieren („`keystead-cli.exe` immer aus derselben Version wie die App“).
 - c) Version 2 ab sofort für jeden Save (bricht alle älteren Betas sofort).
 
@@ -133,12 +133,12 @@ Fester Rahmen: Einmal-AEAD hält maximal ~2× Dateigröße im RAM; `switch_porta
 - c) Wie der Updater: System-Proxy, aber bei PAC direkt (geht am Proxy vorbei).
 Beide Abweichungen vom Icon-Fetcher werden in ARCHITECTURE.md als bewusste Ausnahme festgehalten.
 
-**D7 – Tag umbenennen/löschen über die Sidebar (Block: Tags, nicht blockierend).**
-- a) **Empfohlen:** Ja – `rename_tag`/`delete_tag` nach dem Ordner-Muster, ein Save über alle Items inkl. Papierkorb (~80 Zeilen quer durch Core/Commands/UI).
+**D7 – Tag umbenennen/löschen über die Sidebar (Block: Tags). Entschieden: a, umgesetzt.**
+- a) **Gewählt:** Ja – `rename_tag`/`delete_tag` nach dem Ordner-Muster, ein Save über alle Items inkl. Papierkorb (~80 Zeilen quer durch Core/Commands/UI).
 - b) Nein – Tags nur pro Element bearbeiten; ein Tippfehler auf 30 importierten Elementen wäre mühsam.
 
-**D8 – Website-Icons im Assistenten (Block: Assistent, blockierend nur für diesen Schritt – deine offene Frage).**
-- a) **Empfohlen:** Switch-Zeile im Tresor-Schritt, nur beim ersten Start, Standard bleibt **an**.
+**D8 – Website-Icons im Assistenten (Block: Assistent). Entschieden: a, umgesetzt.**
+- a) **Gewählt:** Switch-Zeile im Tresor-Schritt, nur beim ersten Start, Standard bleibt **an**.
 - b) Dasselbe, aber Standard **aus** (Opt-in; ändert den dokumentierten Vertrag in ARCHITECTURE.md:584 und README).
 - c) Nichts im Assistenten; Einstellungen bleiben der einzige Ort.
 

@@ -265,19 +265,28 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
                 {folder.name}
               </span>
             )}
-            {item.tags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                className="chip chip-btn"
-                onClick={() => onOpenTag(tag)}
-                title={t("tags.show", { name: tag })}
-                aria-label={t("tags.show", { name: tag })}
-              >
-                <Tag />
-                {tag}
-              </button>
-            ))}
+            {item.tags.map((tag) =>
+              trashed ? (
+                // The tag filter never shows the trash (a tag only the trash
+                // carries has no filter at all): plain chips, like the folder.
+                <span key={tag} className="chip">
+                  <Tag />
+                  {tag}
+                </span>
+              ) : (
+                <button
+                  key={tag}
+                  type="button"
+                  className="chip chip-btn"
+                  onClick={() => onOpenTag(tag)}
+                  title={t("tags.show", { name: tag })}
+                  aria-label={t("tags.show", { name: tag })}
+                >
+                  <Tag />
+                  {tag}
+                </button>
+              ),
+            )}
           </div>
         </div>
         {!trashed && (

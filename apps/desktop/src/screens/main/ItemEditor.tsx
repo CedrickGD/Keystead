@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { ChevronDown, Folder as FolderIcon, Plus, Settings2, Star, Tag, Trash2, WandSparkles, X } from "lucide-react";
 import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatch, VaultItem } from "../../lib/types";
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
@@ -460,11 +461,28 @@ function TagsEditor({
     setInput([...rejected, tail.trimStart()].filter(Boolean).join(", "));
   };
 
-  /** Enter / blur: the typed text becomes a tag unless it is over a limit (the message stays visible then). */
+  /** Enter / blur / save shortcut: the typed text becomes a tag unless it is over a limit (the message stays visible then). */
   const commitInput = () => {
     if (error || !input.trim()) return;
     addAll([input]);
     setInput("");
+  };
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === "Enter" && !mod) {
+      // Plain Enter adds the tag.
+      e.preventDefault();
+      commitInput();
+    } else if (mod && (e.key === "Enter" || e.key.toLowerCase() === "s")) {
+      // Ctrl+Enter / Ctrl+S save through the window shortcut, which reads
+      // the draft: the typed text joins it first – synchronously, before the
+      // event bubbles on – as it does via blur when the Save button is clicked.
+      flushSync(commitInput);
+    } else if (e.key === "Backspace" && input === "" && tags.length > 0) {
+      e.preventDefault();
+      onChange(tags.slice(0, -1));
+    }
   };
 
   return (
@@ -501,16 +519,7 @@ function TagsEditor({
           autoComplete="off"
           spellCheck={false}
           onChange={(e) => onInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-              // Plain Enter adds the tag; Ctrl+Enter still saves (window shortcut).
-              e.preventDefault();
-              commitInput();
-            } else if (e.key === "Backspace" && input === "" && tags.length > 0) {
-              e.preventDefault();
-              onChange(tags.slice(0, -1));
-            }
-          }}
+          onKeyDown={onKeyDown}
           onBlur={commitInput}
         />
         <datalist id={listId}>

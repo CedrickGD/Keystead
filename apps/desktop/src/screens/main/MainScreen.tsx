@@ -12,7 +12,7 @@ import { ItemList } from "./ItemList";
 import { ItemView } from "./ItemView";
 import { ItemEditor } from "./ItemEditor";
 import { StartPanel } from "./StartPanel";
-import { countItems, filterItems, tagList, visibleItems, type Filter, type SortKey, type View } from "./model";
+import { countItems, filterItems, hasTag, retagTags, sameTag, tagKey, tagList, visibleItems, type Filter, type SortKey, type View } from "./model";
 import { GeneratorPage } from "../GeneratorPage";
 import { HealthPage } from "../HealthPage";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -145,6 +145,8 @@ export function MainScreen() {
   const totalInFilter = useMemo(() => filterItems(allItems, filter).length, [allItems, filter]);
   const selected = selectedId ? allItems.find((i) => i.id === selectedId) ?? null : null;
   const dirty = editing ? !itemsEqual(editing.draft, editing.baseline) : false;
+  /** The spelling the sidebar shows for `tag` (any spelling of it); `tag` itself if no item outside the trash has it. */
+  const shownTag = (tag: string) => counts.tags.get(tagKey(tag))?.tag ?? tag;
 
   const filterTitle = (f: Filter): string => {
     switch (f.kind) {
@@ -159,7 +161,7 @@ export function MainScreen() {
       case "folder":
         return folders.find((x) => x.id === f.id)?.name ?? t("nav.folders");
       case "tag":
-        return f.tag;
+        return shownTag(f.tag);
     }
   };
 
@@ -170,7 +172,7 @@ export function MainScreen() {
   useEffect(() => {
     if (!items) return;
     const current = viewRef.current;
-    if (current.kind === "vault" && current.filter.kind === "tag" && !counts.tags.has(current.filter.tag)) {
+    if (current.kind === "vault" && current.filter.kind === "tag" && !counts.tags.has(tagKey(current.filter.tag))) {
       setView({ kind: "vault", filter: { kind: "all" } });
     }
   }, [items, counts]);
@@ -226,7 +228,7 @@ export function MainScreen() {
       const folderId = filter.kind === "folder" ? filter.id : null;
       const draft = newItem(type, folderId);
       if (filter.kind === "favorites") draft.favorite = true;
-      if (filter.kind === "tag") draft.tags = [filter.tag];
+      if (filter.kind === "tag") draft.tags = [shownTag(filter.tag)];
       if (view.kind !== "vault" || filter.kind === "trash") setView({ kind: "vault", filter: { kind: "all" } });
       setEditing({ draft, baseline: cloneItem(draft), isNew: true, showErrors: false });
       setSelectedId(null);
@@ -420,13 +422,30 @@ export function MainScreen() {
   // ---------------------------------------------------------------- tags
   // Both commands send no event; the list is refetched afterwards.
 
+  /**
+   * A vault-wide tag change reaches the item open in the editor too – draft
+   * and baseline alike, so the dirty state stays right and saving the draft
+   * cannot bring the old tag back (`save_item` would store it again).
+   */
+  const retagEditing = (from: string, to: string | null) =>
+    setEditing((current) =>
+      current
+        ? {
+            ...current,
+            draft: { ...current.draft, tags: retagTags(current.draft.tags, from, to) },
+            baseline: { ...current.baseline, tags: retagTags(current.baseline.tags, from, to) },
+          }
+        : current,
+    );
+
   const renameTag = async (from: string, to: string) => {
     try {
       const changed = await api.renameTag(from, to);
-      // Follow the tag. Should no item end up with this spelling (merged into
-      // another one), the refetch below falls back to all items.
+      retagEditing(from, to);
+      // Follow the tag. Should no item end up with it (merged into another
+      // one), the refetch below falls back to all items.
       const current = viewRef.current;
-      if (current.kind === "vault" && current.filter.kind === "tag" && current.filter.tag === from) {
+      if (current.kind === "vault" && current.filter.kind === "tag" && sameTag(current.filter.tag, from)) {
         setView({ kind: "vault", filter: { kind: "tag", tag: to } });
       }
       await reload();
@@ -438,7 +457,7 @@ export function MainScreen() {
 
   const deleteTag = async (tag: string) => {
     // Like the backend: every spelling, the trash included.
-    const affected = allItems.filter((i) => i.tags.some((x) => x.toLowerCase() === tag.toLowerCase())).length;
+    const affected = allItems.filter((i) => hasTag(i.tags, tag)).length;
     const ok = await confirm({
       title: t("tags.deleteTitle", { name: tag }),
       message: tp("tags.deleteText", affected),
@@ -448,6 +467,7 @@ export function MainScreen() {
     if (!ok) return;
     try {
       const changed = await api.deleteTag(tag);
+      retagEditing(tag, null);
       await reload();
       toast.success(tp("tags.deleted", changed, { name: tag }));
     } catch (err) {
@@ -544,7 +564,12 @@ export function MainScreen() {
           onRestore={() => void restore(selected)}
           onDeleteForever={() => void deleteForever(selected)}
           onToggleFavorite={() => void toggleFavorite(selected)}
-          onOpenTag={(tag) => navigate({ kind: "vault", filter: { kind: "tag", tag } })}
+          onOpenTag={(tag) => {
+            // Only a tag some item outside the trash carries has a filter
+            // (and a sidebar row); its shown spelling names the filter.
+            const known = counts.tags.get(tagKey(tag));
+            if (known) navigate({ kind: "vault", filter: { kind: "tag", tag: known.tag } });
+          }}
         />
       );
     }
