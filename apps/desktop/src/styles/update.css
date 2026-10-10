@@ -155,6 +155,16 @@
   border-color: var(--danger-border);
 }
 
+.update-banner.warning {
+  background: var(--warning-soft);
+  border-bottom-color: var(--warning-border);
+}
+
+.update-banner.warning .update-icon {
+  color: var(--warning-icon);
+  border-color: var(--warning-border);
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }

@@ -9,6 +9,9 @@
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
 // default only the manual check finds the fake update.
 // `window.__keysteadMock` exposes helpers to simulate backend events.
+// Like the backend, `list_items` answers items without their secrets
+// (demo/redact.ts); `reveal_secret`, `copy_secret_field`, `totp_for_item` and
+// `get_item_for_edit` hand them out one at a time.
 
 import type {
   AppInfo,
@@ -25,8 +28,10 @@ import type {
   LegacyVaultInfo,
   PairedClient,
   PairingRequest,
+  SecretField,
   SessionState,
   Settings,
+  TotpCode,
   UpdateInfo,
   VaultData,
   VaultInfo,
@@ -37,8 +42,17 @@ import { totpNow } from "./demo/totp";
 import { estimateStrength } from "./demo/strength";
 import { generate } from "./demo/generator";
 import { legacyImportItems, privateVault, workVault, type SampleVault } from "./demo/sampleData";
-import { describe, mockImportFile, mockPreview, planMockImport, type MockImportFile, type MockPlan } from "./demo/importFiles";
+import {
+  MOCK_LIST_LIMIT,
+  describe,
+  mockImportFile,
+  mockPreview,
+  planMockImport,
+  type MockImportFile,
+  type MockPlan,
+} from "./demo/importFiles";
 import { mockClearIcons, mockFetchIcons, mockGetIcons, seedSampleIcons } from "./demo/mockIcons";
+import { parseSecretField, redactItem, storedSecret } from "./demo/redact";
 
 const DEMO_PASSWORD = "demo";
 const DEMO_RECOVERY_KEY = "VXDMO-2K7QF-9MZ4T-H8WRC-31PNA";
@@ -477,6 +491,40 @@ function findItem(id: string): VaultItem {
   return item;
 }
 
+/** The item `itemId` of the page's vault (`pageVaultId`; another open vault is `locked`). */
+function pageItem(args: Record<string, unknown>): VaultItem {
+  const vault = openVault();
+  if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+  const item = vault.data.items.find((i) => i.id === str(args, "itemId"));
+  if (!item) fail("not_found");
+  return item;
+}
+
+function fieldArg(args: Record<string, unknown>): SecretField {
+  const field = parseSecretField(args.field);
+  if (!field) fail("invalid_input:field");
+  return field;
+}
+
+/** `totp_for_item`: the current code only. */
+async function secretTotp(item: VaultItem): Promise<TotpCode> {
+  const seed = item.login?.totp.trim() ?? "";
+  if (!seed) fail("not_found");
+  try {
+    return await totpNow(seed);
+  } catch {
+    fail("invalid_input:totp_secret");
+  }
+}
+
+/** One secret of an item (`reveal_secret`, `copy_secret_field`). */
+async function secretValue(item: VaultItem, field: SecretField): Promise<string> {
+  if (field === "totpCode") return (await secretTotp(item)).code;
+  const value = storedSecret(item, field);
+  if (value === null) fail("not_found");
+  return value;
+}
+
 function healthReport(data: VaultData): HealthReport {
   const logins = data.items.filter((i) => i.type === "login" && i.deletedAt === null && i.login);
   const withPassword = logins.filter((i) => (i.login?.password ?? "") !== "");
@@ -627,13 +675,16 @@ async function commitImport(args: Record<string, unknown>): Promise<ImportReport
   await sleep(400);
   // Classified again: the vault may have changed since the preview.
   const now = planMockImport(vault.data.items, [...pending.plan.newItems, ...pending.plan.conflicts.map((c) => c.item)]);
+  const duplicates = [...pending.plan.duplicates, ...now.duplicates];
   const report: ImportReport = {
     imported: 0,
     updated: 0,
     skipped: pending.file.invalid,
-    duplicates: [...pending.plan.duplicates, ...now.duplicates],
+    duplicates: duplicates.slice(0, MOCK_LIST_LIMIT),
+    duplicateCount: duplicates.length,
     conflictsSkipped: [],
-    warnings: pending.file.warnings,
+    warnings: pending.file.warnings.slice(0, MOCK_LIST_LIMIT),
+    warningCount: pending.file.warnings.length,
   };
   report.imported += importItems(vault, now.newItems);
   for (const { conflict, item } of now.conflicts) {
@@ -736,13 +787,39 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return null;
 
     case "list_items":
-      return clone(openVault().data.items);
+      // Without secrets, like the backend (see demo/redact.ts).
+      return openVault().data.items.map(redactItem);
 
     case "list_folders":
       return clone(openVault().data.folders).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
     case "save_item":
-      return saveItem(args.item as VaultItem);
+      return redactItem(saveItem(args.item as VaultItem));
+
+    case "set_favorite": {
+      const favorite = bool(args, "favorite");
+      return redactItem(saveItem({ ...pageItem(args), favorite }));
+    }
+
+    case "reveal_secret": {
+      const field = fieldArg(args);
+      return secretValue(pageItem(args), field);
+    }
+
+    case "copy_secret_field": {
+      const field = fieldArg(args);
+      let value = await secretValue(pageItem(args), field);
+      if (field === "cardNumber") value = value.replace(/\s+/g, "");
+      if (!value) fail("not_found");
+      await copyText(value, true);
+      return null;
+    }
+
+    case "totp_for_item":
+      return secretTotp(pageItem(args));
+
+    case "get_item_for_edit":
+      return clone(pageItem(args));
 
     case "trash_item": {
       findItem(str(args, "id")).deletedAt = Date.now();
@@ -850,8 +927,11 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       if (current !== vault.password) fail("wrong_password");
       if (!next) fail("invalid_input:password_empty");
       vault.password = next;
+      // Like the backend: the vault key is rotated, so an existing recovery
+      // key is replaced by a new one.
+      if (vault.recoveryKey) vault.recoveryKey = makeRecoveryKey();
       touch(vault);
-      return null;
+      return { newRecoveryKey: vault.recoveryKey };
     }
 
     case "create_recovery_key": {
@@ -934,7 +1014,14 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
           fail(`unsupported:${String(format)}`);
       }
       emit("vault://changed", {});
-      return { updated: 0, duplicates: [], conflictsSkipped: [], ...report } satisfies ImportReport;
+      return {
+        updated: 0,
+        duplicates: [],
+        duplicateCount: 0,
+        conflictsSkipped: [],
+        warningCount: report.warnings.length,
+        ...report,
+      } satisfies ImportReport;
     }
 
     case "analyze_import":
@@ -1068,6 +1155,7 @@ const ICON_FETCH_TRIGGERS = new Set([
   "unlock_with_recovery",
   "create_vault",
   "save_item",
+  "set_favorite",
   "restore_item",
   "save_settings",
   "commit_import",

@@ -162,6 +162,11 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   (64 MiB, 3 Durchläufe) zu einem Schlüssel, der nur diesen Tresorschlüssel umhüllt.
 - Tresor-ID und Revision sind an den Geheimtext gebunden; Manipulationen fallen auf.
 - Der Wiederherstellungsschlüssel (125 Bit) umhüllt den Tresorschlüssel ein zweites Mal.
+- Beim Ändern des Master-Passworts oder des Wiederherstellungsschlüssels bekommt der
+  Tresor einen neuen Schlüssel: Mit dem alten Geheimnis und einer alten Kopie der
+  Datei lässt sich kein neuerer Stand öffnen. Ein vorhandener
+  Wiederherstellungsschlüssel wird deshalb beim Ändern des Master-Passworts durch
+  einen neuen ersetzt, den die App einmal anzeigt.
 - Keine Netzwerkverbindungen für deine Daten: Die Erweiterung spricht per Native
   Messaging mit der App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem
   Unix-Socket, die ausschließlich dem eigenen Benutzer zugänglich sind. Ins Internet
@@ -173,12 +178,21 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   Website ein Proxy eingestellt (System oder `HTTPS_PROXY`), lädt sie deren Icon
   gar nicht. Adressen im lokalen Netz (Router, NAS, `localhost`) werden nie
   angefragt. Die Icons liegen verschlüsselt im Tresor, nicht als lose Dateien.
+  Beachte: Zum Laden der Icons kontaktiert die App den Host jeder gespeicherten
+  Website – auch von Seiten, die du in diesem Netz nie besuchst. DNS-Server, der
+  Betreiber des Netzwerks (z. B. ein öffentliches WLAN) und große CDNs können
+  daran die Liste der Websites in deinem Tresor erkennen. Wer das nicht möchte,
+  schaltet „Website-Icons automatisch laden“ in den Einstellungen aus.
 - Updates sind signiert (minisign/Ed25519); die App installiert nur Dateien mit
   gültiger Signatur für genau die angekündigte Version.
 - Ein Browser wird erst nach Bestätigung eines 6-stelligen Codes in der App
   verbunden; gespeichert wird nur ein Hash seines Tokens.
 - Die Erweiterung füllt nur nach einer Aktion des Nutzers aus und nur Logins, die
   zur tatsächlichen Adresse des Frames passen; `https`-Logins nie in `http`-Seiten.
+- Die Oberfläche der App bekommt die Elementliste ohne Passwörter, 2FA-Schlüssel,
+  Kartennummern und verborgene Felder. Ein Geheimnis lädt sie nur, wenn du es
+  anzeigst (nach 30 s wieder verborgen) oder das Element bearbeitest; beim Kopieren
+  kopiert die App selbst, ohne dass der Wert die Oberfläche erreicht.
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -324,12 +338,15 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 
 - Every vault has a random 256-bit vault key that encrypts the data with
   **XChaCha20-Poly1305**. The master password is stretched with **Argon2id**
-  (64 MiB, t = 3, p = 4) into a key that only wraps the vault key, so changing the
-  master password re-wraps the key without re-encrypting the data.
+  (64 MiB, t = 3, p = 4) into a key that only wraps the vault key.
 - The vault id and revision are bound to the ciphertext as associated data; any
   modification of the file is detected.
 - The optional recovery key (125 bits, Crockford base32) wraps the vault key a
   second time.
+- Changing the master password or the recovery key gives the vault a new key: the
+  old secret together with an old copy of the file opens no newer revision. An
+  existing recovery key is therefore replaced by a new one (shown once) when the
+  master password changes.
 - No network access for your data: the extension talks to the app via Native
   Messaging; the app only listens on a local named pipe (Windows, restricted to the
   current user) or a Unix socket (mode 0600, peer uid checked). The only internet
@@ -340,7 +357,11 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   around a proxy: if one is configured for a site (system settings or
   `HTTPS_PROXY`), its icon is not loaded at all. Addresses in the local network
   (router, NAS, `localhost`) are never contacted. The icons are stored encrypted
-  inside the vault, not as loose files.
+  inside the vault, not as loose files. Note: to load the icons the app contacts
+  the host of every saved website – also sites you never visit from this network.
+  DNS resolvers, the network operator (e.g. a public Wi-Fi) and large CDNs can
+  therefore see the list of websites in your vault. If you don't want that, turn
+  off "Load website icons automatically" in the settings.
 - Updates are signed (minisign/Ed25519): the app installs only files with a valid
   signature for exactly the announced version.
 - A browser is paired only after you confirm a 6-digit code in the app; the app
@@ -349,6 +370,10 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   of the frame, and never fills `https` logins into `http` pages.
 - Secrets are zeroized in memory where practical, never logged, and copied secrets
   are excluded from the Windows clipboard history and cleared after a timeout.
+- The app's web UI gets the item list without passwords, TOTP keys, card numbers
+  and hidden fields. It loads a secret only when you reveal it (hidden again after
+  30 s) or edit the item; copying is done by the app itself, the value never
+  reaches the UI.
 
 The full specification (file format, IPC protocol, commands) is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -390,7 +415,8 @@ node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
 
 Releases: CI (`.github/workflows/build.yml`) versions every build
 (`2.0.0-beta.<run>`, or the tag `v<version>`), signs the setup for the in-app updater
-with the repository secret `TAURI_SIGNING_PRIVATE_KEY` and publishes pre-releases
+with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (only builds that publish
+get the secret) and publishes pre-releases
 for commits with `[release]` (stable releases for tags without suffix); see
 "Releases & in-app updates" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 **After tagging a stable `vX.Y.Z`, set `version` in

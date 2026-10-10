@@ -15,6 +15,7 @@ import { NativeBridge, BridgeError, PAIR_TIMEOUT_MS } from "./lib/bridge.js";
 import * as store from "./lib/store.js";
 import { parseWebUrl, siteKey, displayHost } from "./lib/sites.js";
 import { extensionUpdateAction, parseVersion } from "./lib/version.js";
+import { openVaultId, pendingVaultState } from "./lib/pending.js";
 
 const bridge = new NativeBridge();
 const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
@@ -85,7 +86,12 @@ async function updateStatus(patch) {
   // locked or another vault replaced it (the active tab is counted again by
   // the popup / refreshActiveTab).
   const switched = wasUnlocked && status.state === "unlocked" && previous.vaultId && status.vaultId && previous.vaultId !== status.vaultId;
-  if ((wasUnlocked && status.state !== "unlocked") || switched) await clearAllBadges();
+  if ((wasUnlocked && status.state !== "unlocked") || switched) {
+    await clearAllBadges();
+    // Save prompts were computed for the vault that was open (and hold the
+    // captured password): drop them on lock and on a vault switch.
+    await store.clearAllPending();
+  }
   return status;
 }
 
@@ -590,6 +596,11 @@ async function handleCapture(msg, sender) {
   if (await store.isNeverSite(host)) return { prompt: false };
   if (!username) username = await store.getUsernameStep(tabId, site);
 
+  // The prompt belongs to the vault it is computed against (see
+  // lib/pending.js). The cache is only the baseline: no status request
+  // before the app proved reachable (it would launch the app on every form).
+  const vaultBefore = openVaultId(await store.getStatus());
+
   let matches;
   try {
     matches = await call("logins_for_url", { url: sender.url }, { auto: true });
@@ -616,6 +627,13 @@ async function handleCapture(msg, sender) {
     if (same === true) return { prompt: false }; // already stored
     item = item ?? candidate;
   }
+  // Asked fresh now: locked meanwhile, or another vault than before
+  // (switched while comparing, or the cache was behind) – the decision is
+  // not reliable, no prompt.
+  const now = await refreshStatus();
+  if (now?.state !== "unlocked") return { prompt: false };
+  const vaultId = openVaultId(now);
+  if (vaultBefore && vaultId !== vaultBefore) return { prompt: false };
 
   const pending = {
     id: crypto.randomUUID(),
@@ -627,6 +645,8 @@ async function handleCapture(msg, sender) {
     password,
     itemId: item ? item.id : null,
     itemName: item ? String(item.name ?? "") : "",
+    // null: an app that does not report vault ids (the prompt is not bound).
+    vaultId,
     createdAt: Date.now(),
   };
   await store.setPending(tabId, pending);
@@ -641,6 +661,11 @@ async function handlePendingQuery(sender) {
   if (sender.frameId !== 0 || tabId === undefined || !url) return null;
   const pending = await store.getPending(tabId);
   if (!pending) return null;
+  // Computed for another vault than the open one: never shown again.
+  if (pendingVaultState(pending, await store.getStatus()) === "stale") {
+    await store.removePending(tabId, pending.id);
+    return null;
+  }
   // An update (it overwrites a stored password) is only offered on the origin
   // it was captured on: a sibling subdomain must not get its prompt shown on
   // the real site. A new login may follow the user across the site (log in on
@@ -663,6 +688,12 @@ async function handleSaveDecision(msg, sender) {
       await store.removePending(tabId, pending.id);
       return { kind: pending.kind };
     case "save":
+      // Only into the vault the prompt was computed for (asked fresh: the
+      // user may have switched in the popup or in the app).
+      if (pending.vaultId && pendingVaultState(pending, await refreshStatus()) === "stale") {
+        await store.removePending(tabId, pending.id);
+        throw new BridgeError("not_found");
+      }
       if (pending.kind === "update" && pending.itemId) {
         await call("update_password", { itemId: pending.itemId, password: pending.password });
       } else {

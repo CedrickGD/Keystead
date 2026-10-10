@@ -2,6 +2,7 @@ import { Copy, Check } from "lucide-react";
 import { useState } from "react";
 import { useT } from "../i18n";
 import { useCopy } from "../state/app";
+import { useRecoveryKeyOnScreen } from "../lib/recoveryMarker";
 import { Checkbox } from "./Controls";
 
 /** Shows a freshly created recovery key once, with copy + "I wrote it down". */
@@ -17,6 +18,9 @@ export function RecoveryKeyReveal({
   const { t } = useT();
   const copy = useCopy();
   const [copied, setCopied] = useState(false);
+  // The key is on screen: the "not confirmed" reminder waits (it is meant for
+  // a key whose dialog was lost to a lock / reload).
+  useRecoveryKeyOnScreen();
   return (
     <div className="recovery-reveal">
       <div className="recovery-key">

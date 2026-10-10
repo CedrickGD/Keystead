@@ -1,25 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import type { SecretField } from "../lib/types";
 import { useT } from "../i18n";
-import { useCopy } from "../state/app";
+import { useCopy, useCopySecret } from "../state/app";
+
+/** What to copy: a value the page has, or a secret of an item the backend copies itself. */
+export type CopySource = { value: string; sensitive: boolean } | { secret: { itemId: string; field: SecretField } };
 
 /** Icon button that copies a value and briefly turns into a check mark. */
 export function CopyButton({
-  value,
   label,
-  sensitive,
   disabled,
   className,
-}: {
-  value: string;
+  ...source
+}: CopySource & {
   /** Translated name of the value ("Passwort"), used for the tooltip and toast. */
   label: string;
-  sensitive: boolean;
   disabled?: boolean;
   className?: string;
 }) {
   const { t } = useT();
   const copy = useCopy();
+  const copySecret = useCopySecret();
   const [done, setDone] = useState(false);
   const timer = useRef(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -30,7 +32,11 @@ export function CopyButton({
       className={`icon-btn ${done ? "success" : ""} ${className ?? ""}`}
       disabled={disabled}
       onClick={() => {
-        void copy(value, { label, sensitive }).then((ok) => {
+        const copied =
+          "secret" in source
+            ? copySecret(source.secret.itemId, source.secret.field, label)
+            : copy(source.value, { label, sensitive: source.sensitive });
+        void copied.then((ok) => {
           if (!ok) return;
           setDone(true);
           window.clearTimeout(timer.current);

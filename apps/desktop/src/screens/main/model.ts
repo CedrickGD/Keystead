@@ -1,4 +1,4 @@
-import type { ItemType, VaultItem } from "../../lib/types";
+import type { ItemListEntry, ItemType } from "../../lib/types";
 import { matchesSearch } from "../../lib/utils";
 
 export type Filter =
@@ -23,7 +23,7 @@ export function sameFilter(a: Filter, b: Filter): boolean {
   return true;
 }
 
-export function filterItems(items: VaultItem[], filter: Filter): VaultItem[] {
+export function filterItems(items: ItemListEntry[], filter: Filter): ItemListEntry[] {
   switch (filter.kind) {
     case "all":
       return items.filter((i) => i.deletedAt === null);
@@ -38,7 +38,7 @@ export function filterItems(items: VaultItem[], filter: Filter): VaultItem[] {
   }
 }
 
-export function visibleItems(items: VaultItem[], filter: Filter, terms: string[], sort: SortKey): VaultItem[] {
+export function visibleItems(items: ItemListEntry[], filter: Filter, terms: string[], sort: SortKey): ItemListEntry[] {
   const list = filterItems(items, filter).filter((item) => matchesSearch(item, terms));
   const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
   if (filter.kind === "trash") return list.sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0));
@@ -57,7 +57,7 @@ export interface Counts {
   folders: Record<string, number>;
 }
 
-export function countItems(items: VaultItem[]): Counts {
+export function countItems(items: ItemListEntry[]): Counts {
   const counts: Counts = { all: 0, favorites: 0, login: 0, card: 0, identity: 0, note: 0, trash: 0, folders: {} };
   for (const item of items) {
     if (item.deletedAt !== null) {

@@ -2,8 +2,6 @@ import { useRef, useState } from "react";
 import {
   Check,
   ChevronRight,
-  Eye,
-  EyeOff,
   Folder as FolderIcon,
   History,
   MoreHorizontal,
@@ -13,7 +11,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { Folder, VaultItem } from "../../lib/types";
+import type { Folder, ItemListEntry } from "../../lib/types";
 import { normalizeUrl } from "../../lib/api";
 import { formatCardNumber, identityFullName } from "../../lib/utils";
 import { useT } from "../../i18n";
@@ -21,14 +19,17 @@ import { CopyButton } from "../../components/CopyButton";
 import { Avatar } from "../../components/Avatar";
 import { iconHost } from "../../lib/icons";
 import { Menu, MenuItem } from "../../components/Menu";
-import { TotpValue, useTotp } from "../../components/Totp";
-import { PasswordText } from "../../components/PasswordText";
-import { FieldRow, Section } from "./FieldRow";
+import { TotpValue, useItemTotp } from "../../components/Totp";
+import { FieldRow, SecretFieldRow, Section } from "./FieldRow";
 import { TYPE_ICONS } from "./ItemList";
 
-function TotpRow({ seed }: { seed: string }) {
+// The item list holds no secrets (`ItemListEntry`): every secret row fetches
+// its value on demand (`reveal_secret`) and copies in the backend
+// (`copy_secret_field`); see `SecretFieldRow`.
+
+function TotpRow({ item }: { item: ItemListEntry }) {
   const { t } = useT();
-  const totp = useTotp(seed);
+  const totp = useItemTotp(item.id, item.updatedAt);
   return (
     <div className="fieldrow">
       <div className="fieldrow-main">
@@ -38,16 +39,15 @@ function TotpRow({ seed }: { seed: string }) {
         </div>
       </div>
       <div className="fieldrow-actions">
-        <CopyButton value={totp.code?.code ?? ""} label={t("field.totpShort")} sensitive disabled={!totp.code} />
+        <CopyButton secret={{ itemId: item.id, field: "totpCode" }} label={t("field.totpShort")} disabled={!totp.code} />
       </div>
     </div>
   );
 }
 
-function PasswordHistory({ item }: { item: VaultItem }) {
+function PasswordHistory({ item }: { item: ItemListEntry }) {
   const { t, formatDateTime } = useT();
   const [open, setOpen] = useState(false);
-  const [revealed, setRevealed] = useState<Set<number>>(new Set());
   if (item.passwordHistory.length === 0) return null;
   return (
     <section className="detail-section">
@@ -59,46 +59,25 @@ function PasswordHistory({ item }: { item: VaultItem }) {
       </button>
       {open && (
         <div className="card field-card">
-          {item.passwordHistory.map((entry, idx) => {
-            const shown = revealed.has(idx);
-            return (
-              <div className="fieldrow" key={idx}>
-                <div className="fieldrow-main">
-                  <div className="fieldrow-label">{t("item.replacedAt", { date: formatDateTime(entry.replacedAt) })}</div>
-                  <div className="fieldrow-value selectable">
-                    {shown ? <PasswordText value={entry.password} /> : <span className="mask">••••••••••••</span>}
-                  </div>
-                </div>
-                <div className="fieldrow-actions">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-pressed={shown}
-                    title={shown ? t("common.hide") : t("common.show")}
-                    aria-label={shown ? t("common.hide") : t("common.show")}
-                    onClick={() =>
-                      setRevealed((set) => {
-                        const next = new Set(set);
-                        if (next.has(idx)) next.delete(idx);
-                        else next.add(idx);
-                        return next;
-                      })
-                    }
-                  >
-                    {shown ? <EyeOff /> : <Eye />}
-                  </button>
-                  <CopyButton value={entry.password} label={t("field.password")} sensitive />
-                </div>
-              </div>
-            );
-          })}
+          {item.passwordHistory.map((entry, idx) => (
+            // Only the date is known until an entry is revealed.
+            <SecretFieldRow
+              key={idx}
+              itemId={item.id}
+              field={{ history: idx }}
+              revision={item.updatedAt}
+              label={t("item.replacedAt", { date: formatDateTime(entry.replacedAt) })}
+              copyLabel={t("field.password")}
+              password
+            />
+          ))}
         </div>
       )}
     </section>
   );
 }
 
-function CustomFields({ item }: { item: VaultItem }) {
+function CustomFields({ item }: { item: ItemListEntry }) {
   const { t } = useT();
   if (item.fields.length === 0) return null;
   return (
@@ -116,15 +95,22 @@ function CustomFields({ item }: { item: VaultItem }) {
               </span>
             }
           />
+        ) : field.kind === "hidden" ? (
+          <SecretFieldRow
+            key={idx}
+            itemId={item.id}
+            field={{ custom: idx }}
+            revision={item.updatedAt}
+            label={field.name || t("item.unnamedField")}
+            copyLabel={field.name || t("item.value")}
+            mono
+          />
         ) : (
           <FieldRow
             key={idx}
             label={field.name || t("item.unnamedField")}
             value={field.value}
-            secret={field.kind === "hidden"}
-            mono={field.kind === "hidden"}
             copyLabel={field.name || t("item.value")}
-            sensitive={field.kind === "hidden"}
           />
         ),
       )}
@@ -132,7 +118,7 @@ function CustomFields({ item }: { item: VaultItem }) {
   );
 }
 
-function Notes({ item }: { item: VaultItem }) {
+function Notes({ item }: { item: ItemListEntry }) {
   const { t } = useT();
   if (!item.notes.trim()) return null;
   return (
@@ -143,21 +129,21 @@ function Notes({ item }: { item: VaultItem }) {
   );
 }
 
-function LoginBody({ item }: { item: VaultItem }) {
+function LoginBody({ item }: { item: ItemListEntry }) {
   const { t } = useT();
   const login = item.login;
   if (!login) return null;
   const uris = login.uris.filter((u) => u.uri.trim());
-  const hasCredentials = login.username || login.password || login.totp;
+  const hasCredentials = login.username || login.hasPassword || login.hasTotp;
   return (
     <>
       {hasCredentials && (
         <Section title={t("item.credentials")}>
           {login.username && <FieldRow label={t("field.username")} value={login.username} copyLabel={t("field.username")} />}
-          {login.password && (
-            <FieldRow label={t("field.password")} value={login.password} secret password copyLabel={t("field.password")} sensitive />
+          {login.hasPassword && (
+            <SecretFieldRow itemId={item.id} field="password" revision={item.updatedAt} label={t("field.password")} password />
           )}
-          {login.totp.trim() && <TotpRow seed={login.totp} />}
+          {login.hasTotp && <TotpRow item={item} />}
         </Section>
       )}
       {uris.length > 0 && (
@@ -180,7 +166,7 @@ function LoginBody({ item }: { item: VaultItem }) {
   );
 }
 
-function CardBody({ item }: { item: VaultItem }) {
+function CardBody({ item }: { item: ItemListEntry }) {
   const { t } = useT();
   const card = item.card;
   if (!card) return null;
@@ -188,25 +174,26 @@ function CardBody({ item }: { item: VaultItem }) {
   return (
     <Section title={t("item.cardDetails")}>
       {card.cardholderName && <FieldRow label={t("field.cardholder")} value={card.cardholderName} copyLabel={t("field.cardholder")} />}
-      {card.number && (
-        <FieldRow
+      {card.hasNumber && (
+        <SecretFieldRow
+          itemId={item.id}
+          field="cardNumber"
+          revision={item.updatedAt}
           label={t("field.cardNumber")}
-          value={card.number.replace(/\s+/g, "")}
-          display={formatCardNumber(card.number)}
+          format={formatCardNumber}
           mono
-          secret
-          copyLabel={t("field.cardNumber")}
-          sensitive
         />
       )}
       {card.brand && <FieldRow label={t("field.brand")} value={card.brand} />}
       {expiry && <FieldRow label={t("field.expiry")} value={expiry} copyLabel={t("field.expiry")} />}
-      {card.code && <FieldRow label={t("field.securityCode")} value={card.code} mono secret copyLabel={t("field.securityCode")} sensitive />}
+      {card.hasCode && (
+        <SecretFieldRow itemId={item.id} field="cardCode" revision={item.updatedAt} label={t("field.securityCode")} mono />
+      )}
     </Section>
   );
 }
 
-function IdentityBody({ item }: { item: VaultItem }) {
+function IdentityBody({ item }: { item: ItemListEntry }) {
   const { t } = useT();
   const id = item.identity;
   if (!id) return null;
@@ -240,7 +227,7 @@ function IdentityBody({ item }: { item: VaultItem }) {
 }
 
 export interface ItemViewProps {
-  item: VaultItem;
+  item: ItemListEntry;
   folders: Folder[];
   onEdit: () => void;
   onTrash: () => void;

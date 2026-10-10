@@ -398,7 +398,12 @@ fn change_master_password() {
         v.change_master_password(PW, ""),
         Err(Error::InvalidInput(_))
     ));
-    v.change_master_password(PW, "neues Passwort ✓").unwrap();
+    // Without a recovery key there is no new one.
+    assert_eq!(
+        v.change_master_password(PW, "neues Passwort ✓").unwrap(),
+        None
+    );
+    assert!(!v.has_recovery_key());
     assert!(v.verify_master_password("neues Passwort ✓"));
     assert!(!v.verify_master_password(PW));
     assert!(matches!(
@@ -624,35 +629,133 @@ fn changing_the_master_password_rotates_the_vault_key() {
 }
 
 #[test]
-fn master_password_change_with_recovery_key_keeps_the_recovery_key() {
+fn master_password_change_with_recovery_key_issues_a_new_recovery_key() {
     let (_dir, store) = store();
     let mut v = create(&store, "Privat");
     v.save_item(login("A", "a", "secret-a", "")).unwrap();
-    let code = v.create_recovery_key().unwrap();
+    let old_code = v.create_recovery_key().unwrap();
     v.save_item(login("B", "b", "secret-b", "")).unwrap();
+    let id = v.id().to_owned();
     let bak = bak_path(&v);
+    // The .bak holds the previous revision with the old wrappings.
+    assert!(VaultFile::read(&bak)
+        .unwrap()
+        .unwrap_key_with_recovery(&old_code)
+        .is_ok());
     let old_copy = fs::read(v.path()).unwrap();
 
-    // The recovery code is not known here, so the vault key is only
-    // re-wrapped: the recovery key keeps working ...
-    v.change_master_password(PW, "new master").unwrap();
+    let new_code = v
+        .change_master_password(PW, "new master")
+        .unwrap()
+        .expect("the recovery key is replaced");
+    assert_eq!(new_code.len(), 29);
+    assert_ne!(new_code, old_code);
+    assert!(v.has_recovery_key());
+    assert!(store.list_vaults().unwrap()[0].has_recovery_key);
+
+    // The vault key was rotated: neither old secret opens the current file,
+    // and the key they yield from an older copy decrypts no later revision.
     let current = VaultFile::read(v.path()).unwrap();
-    let k = current.unwrap_key_with_recovery(&code).unwrap();
-    assert_eq!(current.decrypt_payload(&k).unwrap().items.len(), 2);
-    // ... but no .bak opens with the old password.
+    assert!(matches!(current.unwrap_key(PW), Err(Error::WrongPassword)));
+    assert!(matches!(
+        current.unwrap_key_with_recovery(&old_code),
+        Err(Error::WrongPassword)
+    ));
+    assert!(matches!(store.unlock(&id, PW), Err(Error::WrongPassword)));
+    assert!(matches!(
+        store.unlock_with_recovery_key(&id, &old_code, "x"),
+        Err(Error::WrongPassword)
+    ));
+    let old_key = key_from_copy(&old_copy, |f| f.unwrap_key(PW));
+    let old_recovery_key = key_from_copy(&old_copy, |f| f.unwrap_key_with_recovery(&old_code));
+    assert_eq!(*old_key, *old_recovery_key);
+    assert!(!opens_current(&v, &old_key));
+
+    // The .bak does not keep the old wrappings (replaced by the new
+    // revision, or removed).
     if bak.exists() {
+        let b = VaultFile::read(&bak).unwrap();
+        assert_eq!(b.revision, current.revision);
+        assert!(matches!(b.unwrap_key(PW), Err(Error::WrongPassword)));
         assert!(matches!(
-            VaultFile::read(&bak).unwrap().unwrap_key(PW),
+            b.unwrap_key_with_recovery(&old_code),
             Err(Error::WrongPassword)
         ));
     }
-    // Replacing the recovery key then rotates the vault key, which also
-    // retires older copies that open with the old password.
-    let old_key = key_from_copy(&old_copy, |f| f.unwrap_key(PW));
-    assert!(opens_current(&v, &old_key));
-    v.create_recovery_key().unwrap();
+
+    // The new recovery key wraps the new vault key.
+    let k = current.unwrap_key_with_recovery(&new_code).unwrap();
+    assert_eq!(*k, *current.unwrap_key("new master").unwrap());
+    assert_eq!(current.decrypt_payload(&k).unwrap().items.len(), 2);
+
+    // Later revisions: still closed to the old key, open with the new secrets.
+    v.save_item(login("C", "c", "secret-c", "")).unwrap();
     assert!(!opens_current(&v, &old_key));
-    assert_eq!(store.unlock(v.id(), "new master").unwrap().items().len(), 2);
+    assert_eq!(store.unlock(&id, "new master").unwrap().data(), v.data());
+    let r = store
+        .unlock_with_recovery_key(&id, &new_code, "after recovery")
+        .unwrap();
+    assert_eq!(r.data(), v.data());
+    // A recovery-key unlock keeps that key valid (it knows the code) ...
+    drop(r);
+    let mut r = store
+        .unlock_with_recovery_key(&id, &new_code, "after recovery 2")
+        .unwrap();
+    // ... and a later master password change replaces it again.
+    let third_code = r
+        .change_master_password("after recovery 2", "final")
+        .unwrap()
+        .expect("the recovery key is replaced");
+    assert!(matches!(
+        store.unlock_with_recovery_key(&id, &new_code, "x"),
+        Err(Error::WrongPassword)
+    ));
+    assert_eq!(
+        store
+            .unlock_with_recovery_key(&id, &third_code, "fourth")
+            .unwrap()
+            .items()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn failed_master_password_change_keeps_the_recovery_key() {
+    let (_dir, store) = store();
+    let id = create(&store, "Shared").id().to_owned();
+    let mut app = store.unlock(&id, PW).unwrap();
+    let code = app.create_recovery_key().unwrap();
+    let mut tui = store.unlock(&id, PW).unwrap();
+    // Another process saved in between: nothing is written, the code
+    // generated for the failed attempt is never returned.
+    tui.save_item(login("From tui", "b", "2", "")).unwrap();
+    assert!(matches!(
+        app.change_master_password(PW, "new master"),
+        Err(Error::Conflict)
+    ));
+    assert!(app.verify_master_password(PW));
+    let current = VaultFile::read(app.path()).unwrap();
+    assert!(current.unwrap_key_with_recovery(&code).is_ok());
+    assert!(current.unwrap_key(PW).is_ok());
+    // After a reload the retry succeeds and replaces the key.
+    assert!(app.reload_if_changed().unwrap());
+    let new_code = app
+        .change_master_password(PW, "new master")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        store.unlock_with_recovery_key(&id, &code, "x"),
+        Err(Error::WrongPassword)
+    ));
+    assert_eq!(
+        store
+            .unlock_with_recovery_key(&id, &new_code, "y")
+            .unwrap()
+            .items()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -727,6 +830,27 @@ fn other_sessions_follow_rotation_or_must_unlock_again() {
     assert!(matches!(tui.reload_if_changed(), Err(Error::KeyChanged)));
     let again = store.unlock(&id, "new master").unwrap();
     assert_eq!(again.data(), app.data());
+
+    // The same with a recovery key, which the change replaces.
+    let mut tui = again;
+    app.create_recovery_key().unwrap();
+    assert!(tui.reload_if_changed().unwrap());
+    let code = app
+        .change_master_password("new master", "newest")
+        .unwrap()
+        .expect("the recovery key is replaced");
+    assert!(matches!(tui.reload_if_changed(), Err(Error::KeyChanged)));
+    assert!(matches!(tui.create_recovery_key(), Err(Error::Conflict)));
+    let again = store.unlock(&id, "newest").unwrap();
+    assert!(again.has_recovery_key());
+    assert_eq!(again.data(), app.data());
+    assert_eq!(
+        store
+            .unlock_with_recovery_key(&id, &code, "after recovery")
+            .unwrap()
+            .data(),
+        app.data()
+    );
 }
 
 #[test]

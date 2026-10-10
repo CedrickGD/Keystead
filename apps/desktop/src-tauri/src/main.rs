@@ -18,6 +18,7 @@ mod import_flow;
 mod monitor;
 mod platform;
 mod portable;
+mod secrets;
 mod state;
 mod tray;
 mod update;

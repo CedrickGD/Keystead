@@ -25,6 +25,7 @@ use crate::error::{AppError, AppResult};
 use crate::extension;
 use crate::platform;
 use crate::portable;
+use crate::secrets::{self, ItemListEntry};
 use crate::state::{log, Core, LockReason};
 use crate::update::{self, UpdateInfo};
 use crate::wipe::Wiped;
@@ -189,8 +190,10 @@ pub async fn create_vault(
     master_password: String,
 ) -> CmdResult<VaultInfo> {
     run(&core, true, move |c| {
-        let vault = c.store().create_vault(&name, &master_password)?;
-        c.install_vault(vault)
+        // A lock during the key derivation wins (see `Core::unlock`).
+        let (epoch, store) = c.unlock_ticket();
+        let vault = store.create_vault(&name, &master_password)?;
+        c.install_vault_since(vault, epoch)
     })
     .await
 }
@@ -212,10 +215,11 @@ pub async fn unlock_with_recovery(
     new_master_password: String,
 ) -> CmdResult<VaultInfo> {
     run(&core, true, move |c| {
+        // A lock during the key derivation wins (see `Core::unlock`).
+        let (epoch, store) = c.unlock_ticket();
         let vault =
-            c.store()
-                .unlock_with_recovery_key(&vault_id, &recovery_key, &new_master_password)?;
-        c.install_vault(vault)
+            store.unlock_with_recovery_key(&vault_id, &recovery_key, &new_master_password)?;
+        c.install_vault_since(vault, epoch)
     })
     .await
 }
@@ -239,9 +243,14 @@ pub async fn touch_activity(core: Shared<'_>) -> CmdResult<()> {
 // Items & folders
 // ---------------------------------------------------------------------------
 
+/// All items incl. trash, redacted: the webview never gets the secrets of
+/// the whole vault (see `secrets`).
 #[tauri::command]
-pub async fn list_items(core: Shared<'_>) -> CmdResult<Wiped<Vec<VaultItem>>> {
-    run(&core, false, |c| c.read(|v| Wiped(v.items().to_vec()))).await
+pub async fn list_items(core: Shared<'_>) -> CmdResult<Wiped<Vec<ItemListEntry>>> {
+    run(&core, false, |c| {
+        c.read(|v| Wiped(secrets::list_entries(v)))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -266,11 +275,11 @@ pub async fn save_item(
     core: Shared<'_>,
     item: Value,
     page_vault_id: Option<String>,
-) -> CmdResult<Wiped<VaultItem>> {
+) -> CmdResult<Wiped<ItemListEntry>> {
     run(&core, true, move |c| {
         let item = Wiped(parse::<VaultItem>(item, "item")?);
         c.mutate_for_page(page_vault_id.as_deref(), |v| v.save_item(item.0.clone()))
-            .map(Wiped)
+            .map(|saved| Wiped(secrets::saved_entry(saved)))
     })
     .await
 }
@@ -420,19 +429,48 @@ pub async fn health_report(core: Shared<'_>) -> CmdResult<HealthReport> {
 // Vault management
 // ---------------------------------------------------------------------------
 
+/// Result of `change_master_password`: the recovery key that replaced the
+/// vault's old one (`null` without recovery key), shown once by the UI.
+/// Wiped once Tauri has serialized it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MasterPasswordChanged {
+    new_recovery_key: Option<String>,
+}
+
+impl Drop for MasterPasswordChanged {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.new_recovery_key);
+    }
+}
+
 #[tauri::command]
 pub async fn change_master_password(
     core: Shared<'_>,
     current: String,
     new_password: String,
     page_vault_id: Option<String>,
-) -> CmdResult<()> {
+) -> CmdResult<MasterPasswordChanged> {
     run(&core, true, move |c| {
-        c.mutate_for_page(page_vault_id.as_deref(), |v| {
-            v.change_master_password(&current, &new_password)
-        })
+        let current = zeroize::Zeroizing::new(current);
+        let new_password = zeroize::Zeroizing::new(new_password);
+        change_master_password_on(c, page_vault_id.as_deref(), &current, &new_password)
     })
     .await
+}
+
+/// The work of [`change_master_password`] (rotates the vault key and
+/// replaces an existing recovery key, see "Key rotation").
+fn change_master_password_on(
+    c: &Core,
+    page_vault_id: Option<&str>,
+    current: &str,
+    new_password: &str,
+) -> AppResult<MasterPasswordChanged> {
+    c.mutate_for_page(page_vault_id, |v| {
+        v.change_master_password(current, new_password)
+    })
+    .map(|new_recovery_key| MasterPasswordChanged { new_recovery_key })
 }
 
 #[tauri::command]
@@ -482,6 +520,7 @@ pub async fn delete_vault(
         let closed = {
             let mut st = c.state();
             let closed = if st.vault.as_ref().is_some_and(|v| v.id() == vault_id) {
+                c.begin_lock();
                 st.vault.take()
             } else {
                 None
@@ -750,8 +789,11 @@ fn switch_portable_mode(
     // Nothing may use the data directory while it moves.
     bridge::stop(c);
     let (result, closed) = {
-        // Held across the move: nothing can unlock the vault meanwhile.
+        // Held across the move: nothing can unlock the vault meanwhile, and
+        // an unlock already deriving its key (from the old location) will
+        // not open its vault afterwards.
         let mut st = c.state();
+        c.begin_lock();
         let closed = st.vault.take();
         let result = move_data(enabled).map(|dir| {
             st.store = VaultStore::new(dir);
@@ -784,6 +826,45 @@ mod tests {
             .filter(|(name, _)| name == EVENT_LOCKED)
             .map(|(_, payload)| payload)
             .collect()
+    }
+
+    #[test]
+    fn master_password_change_returns_the_new_recovery_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let id = c.read(|v| v.id().to_owned()).unwrap();
+        let json = |r: MasterPasswordChanged| serde_json::to_value(&r).unwrap();
+
+        // Without a recovery key none is created.
+        let r = change_master_password_on(&c, Some(&id), "master", "second").unwrap();
+        assert_eq!(json(r), serde_json::json!({ "newRecoveryKey": null }));
+
+        // With one it is replaced: the old code stops working.
+        let old = c.mutate(|v| v.create_recovery_key()).unwrap();
+        let r = change_master_password_on(&c, Some(&id), "second", "third").unwrap();
+        let new = json(r)["newRecoveryKey"].as_str().unwrap().to_owned();
+        assert_eq!(new.len(), 29);
+        assert_ne!(new, old);
+        assert!(c.read(|v| v.has_recovery_key()).unwrap());
+
+        // Another page's vault or a wrong password: nothing changes.
+        for (page, current, code) in [
+            ("other-vault", "third", "locked"),
+            (id.as_str(), "nope", "wrong_password"),
+        ] {
+            let err = change_master_password_on(&c, Some(page), current, "x")
+                .err()
+                .expect("refused");
+            assert_eq!(err.code(), code);
+        }
+        assert!(c.read(|v| v.verify_master_password("third")).unwrap());
+
+        let store = VaultStore::new(c.data_dir());
+        assert!(matches!(
+            store.unlock_with_recovery_key(&id, &old, "x"),
+            Err(CoreError::WrongPassword)
+        ));
+        assert!(store.unlock_with_recovery_key(&id, &new, "x").is_ok());
     }
 
     #[test]

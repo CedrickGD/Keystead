@@ -29,6 +29,7 @@ use tauri::{AppHandle, Manager as _, Url};
 use tauri_plugin_updater::{Error as UpdaterError, RemoteRelease, Update, Updater, UpdaterExt};
 
 use crate::error::{AppError, AppResult};
+use crate::platform;
 use crate::state::{log, Core, LockReason};
 
 /// `update://available` – payload `UpdateInfo`, once per newly found version.
@@ -492,6 +493,10 @@ async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
     if !can_install(app) {
         return Err(AppError::unsupported("update_portable"));
     }
+    // The setup ends every running Keystead.exe without asking – also a
+    // terminal UI (`--cli`), losing its unsaved input and leaving a secret
+    // it copied on the clipboard. Checked again right before installing.
+    refuse_while_terminal_ui_runs()?;
     let channel = core.state().settings.update_channel;
     let (info, update) = check(app, channel).await?;
     core.remember_update(&info);
@@ -527,6 +532,7 @@ async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
         },
     );
 
+    refuse_while_terminal_ui_runs()?;
     // Nothing decrypted may outlive the process, and the setup replaces the
     // executable: stop the bridge, close the vault (and keep it closed) and
     // clear a copied secret first.
@@ -549,6 +555,15 @@ async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
             Err(AppError::io(format!("update: {e}")))
         }
     }
+}
+
+/// `invalid_input:update_tui_running` while a terminal UI runs (Windows;
+/// see [`platform::terminal_ui_running`]).
+fn refuse_while_terminal_ui_runs() -> AppResult<()> {
+    if platform::terminal_ui_running() {
+        return Err(AppError::invalid("update_tui_running"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

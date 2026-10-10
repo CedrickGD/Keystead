@@ -124,6 +124,33 @@ pub trait VaultBackend: Send + Sync + 'static {
             BridgeError::Internal
         })
     }
+    /// `copy_field`: puts a login's password or current TOTP code (without
+    /// spaces) on the clipboard like [`VaultBackend::copy_secret`]; returns
+    /// the seconds the code stays valid (`None` for a password). The default
+    /// reads it with [`VaultBackend::get_login`] / [`VaultBackend::get_totp`]
+    /// and copies it with [`VaultBackend::copy_secret`]; an app may override
+    /// it to read and copy as one step (the desktop app copies nothing if
+    /// the vault was locked or switched in between, so the closed vault's
+    /// secret never lands on the clipboard after its clear ran).
+    fn copy_field(
+        &self,
+        item_id: &str,
+        field: CopyField,
+    ) -> std::result::Result<Option<u32>, BridgeError> {
+        let (text, remaining) = match field {
+            CopyField::Password => (
+                Zeroizing::new(self.get_login(item_id)?.password.clone()),
+                None,
+            ),
+            CopyField::Totp => {
+                let code = self.get_totp(item_id)?;
+                let digits: String = code.code.chars().filter(|c| !c.is_whitespace()).collect();
+                (Zeroizing::new(digits), Some(code.remaining))
+            }
+        };
+        self.copy_secret(&text)?;
+        Ok(remaining)
+    }
     /// Called after a successful deliberate user action from the browser
     /// (see [`Payload::is_user_action`]), e.g. to reset the auto-lock timer.
     fn on_activity(&self) {}
@@ -134,7 +161,8 @@ pub trait VaultBackend: Send + Sync + 'static {
 pub struct DispatcherConfig {
     /// How long `pair` waits for the user (default 120 s).
     pub pairing_timeout: Duration,
-    /// Wrong passwords in a row before unlocking is suspended (default 5).
+    /// Wrong passwords before unlocking is suspended (default 5): summed
+    /// over all vaults; a success clears only those of the vault it opened.
     pub max_unlock_failures: u32,
     /// How long unlocking is suspended (default 30 s).
     pub unlock_lockout: Duration,
@@ -160,10 +188,25 @@ pub struct PairingRequest {
     pub code: String,
 }
 
+/// Wrong passwords of `unlock`, counted per vault: the limit applies to
+/// their sum (all vaults together), but a success only clears the failures
+/// of the vault it opened or re-checked – so knowing the password of one
+/// vault never resets the count for another.
 #[derive(Debug, Default)]
 struct UnlockLimiter {
-    failures: u32,
+    /// Key: the requested vault id, `""` for a request without one (the
+    /// backend's default vault). Only ids of existing vaults get here
+    /// (unknown ids are `not_found`, which does not count).
+    failures: HashMap<String, u32>,
     blocked_until: Option<Instant>,
+}
+
+impl UnlockLimiter {
+    fn total(&self) -> u32 {
+        self.failures
+            .values()
+            .fold(0u32, |sum, n| sum.saturating_add(*n))
+    }
 }
 
 /// The [`BridgeHandler`] of the app. Share it as `Arc<Dispatcher>`: one
@@ -352,19 +395,7 @@ impl Dispatcher {
                 json(&same_secret(login.password.as_bytes(), password.as_bytes()))
             }
             Payload::CopyField { item_id, field } => {
-                let (text, remaining) = match field {
-                    CopyField::Password => (
-                        Zeroizing::new(backend.get_login(&item_id)?.password.clone()),
-                        None,
-                    ),
-                    CopyField::Totp => {
-                        let code = backend.get_totp(&item_id)?;
-                        let digits: String =
-                            code.code.chars().filter(|c| !c.is_whitespace()).collect();
-                        (Zeroizing::new(digits), Some(code.remaining))
-                    }
-                };
-                backend.copy_secret(&text)?;
+                let remaining = backend.copy_field(&item_id, field)?;
                 json(&CopyData { remaining })
             }
             Payload::CopySecret { text } => {
@@ -439,12 +470,27 @@ impl Dispatcher {
         }
         let result = self.backend.unlock(vault_id, password);
         match &result {
-            Ok(_) => *limiter = UnlockLimiter::default(),
+            Ok(opened) => {
+                // Only the failures of this vault: a right password for one
+                // vault (e.g. re-checking the open one) says nothing about
+                // the guesses against another.
+                limiter.failures.remove(&opened.id);
+                if vault_id.is_none() {
+                    limiter.failures.remove("");
+                }
+                if limiter.failures.is_empty() {
+                    limiter.blocked_until = None;
+                }
+            }
             Err(BridgeError::WrongPassword) => {
-                limiter.failures = limiter.failures.saturating_add(1);
+                let count = limiter
+                    .failures
+                    .entry(vault_id.unwrap_or("").to_owned())
+                    .or_default();
+                *count = count.saturating_add(1);
                 // Once the limit is reached, every further failure (after the
                 // lockout expired) suspends unlocking again.
-                if limiter.failures >= self.config.max_unlock_failures {
+                if limiter.total() >= self.config.max_unlock_failures {
                     limiter.blocked_until = Some(Instant::now() + self.config.unlock_lockout);
                 }
             }

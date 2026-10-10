@@ -72,6 +72,13 @@ impl Wipe for GeneratedPassword {
     }
 }
 
+/// A single secret (`reveal_secret`).
+impl Wipe for String {
+    fn wipe(&mut self) {
+        self.zeroize();
+    }
+}
+
 impl<T: Wipe> Wipe for Vec<T> {
     fn wipe(&mut self) {
         self.iter_mut().for_each(Wipe::wipe);

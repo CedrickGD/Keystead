@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CalendarClock, ChevronRight, CircleCheck, RefreshCw, Repeat, ShieldAlert, Smartphone } from "lucide-react";
 import { api } from "../lib/api";
-import type { HealthReport, VaultItem } from "../lib/types";
+import type { HealthReport, ItemListEntry } from "../lib/types";
 import { itemSubtitle } from "../lib/utils";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
@@ -43,7 +43,7 @@ function ItemRows({
   limit,
 }: {
   ids: string[];
-  byId: Map<string, VaultItem>;
+  byId: Map<string, ItemListEntry>;
   onOpen: (id: string) => void;
   limit?: number;
 }) {
@@ -119,7 +119,8 @@ function HealthCard({
   );
 }
 
-export function HealthPage({ items, onOpenItem }: { items: VaultItem[]; onOpenItem: (id: string) => void }) {
+/** The report comes from the backend (`health_report`); `items` (no secrets) only name the affected items. */
+export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOpenItem: (id: string) => void }) {
   const { t, tp, errorText } = useT();
   const toast = useToast();
   const [report, setReport] = useState<HealthReport | null>(null);
@@ -145,7 +146,7 @@ export function HealthPage({ items, onOpenItem }: { items: VaultItem[]; onOpenIt
   const without2fa = useMemo(
     () =>
       items
-        .filter((i) => i.type === "login" && i.deletedAt === null && i.login?.password && !i.login.totp.trim())
+        .filter((i) => i.type === "login" && i.deletedAt === null && i.login?.hasPassword && !i.login.hasTotp)
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((i) => i.id),
     [items],

@@ -12,6 +12,7 @@ import { Logo } from "./components/Logo";
 import { AppContext, type AppContextValue } from "./state/app";
 import { UpdateProvider } from "./state/update";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { RecoveryReminder } from "./components/RecoveryReminder";
 import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
@@ -307,6 +308,8 @@ function AppRoot({
         <div className="app-frame">
           {/* New versions: above the main window and the unlock screen. */}
           {(screen === "main" || screen === "unlock") && <UpdateBanner />}
+          {/* A new recovery key that was never confirmed as stored (lost to a lock / reload). */}
+          {screen === "main" && vault && <RecoveryReminder key={vault.id} />}
           <div className="app-frame-body">
             {screen === "welcome" && <WelcomeScreen />}
             {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}

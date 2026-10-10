@@ -52,7 +52,13 @@ One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
    protocol frames.
 2. **Terminal mode** – `--cli` (or `cli` as first arg): on Windows call
    `FreeConsole()` + `AllocConsole()` so the TUI gets its own new console
-   window, then `keystead_tui::run()`, exit. Additionally the console-subsystem
+   window, then `keystead_tui::run()`, exit. Windows also: the process holds
+   the named mutex `Local\Keystead-TerminalUI` while it runs (the update
+   refuses to install meanwhile, see "In-app updates"), and a console
+   control handler (`SetConsoleCtrlHandler`: Ctrl+C/Ctrl+Break as a signal,
+   closing the console window, logoff, shutdown) clears a secret the TUI
+   copied if the clipboard still holds it – its timed clear runs in-process
+   and would die with it – before the default handler ends the process. Additionally the console-subsystem
    binary `keystead-cli(.exe)` from `crates/keystead-tui` runs the same TUI inside
    an existing terminal.
 3. **GUI mode** – everything else. `--background` starts hidden in the tray
@@ -143,20 +149,27 @@ files, settings, plain-text exports) share this.
   `"keystead:v1:payload:" + id + ":" + revision`.
 * The master password → Argon2id (params above, salt 16 B) → 32-byte KEK →
   wraps the vault key (XChaCha20-Poly1305, AAD `"keystead:v1:key:" + id`).
-* **Key rotation**: replacing a secret replaces the vault key where
-  possible, so the old secret plus an older copy of the file (`.bak`, a
-  backup, a synced version) yields only the old key, which decrypts no
-  later revision:
+* **Key rotation**: replacing a secret always replaces the vault key, so the
+  old secret plus an older copy of the file (`.bak`, a backup, a synced
+  version) yields only the old key, which decrypts no later revision:
   * `create_recovery_key` (also "replace") and `remove_recovery_key`: fresh
     vault key, re-wrapped with the unchanged master password (the unlocked
     vault keeps the master KEK in memory for this – no password prompt).
   * `unlock_with_recovery_key`: fresh vault key, wrapped with the new master
-    password and again with the (still valid) recovery code.
-  * `change_master_password`: fresh vault key if the vault has **no**
-    recovery key. With a recovery key only the vault key is re-wrapped (the
-    recovery code is unknown to the app, a new key would make it useless):
-    older copies still open with the old password until the recovery key is
-    replaced, which rotates the key.
+    password and again with the recovery code just entered (same recovery
+    salt): the recovery key stays valid.
+  * `change_master_password`: fresh vault key, wrapped with the new master
+    password. The app does not know the recovery code, and the old recovery
+    box only opens the old key – so if the vault has a recovery key, it is
+    **replaced** by a freshly generated one wrapping the new key, and the
+    call returns the new code (`Some`, desktop: `newRecoveryKey`) to be shown
+    once like a newly created recovery key. The old code stops working like
+    the old password. No recovery key: none is created (`None`/`null`).
+  * In each case the previous revision is not kept as `.bak` (replaced by
+    the new revision, or removed), and other open sessions follow the new
+    key where their cached master KEK still opens it (recovery-key changes)
+    or get `Error::KeyChanged` and must unlock again (master password
+    changed – including a recovery-key unlock elsewhere).
   * Copies made before a rotation still open with the old secret – but only
     show the data they contained back then.
 * Optional **recovery key**: random 25 chars of Crockford base32 shown as
@@ -209,7 +222,7 @@ impl VaultStore {
     pub fn create_vault(&self, name: &str, master_password: &str) -> Result<UnlockedVault>;
     pub fn create_vault_with_params(&self, name: &str, master_password: &str, kdf: KdfParams) -> Result<UnlockedVault>;
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault>;   // Error::WrongPassword on bad pw
-    pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid
+    pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid (re-wrapped)
     pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak + leftover temp files
     pub fn vault_path(&self, vault_id: &str) -> PathBuf;
 }
@@ -247,7 +260,7 @@ impl UnlockedVault {
     pub fn commit_import_ref(&mut self, plan: &ImportPlan, mode: ConflictMode) -> Result<ImportReport>; // same, keeps the plan (retry after `conflict` + reload_if_changed)
     pub fn rename(&mut self, name: &str) -> Result<()>;
     pub fn verify_master_password(&self, password: &str) -> bool;
-    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()>; // rotates the vault key unless a recovery key exists (see "Key rotation")
+    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<Option<String>>; // rotates the vault key; replaces an existing recovery key and returns the new formatted code (see "Key rotation")
     pub fn create_recovery_key(&mut self) -> Result<String>;   // returns formatted code, replaces an existing one; rotates the vault key
     pub fn remove_recovery_key(&mut self) -> Result<()>;       // rotates the vault key
     pub fn has_recovery_key(&self) -> bool;
@@ -290,21 +303,26 @@ pub struct ImportReport {          // camelCase
     pub imported: usize,           // items added as new items (incl. conflicts kept with keepBoth)
     pub updated: usize,            // existing logins updated from the file (mode update)
     pub skipped: usize,            // invalid rows/entries of the file (each has a warning)
-    pub duplicates: Vec<ImportMatch>,        // not imported: already present (existingId "" = twice in the file)
+    pub duplicates: Vec<ImportMatch>,        // not imported: already present (existingId "" = twice in the file) – the first IMPORT_LIST_LIMIT (100)
+    pub duplicate_count: usize,              // "duplicateCount": all of them
     pub conflicts_skipped: Vec<ImportMatch>, // "conflictsSkipped": conflicts not imported (mode skip, deselected, nothing to take over, or not shown in the preview)
-    pub warnings: Vec<String>,
+    pub warnings: Vec<String>,               // the first IMPORT_LIST_LIMIT (100)
+    pub warning_count: usize,                // "warningCount": all of them
 }
 pub enum ImportFormat { Legacy, Csv, BitwardenJson, Keystead } // serde "legacy" | "csv" | "bitwarden_json" | "keystead"; FromStr/Display/as_str(), needs_password()
 pub struct DetectedImport { pub format: ImportFormat, pub needs_password: bool, pub file_name: String } // camelCase
 pub fn detect_import(path: &Path) -> Result<DetectedImport>;        // by content, see below
-pub struct ParsedImport { pub items: Vec<VaultItem>, pub folders: Vec<Folder>, pub warnings: Vec<String>, pub invalid: usize } // Debug without secrets, wiped on drop
+pub struct ParsedImport { pub items: Vec<VaultItem>, pub folders: Vec<Folder>, pub warnings: Vec<String> /*≤ IMPORT_WARNING_LIMIT (1000)*/,
+                          pub warnings_omitted: usize /*further warnings, counted only*/, pub invalid: usize } // Debug without secrets, wiped on drop
 pub fn read_import(path: &Path, format: ImportFormat, password: Option<&str>) -> Result<ParsedImport>;
 pub fn plan_import(existing: &VaultData, parsed: ParsedImport) -> ImportPlan;
 pub struct ImportPlan { pub new_items: Vec<VaultItem>, pub folders: Vec<Folder>, pub duplicates: Vec<ImportMatch>,
                         pub conflicts: Vec<ImportConflict> /*at most one per existing login*/, pub invalid: usize, pub warnings: Vec<String>,
-                        /* + every planned conflict with its incoming item (private) */ }
-impl ImportPlan { pub fn preview(&self) -> ImportPreview }          // Debug prints counts only; items wiped on drop; not Clone/Serialize
-pub struct ImportPreview { pub new_count: usize, pub duplicates: Vec<ImportMatch>, pub conflicts: Vec<ImportConflict>, pub invalid: usize, pub warnings: Vec<String> } // camelCase, secret-free
+                        pub warnings_omitted: usize, /* + every planned conflict with its incoming item (private) */ }
+impl ImportPlan { pub fn preview(&self) -> ImportPreview; pub fn warning_count(&self) -> usize } // Debug prints counts only; items wiped on drop; not Clone/Serialize
+pub struct ImportPreview { pub new_count: usize, pub duplicates: Vec<ImportMatch> /*first 100*/, pub duplicate_count: usize, pub conflicts: Vec<ImportConflict> /*all*/,
+                           pub invalid: usize, pub warnings: Vec<String> /*first 100*/, pub warning_count: usize } // camelCase, secret-free
+pub const IMPORT_WARNING_LIMIT: usize = 1000; pub const IMPORT_LIST_LIMIT: usize = 100;
 pub struct ImportMatch { pub incoming_name: String, pub username: String, pub site: String, pub item_type: ItemType, pub existing_id: String, pub existing_name: String } // camelCase, no passwords
 pub struct ImportConflict { pub conflict_id: String /*"conflict-1", …*/, pub reason: ConflictReason, #[serde(flatten)] pub entry: ImportMatch } // camelCase, flat JSON
 pub enum ConflictReason { Password, Totp }                         // serde "password" | "totp"
@@ -474,6 +492,24 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
     empty for notes); `site` = the login host (empty without URI / for other
     types); `itemType`; `existingId`, `existingName`. Never a password, card
     number or note text.
+* **Size of what reaches the UI**: a parsed file keeps at most 1000 warnings
+  (`IMPORT_WARNING_LIMIT`; further ones are only counted,
+  `ParsedImport::warnings_omitted`), so a crafted file with millions of
+  invalid entries does not become millions of strings. `ImportPreview`
+  (`plan.preview()`) and `ImportReport` carry at most 100 entries of
+  `duplicates` and `warnings` (`IMPORT_LIST_LIMIT`, the first ones) and the
+  totals in `duplicateCount` / `warningCount`; `conflicts` (preview) and
+  `conflictsSkipped` (report) are complete – at most one per existing login,
+  and the UI decides about each conflict by its id. The plan itself keeps
+  every duplicate (the commit needs none of them).
+* **Memory hygiene** (best effort): the JSON tree of a decrypted VaultX 1.x
+  payload and of a plaintext Bitwarden export is held in a guard
+  (`WipedValue`) that overwrites every string when it is dropped – on every
+  path, errors and wrong-key garbage included. CSV rows are read into one
+  reused record whose buffer is overwritten with zeros at the end. Not
+  covered: serde_json's and the CSV reader's own scratch/read buffers, a
+  record buffer that had to grow, and transient string copies while items
+  are built (the items themselves are wiped with the plan).
 * **Commit** (`commit_import`, `commit_import_ref`): one save = one revision;
   nothing is written when nothing changes. The incoming items are
   classified again against the current vault (it may have changed since the
@@ -586,9 +622,14 @@ history. The bridge's own writes are not affected.
 | `unlock_with_recovery` | `vaultId, recoveryKey, newMasterPassword` | `VaultInfo` |
 | `lock_vault` | – | `null` |
 | `touch_activity` | – | `null` (resets auto-lock timer; UI calls it throttled to ≤1/30 s on input – mouse move/click, key, wheel – while its window is focused and visible) |
-| `list_items` | – | `VaultItem[]` (all, incl. trash; UI filters) |
+| `list_items` | – | `ItemListEntry[]` (all, incl. trash; UI filters) – **redacted**, no secrets, see "Secrets and the webview" |
 | `list_folders` | – | `Folder[]` |
-| `save_item` † | `item: VaultItem` | `VaultItem` |
+| `save_item` † | `item: VaultItem` | `ItemListEntry` (the saved item, redacted) |
+| `set_favorite` † | `itemId, favorite: boolean` | `ItemListEntry` – (un)marks a favourite without the UI sending the item back |
+| `reveal_secret` | `itemId, field: SecretField, pageVaultId` | `string` – one secret, for an eye toggle |
+| `copy_secret_field` | `itemId, field: SecretField, pageVaultId` | `null` – copies a secret like `copy_text` with `sensitive`; the value never reaches the webview |
+| `totp_for_item` | `itemId, pageVaultId` | `TotpCode` – the current code of a login's TOTP key (never the key) |
+| `get_item_for_edit` | `itemId, pageVaultId` | `VaultItem` – the full item, only for the editor |
 | `trash_item` / `restore_item` / `delete_item` † | `id` | `null` |
 | `empty_trash` † | – | `number` |
 | `save_folder` † | `folder: Folder` | `Folder` |
@@ -597,10 +638,10 @@ history. The bridge's own writes are not affected.
 | `generator_history` | – | `GeneratedPassword[]` |
 | `clear_generator_history` † | – | `null` |
 | `password_strength` | `password` | `Strength` |
-| `totp_code` | `seed` | `TotpCode` |
-| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies passwords, TOTP codes, card number/code, hidden fields, notes of every item type, generated passwords and the recovery key as sensitive) |
+| `totp_code` | `seed` | `TotpCode` (kept for compatibility; the item view has no keys and uses `totp_for_item`) |
+| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies notes of every item type, generated passwords and the recovery key as sensitive; the secrets of items – passwords, TOTP codes, card number/code, hidden fields, old passwords – go through `copy_secret_field`, which copies the same way) |
 | `health_report` | – | `HealthReport` |
-| `change_master_password` † | `current, newPassword` | `null` |
+| `change_master_password` † | `current, newPassword` | `{ newRecoveryKey: string \| null }` – rotates the vault key; a vault with a recovery key gets a new one (the old one stops working), shown once by the UI like a newly created key; `null` without recovery key (see "Key rotation"). Unconfirmed new keys: see below the table |
 | `create_recovery_key` † | – | `string` |
 | `remove_recovery_key` † | – | `null` |
 | `rename_vault` † | `name` | `VaultInfo` |
@@ -706,8 +747,10 @@ Frontend integration requirements for `src-tauri`:
 * Leaving an open vault (any lock, `delete_vault` of the open vault, the
   vault closed by `set_portable_mode`, the extension switching to another
   vault – the splash is shown until the reload) reloads the page (`src/lib/discard.ts`)
-  once the commands in flight have answered (≤ 3 s), so the decrypted items,
-  generator history etc. do not linger in the renderer's JS heap – hygiene:
+  once the commands in flight have answered (≤ 3 s), so the item list (no
+  secrets, see "Secrets and the webview"), an item open in the editor, a
+  revealed value, the generator history etc. do not linger in the renderer's
+  JS heap – hygiene:
   unreachable, not overwritten. Visible toasts marked `carry` (lock reason,
   portable-mode result; never vault data) survive the reload via
   `sessionStorage`. Not with the mock backend (it lives in the same page; a
@@ -719,6 +762,79 @@ Frontend integration requirements for `src-tauri`:
   file paths; `dragDropEnabled` stays at its default `true`, the events need
   only `core:event:default`). On Windows this disables HTML5 drag & drop in
   the webview – the UI uses none.
+
+### Secrets and the webview (`src-tauri/src/secrets.rs`)
+The page never holds the secrets of the whole vault. A secret reaches the
+webview only when the user explicitly reveals one (eye toggle) or edits the
+item; copying never sends it there.
+* **Redaction contract.** `list_items`, `save_item` and `set_favorite` answer
+  `ItemListEntry` (TS `src/lib/types.ts`, Rust `secrets::ItemListEntry`,
+  camelCase): the shape of `VaultItem` with the secrets replaced –
+  `login.password` and `login.totp` are always `""` with `hasPassword` /
+  `hasTotp` (`totp` not blank); `card.number` is masked – `"•••• 1234"` (the
+  last 4 digits) when the number has at least 8 digits, `"••••"` for a
+  shorter one (never half of it), `""` for none – with `hasNumber`, and
+  `card.code` is `""` with `hasCode`; every custom field has `hasValue`, and
+  a `hidden` one has `value: ""` (name and kind stay; `text` and `boolean`
+  values stay); `passwordHistory` entries are `{ replacedAt }` only. Not
+  secret, so unchanged: name, folder, favourite, notes (notes are still
+  copied as sensitive), username, websites, cardholder, brand, expiry,
+  identity, dates. The UI's search filters these non-secret fields only
+  (name, username, websites, notes, card brand, identity name / e-mail);
+  searching by a password, TOTP key, card number or hidden value is not
+  supported – it never was (`UnlockedVault::search` has the same fields).
+* **`SecretField`** (JSON, serde externally tagged): `"password"`, `"totp"`
+  (the stored key), `"totpCode"` (the current code), `"cardNumber"`,
+  `"cardCode"`, `{ "custom": i }` (`fields[i]`), `{ "history": i }`
+  (`passwordHistory[i]`, newest first). Anything else → `invalid_input:field`.
+* **Commands** (all take `pageVaultId`; another open vault or none →
+  `locked`, like the † commands; an unknown item, or a field the item does
+  not have – another type, an index out of range, no TOTP key for
+  `totpCode` – → `not_found`): `reveal_secret` returns the stored value (`""`
+  for an empty one; a card number as stored); `copy_secret_field` copies it
+  through the sensitive clipboard path of `copy_text` (cleared after
+  `clipboardClearSeconds` and on lock/quit; a card number without its
+  spaces; an empty value → `not_found`, the clipboard is not touched);
+  `totp_for_item` returns `TotpCode` for the login's key (an invalid key →
+  the core's `invalid_input:totp_…` codes); `get_item_for_edit` returns the
+  full `VaultItem` (incl. the password history, which `save_item` takes over
+  from the item it is sent); `set_favorite` † saves the stored item with the
+  new `favorite` (`not_found` instead of creating an item for an unknown id).
+  `reveal_secret`, `copy_secret_field`, `get_item_for_edit` and
+  `set_favorite` count as user activity for auto-lock; `totp_for_item` is
+  polled and does not. Their results are wiped after serialization
+  (`Wiped`, like `list_items`). The bridge / extension path is unchanged.
+* **UI.** The item list (`MainScreen`) holds only `ItemListEntry`s. Eye
+  toggles (`SecretFieldRow`, `useRevealedSecret`) call `reveal_secret` and
+  hide the value again after 30 s, when the item or its `updatedAt` changes,
+  when the window loses focus or is hidden, on lock and on unmount; the value
+  lives only in that component's state. Copy buttons (password, TOTP code,
+  card number/code, hidden fields, old passwords), the list rows' password
+  button and Ctrl+Shift+C call `copy_secret_field`. The TOTP row polls
+  `totp_for_item`. "Bearbeiten" loads `get_item_for_edit` into the editor's
+  state, which is dropped after save / cancel (`save_item` answers the
+  redacted entry). The password history lists dates and reveals / copies an
+  entry on demand. The health report comes from `health_report`; its "no
+  2FA" list uses `hasPassword` / `hasTotp`. The mock backend redacts the same
+  way (`src/lib/demo/redact.ts`).
+
+### Recovery keys waiting for confirmation (`src/lib/recoveryMarker.ts`)
+A new recovery key exists only in the dialog that shows it (created in
+Settings or the setup wizard, or replacing the old one after
+`change_master_password` – the old one stops working at once). A lock, a
+system lock or a vault switch reloads the page (`discardPageData`) and would
+drop that dialog with the only copy. The lock is never delayed for it;
+instead the UI records **only the vault id** in `localStorage`
+(`keystead.recoveryUnconfirmed`, survives reloads and restarts) as soon as
+a key is shown, and removes it when the user confirms having stored the key
+("Fertig" after the checkbox), or when the key is removed. While the marker
+names the open vault and `hasRecoveryKey` is true – and the page is not
+showing that key itself (`useRecoveryKeyOnScreen` in `RecoveryKeyReveal`, page
+memory only, so after a reload it counts as lost) –, the main window shows a
+persistent warning above its content ("Neuer Wiederherstellungsschlüssel
+nicht bestätigt …") with "Neuen Schlüssel erstellen", which opens the
+replace dialog (a fresh key; confirming it clears the marker). A marker for a
+vault without recovery key is dropped silently.
 
 ### Import with preview (`src-tauri/src/import_flow.rs`, `src/components/import/`)
 * **Flow**: `analyze_import(path, password)` → `detect_import` (by content)
@@ -776,7 +892,8 @@ Frontend integration requirements for `src-tauri`:
   lists the supported formats, `bitwarden_encrypted` explains how to export
   unencrypted, `file_too_large`, `io`, a missing file, an expired preview);
   "Erneut prüfen" only where checking the same file again can help. Leaving
-  the dialog cancels a waiting plan.
+  the dialog cancels a waiting plan. Numbers and "… und N weitere" use
+  `duplicateCount` / `warningCount` (the lists carry at most 100 entries).
 * **Entry points**: the start panel's "Passwörter importieren", Settings →
   Import & Export → "Importieren …", the welcome screen's "Von VaultX
   umsteigen" (wizard step "Import", skippable) and drag & drop.
@@ -800,14 +917,16 @@ Frontend integration requirements for `src-tauri`:
   / `folder` / `options` / `settings`. Mutations that hit `conflict` reload
   the vault and retry once (the UI then also gets `vault://changed`).
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
-  mutations, `copy_text`, generator, import/export, settings, …) and bridge
-  user actions. Polled/passive commands (`totp_code`, `browser_status`,
-  `session_state`, `app_info`, `list_*`, `get_settings`, `get_icons`) do **not** reset
-  the timer. The monitor checks every 5 s (idle time includes sleep).
+  mutations, `copy_text`, `reveal_secret`, `copy_secret_field`,
+  `get_item_for_edit`, generator, import/export, settings, …) and bridge
+  user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
+  `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
+  `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
 * `lockOnSystemLock`: Windows uses session notifications
   (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`) and `PBT_APMSUSPEND`; on every
   OS a clock jump > 2 min between the monitor's 1-s ticks (suspend /
-  hibernate) locks with reason `system`. Linux/macOS do not detect a plain
+  hibernate) locks with reason `system` (also while no vault is open, see
+  "Lock epoch"). Linux/macOS do not detect a plain
   screen lock without suspend.
 * The vault file is checked every 2 s (`reload_if_changed`) → `vault://changed`.
 * Locking (any reason) also clears a secret copied through the app
@@ -816,21 +935,38 @@ Frontend integration requirements for `src-tauri`:
   app then remembers the secret itself, as `Zeroizing<String>`); so does
   quitting the app. `lock_vault` (the UI's own request) emits no event;
   tray "Sperren" and the extension's `lock` emit `vault://locked {manual}`.
-* `list_items`, `save_item` and `generator_history` overwrite the strings of
-  their cloned result once Tauri has serialized it (`src/wipe.rs`); the
-  serialized IPC message itself is out of reach.
+* `list_items`, `save_item`, `set_favorite`, `reveal_secret`,
+  `totp_for_item`, `get_item_for_edit` and `generator_history` overwrite the
+  strings of their cloned result once Tauri has serialized it
+  (`src/wipe.rs`); the serialized IPC message itself is out of reach.
 * Every unlock/create stores the vault as `lastVaultId` (also an
   extension unlock, so the app's unlock screen preselects that vault after
   the next lock). The extension's `unlock` opens its `vaultId`; without one
   `lastVaultId` if it exists, else the only vault (else `not_found`). If
   another vault is open, the new one is unlocked (key derivation) while the
   old one stays open and usable; only on success it replaces it
-  (`Core::install_vault`): the old vault is dropped (wiped) and a secret it
+  (`Core::install_vault_since`): the old vault is dropped (wiped) and a secret it
   copied is cleared from the clipboard like on lock, without
   `vault://locked`; then `vault://unlocked` with the new `VaultInfo`. A failed
   attempt (wrong password, rate limit, unknown id) leaves the open vault
   open. Unlocking the vault that is already open only checks the password
   (no event).
+* **Lock epoch** (`Core::lock_epoch`): every lock – any reason, also while
+  no vault is open (a system lock or suspend with `lockOnSystemLock` always
+  calls `Core::lock`) –, the portable-mode move, `delete_vault` closing the
+  open vault, an update (`lock_for_update`) and a vault switch start a new
+  epoch. Every unlock path (UI, extension, recovery key, new vault) reads the
+  epoch together with the store before its key derivation
+  (`Core::unlock_ticket`) and `Core::install_vault_since` refuses the vault
+  (wiped, `locked`; the extension gets `locked`, the UI shows the lock
+  screen) if the epoch changed meanwhile – so a lock that lands during the
+  0.3–1 s derivation is never undone, and nothing opens from the data
+  directory's old location. Copies of a vault secret (`copy_secret_field`,
+  the bridge's `copy_field` – read and copied through
+  `VaultBackend::copy_field`) carry the epoch of their read and are dropped
+  (`locked`) if a lock or switch happened before the copy;
+  `clear_copied_secret` and the copy hold the same lock, so a copy is either
+  refused or cleared by the lock.
 * `import_data` and `commit_import` emit `vault://changed` after a
   successful import.
 * `delete_vault` / `respond_pairing` / `revoke_client`: unknown ids →
@@ -927,12 +1063,27 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   32–63, then unknown, then < 32; within each PNG before ICO before others;
   `apple-touch-icon` without `sizes` = 180; SVG – by `type` or `.svg` path –
   and `data:` links other than `data:image/png;base64` are ignored), up to 3
-  links tried, then `https://<host>/favicon.ico`. Every request: https only,
-  default port, no credentials in the URL, ≤ 3 redirects – each again
-  checked like the first URL –, 5 s timeout, body ≤ 512 KiB (an image above
-  that is refused), no cookies, no `Referer`, user agent
-  `Keystead/<version> (icon fetcher)`, `Accept` for HTML resp. images only.
-  Nothing from the vault is ever sent – only the host name in the URL.
+  links tried, then `https://<host>/favicon.ico`. The HTML step is bounded
+  (a hostile page must not keep the app busy): at most 1024 `link`/`base`
+  tags of the head are read and the first 32 icon links collected; a
+  `<base href>` or link `href` longer than 2048 bytes is ignored (`data:`
+  links are bounded by the 512 KiB instead); duplicates are found through a
+  hash set; and the step runs on the blocking thread pool like the image
+  decoding, so the 15 s limit and cancelling apply to it. Every request:
+  https only, default port, no credentials in the URL, ≤ 3 redirects – each
+  again checked like the first URL –, 5 s timeout, body ≤ 512 KiB (an image
+  above that is refused), no cookies, no `Referer`, the generic user agent
+  `Mozilla/5.0` (no product name or version: the sites, and CDNs that see
+  many of these requests, do not learn that the address runs Keystead or
+  which version), `Accept` for HTML resp. images only. Nothing from the
+  vault is ever sent – only the host name in the URL.
+* **What this reveals**: loading icons contacts the host of every saved
+  login (the DNS lookup and the TLS server name are visible on the
+  network) – right after an unlock and after an import, also for sites the
+  user never visits from this network. DNS resolvers, the network operator
+  (e.g. a public Wi-Fi) and CDNs that serve many of the sites can therefore
+  see the list of websites in the vault. Settings, README and this section
+  say so; turning `websiteIcons` off stops it.
 * **Address guard (SSRF)**: besides `is_fetchable_host` for the site and
   every link/redirect host, the HTTP client resolves names through
   `PublicResolver`, which drops every address that is not public (loopback,
@@ -972,8 +1123,9 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   and editor header and the security report show the icon of
   `iconHost(item)` on a light tile (letter avatar while missing or if the
   image does not decode). Settings → Allgemein: "Website-Icons automatisch
-  laden" (hint: loaded directly from the websites, never around a proxy –
-  with a proxy set up, no icons are loaded; off = no requests for this) and
+  laden" (hint: loaded directly from the websites, which shows DNS servers
+  and the network the list of saved sites; never around a proxy – with a
+  proxy set up, no icons are loaded; off = no requests for this) and
   "Gespeicherte Icons löschen" (`clear_icons`).
 * **Browser extension**: `logins_for_url` and `search` rows carry the stored
   icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
@@ -1043,10 +1195,16 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   logged (`[keystead] update check failed: …`). The last result is kept
   for `pending_update`; changing the channel or turning the check on drops
   it and lets the next find be announced again.
-* **Install** (`install_update`): one at a time. Checks again, downloads
+* **Install** (`install_update`): one at a time. Windows: while a terminal
+  UI (`Keystead.exe --cli`, detected by its mutex `Local\Keystead-TerminalUI`)
+  runs in the session → `invalid_input:update_tui_running` ("Bitte zuerst die
+  Terminal-Version von Keystead beenden …"), checked before the download and
+  again right before the vault is closed – the passive setup would end it
+  without asking (Restart Manager), losing its unsaved input and leaving a
+  copied secret on the clipboard. Checks again, downloads
   (`update://progress`), verifies, emits `update://ready`, then
   `Core::lock_for_update`: from now on no vault can be opened
-  (`Core::install_vault` – the one path of every unlock, recovery-key unlock
+  (`Core::install_vault_since` – the one path of every unlock, recovery-key unlock
   and new vault – answers `invalid_input:update_in_progress`, checked under
   the state lock), the browser bridge stops (waiting pairings are denied),
   the vault is locked (wiping it, no `vault://locked` – the banner shows the
@@ -1100,7 +1258,13 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   user there (see below). Disabling portable mode deletes `Keystead-Data`
   with its copy, as before.
 * Updating the extension: the bridge `status` tells paired clients the
-  delivered version and folder. The extension's service worker compares it
+  delivered version and folder – only once this process has written the
+  folder (or found it current) at the current data directory
+  (`extension::deployed_version`); while the startup thread is still writing
+  it, after a failed write and after a portable-mode switch until the new
+  folder is written, both are `null`, so the extension never reloads itself
+  from an old, half-written or missing folder. `manifest.json` is written
+  last (also by the in-place fallback). The extension's service worker compares it
   with `chrome.runtime.getManifest().version` (numeric, `lib/version.js`);
   newer → `chrome.runtime.reload()` after 2.5 s, at most once per target
   version (`chrome.storage.local.extensionReloadedFor`), never while a
@@ -1133,11 +1297,18 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   (`version`: app, NSIS setup – `VIProductVersion` drops the pre-release,
   `ProductVersion`/`DisplayVersion` keep it – and updater); the extension
   manifest gets `<x.y.z>.<run number>` (also for tags, so a stable release is
-  newer than the betas before it for Chrome too). Then `tauri build` with
-  `TAURI_SIGNING_PRIVATE_KEY` (secret) and an empty
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` → `…-setup.exe` + `.sig`. Without the
-  secret: `--config` with `bundle.createUpdaterArtifacts=false` and a
-  `::warning::` – the build succeeds, just without `.sig`/`latest.json`.
+  newer than the betas before it for Chrome too). Then `tauri build`. Only
+  builds that publish (the **release** job's condition: tags `v*`, pushes
+  with `[release]`) get `TAURI_SIGNING_PRIVATE_KEY` (secret) and an empty
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` → `…-setup.exe` + `.sig`. Every other
+  build (branch pushes, pull requests, `workflow_dispatch`) never sees the
+  secret and builds with `--config` `bundle.createUpdaterArtifacts=false` –
+  no `.sig`/`latest.json`, so no unreviewed build is a valid update. A
+  publishing build without the secret does the same with a `::warning::`.
+  Third-party actions (`dtolnay/rust-toolchain` with `toolchain: 1.97.0`,
+  `Swatinem/rust-cache`, `softprops/action-gh-release`) and the `actions/*`
+  ones are pinned to full commit SHAs (version in a comment); bump them
+  deliberately.
   Packaging renames the setup to `Keystead-<version>-windows-setup.exe`
   (+ `.sig`) and writes `latest.json` (`.github/scripts/latest-json.mjs`,
   notes = the commit subject without `[release]`) pointing at exactly that
@@ -1273,7 +1444,9 @@ Behaviour (additive to the table above):
   `extensionVersion` (manifest version of the extension the app delivers)
   and `extensionDir` (absolute path of `<data_dir>/browser-extension`) come
   from `VaultBackend::extension_info` and are also only sent to paired
-  clients (`null` otherwise, and from apps without the method). Clients
+  clients (`null` otherwise, from apps without the method, and – desktop app
+  – until the folder holds that version, see "Browser extension
+  deployment"). Clients
   treat missing fields as `null`.
 * `list_vaults`: `VaultBackend::list_vaults` sorted by name (lowercase, then
   id); `lastVaultId` only if that vault is listed. Not a user action (the
@@ -1286,10 +1459,15 @@ Behaviour (additive to the table above):
   up (the extension cancelled, the browser ended the host), the request is
   withdrawn and can no longer be approved. Withdrawn, superseded and
   timed-out requests are reported via `VaultBackend::pairing_closed`.
-* `unlock`: after 5 wrong passwords in a row it answers `wrong_password` for
-  30 s without trying; every further failure restarts the 30 s, a success
-  resets the counter. Attempts are serialised. The limit is shared by all
-  vaults (a wrong password while switching counts too). `vaultId` absent or
+* `unlock`: after 5 wrong passwords it answers `wrong_password` for 30 s
+  without trying; every further failure restarts the 30 s. Attempts are
+  serialised. Failures are counted per vault (the requested `vaultId`, a
+  request without one under its own key) and the limit applies to their sum
+  – it is shared by all vaults (a wrong password while switching counts
+  too). A success clears only the failures of the vault it opened or
+  re-checked (and of the no-id key if the request had no `vaultId`): the
+  known password of one vault – e.g. re-checking the open one, or opening it
+  again – never resets the count of guesses against another. `vaultId` absent or
   `null` = the backend picks the vault (previous behaviour); `""` →
   `invalid_request`; an unknown id → `not_found` (does not count as a
   failure). A failed unlock never closes the open vault.
@@ -1299,16 +1477,24 @@ Behaviour (additive to the table above):
   polling, the automatic `logins_for_url` and `check_login_password` (a page
   can trigger it by submitting forms) must not keep the vault from
   auto-locking.
-* `copy_field` / `copy_secret` call `VaultBackend::copy_secret`, whose default
+* `copy_secret` calls `VaultBackend::copy_secret`, `copy_field` calls
+  `VaultBackend::copy_field` (default: `get_login` / `get_totp`, then
+  `copy_secret`). The default `copy_secret`
   copies with `keystead_core::clipboard::copy_secret` in the app process:
   excluded from clipboard history, cleared after `clipboardClearSeconds` from
   the settings file (0 = never) if the clipboard still holds it, and – being
   the same pending secret – cleared when the app locks. (The desktop app
-  overrides it with the path of its own sensitive `copy_text`.) TOTP codes
+  overrides both with the path of its own sensitive `copy_text`; its
+  `copy_field` reads the field and the lock epoch in one step and copies
+  nothing – `locked` – if the vault was locked or switched in between.) TOTP codes
   are copied without spaces. `copy_field` with another `field` → `invalid_request`; a
   login without TOTP seed → `not_found`.
 * `check_login_password` compares without an early exit and answers only
-  `true`/`false` (unknown id or non-login → `not_found`).
+  `true`/`false` (unknown id or non-login → `not_found`). The extension binds
+  the save/update prompt it computes with it to the open vault (`status`
+  `vaultId` after the comparison): it drops the prompt on lock or vault
+  switch and never saves it into another vault (see
+  `extension/chrome/README.md`).
 * Memory hygiene (best effort): request passwords (`unlock`, `save_login`,
   `update_password`, `check_login_password`, `copy_secret`) are held in
   `Zeroizing<String>`; `LoginSecret` wipes username, password and TOTP code
@@ -1357,6 +1543,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn save_login(&self, name: &str, url: &str, username: &str, password: &str) -> Result<String, BridgeError>;
     fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError>;
     fn copy_secret(&self, text: &str) -> Result<(), BridgeError> { /* default: core clipboard::copy_secret, clipboardClearSeconds from settings.json */ }
+    fn copy_field(&self, item_id: &str, field: CopyField) -> Result<Option<u32>, BridgeError> { /* default: get_login/get_totp + copy_secret; the app reads and copies in one step (lock epoch) */ }
     fn on_activity(&self) {}
 }
 impl From<keystead_core::Error> for BridgeError;  // WrongPassword/NotFound keep meaning, InvalidInput → invalid_request, rest → internal
@@ -1390,7 +1577,7 @@ register::registered_browsers() -> Vec<BrowserId>;            // re-register the
   extension: `logo()` in `lib/icons.js` and `content.js`. Inline SVGs use
   per-instance gradient ids (a reference into a hidden SVG does not render).
 * Everything important is one click away: copy buttons next to every field,
-  "eye" toggle for secrets, a generate button in every password field,
+  "eye" toggle for secrets (hidden again after 30 s), a generate button in every password field,
   keyboard shortcuts (Ctrl+F search, Ctrl+N new, Ctrl+L lock,
   Ctrl+Shift+C on a selected item copies its password, Ctrl+B the username,
   Ctrl+S saves while editing, Esc cancels editing / closes dialogs).

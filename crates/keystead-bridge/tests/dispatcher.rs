@@ -562,6 +562,52 @@ fn unlock_is_rate_limited_after_five_failures() {
 }
 
 #[test]
+fn the_password_of_one_vault_does_not_reset_the_limit_for_another() {
+    let f = fixture(DispatcherConfig {
+        unlock_lockout: Duration::from_secs(60),
+        ..DispatcherConfig::default()
+    });
+    let (cid, tok) = paired(&f);
+    let unlock = |vault: &str, pw: &str| {
+        call(
+            f.dispatcher.as_ref(),
+            with_creds(
+                json!({"id": "u", "type": "unlock", "password": pw, "vaultId": vault}),
+                &cid,
+                &tok,
+            ),
+        )
+    };
+    // "Privat" is open and its password known; "Arbeit" is guessed.
+    assert!(unlock(VAULT_ID, PASSWORD).ok);
+    for _ in 0..4 {
+        assert_eq!(
+            err(&unlock(WORK_VAULT_ID, "guess")),
+            BridgeError::WrongPassword
+        );
+    }
+    // Re-checking the open vault, and opening it again after a lock, do not
+    // clear the guesses against "Arbeit".
+    assert!(unlock(VAULT_ID, PASSWORD).ok);
+    f.backend.set_unlocked(false);
+    assert!(unlock(VAULT_ID, PASSWORD).ok);
+    assert_eq!(
+        err(&unlock(WORK_VAULT_ID, "guess")),
+        BridgeError::WrongPassword
+    );
+    // Five wrong passwords in total: locked out – even the right password
+    // of either vault no longer reaches the backend.
+    let calls = f.backend.unlock_calls.load(Ordering::SeqCst);
+    assert_eq!(
+        err(&unlock(WORK_VAULT_ID, WORK_PASSWORD)),
+        BridgeError::WrongPassword
+    );
+    assert_eq!(err(&unlock(VAULT_ID, PASSWORD)), BridgeError::WrongPassword);
+    assert_eq!(f.backend.unlock_calls.load(Ordering::SeqCst), calls);
+    assert_eq!(f.backend.unlocked_id(), Some(VAULT_ID));
+}
+
+#[test]
 fn concurrent_unlock_attempts_cannot_bypass_the_limit() {
     let f = fixture(DispatcherConfig {
         unlock_lockout: Duration::from_secs(60),

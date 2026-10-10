@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
+use keystead_bridge::protocol::CopyField;
 use keystead_bridge::{
     register, start_server, BridgeError, ClientStore, Dispatcher, ExtensionInfo, LoginSecret,
     PairedClient, PairingRequest, VaultBackend, VaultSummary,
@@ -58,6 +59,22 @@ fn bridge_vault_id(core: &Core) -> AppResult<String> {
     }
 }
 
+/// A clipboard result for the bridge: `locked` stays `locked` (the vault
+/// closed or changed while the copy was under way), anything else is
+/// logged and `internal`.
+fn copy_result(result: AppResult<()>) -> Result<(), BridgeError> {
+    result.map_err(|e| match e {
+        AppError::Locked => BridgeError::Locked,
+        other => {
+            log(format_args!(
+                "could not copy to the clipboard: {}",
+                other.code()
+            ));
+            BridgeError::Internal
+        }
+    })
+}
+
 /// A display name for a login saved from the browser without a name.
 fn name_from_url(url: &str) -> String {
     let url = url.trim();
@@ -86,14 +103,17 @@ impl VaultBackend for Backend {
         }
     }
 
-    /// The extension folder the app maintains (`crate::extension`).
+    /// The extension folder the app maintains (`crate::extension`) – only
+    /// once it holds the embedded version: the extension reloads itself when
+    /// it sees a newer one, which must not happen while the startup thread
+    /// is still writing the folder (or after it failed).
     fn extension_info(&self) -> Option<ExtensionInfo> {
         let core = self.core.upgrade()?;
+        let data_dir = core.data_dir();
+        let version = extension::deployed_version(&data_dir)?;
         Some(ExtensionInfo {
-            version: extension::bundled_version().to_owned(),
-            dir: extension::extension_dir(&core.data_dir())
-                .display()
-                .to_string(),
+            version: version.to_owned(),
+            dir: extension::extension_dir(&data_dir).display().to_string(),
         })
     }
 
@@ -122,7 +142,7 @@ impl VaultBackend for Backend {
 
     /// Opening another vault than the open one switches: the new vault is
     /// unlocked (key derivation) while the open one stays usable, and only
-    /// replaces it on success (`Core::install_vault` closes the old one like
+    /// replaces it on success (`Core::install_vault_since` closes the old one like
     /// a lock). The UI follows via `vault://unlocked`.
     fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError> {
         let core = self.core()?;
@@ -310,13 +330,43 @@ impl VaultBackend for Backend {
     /// Same path as the UI's `copy_text` (settings from memory; cleared on
     /// lock and quit also with `clipboardClearSeconds` = 0).
     fn copy_secret(&self, text: &str) -> Result<(), BridgeError> {
-        self.core()?.copy_to_clipboard(text, true).map_err(|e| {
-            log(format_args!(
-                "could not copy to the clipboard: {}",
-                e.code()
-            ));
-            BridgeError::Internal
-        })
+        copy_result(self.core()?.copy_to_clipboard(text, true))
+    }
+
+    /// Reads the field and the lock epoch under one state lock, then copies
+    /// only if no lock or vault switch happened in between
+    /// (`Core::copy_to_clipboard_since`; otherwise `locked`).
+    fn copy_field(&self, item_id: &str, field: CopyField) -> Result<Option<u32>, BridgeError> {
+        let core = self.core()?;
+        let (text, remaining, epoch) = {
+            let st = core.state();
+            let item = st
+                .vault()?
+                .item(item_id)
+                .filter(|i| !i.is_trashed())
+                .ok_or(BridgeError::NotFound)?;
+            let login = item.login.as_ref().ok_or(BridgeError::NotFound)?;
+            let (text, remaining) = match field {
+                CopyField::Password => {
+                    if item.item_type != ItemType::Login {
+                        return Err(BridgeError::NotFound);
+                    }
+                    (zeroize::Zeroizing::new(login.password.clone()), None)
+                }
+                CopyField::Totp => {
+                    let seed = login.totp.trim();
+                    if seed.is_empty() {
+                        return Err(BridgeError::NotFound);
+                    }
+                    let code = totp::totp_now(seed)?;
+                    let digits: String = code.code.chars().filter(|c| !c.is_whitespace()).collect();
+                    (zeroize::Zeroizing::new(digits), Some(code.remaining))
+                }
+            };
+            (text, remaining, core.lock_epoch())
+        };
+        copy_result(core.copy_to_clipboard_since(&text, true, Some(epoch)))?;
+        Ok(remaining)
     }
 
     fn on_activity(&self) {

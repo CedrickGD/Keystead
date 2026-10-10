@@ -16,9 +16,12 @@ import type {
   ImportAnalysis,
   ImportFormat,
   ImportReport,
+  ItemListEntry,
   LegacyVaultInfo,
   LockReason,
+  MasterPasswordChanged,
   PairingRequest,
+  SecretField,
   SessionState,
   Settings,
   Strength,
@@ -87,6 +90,11 @@ export function setPageVault(id: string): void {
   pageVaultId = id;
 }
 
+/** The vault this page works on (see `pageVaultId`), if any. */
+export function getPageVault(): string | null {
+  return pageVaultId;
+}
+
 /** A vault this page opened itself: it works on that one from now on. */
 async function opened(info: Promise<VaultInfo>): Promise<VaultInfo> {
   const vault = await info;
@@ -127,9 +135,22 @@ export const api = {
   lockVault: () => call<null>("lock_vault"),
   touchActivity: () => call<null>("touch_activity"),
 
-  listItems: () => call<VaultItem[]>("list_items"),
+  /** All items incl. trash, without their secrets (see `ItemListEntry`). */
+  listItems: () => call<ItemListEntry[]>("list_items"),
   listFolders: () => call<Folder[]>("list_folders"),
-  saveItem: (item: VaultItem) => call<VaultItem>("save_item", { item, pageVaultId }),
+  /** Saves a full item (from `getItemForEdit` or a new one); answers the redacted entry. */
+  saveItem: (item: VaultItem) => call<ItemListEntry>("save_item", { item, pageVaultId }),
+  setFavorite: (itemId: string, favorite: boolean) =>
+    call<ItemListEntry>("set_favorite", { itemId, favorite, pageVaultId }),
+  /** One secret, for an eye toggle; keep it in component state only. */
+  revealSecret: (itemId: string, field: SecretField) => call<string>("reveal_secret", { itemId, field, pageVaultId }),
+  /** Copies a secret as sensitive in the backend; the value never reaches the page. */
+  copySecretField: (itemId: string, field: SecretField) =>
+    call<null>("copy_secret_field", { itemId, field, pageVaultId }),
+  /** The current TOTP code of a login (never its key). */
+  totpForItem: (itemId: string) => call<TotpCode>("totp_for_item", { itemId, pageVaultId }),
+  /** The full item, only for the editor (drop it after save / cancel). */
+  getItemForEdit: (itemId: string) => call<VaultItem>("get_item_for_edit", { itemId, pageVaultId }),
   trashItem: (id: string) => call<null>("trash_item", { id, pageVaultId }),
   restoreItem: (id: string) => call<null>("restore_item", { id, pageVaultId }),
   deleteItem: (id: string) => call<null>("delete_item", { id, pageVaultId }),
@@ -146,8 +167,9 @@ export const api = {
   copyText: (text: string, sensitive: boolean) => call<null>("copy_text", { text, sensitive }),
   healthReport: () => call<HealthReport>("health_report"),
 
+  /** Also replaces an existing recovery key: show `newRecoveryKey` once. */
   changeMasterPassword: (current: string, newPassword: string) =>
-    call<null>("change_master_password", { current, newPassword, pageVaultId }),
+    call<MasterPasswordChanged>("change_master_password", { current, newPassword, pageVaultId }),
   createRecoveryKey: () => call<string>("create_recovery_key", { pageVaultId }),
   removeRecoveryKey: () => call<null>("remove_recovery_key", { pageVaultId }),
   renameVault: (name: string) => call<VaultInfo>("rename_vault", { name, pageVaultId }),

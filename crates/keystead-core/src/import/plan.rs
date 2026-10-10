@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::ParsedImport;
+use super::{ParsedImport, IMPORT_LIST_LIMIT};
 use crate::model::{Folder, ItemType, VaultData, VaultItem};
 use crate::totp;
 use crate::vault::{wipe_item, wipe_items};
@@ -113,7 +113,10 @@ pub struct ImportPlan {
     pub conflicts: Vec<ImportConflict>,
     /// Invalid rows/entries of the file (each has a warning).
     pub invalid: usize,
+    /// The first [`super::IMPORT_WARNING_LIMIT`] warnings of the file.
     pub warnings: Vec<String>,
+    /// Warnings beyond those (counted, not kept).
+    pub warnings_omitted: usize,
     /// Every conflict as planned, with its incoming item (`conflicts` may
     /// have been shortened by the caller since).
     conflict_items: Vec<PlannedConflict>,
@@ -127,16 +130,22 @@ struct PlannedConflict {
     item: VaultItem,
 }
 
-/// Secret-free summary of an [`ImportPlan`] for the import preview.
+/// Secret-free summary of an [`ImportPlan`] for the import preview. Its
+/// size does not grow with the file: `duplicates` and `warnings` hold the
+/// first [`IMPORT_LIST_LIMIT`] entries, `duplicate_count` / `warning_count`
+/// the totals. `conflicts` is complete (at most one per existing login; the
+/// UI decides about each).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ImportPreview {
     /// Number of items that would be added.
     pub new_count: usize,
     pub duplicates: Vec<ImportMatch>,
+    pub duplicate_count: usize,
     pub conflicts: Vec<ImportConflict>,
     pub invalid: usize,
     pub warnings: Vec<String>,
+    pub warning_count: usize,
 }
 
 impl ImportPlan {
@@ -144,12 +153,24 @@ impl ImportPlan {
     pub fn preview(&self) -> ImportPreview {
         ImportPreview {
             new_count: self.new_items.len(),
-            duplicates: self.duplicates.clone(),
+            duplicates: first(&self.duplicates),
+            duplicate_count: self.duplicates.len(),
             conflicts: self.conflicts.clone(),
             invalid: self.invalid,
-            warnings: self.warnings.clone(),
+            warnings: first(&self.warnings),
+            warning_count: self.warning_count(),
         }
     }
+
+    /// All warnings of the file, kept or not.
+    pub fn warning_count(&self) -> usize {
+        self.warnings.len() + self.warnings_omitted
+    }
+}
+
+/// The first [`IMPORT_LIST_LIMIT`] entries of a list (for the UI).
+pub(crate) fn first<T: Clone>(list: &[T]) -> Vec<T> {
+    list.iter().take(IMPORT_LIST_LIMIT).cloned().collect()
 }
 
 impl std::fmt::Debug for ImportPlan {
@@ -161,7 +182,7 @@ impl std::fmt::Debug for ImportPlan {
             .field("duplicates", &self.duplicates.len())
             .field("conflicts", &self.conflicts.len())
             .field("invalid", &self.invalid)
-            .field("warnings", &self.warnings.len())
+            .field("warnings", &self.warning_count())
             .finish_non_exhaustive()
     }
 }
@@ -240,6 +261,7 @@ pub fn plan_import(existing: &VaultData, mut parsed: ParsedImport) -> ImportPlan
         conflicts: Vec::new(),
         invalid: parsed.invalid,
         warnings: std::mem::take(&mut parsed.warnings),
+        warnings_omitted: parsed.warnings_omitted,
         conflict_items: Vec::new(),
     };
     for (item, conflict) in accepted.into_iter().zip(accepted_conflicts) {

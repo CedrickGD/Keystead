@@ -25,20 +25,23 @@ jobs:
     name: Tests (Linux)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Third-party actions are pinned to full commit SHAs (a tag or branch can
+      # be moved); the toolchain matches rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10
         with:
+          toolchain: 1.97.0
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -71,9 +74,9 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       extension_version: ${{ steps.version.outputs.extension_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -93,27 +96,38 @@ jobs:
           KEYSTEAD_PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]')) }}
         run: node .github/scripts/release-version.mjs --write --check-tags
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10
+        with:
+          toolchain: 1.97.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
 
       # The NSIS setup is signed for the in-app updater (`<setup>.exe.sig`)
-      # with the minisign key in the TAURI_SIGNING_PRIVATE_KEY secret. Without
-      # the secret the build still succeeds, just without updater artifacts.
+      # with the minisign key in the TAURI_SIGNING_PRIVATE_KEY secret – only
+      # on builds that publish (tags v*, pushes with [release]; the same
+      # condition as the release job). Every other build (branch pushes, pull
+      # requests, workflow_dispatch) never gets the secret and produces no
+      # .sig / latest.json, so no unreviewed build is a valid update.
       - name: Build desktop app (exe + installer)
         working-directory: apps/desktop
         shell: pwsh
         env:
           KEYSTEAD_VERSION_LABEL: ${{ steps.version.outputs.version }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEYSTEAD_PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]')) }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]'))) && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-            Write-Host "::warning title=Updates not signed::The secret TAURI_SIGNING_PRIVATE_KEY is not set: building without updater artifacts (no .sig, no latest.json). Installed copies cannot update to this build in-app."
+          $publish = $env:KEYSTEAD_PUBLISH -eq 'true'
+          if (-not $publish -or [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            if ($publish) {
+              Write-Host "::warning title=Updates not signed::The secret TAURI_SIGNING_PRIVATE_KEY is not set: building without updater artifacts (no .sig, no latest.json). Installed copies cannot update to this build in-app."
+            } else {
+              Write-Host "Not a publishing build: building without updater artifacts (no .sig, no latest.json)."
+            }
             Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
             $override = Join-Path $env:RUNNER_TEMP "no-updater-artifacts.json"
             '{ "bundle": { "createUpdaterArtifacts": false } }' | Set-Content -Path $override -Encoding utf8
@@ -164,7 +178,7 @@ jobs:
           }
           Get-ChildItem $out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Keystead-${{ steps.version.outputs.version }}-windows
           path: |
@@ -187,11 +201,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           sparse-checkout: .github/scripts
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: Keystead-${{ needs.windows.outputs.version }}-windows
           path: release
@@ -233,7 +247,7 @@ jobs:
           fi
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.windows.outputs.version }}
           target_commitish: ${{ github.sha }}

@@ -15,10 +15,10 @@ import {
   X,
   Layers,
 } from "lucide-react";
-import type { ItemType, VaultItem } from "../../lib/types";
+import type { ItemListEntry, ItemType } from "../../lib/types";
 import { itemSubtitle } from "../../lib/utils";
 import { useT } from "../../i18n";
-import { useCopy } from "../../state/app";
+import { useCopy, useCopySecret } from "../../state/app";
 import { Avatar } from "../../components/Avatar";
 import { iconHost } from "../../lib/icons";
 import { EmptyState, Highlight } from "../../components/EmptyState";
@@ -115,7 +115,7 @@ function SortButton({ sort, onSort }: { sort: SortKey; onSort: (sort: SortKey) =
 export interface ItemListProps {
   title: string;
   filter: Filter;
-  items: VaultItem[];
+  items: ItemListEntry[];
   loading: boolean;
   totalInFilter: number;
   selectedId: string | null;
@@ -152,6 +152,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
 ) {
   const { t, formatRelative } = useT();
   const copy = useCopy();
+  const copySecret = useCopySecret();
   const listRef = useRef<HTMLDivElement>(null);
   const isTrash = filter.kind === "trash";
 
@@ -275,7 +276,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
                 </div>
               </div>
               {item.favorite && !isTrash && <Star className="row-star" aria-label={t("item.favorite")} />}
-              {!isTrash && item.login && (item.login.username || item.login.password) && (
+              {!isTrash && item.login && (item.login.username || item.login.hasPassword) && (
                 // Mouse shortcut for the most common task; keyboard users have Ctrl+B / Ctrl+Shift+C.
                 <div className="row-actions">
                   {item.login.username && (
@@ -293,7 +294,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
                       <UserRound />
                     </button>
                   )}
-                  {item.login.password && (
+                  {item.login.hasPassword && (
                     <button
                       type="button"
                       className="icon-btn sm"
@@ -302,7 +303,8 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
                       aria-label={t("common.copyNamed", { what: t("field.password") })}
                       onClick={(e) => {
                         e.stopPropagation();
-                        void copy(item.login?.password ?? "", { label: t("field.password"), sensitive: true });
+                        // Copied by the backend: the list holds no passwords.
+                        void copySecret(item.id, "password", t("field.password"));
                       }}
                     >
                       <KeyRound />

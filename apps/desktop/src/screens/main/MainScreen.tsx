@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, events, subscribeEffect } from "../../lib/api";
-import type { Folder, ItemType, VaultItem } from "../../lib/types";
+import type { Folder, ItemListEntry, ItemType, VaultItem } from "../../lib/types";
 import { cloneItem, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
 import { hasModalLayer } from "../../lib/layers";
 import { useT, type MessageKey } from "../../i18n";
-import { useApp, useCopy } from "../../state/app";
+import { useApp, useCopy, useCopySecret } from "../../state/app";
 import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
 import { Sidebar } from "./Sidebar";
@@ -21,6 +21,9 @@ import { useFileDropTarget } from "../../components/import/FileDrop";
 import type { ImportRequest } from "../../components/import/ImportFlow";
 import { clearStartSection, peekStartSection } from "../../lib/startView";
 
+// The item list holds redacted entries (`ItemListEntry`, no secrets). Only
+// the editor gets a full item (`get_item_for_edit`), in `editing`, which is
+// dropped again after save / cancel.
 interface EditState {
   draft: VaultItem;
   /** Snapshot to detect unsaved changes. */
@@ -40,12 +43,13 @@ export function MainScreen() {
   const toast = useToast();
   const confirm = useConfirm();
   const copy = useCopy();
+  const copySecret = useCopySecret();
   const { vault, lock, showUnlock } = useApp();
   // Via a ref: `reload` must not change (and refetch) with every context update.
   const showUnlockRef = useRef(showUnlock);
   showUnlockRef.current = showUnlock;
 
-  const [items, setItems] = useState<VaultItem[] | null>(null);
+  const [items, setItems] = useState<ItemListEntry[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [view, setView] = useState<View>(() => {
     // E.g. the setup wizard's "Anleitung" for the browser extension.
@@ -65,6 +69,13 @@ export function MainScreen() {
   useFileDropTarget((path, others) => openImport(path, others));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditState | null>(null);
+  // Bumped whenever the detail pane moves on (another item, none, another
+  // view): a `get_item_for_edit` answer for an older request is dropped
+  // instead of opening the editor.
+  const editRequest = useRef(0);
+  useEffect(() => {
+    editRequest.current += 1;
+  }, [selectedId, view]);
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSortState] = useState<SortKey>(() => (localPrefs.get("sort") === "updated" ? "updated" : "name"));
@@ -201,17 +212,31 @@ export function MainScreen() {
       setSelectedId(null);
     });
 
-  const startEdit = (item: VaultItem) => {
-    const draft = cloneItem(item);
-    if (draft.type === "login" && draft.login && draft.login.uris.length === 0) {
-      draft.login.uris = [{ uri: "", match: "domain" }];
+  /** Loads the full item (with its secrets) for the editor. */
+  const startEdit = async (item: ItemListEntry) => {
+    const request = ++editRequest.current;
+    try {
+      const draft = await api.getItemForEdit(item.id);
+      // Another item was selected, or the view changed, meanwhile.
+      if (request !== editRequest.current) return;
+      if (draft.type === "login" && draft.login && draft.login.uris.length === 0) {
+        draft.login.uris = [{ uri: "", match: "domain" }];
+      }
+      setEditing({ draft, baseline: cloneItem(draft), isNew: false, showErrors: false });
+    } catch (err) {
+      if (request !== editRequest.current) return;
+      if (err instanceof ApiError && err.code === "locked") {
+        showUnlockRef.current();
+        return;
+      }
+      toast.error(errorText(err));
+      if (err instanceof ApiError && err.code === "not_found") void reload();
     }
-    setEditing({ draft, baseline: cloneItem(draft), isNew: false, showErrors: false });
   };
 
   const cancelEdit = () => void guard(() => undefined);
 
-  const upsertLocal = (item: VaultItem) =>
+  const upsertLocal = (item: ItemListEntry) =>
     setItems((list) => {
       const current = list ?? [];
       return current.some((i) => i.id === item.id) ? current.map((i) => (i.id === item.id ? item : i)) : [...current, item];
@@ -245,7 +270,7 @@ export function MainScreen() {
 
   // ------------------------------------------------------- item actions
 
-  const trash = async (item: VaultItem) => {
+  const trash = async (item: ItemListEntry) => {
     try {
       await api.trashItem(item.id);
       upsertLocal({ ...item, deletedAt: Date.now() });
@@ -272,7 +297,7 @@ export function MainScreen() {
     }
   };
 
-  const restore = async (item: VaultItem) => {
+  const restore = async (item: ItemListEntry) => {
     try {
       await api.restoreItem(item.id);
       upsertLocal({ ...item, deletedAt: null });
@@ -283,7 +308,7 @@ export function MainScreen() {
     }
   };
 
-  const deleteForever = async (item: VaultItem) => {
+  const deleteForever = async (item: ItemListEntry) => {
     const ok = await confirm({
       title: t("trash.deleteForeverTitle"),
       message: t("trash.deleteForeverText", { name: item.name }),
@@ -319,9 +344,10 @@ export function MainScreen() {
     }
   };
 
-  const toggleFavorite = async (item: VaultItem) => {
+  const toggleFavorite = async (item: ItemListEntry) => {
     try {
-      const saved = await api.saveItem({ ...item, favorite: !item.favorite });
+      // Not `saveItem`: the list entry has no secrets to send back.
+      const saved = await api.setFavorite(item.id, !item.favorite);
       upsertLocal(saved);
     } catch (err) {
       toast.error(errorText(err));
@@ -398,9 +424,9 @@ export function MainScreen() {
       e.preventDefault();
       void lock();
     } else if (mod && e.shiftKey && key === "c") {
-      if (editing || !selected?.login?.password) return;
+      if (editing || !selected?.login?.hasPassword) return;
       e.preventDefault();
-      void copy(selected.login.password, { label: t("field.password"), sensitive: true });
+      void copySecret(selected.id, "password", t("field.password"));
     } else if (mod && !e.shiftKey && key === "b") {
       e.preventDefault();
       const username = selected?.login?.username || selected?.identity?.username;
@@ -453,7 +479,7 @@ export function MainScreen() {
           key={selected.id}
           item={selected}
           folders={folders}
-          onEdit={() => startEdit(selected)}
+          onEdit={() => void startEdit(selected)}
           onTrash={() => void trash(selected)}
           onRestore={() => void restore(selected)}
           onDeleteForever={() => void deleteForever(selected)}

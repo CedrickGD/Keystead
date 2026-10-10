@@ -221,6 +221,43 @@ fn malformed_html_does_not_panic() {
 }
 
 #[test]
+fn hostile_pages_are_parsed_in_bounded_time() {
+    // A 170 KB `<base href>` followed by ~14k icon links, padded to the
+    // 512 KiB a page may have: every link would resolve to a 170 KB URL and
+    // be compared with every earlier one (minutes of CPU, gigabytes).
+    let mut html = format!(
+        "<head><base href=\"https://x.example/{}/\">",
+        "A".repeat(170_000)
+    );
+    let mut n = 0;
+    while html.len() < MAX_BYTES - 64 {
+        html.push_str(&format!("<link rel=icon href={n}>"));
+        n += 1;
+    }
+    assert!(n > 14_000, "{n}");
+    let started = Instant::now();
+    let found = icon_candidates(&html, &page());
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+    assert_eq!(found.len(), MAX_PAGE_CANDIDATES);
+    // The oversized base is ignored: links resolve against the page.
+    assert_eq!(urls(&found[..1]), vec!["https://www.example.com/de/0"]);
+
+    // Overlong hrefs are skipped; the same link many times is one candidate.
+    let mut html = format!("<link rel=icon href=\"/{}.png\">", "b".repeat(MAX_HREF_LEN));
+    for _ in 0..5_000 {
+        html.push_str("<link rel=icon href=/same.png>");
+    }
+    let found = icon_candidates(&html, &page());
+    assert_eq!(urls(&found), vec!["https://www.example.com/same.png"]);
+
+    // Only the first MAX_HEAD_TAGS link/base tags are read.
+    let mut html = "<link rel=stylesheet href=/s.css>".repeat(MAX_HEAD_TAGS);
+    html.push_str("<link rel=icon href=/late.png>");
+    assert!(icon_candidates(&html, &page()).is_empty());
+}
+
+#[test]
 fn sizes_and_entities() {
     assert_eq!(parse_sizes("16x16 32x32"), Some(32));
     assert_eq!(parse_sizes("180X180"), Some(180));
@@ -351,7 +388,7 @@ fn the_resolver_hides_local_addresses() {
 
     // The production client uses it for every connection: even a URL the
     // policy would refuse up front never reaches a local address.
-    let fetcher = Fetcher::new("test").unwrap();
+    let fetcher = Fetcher::new().unwrap();
     let err =
         block_on(async { fetcher.client.get("https://localhost:9/").send().await }).unwrap_err();
     assert!(
@@ -593,7 +630,6 @@ fn local_fetcher(server: &Server) -> Fetcher {
         Allow::Local {
             origin: server.origin.clone(),
         },
-        "9.9.9-test",
         Duration::from_millis(1500),
         false,
     )
@@ -633,10 +669,8 @@ fn loads_the_best_linked_icon_with_a_neutral_request() {
                 .find(|(k, _)| k == name)
                 .map(|(_, v)| v.clone())
         };
-        assert_eq!(
-            header("user-agent").as_deref(),
-            Some("Keystead/9.9.9-test (icon fetcher)")
-        );
+        // Generic: no product name, no version.
+        assert_eq!(header("user-agent").as_deref(), Some("Mozilla/5.0"));
         assert_eq!(header("cookie"), None);
         assert_eq!(header("referer"), None);
         assert_eq!(header("authorization"), None);
@@ -839,7 +873,6 @@ fn offline_runs_record_nothing() {
     };
     let fetcher = Fetcher::build(
         Allow::Local { origin: closed },
-        "test",
         Duration::from_millis(500),
         false,
     )
@@ -1035,9 +1068,9 @@ fn sites_a_proxy_would_handle_are_not_fetched() {
 
     // The production fetcher reads the settings; the local test fetcher and
     // one that uses the proxy itself do not.
-    assert!(Fetcher::new("test").unwrap().proxies.is_some());
+    assert!(Fetcher::new().unwrap().proxies.is_some());
     assert!(local_fetcher(&server).proxies.is_none());
-    assert!(Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, true)
+    assert!(Fetcher::build(Allow::Public, REQUEST_TIMEOUT, true)
         .unwrap()
         .proxies
         .is_none());
@@ -1112,7 +1145,7 @@ fn the_scheduler_follows_the_vault_session() {
 #[ignore = "needs the internet"]
 fn real_sites() {
     let via_proxy = std::env::var_os("KEYSTEAD_ICON_PROXY").is_some();
-    let fetcher = Fetcher::build(Allow::Public, "test", REQUEST_TIMEOUT, via_proxy).unwrap();
+    let fetcher = Fetcher::build(Allow::Public, REQUEST_TIMEOUT, via_proxy).unwrap();
     let out_dir = std::env::var_os("KEYSTEAD_ICON_OUT").map(std::path::PathBuf::from);
     let hosts = std::env::var("KEYSTEAD_ICON_HOSTS").unwrap_or_else(|_| {
         "github.com wikipedia.org amazon.de paypal.com spiegel.de mozilla.org".into()

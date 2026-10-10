@@ -14,8 +14,8 @@
 //!   only written into the vault the run started for.
 //! * **How** ([`Fetcher`]): `GET https://<host>/` (only https, ≤ 3
 //!   redirects, each again https on the default port to a host that may be
-//!   contacted, 5 s timeout, ≤ 512 KiB, no cookies, no referrer, user agent
-//!   `Keystead/<version> (icon fetcher)`), the best `<link rel=icon |
+//!   contacted, 5 s timeout, ≤ 512 KiB, no cookies, no referrer, the
+//!   generic user agent [`USER_AGENT`] – no product name or version), the best `<link rel=icon |
 //!   shortcut icon | apple-touch-icon>` of the page's head (PNG/ICO
 //!   preferred, ≥ 32 px; no SVG, `data:` only as `image/png;base64`), then
 //!   `https://<host>/favicon.ico`. Decoded (PNG, ICO, JPEG, GIF, WebP; at
@@ -96,6 +96,14 @@ const MAX_REDIRECTS: usize = 3;
 const MAX_BYTES: usize = 512 * 1024;
 /// Icon links of a page tried before `/favicon.ico`.
 const MAX_CANDIDATES: usize = 3;
+/// Bounds of the HTML step (a hostile page must not make it expensive):
+/// icon links collected per page (the first ones in document order), `link`
+/// and `base` tags read from its head, and the length of a `<base href>` or
+/// link `href` that is used at all (`data:` links are bounded by
+/// [`MAX_BYTES`] instead).
+const MAX_PAGE_CANDIDATES: usize = 32;
+const MAX_HEAD_TAGS: usize = 1024;
+const MAX_HREF_LEN: usize = 2048;
 /// Decoder limits: largest image side (no favicon needs more; it bounds the
 /// decoding work per image) and decoder memory.
 const MAX_DIMENSION: u32 = 1024;
@@ -108,6 +116,11 @@ const MIN_DIMENSION: u32 = 8;
 /// the browser is capped at 1 MiB).
 pub const BRIDGE_ICON_ROWS: usize = 20;
 pub const BRIDGE_ICON_MAX_LEN: usize = 16 * 1024;
+
+/// The user agent of every icon request: generic, so the sites (and anyone
+/// who sees many of these requests) do not learn that this address runs
+/// Keystead, nor which version.
+const USER_AGENT: &str = "Mozilla/5.0";
 
 const ACCEPT_HTML: &str = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5";
 const ACCEPT_IMAGE: &str = "image/png,image/x-icon,image/webp,image/*;q=0.8,*/*;q=0.5";
@@ -131,7 +144,7 @@ enum Signal {
 }
 
 /// The icon scheduler's view of the vault session, held by [`Core`]: the
-/// state hooks (`install_vault`, `finish_lock`, `mutate_with`, settings)
+/// state hooks (`install_vault_since`, `finish_lock`, `mutate_with`, settings)
 /// call it; a run started under an older `generation` stops.
 #[derive(Default)]
 pub struct IconTracker {
@@ -211,7 +224,7 @@ enum RunOutcome {
 
 /// Starts the scheduler thread (GUI mode).
 pub fn spawn_scheduler(core: &Arc<Core>) {
-    match Fetcher::new(core.app_version()) {
+    match Fetcher::new() {
         Ok(fetcher) => {
             start_scheduler(core, fetcher);
         }
@@ -815,8 +828,8 @@ pub(crate) struct Fetcher {
 
 impl Fetcher {
     /// The production fetcher: no proxy, [`PublicResolver`], https only.
-    pub fn new(app_version: &str) -> Result<Self, String> {
-        Self::build(Allow::Public, app_version, REQUEST_TIMEOUT, false)
+    pub fn new() -> Result<Self, String> {
+        Self::build(Allow::Public, REQUEST_TIMEOUT, false)
     }
 
     /// The current proxy settings, if this fetcher has to respect them.
@@ -824,12 +837,7 @@ impl Fetcher {
         self.proxies.map(|read| read())
     }
 
-    fn build(
-        allow: Allow,
-        app_version: &str,
-        timeout: Duration,
-        use_env_proxy: bool,
-    ) -> Result<Self, String> {
+    fn build(allow: Allow, timeout: Duration, use_env_proxy: bool) -> Result<Self, String> {
         // `rustls-no-provider` (shared with the updater): install ring as
         // the process default before the first client is built.
         if rustls::crypto::CryptoProvider::get_default().is_none() {
@@ -840,7 +848,7 @@ impl Fetcher {
         let policy = Arc::new(Policy { allow });
         let redirects = Arc::clone(&policy);
         let mut builder = reqwest::Client::builder()
-            .user_agent(format!("Keystead/{app_version} (icon fetcher)"))
+            .user_agent(USER_AGENT)
             .timeout(timeout)
             .connect_timeout(timeout)
             .referer(false)
@@ -889,11 +897,15 @@ impl Fetcher {
         let mut tried: HashSet<Url> = HashSet::new();
         match self.get(&page, ACCEPT_HTML, true, stop).await {
             Ok((final_url, body)) => {
-                let html = String::from_utf8_lossy(&body);
-                for candidate in icon_candidates(&html, &final_url)
-                    .into_iter()
-                    .take(MAX_CANDIDATES)
-                {
+                // CPU work on the blocking pool (like decoding), so the
+                // deadline and cancelling still apply and the async runtime
+                // that serves the app's commands is never held up.
+                let candidates = tauri::async_runtime::spawn_blocking(move || {
+                    icon_candidates(&String::from_utf8_lossy(&body), &final_url)
+                })
+                .await
+                .unwrap_or_default();
+                for candidate in candidates.into_iter().take(MAX_CANDIDATES) {
                     let bytes = match candidate.source {
                         Source::Png(bytes) => Ok(bytes),
                         Source::Url(url) => {
@@ -1053,18 +1065,27 @@ impl Tag {
 
 /// The icon links of a page's head, best first (see [`Candidate::rank`]).
 /// Relative links are resolved against `<base href>` or `page`. SVG icons
-/// and `data:` links other than `data:image/png;base64` are left out.
+/// and `data:` links other than `data:image/png;base64` are left out. The
+/// work is bounded: at most [`MAX_PAGE_CANDIDATES`] links (the first ones),
+/// hrefs and `<base href>` longer than [`MAX_HREF_LEN`] are ignored, and
+/// duplicates are found through a hash set.
 pub(crate) fn icon_candidates(html: &str, page: &Url) -> Vec<Candidate> {
     let tags = head_tags(html);
     let base = tags
         .iter()
         .find(|t| t.name == "base")
         .and_then(|t| t.attr("href"))
-        .and_then(|href| page.join(href.trim()).ok())
+        .map(str::trim)
+        .filter(|href| href.len() <= MAX_HREF_LEN)
+        .and_then(|href| page.join(href).ok())
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .unwrap_or_else(|| page.clone());
     let mut out: Vec<Candidate> = Vec::new();
+    let mut seen_urls: HashSet<Url> = HashSet::new();
     for tag in tags.iter().filter(|t| t.name == "link") {
+        if out.len() >= MAX_PAGE_CANDIDATES {
+            break;
+        }
         let rel = tag.attr("rel").unwrap_or("").to_ascii_lowercase();
         let tokens: Vec<&str> = rel.split_ascii_whitespace().collect();
         let apple = tokens
@@ -1091,6 +1112,9 @@ pub(crate) fn icon_candidates(html: &str, page: &Url) -> Vec<Candidate> {
                 None => continue,
             }
         } else {
+            if href.len() > MAX_HREF_LEN {
+                continue;
+            }
             let Ok(url) = base.join(href) else { continue };
             if !matches!(url.scheme(), "http" | "https") {
                 continue;
@@ -1110,7 +1134,12 @@ pub(crate) fn icon_candidates(html: &str, page: &Url) -> Vec<Candidate> {
             };
             (Source::Url(url), kind)
         };
-        if out.iter().any(|c| c.source == source) {
+        let duplicate = match &source {
+            Source::Url(url) => !seen_urls.insert(url.clone()),
+            // At most MAX_PAGE_CANDIDATES comparisons.
+            Source::Png(_) => out.iter().any(|c| c.source == source),
+        };
+        if duplicate {
             continue;
         }
         out.push(Candidate { source, kind, size });
@@ -1146,13 +1175,17 @@ fn decode_png_data_url(href: &str) -> Option<Vec<u8>> {
     keystead_core::crypto::b64_decode(&data).ok()
 }
 
-/// `link` and `base` start tags before `<body>` / `</head>`, skipping
-/// comments and the content of `script`, `style` and similar elements.
+/// `link` and `base` start tags before `<body>` / `</head>` (at most
+/// [`MAX_HEAD_TAGS`]), skipping comments and the content of `script`,
+/// `style` and similar elements.
 fn head_tags(html: &str) -> Vec<Tag> {
     let b = html.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
-    while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
+    while out.len() < MAX_HEAD_TAGS {
+        let Some(off) = b[i..].iter().position(|&c| c == b'<') else {
+            break;
+        };
         let start = i + off + 1;
         i = start;
         let rest = &b[start..];

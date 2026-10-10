@@ -6,9 +6,9 @@
 //! example `Error::Conflict`) never leaves memory and disk out of sync.
 //!
 //! Replacing a secret that opens the vault (master password, recovery key)
-//! also replaces the vault key where possible ("rotation"), so the old
-//! secret together with an older copy of the file (the `.bak`, a backup, a
-//! synced version) cannot decrypt the current or any later revision.
+//! also replaces the vault key ("rotation"), so the old secret together
+//! with an older copy of the file (the `.bak`, a backup, a synced version)
+//! cannot decrypt the current or any later revision.
 
 use std::path::{Path, PathBuf};
 
@@ -478,15 +478,24 @@ impl UnlockedVault {
         mode: ConflictMode,
     ) -> Result<ImportReport> {
         let now = now_ms();
+        // Lists for the UI are capped (`IMPORT_LIST_LIMIT`), the counts are
+        // complete – a file with millions of duplicates or warnings must not
+        // turn into a report of that size.
         let mut report = ImportReport {
             skipped: plan.invalid,
-            duplicates: plan.duplicates.clone(),
-            warnings: plan.warnings.clone(),
+            duplicates: import::first(&plan.duplicates),
+            duplicate_count: plan.duplicates.len(),
+            warnings: import::first(&plan.warnings),
+            warning_count: plan.warning_count(),
             ..Default::default()
         };
         self.mutate_if_changed(move |data| {
             let resolved = import::resolve_import(&data.items, plan, mode);
-            report.duplicates.extend(resolved.duplicates);
+            report.duplicate_count += resolved.duplicates.len();
+            let room = import::IMPORT_LIST_LIMIT.saturating_sub(report.duplicates.len());
+            report
+                .duplicates
+                .extend(resolved.duplicates.into_iter().take(room));
             report.conflicts_skipped = resolved.conflicts_skipped;
             for update in resolved.updates {
                 let import::PendingUpdate {
@@ -533,38 +542,39 @@ impl UnlockedVault {
             .is_ok_and(|k| crypto::ct_eq(k.as_slice(), self.key.as_slice()))
     }
 
-    /// Changes the master password.
+    /// Changes the master password and rotates the vault key: a fresh key
+    /// encrypts the data, so the old password does not open this or any
+    /// later revision, even together with an older copy of the file. No
+    /// `.bak` of the previous revision is left behind.
     ///
-    /// Without a recovery key the vault key is rotated: a fresh key encrypts
-    /// the data, so the old password does not open this or any later
-    /// revision even together with an older copy of the file. With a
-    /// recovery key only the vault key is re-wrapped – the recovery code is
-    /// not known here and a new vault key would make it useless; replacing
-    /// the recovery key afterwards ([`Self::create_recovery_key`]) rotates
-    /// the key and so also revokes the old password. Either way no `.bak`
-    /// of the previous revision is left behind.
-    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
+    /// The recovery code of an existing recovery key is not known here, and
+    /// the old recovery box only opens the old key. So a vault with a
+    /// recovery key gets a **new** one (wrapping the new key), formatted as
+    /// `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` and returned as `Some`; the old code
+    /// stops working like the old password. `None` without recovery key.
+    pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<Option<String>> {
         if !self.verify_master_password(current) {
             return Err(Error::WrongPassword);
         }
         if new.is_empty() {
             return Err(Error::invalid("password_empty"));
         }
-        let params = self.file.kdf_params();
+        let key = crypto::random_key()?;
         let mut header = self.file.clone();
-        let rekey = if header.has_recovery() {
-            let master_kek = header.set_master_password_kek(&self.key, new, params)?;
-            Rekey {
-                key: self.key.clone(),
-                master_kek,
-            }
-        } else {
-            let key = crypto::random_key()?;
-            let master_kek = header.set_master_password_kek(&key, new, params)?;
-            Rekey { key, master_kek }
-        };
+        let master_kek = header.set_master_password_kek(&key, new, self.file.kdf_params())?;
+        let mut code = None;
+        if header.has_recovery() {
+            let new_code = format::generate_recovery_code()?;
+            header.set_recovery_code(&key, &new_code)?;
+            code = Some(new_code);
+        }
         let data = self.data.clone();
-        self.commit(header, data, Some(rekey))
+        if let Err(e) = self.commit(header, data, Some(Rekey { key, master_kek })) {
+            // Never written: the code opens nothing.
+            code.zeroize();
+            return Err(e);
+        }
+        Ok(code)
     }
 
     /// Creates a new recovery key (replacing an existing one) and returns

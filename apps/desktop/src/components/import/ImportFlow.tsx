@@ -455,6 +455,8 @@ export function ImportFlow({
 
   if (step === "preview" && analysis && preview) {
     const conflicts = preview.conflicts;
+    // The lists carry at most 100 entries; the counts are complete.
+    const duplicateCount = preview.duplicateCount ?? preview.duplicates.length;
     const toImport = preview.newCount + (mode === "skip" ? 0 : conflicts.length);
     const nothingToDo = preview.newCount === 0 && conflicts.length === 0;
     const body = (
@@ -464,11 +466,11 @@ export function ImportFlow({
         <div className="import-stats">
           <Stat tone="new" icon={<Plus />} n={preview.newCount} label={t("importFlow.statNew")} hint={t("importFlow.statNewHint")} />
           {/* Only what the file contains; "neu" always (also 0). */}
-          {preview.duplicates.length > 0 && (
+          {duplicateCount > 0 && (
             <Stat
               tone="same"
               icon={<CopyCheck />}
-              n={preview.duplicates.length}
+              n={duplicateCount}
               label={t("importFlow.statDuplicates")}
               hint={t("importFlow.statSkippedHint")}
             />
@@ -497,10 +499,10 @@ export function ImportFlow({
           <div className="callout callout-success import-all-present">
             <CircleCheck />
             <div>
-              <strong>{preview.duplicates.length > 0 ? t("importFlow.allPresentTitle") : t("importFlow.emptyTitle")}</strong>
+              <strong>{duplicateCount > 0 ? t("importFlow.allPresentTitle") : t("importFlow.emptyTitle")}</strong>
               <div>
-                {preview.duplicates.length > 0
-                  ? tp("importFlow.allPresentText", preview.duplicates.length, { file: analysis.fileName })
+                {duplicateCount > 0
+                  ? tp("importFlow.allPresentText", duplicateCount, { file: analysis.fileName })
                   : t("importFlow.emptyText", { file: analysis.fileName })}
               </div>
             </div>
@@ -521,14 +523,14 @@ export function ImportFlow({
           </section>
         )}
 
-        {preview.duplicates.length > 0 && (
+        {duplicateCount > 0 && (
           <details className="import-details">
-            <summary>{tp("importFlow.duplicatesList", preview.duplicates.length)}</summary>
-            <MatchList items={preview.duplicates} />
+            <summary>{tp("importFlow.duplicatesList", duplicateCount)}</summary>
+            <MatchList items={preview.duplicates} total={duplicateCount} />
           </details>
         )}
 
-        {preview.warnings.length > 0 && <Warnings warnings={preview.warnings} />}
+        {preview.warnings.length > 0 && <Warnings warnings={preview.warnings} total={preview.warningCount} />}
         {error && (
           <div className="callout callout-danger" role="alert">
             <CircleAlert />
@@ -583,11 +585,22 @@ export function ImportFlow({
 
   // ------------------------------------------------------------------ result
 
-  const done = report ?? { imported: 0, updated: 0, skipped: 0, duplicates: [], conflictsSkipped: [], warnings: [] };
+  const done: ImportReport = report ?? {
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    duplicates: [],
+    duplicateCount: 0,
+    conflictsSkipped: [],
+    warnings: [],
+    warningCount: 0,
+  };
   const skippedEntries: { match: ImportMatch; reason: "exists" | "conflict" }[] = [
     ...done.conflictsSkipped.map((match) => ({ match, reason: "conflict" as const })),
     ...done.duplicates.map((match) => ({ match, reason: "exists" as const })),
   ];
+  // `duplicates` lists at most 100 entries; `duplicateCount` counts all.
+  const skippedTotal = done.conflictsSkipped.length + (done.duplicateCount ?? done.duplicates.length);
   const body = (
     <div className="import-flow">
       {noticeBox}
@@ -598,21 +611,22 @@ export function ImportFlow({
         <div className="import-result-counts">
           <span className="import-count new">{t("importFlow.doneImported", { n: done.imported })}</span>
           <span className="import-count">{t("importFlow.doneUpdated", { n: done.updated })}</span>
-          <span className="import-count">{t("importFlow.doneSkipped", { n: skippedEntries.length })}</span>
+          <span className="import-count">{t("importFlow.doneSkipped", { n: skippedTotal })}</span>
         </div>
       </div>
-      {skippedEntries.length > 0 && (
+      {skippedTotal > 0 && (
         <details className="import-details">
-          <summary>{t("importFlow.skippedList", { n: skippedEntries.length })}</summary>
+          <summary>{t("importFlow.skippedList", { n: skippedTotal })}</summary>
           <MatchList
             items={skippedEntries.map((e) => e.match)}
+            total={skippedTotal}
             reasons={skippedEntries.map((e) =>
               e.reason === "conflict" ? t("importFlow.reasonConflict") : t("importFlow.reasonExists"),
             )}
           />
         </details>
       )}
-      {done.warnings.length > 0 && <Warnings warnings={done.warnings} />}
+      {done.warnings.length > 0 && <Warnings warnings={done.warnings} total={done.warningCount} />}
     </div>
   );
   return children({
@@ -704,10 +718,19 @@ function Stat({
   );
 }
 
-/** Name, username and site of import entries (never a password). */
-function MatchList({ items, reasons }: { items: (ImportMatch | ImportConflict)[]; reasons?: string[] }) {
+/** Name, username and site of import entries (never a password). `total`: all entries, when `items` is only the first part. */
+function MatchList({
+  items,
+  reasons,
+  total,
+}: {
+  items: (ImportMatch | ImportConflict)[];
+  reasons?: string[];
+  total?: number;
+}) {
   const { t } = useT();
   const shown = items.slice(0, LIST_LIMIT);
+  const all = Math.max(total ?? items.length, items.length);
   return (
     <ul className="import-list">
       {shown.map((item, idx) => {
@@ -734,9 +757,7 @@ function MatchList({ items, reasons }: { items: (ImportMatch | ImportConflict)[]
           </li>
         );
       })}
-      {items.length > shown.length && (
-        <li className="import-list-more">{t("importFlow.more", { n: items.length - shown.length })}</li>
-      )}
+      {all > shown.length && <li className="import-list-more">{t("importFlow.more", { n: all - shown.length })}</li>}
     </ul>
   );
 }
@@ -781,15 +802,19 @@ function ModeChoice({
   );
 }
 
-function Warnings({ warnings }: { warnings: string[] }) {
-  const { tp } = useT();
+/** `total`: all warnings of the file (the list carries at most 100). */
+function Warnings({ warnings, total }: { warnings: string[]; total?: number }) {
+  const { t, tp } = useT();
+  const all = Math.max(total ?? warnings.length, warnings.length);
+  const shown = warnings.slice(0, LIST_LIMIT);
   return (
     <details className="import-details subtle">
-      <summary>{tp("importFlow.warnings", warnings.length)}</summary>
+      <summary>{tp("importFlow.warnings", all)}</summary>
       <ul className="import-warnings">
-        {warnings.slice(0, LIST_LIMIT).map((warning, idx) => (
+        {shown.map((warning, idx) => (
           <li key={idx}>{warning}</li>
         ))}
+        {all > shown.length && <li className="import-list-more">{t("importFlow.more", { n: all - shown.length })}</li>}
       </ul>
     </details>
   );

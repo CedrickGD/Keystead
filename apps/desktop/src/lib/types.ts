@@ -73,6 +73,86 @@ export interface VaultItem {
   deletedAt: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Redacted items (`list_items`, `save_item`, `set_favorite`), see "Secrets and
+// the webview" in docs/ARCHITECTURE.md. Mirrors `ItemListEntry` in
+// apps/desktop/src-tauri/src/secrets.rs. A secret reaches the UI only through
+// `reveal_secret` (one value) and `get_item_for_edit` (the full `VaultItem`).
+// ---------------------------------------------------------------------------
+
+/** A login without its password and TOTP key. */
+export interface LoginListData {
+  username: string;
+  /** Always "": the password stays in the backend. */
+  password: "";
+  hasPassword: boolean;
+  uris: LoginUri[];
+  /** Always "": the TOTP key stays in the backend (`totp_for_item` gives the code). */
+  totp: "";
+  hasTotp: boolean;
+  passwordRevisedAt: number | null;
+}
+
+/** A card without its number and security code. */
+export interface CardListData {
+  cardholderName: string;
+  brand: string;
+  /** "•••• 1234" (the last 4 digits of a number with at least 8), "••••" for a shorter one, "" for none. */
+  number: string;
+  hasNumber: boolean;
+  expMonth: string;
+  expYear: string;
+  /** Always "". */
+  code: "";
+  hasCode: boolean;
+}
+
+export interface CustomFieldListEntry {
+  name: string;
+  /** "" for `hidden` fields (`hasValue` says whether there is one). */
+  value: string;
+  kind: FieldKind;
+  hasValue: boolean;
+}
+
+/** An old password: only when it was replaced (`reveal_secret` { history: index } gives it). */
+export interface PasswordHistoryListEntry {
+  replacedAt: number;
+}
+
+/** An item as the item list holds it: `VaultItem` without its secrets. */
+export interface ItemListEntry {
+  id: string;
+  type: ItemType;
+  name: string;
+  folderId: string | null;
+  favorite: boolean;
+  notes: string;
+  login: LoginListData | null;
+  card: CardListData | null;
+  identity: IdentityData | null;
+  fields: CustomFieldListEntry[];
+  /** Newest first, like `VaultItem.passwordHistory`. */
+  passwordHistory: PasswordHistoryListEntry[];
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}
+
+/**
+ * One secret of an item (`reveal_secret`, `copy_secret_field`): "totp" is the
+ * stored key, "totpCode" the current code; `custom` / `history` index
+ * `fields` / `passwordHistory`.
+ */
+export type SecretField =
+  | "password"
+  | "totp"
+  | "totpCode"
+  | "cardNumber"
+  | "cardCode"
+  | { custom: number }
+  | { history: number };
+
 export interface Folder {
   id: string;
   name: string;
@@ -133,6 +213,14 @@ export interface AppInfo {
 export interface SessionState {
   unlocked: boolean;
   vault: VaultInfo | null;
+}
+
+/**
+ * `change_master_password`: the vault key is rotated, so an existing recovery
+ * key is replaced – the new one (show it once) or `null` without recovery key.
+ */
+export interface MasterPasswordChanged {
+  newRecoveryKey: string | null;
 }
 
 export type GeneratorKind = "password" | "passphrase";
@@ -212,15 +300,17 @@ export interface ImportConflict extends ImportMatch {
   reason: "password" | "totp";
 }
 
-/** Secret-free summary of an analysed import file (`analyze_import`). */
+/** Secret-free summary of an analysed import file (`analyze_import`). `duplicates` and `warnings` hold at most 100 entries; the counts are complete. `conflicts` is complete. */
 export interface ImportPreview {
   newCount: number;
   duplicates: ImportMatch[];
+  duplicateCount: number;
   conflicts: ImportConflict[];
   /** Rows/entries of the file that could not be read (see `warnings`). */
   invalid: number;
   /** English, technical. */
   warnings: string[];
+  warningCount: number;
 }
 
 /** Answer of `analyze_import`. `preview` null (and `importId` null) = ask for the file's password and analyse again. */
@@ -242,11 +332,14 @@ export interface ImportReport {
   updated: number;
   /** Invalid rows/entries of the file. */
   skipped: number;
-  /** Not imported: already in the vault (or twice in the file). */
+  /** Not imported: already in the vault (or twice in the file) – at most 100; `duplicateCount` counts all. */
   duplicates: ImportMatch[];
+  duplicateCount: number;
   /** Not imported: conflicts that were skipped. */
   conflictsSkipped: ImportMatch[];
+  /** At most 100; `warningCount` counts all. */
   warnings: string[];
+  warningCount: number;
 }
 
 export interface LegacyVaultInfo {

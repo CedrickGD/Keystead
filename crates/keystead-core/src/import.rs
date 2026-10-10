@@ -38,16 +38,27 @@ mod detect;
 mod plan;
 
 pub use detect::{detect_import, DetectedImport};
+pub(crate) use plan::{first, resolve_import, take_over, PendingUpdate};
 pub use plan::{
     plan_import, ConflictMode, ConflictReason, ImportConflict, ImportMatch, ImportPlan,
     ImportPreview,
 };
-pub(crate) use plan::{resolve_import, take_over, PendingUpdate};
 
 /// Largest file [`detect_import`] / [`read_import`] accept (50 MiB):
 /// larger files are refused with `unsupported:file_too_large` before they
 /// are read.
 pub const IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Warnings a parsed file keeps ([`ParsedImport::warnings`]); further ones
+/// are only counted (`warnings_omitted`), so a crafted file with millions of
+/// invalid entries cannot make millions of strings.
+pub const IMPORT_WARNING_LIMIT: usize = 1000;
+
+/// Entries of each list an [`ImportPreview`] or [`ImportReport`] carries to
+/// the UI (`duplicates`, `warnings`); the totals are in `duplicateCount` /
+/// `warningCount`. Conflicts are always complete (at most one per existing
+/// login, and the UI decides about each).
+pub const IMPORT_LIST_LIMIT: usize = 100;
 
 /// Result of an import into a vault (returned to the UI).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,14 +73,18 @@ pub struct ImportReport {
     /// Invalid rows/entries of the file (see `warnings`).
     pub skipped: usize,
     /// Items not imported because they already exist (or appear twice in
-    /// the file: `existingId` is empty then).
+    /// the file: `existingId` is empty then). The first
+    /// [`IMPORT_LIST_LIMIT`]; all of them are counted in `duplicate_count`.
     pub duplicates: Vec<ImportMatch>,
+    pub duplicate_count: usize,
     /// Conflicts that were not imported: [`ConflictMode::Skip`], removed
     /// from `plan.conflicts`, nothing to take over with
     /// [`ConflictMode::Update`], or a conflict that arose or moved to
     /// another login after the preview (never applied).
     pub conflicts_skipped: Vec<ImportMatch>,
+    /// The first [`IMPORT_LIST_LIMIT`] warnings; `warning_count` counts all.
     pub warnings: Vec<String>,
+    pub warning_count: usize,
 }
 
 /// A supported import file format (the `import_data` command values).
@@ -144,8 +159,11 @@ pub struct LegacyVaultInfo {
 pub struct ParsedImport {
     pub items: Vec<VaultItem>,
     pub folders: Vec<Folder>,
-    /// English, one per skipped entry or lossy conversion.
+    /// English, one per skipped entry or lossy conversion – the first
+    /// [`IMPORT_WARNING_LIMIT`].
     pub warnings: Vec<String>,
+    /// Warnings beyond [`IMPORT_WARNING_LIMIT`] (counted, not kept).
+    pub warnings_omitted: usize,
     /// Rows/entries that could not be imported (each has a warning).
     pub invalid: usize,
 }
@@ -153,7 +171,17 @@ pub struct ParsedImport {
 impl ParsedImport {
     fn skip(&mut self, warning: String) {
         self.invalid += 1;
-        self.warnings.push(warning);
+        self.warn(warning);
+    }
+
+    /// Keeps the warning while fewer than [`IMPORT_WARNING_LIMIT`] are
+    /// kept, else only counts it.
+    fn warn(&mut self, warning: String) {
+        if self.warnings.len() < IMPORT_WARNING_LIMIT {
+            self.warnings.push(warning);
+        } else {
+            self.warnings_omitted += 1;
+        }
     }
 
     fn into_parts(mut self) -> (Vec<VaultItem>, Vec<Folder>, Vec<String>) {
@@ -172,6 +200,7 @@ impl std::fmt::Debug for ParsedImport {
             .field("items", &self.items.len())
             .field("folders", &self.folders.len())
             .field("warnings", &self.warnings.len())
+            .field("warnings_omitted", &self.warnings_omitted)
             .field("invalid", &self.invalid)
             .finish()
     }
@@ -240,6 +269,39 @@ fn read_text_limited(path: &Path) -> Result<Zeroizing<String>> {
 // ---------------------------------------------------------------------------
 // Generic JSON helpers (lenient: numbers/bools are accepted as strings).
 // ---------------------------------------------------------------------------
+
+/// Overwrites every string value of a JSON tree (object keys are field
+/// names, not secrets, and stay).
+pub(crate) fn wipe_value(value: &mut Value) {
+    match value {
+        Value::String(s) => zeroize::Zeroize::zeroize(s),
+        Value::Array(items) => items.iter_mut().for_each(wipe_value),
+        Value::Object(map) => map.values_mut().for_each(wipe_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// A JSON tree parsed from an import file (a decrypted VaultX 1.x payload,
+/// a plaintext Bitwarden export): its strings are overwritten when it is
+/// dropped – on every path, errors included – so the file's secrets do not
+/// stay behind in freed memory. Best effort: serde_json's own scratch
+/// buffers (escaped strings, a tree abandoned by a parse error) are not
+/// covered.
+pub(crate) struct WipedValue(pub(crate) Value);
+
+impl std::ops::Deref for WipedValue {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl Drop for WipedValue {
+    fn drop(&mut self) {
+        wipe_value(&mut self.0);
+    }
+}
 
 fn value_str(v: Option<&Value>) -> String {
     match v {
@@ -455,7 +517,7 @@ fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Option<Zeroizing<Vec<u
 }
 
 enum Attempt {
-    Plain(Value),
+    Plain(WipedValue),
     WrongKey,
 }
 
@@ -466,7 +528,7 @@ fn legacy_decrypt(meta: &LegacyMeta, enc_key: &[u8], mac_key: Option<&[u8]>) -> 
             return Err(Error::corrupt("legacy vault: integrity check failed"));
         }
         // VaultX 1.x stored a vault without entries as empty Data.
-        return Ok(Attempt::Plain(Value::Object(Map::new())));
+        return Ok(Attempt::Plain(WipedValue(Value::Object(Map::new()))));
     }
     if meta.iv.len() != 16 {
         return Err(Error::corrupt("legacy vault: invalid IV"));
@@ -499,7 +561,10 @@ fn legacy_decrypt(meta: &LegacyMeta, enc_key: &[u8], mac_key: Option<&[u8]>) -> 
             Ok(Attempt::WrongKey)
         };
     };
-    match serde_json::from_slice::<Value>(util::strip_bom_bytes(&plain)) {
+    // Guarded at once: also a tree that is not used (not an object, e.g.
+    // garbage of a wrong key that happens to parse) is wiped.
+    let parsed = serde_json::from_slice::<Value>(util::strip_bom_bytes(&plain)).map(WipedValue);
+    match parsed {
         Ok(v) if v.is_object() => Ok(Attempt::Plain(v)),
         _ if mac_ok => Err(Error::corrupt("legacy vault: payload is not valid JSON")),
         // Without a MAC a wrong key occasionally yields valid padding.
@@ -507,7 +572,7 @@ fn legacy_decrypt(meta: &LegacyMeta, enc_key: &[u8], mac_key: Option<&[u8]>) -> 
     }
 }
 
-fn legacy_unlock(meta: &LegacyMeta, password: &str) -> Result<Value> {
+fn legacy_unlock(meta: &LegacyMeta, password: &str) -> Result<WipedValue> {
     let material = pbkdf2_sha1(password, &meta.salt, meta.iterations, 64);
     if let Attempt::Plain(v) = legacy_decrypt(meta, &material[..32], Some(&material[32..]))? {
         return Ok(v);
@@ -591,8 +656,8 @@ fn parse_legacy_bytes(bytes: &[u8], password: &str) -> Result<ParsedImport> {
     let Some(obj) = plain.as_object() else {
         return Err(Error::corrupt("legacy vault: payload is not an object"));
     };
-    if !get_ci_str(obj, "TotpSecret").is_empty() {
-        out.warnings.push(
+    if !Zeroizing::new(get_ci_str(obj, "TotpSecret")).is_empty() {
+        out.warn(
             "The two-factor unlock (TotpSecret) of the old vault is not imported; Keystead does not use it."
                 .to_owned(),
         );
@@ -1179,20 +1244,30 @@ fn parse_csv(text: &str) -> Result<ParsedImport> {
 
     let mut out = ParsedImport::default();
     let mut folders = FolderSet::default();
-    for (index, result) in reader.records().enumerate() {
+    // One record for all rows, overwritten at the end (best effort: the
+    // reader's own read buffer and a record buffer that had to grow are
+    // freed without wiping).
+    let mut record = WipedRecord::new();
+    let mut index = 0usize;
+    loop {
         let line = index + 2;
-        let record = match result {
-            Ok(r) => r,
+        index += 1;
+        match reader.read_record(record.get_mut()) {
+            Ok(true) => {}
+            Ok(false) => break,
             Err(e) => {
+                record.track();
                 let line = e.position().map_or(line as u64, |p| p.line());
                 out.skip(format!("Row {line} skipped: {e}"));
                 continue;
             }
-        };
+        }
+        record.track();
+        let record = record.get();
         let line = record.position().map_or(line as u64, |p| p.line());
         let row = Row {
             headers: &headers,
-            record: &record,
+            record,
         };
         if row.is_blank() {
             continue;
@@ -1211,6 +1286,56 @@ fn parse_csv(text: &str) -> Result<ParsedImport> {
     Ok(out)
 }
 
+/// The one CSV record [`parse_csv`] reads every row into; its buffer is
+/// overwritten with zeros when it is dropped (as far as any row filled it).
+struct WipedRecord {
+    record: Option<csv::StringRecord>,
+    /// Longest content (all fields) any row had.
+    max_len: usize,
+}
+
+impl WipedRecord {
+    fn new() -> Self {
+        WipedRecord {
+            // Room for typical rows, so the buffer rarely has to grow (and
+            // leave an unwiped copy behind).
+            record: Some(csv::StringRecord::with_capacity(4096, 32)),
+            max_len: 0,
+        }
+    }
+
+    fn get(&self) -> &csv::StringRecord {
+        self.record.as_ref().expect("present until dropped")
+    }
+
+    fn get_mut(&mut self) -> &mut csv::StringRecord {
+        self.record.as_mut().expect("present until dropped")
+    }
+
+    /// Notes how far the current row filled the buffer.
+    fn track(&mut self) {
+        self.max_len = self.max_len.max(self.get().as_slice().len());
+    }
+}
+
+impl Drop for WipedRecord {
+    fn drop(&mut self) {
+        if let Some(record) = self.record.take() {
+            zero_record(record, self.max_len);
+        }
+    }
+}
+
+/// Overwrites the first `len` bytes of the record's buffer with zeros:
+/// `clear` keeps the buffer, and one field of zeros as long as the longest
+/// row overwrites everything any row put there.
+fn zero_record(record: csv::StringRecord, len: usize) -> csv::ByteRecord {
+    let mut bytes = record.into_byte_record();
+    bytes.clear();
+    bytes.push_field(&vec![0u8; len]);
+    bytes
+}
+
 /// Imports a CSV export. Detects Bitwarden, Firefox, Chrome/Edge and
 /// legacy-VaultX/generic column layouts; ',' ';' or tab separated; a UTF-8
 /// BOM is ignored. Returns items, folders and warnings.
@@ -1222,7 +1347,7 @@ pub fn import_csv(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String
 // Bitwarden JSON
 // ---------------------------------------------------------------------------
 
-fn bw_match(v: Option<&Value>, warnings: &mut Vec<String>, item_name: &str) -> UriMatch {
+fn bw_match(v: Option<&Value>, out: &mut ParsedImport, item_name: &str) -> UriMatch {
     match get_i64(v) {
         None | Some(0) => UriMatch::Domain,
         Some(1) => UriMatch::Host,
@@ -1230,7 +1355,7 @@ fn bw_match(v: Option<&Value>, warnings: &mut Vec<String>, item_name: &str) -> U
         Some(3) => UriMatch::Exact,
         Some(5) => UriMatch::Never,
         Some(4) => {
-            warnings.push(format!(
+            out.warn(format!(
                 "\"{item_name}\": regular-expression URL matching is not supported; domain matching is used."
             ));
             UriMatch::Domain
@@ -1343,7 +1468,7 @@ fn bw_item(obj: &Map<String, Value>, out: &mut ParsedImport) {
                         .filter_map(|u| {
                             let uri = get_str(u, "uri").trim().to_owned();
                             (!uri.is_empty()).then(|| LoginUri {
-                                match_type: bw_match(u.get("match"), &mut out.warnings, &label),
+                                match_type: bw_match(u.get("match"), out, &label),
                                 uri,
                             })
                         })
@@ -1355,8 +1480,7 @@ fn bw_item(obj: &Map<String, Value>, out: &mut ParsedImport) {
                 .and_then(Value::as_array)
                 .is_some_and(|a| !a.is_empty())
             {
-                out.warnings
-                    .push(format!("\"{label}\": passkeys are not imported."));
+                out.warn(format!("\"{label}\": passkeys are not imported."));
             }
             item.login = Some(LoginData {
                 username: get_str(login, "username"),
@@ -1432,8 +1556,7 @@ fn bw_item(obj: &Map<String, Value>, out: &mut ParsedImport) {
         }
         ItemType::Note => {
             if let Some(ssh) = obj.get("sshKey").and_then(Value::as_object) {
-                out.warnings
-                    .push(format!("\"{label}\": SSH key imported as a secure note."));
+                out.warn(format!("\"{label}\": SSH key imported as a secure note."));
                 for (key, label, hidden) in [
                     ("privateKey", "Private Key", true),
                     ("publicKey", "Public Key", false),
@@ -1458,8 +1581,11 @@ fn bw_item(obj: &Map<String, Value>, out: &mut ParsedImport) {
 }
 
 fn parse_bitwarden_json(text: &str) -> Result<ParsedImport> {
-    let value: Value = serde_json::from_str(util::strip_bom(text))
-        .map_err(|e| Error::invalid(format!("json: {e}")))?;
+    // The plaintext export's tree is wiped however this returns.
+    let value = WipedValue(
+        serde_json::from_str(util::strip_bom(text))
+            .map_err(|e| Error::invalid(format!("json: {e}")))?,
+    );
     let obj = value
         .as_object()
         .ok_or_else(|| Error::invalid("bitwarden_json"))?;
@@ -1579,4 +1705,62 @@ pub fn import_into(
     let parsed = read_import(path, format, password)?;
     let plan = plan_import(vault.data(), parsed);
     vault.commit_import(plan, ConflictMode::Skip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wiped_values_blank_every_nested_string() {
+        let mut value = serde_json::json!({
+            "Entries": [{"Password": "hunter2", "Notes": {"deep": ["s3cret"]}}],
+            "flag": true,
+            "n": 7,
+            "none": null
+        });
+        wipe_value(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "Entries": [{"Password": "", "Notes": {"deep": [""]}}],
+                "flag": true,
+                "n": 7,
+                "none": null
+            })
+        );
+        // In place: the string's own buffer is overwritten, not just
+        // released.
+        let mut value = serde_json::json!({"password": "hunter2"});
+        let (ptr, len) = match &value["password"] {
+            Value::String(s) => (s.as_ptr(), s.len()),
+            _ => unreachable!(),
+        };
+        wipe_value(&mut value);
+        assert_eq!(value["password"], "");
+        // SAFETY: zeroize keeps the allocation (capacity ≥ len) and the tree
+        // still owns it; the bytes were written (zeroed) by zeroize.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(bytes.iter().all(|&b| b == 0), "{bytes:?}");
+        // The guard derefs to the tree (and wipes it when dropped).
+        let guard = WipedValue(serde_json::json!({"a": "b"}));
+        assert_eq!(guard["a"], "b");
+    }
+
+    #[test]
+    fn the_csv_record_buffer_is_overwritten() {
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader("name,password\nGitHub,hunter2-long-secret\nx,y\n".as_bytes());
+        let mut record = WipedRecord::new();
+        let mut longest = 0;
+        while reader.read_record(record.get_mut()).unwrap() {
+            record.track();
+            longest = longest.max(record.get().as_slice().len());
+        }
+        assert_eq!(record.max_len, longest);
+        let taken = record.record.take().unwrap();
+        let wiped = zero_record(taken, record.max_len);
+        assert_eq!(wiped.as_slice(), vec![0u8; longest].as_slice());
+    }
 }

@@ -45,6 +45,7 @@ accepted (*Zurück* returns to it).
 | `background.js` | Service worker: native port (`lib/bridge.js`), status cache, pairing, badge, context menu, commands, credential release to content scripts, save/update prompts. |
 | `lib/bridge.js` | Native messaging client: lazy port, reconnect, per-request timeouts (10 s; 12 s while the host may still launch the app; `pair` 125 s on its own port). |
 | `lib/version.js` | Extension version compare and the self-update decision (`extensionUpdateAction`); tested by `extension/tests/version.test.mjs` (`node --test extension/tests/*.test.mjs`). |
+| `lib/pending.js` | Whether a save/update prompt still belongs to the open vault (`pendingVaultState`); tested by `extension/tests/pending.test.mjs`. |
 | `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the extension version and folder the app delivers), pairing progress, pending save prompts. |
 | `content.js` | Inline icon + dropdown, autofill, capture of submitted logins, save bar – UI in a closed shadow root. |
 | `lib/forms.js` | Pure DOM helpers for form detection and filling (`globalThis.KeysteadForms`); loadable on its own in a test page. |
@@ -80,7 +81,14 @@ accepted (*Zurück* returns to it).
 * Logins stored for `https` are never filled into `http` pages; invisible,
   disabled and read-only fields are never filled.
 * Captured passwords for the save prompt wait in `chrome.storage.session`
-  (memory only, not readable by content scripts) for at most 2 minutes.
+  (memory only, not readable by content scripts) for at most 2 minutes, and
+  are dropped as soon as the vault locks or another vault is opened.
+* A prompt belongs to the vault it was computed against (`vaultId`, asked
+  fresh from the app after the comparison; no prompt if the vault changed or
+  locked meanwhile): after a vault switch it is neither shown again
+  (`cs:pending`) nor saved (`cs:save-decision` asks the app's status first
+  and answers `not_found`), so a login is never saved into, or an update
+  aimed at, the other vault.
 * Popup-only messages (search, copy password, unlock, …) are rejected when
   they come from a content script. Secrets are never logged.
 * Copying a password or TOTP code (and the generator's copy button) is done

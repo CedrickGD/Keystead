@@ -184,12 +184,17 @@ export function planMockImport(existing: VaultItem[], incoming: VaultItem[]): Mo
   return plan;
 }
 
+/** Like the backend: `duplicates` and `warnings` carry at most this many entries, the counts all. */
+export const MOCK_LIST_LIMIT = 100;
+
 export function mockPreview(plan: MockPlan, file: MockImportFile): ImportPreview {
   return {
     newCount: plan.newItems.length,
-    duplicates: plan.duplicates,
+    duplicates: plan.duplicates.slice(0, MOCK_LIST_LIMIT),
+    duplicateCount: plan.duplicates.length,
     conflicts: plan.conflicts.map((c) => c.conflict),
     invalid: file.invalid,
-    warnings: file.warnings,
+    warnings: file.warnings.slice(0, MOCK_LIST_LIMIT),
+    warningCount: file.warnings.length,
   };
 }

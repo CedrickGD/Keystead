@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use keystead_core::export::{export_bitwarden_json, export_csv, export_encrypted_with_params};
 use keystead_core::import::{
     detect_import, import_into, plan_import, read_import, ConflictMode, ConflictReason,
-    DetectedImport, ImportFormat, ImportPlan, ImportReport, ParsedImport, IMPORT_MAX_BYTES,
+    DetectedImport, ImportFormat, ImportPlan, ImportPreview, ImportReport, ParsedImport,
+    IMPORT_MAX_BYTES,
 };
 use keystead_core::model::{
     CardData, Folder, IdentityData, ItemType, LoginData, LoginUri, UriMatch, VaultData, VaultItem,
@@ -697,10 +698,27 @@ fn format_names_and_serde_shapes() {
         keys,
         [
             "conflictsSkipped",
+            "duplicateCount",
             "duplicates",
             "imported",
             "skipped",
             "updated",
+            "warningCount",
+            "warnings"
+        ]
+    );
+    let preview = serde_json::to_value(ImportPreview::default()).unwrap();
+    let mut keys: Vec<_> = preview.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "conflicts",
+            "duplicateCount",
+            "duplicates",
+            "invalid",
+            "newCount",
+            "warningCount",
             "warnings"
         ]
     );
@@ -1470,4 +1488,58 @@ fn drag_and_drop_flow_between_vaults() {
     let gh = target.item(&gh.id).unwrap();
     assert_eq!(gh.password(), "gh-2");
     assert_eq!(gh.password_history[0].password, "gh-1");
+}
+
+// ---------------------------------------------------------------------------
+// Size of what reaches the UI
+// ---------------------------------------------------------------------------
+
+#[test]
+fn previews_and_reports_do_not_grow_with_the_file() {
+    use keystead_core::import::{IMPORT_LIST_LIMIT, IMPORT_WARNING_LIMIT};
+    let dir = TempDir::new().unwrap();
+    let (_store, mut vault) = new_vault(dir.path());
+    vault
+        .save_item(login("GitHub", "github.com", "octocat", "pw"))
+        .unwrap();
+
+    // 10k empty Bitwarden items: one warning each.
+    let items = vec![json!({}); 10_000];
+    let path = write(
+        dir.path(),
+        "bomb.json",
+        json!({ "encrypted": false, "items": items }).to_string(),
+    );
+    let parsed = read_import(&path, ImportFormat::BitwardenJson, None).unwrap();
+    assert_eq!(parsed.invalid, 10_000);
+    assert_eq!(parsed.warnings.len(), IMPORT_WARNING_LIMIT);
+    assert_eq!(parsed.warnings_omitted, 10_000 - IMPORT_WARNING_LIMIT);
+    let plan = plan_import(vault.data(), parsed);
+    let preview = plan.preview();
+    assert_eq!(preview.warnings.len(), IMPORT_LIST_LIMIT);
+    assert_eq!(preview.warning_count, 10_000);
+    assert_eq!(preview.invalid, 10_000);
+    let report = vault.commit_import(plan, ConflictMode::Skip).unwrap();
+    assert_eq!(report.warnings.len(), IMPORT_LIST_LIMIT);
+    assert_eq!(report.warning_count, 10_000);
+    assert_eq!(report.skipped, 10_000);
+
+    // 5k copies of a login the vault has: 5k duplicates.
+    let mut csv = String::from("name,url,username,password\n");
+    for _ in 0..5_000 {
+        csv.push_str("GitHub,https://github.com,octocat,pw\n");
+    }
+    let path = write(dir.path(), "dupes.csv", csv);
+    let parsed = read_import(&path, ImportFormat::Csv, None).unwrap();
+    let plan = plan_import(vault.data(), parsed);
+    let preview = plan.preview();
+    assert_eq!(preview.duplicates.len(), IMPORT_LIST_LIMIT);
+    assert_eq!(preview.duplicate_count, 5_000);
+    assert_eq!(preview.new_count, 0);
+    // The serialised preview stays small.
+    assert!(serde_json::to_string(&preview).unwrap().len() < 64 * 1024);
+    let report = vault.commit_import(plan, ConflictMode::Skip).unwrap();
+    assert_eq!(report.duplicates.len(), IMPORT_LIST_LIMIT);
+    assert_eq!(report.duplicate_count, 5_000);
+    assert_eq!(report.imported, 0);
 }

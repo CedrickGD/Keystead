@@ -42,6 +42,7 @@ import { useConfirm } from "../../components/Confirm";
 import { Button, Segmented, Select, Switch } from "../../components/Controls";
 import { useOpenImport } from "../../components/import/ImportDialog";
 import { extensionDownloadUrl } from "../../lib/links";
+import { clearRecoveryUnconfirmed } from "../../lib/recoveryMarker";
 import { Logo } from "../../components/Logo";
 import { useUpdateErrorText } from "../../components/UpdateBanner";
 import { useUpdate } from "../../state/update";
@@ -181,6 +182,8 @@ function SecuritySection() {
     if (!ok || !vault) return;
     try {
       await api.removeRecoveryKey();
+      // No key, nothing left to confirm.
+      clearRecoveryUnconfirmed(vault.id);
       setVault({ ...vault, hasRecoveryKey: false });
       toast.success(t("recovery.removed"));
     } catch (err) {
@@ -246,7 +249,7 @@ function SecuritySection() {
         </div>
       </SettingRow>
 
-      {dialog === "password" && <ChangeMasterPasswordDialog onClose={() => setDialog(null)} />}
+      {dialog === "password" && <ChangeMasterPasswordDialog hasRecoveryKey={hasKey} onClose={() => setDialog(null)} />}
       {dialog === "recovery" && (
         <RecoveryKeyDialog
           replacing={hasKey}

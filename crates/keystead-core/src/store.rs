@@ -141,9 +141,12 @@ impl VaultStore {
     }
 
     /// Unlocks a vault with its recovery key and sets a new master password.
-    /// The recovery key stays valid. The vault key is rotated, so the old
-    /// master password does not open the vault any more, not even together
-    /// with an older copy of the file.
+    /// The vault key is rotated, so the old master password does not open
+    /// the vault any more, not even together with an older copy of the file.
+    /// The recovery key stays valid: the code is known here, so its recovery
+    /// box (same salt) wraps the new key (unlike
+    /// [`UnlockedVault::change_master_password`], which does not know the
+    /// code and issues a new recovery key).
     pub fn unlock_with_recovery_key(
         &self,
         vault_id: &str,

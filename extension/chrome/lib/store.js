@@ -207,6 +207,17 @@ export async function removePending(tabId, id = null) {
   });
 }
 
+/** Drops every pending save prompt (vault locked or switched). */
+export async function clearAllPending() {
+  try {
+    const all = await session.get(null);
+    const keys = Object.keys(all).filter((key) => key.startsWith("pending:"));
+    if (keys.length) await session.remove(keys);
+  } catch {
+    // Best effort.
+  }
+}
+
 export async function getUsernameStep(tabId, site) {
   const step = await getKey(session, tabKey("username", tabId), null);
   if (!step || step.site !== site || Date.now() - step.at > USERNAME_STEP_TTL_MS) return "";

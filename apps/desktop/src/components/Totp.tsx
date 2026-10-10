@@ -10,8 +10,12 @@ export interface LiveTotp {
   error: string | null;
 }
 
-/** Live TOTP code for a seed; fetches a new code when the period rolls over. */
-export function useTotp(seed: string): LiveTotp {
+/**
+ * Live TOTP code of a login (`totp_for_item`: the backend keeps the key);
+ * fetches a new code when the period rolls over, and again for a new
+ * `revision` of the item. The code lives only in this component's state.
+ */
+export function useItemTotp(itemId: string, revision: number): LiveTotp {
   const { errorText } = useT();
   const [code, setCode] = useState<TotpCode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +30,7 @@ export function useTotp(seed: string): LiveTotp {
       if (inFlight) return;
       inFlight = true;
       try {
-        const next = await api.totpCode(seed);
+        const next = await api.totpForItem(itemId);
         if (cancelled) return;
         expiresAt.current = Date.now() + next.remaining * 1000;
         setCode(next);
@@ -55,7 +59,7 @@ export function useTotp(seed: string): LiveTotp {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [seed, errorText]);
+  }, [itemId, revision, errorText]);
 
   const remaining = code ? Math.max(0, Math.ceil((expiresAt.current - now) / 1000)) : 0;
   return { code, remaining, error };

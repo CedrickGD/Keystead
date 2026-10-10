@@ -4,7 +4,7 @@
 // a trailing dot and a leading "www.", port ignored. The backend's
 // `get_icons` answers { [host]: "data:image/png;base64,…" }.
 
-import type { VaultItem } from "./types";
+import type { ItemType, LoginUri } from "./types";
 
 /** The icon host of one stored URI, or null (other schemes, unparsable). */
 export function siteHost(uri: string): string | null {
@@ -22,8 +22,8 @@ export function siteHost(uri: string): string | null {
   return host || null;
 }
 
-/** The icon host of an item: logins only, the first URI that has one. */
-export function iconHost(item: Pick<VaultItem, "type" | "login">): string | null {
+/** The icon host of an item (list entry or full item): logins only, the first URI that has one. */
+export function iconHost(item: { type: ItemType; login: { uris: LoginUri[] } | null }): string | null {
   if (item.type !== "login") return null;
   for (const u of item.login?.uris ?? []) {
     const host = siteHost(u.uri);

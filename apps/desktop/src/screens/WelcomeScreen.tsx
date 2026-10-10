@@ -23,6 +23,7 @@ import { RecoveryKeyReveal } from "../components/RecoveryKey";
 import { ImportFlow } from "../components/import/ImportFlow";
 import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
+import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
   masterPasswordProblem,
@@ -372,7 +373,9 @@ function RecoveryStep({ onDone, extension }: { onDone: () => void; extension: Re
     setBusy(true);
     setError(null);
     try {
-      setKey(await api.createRecoveryKey());
+      const created = await api.createRecoveryKey();
+      markRecoveryUnconfirmed();
+      setKey(created);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -388,7 +391,16 @@ function RecoveryStep({ onDone, extension }: { onDone: () => void; extension: Re
           <p className="muted">{t("recovery.yourKeyDesc")}</p>
         </div>
         <RecoveryKeyReveal value={key} confirmed={confirmed} onConfirmedChange={setConfirmed} />
-        <Button variant="primary" size="lg" block disabled={!confirmed} onClick={onDone}>
+        <Button
+          variant="primary"
+          size="lg"
+          block
+          disabled={!confirmed}
+          onClick={() => {
+            clearRecoveryUnconfirmed();
+            onDone();
+          }}
+        >
           {t("wizard.finish")}
         </Button>
       </div>

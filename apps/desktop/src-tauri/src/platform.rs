@@ -25,10 +25,33 @@ pub fn platform_name() -> &'static str {
 
 /// Windows: gives terminal mode its own new console window (the release
 /// exe uses the GUI subsystem and has none) and points the standard handles
-/// at it. Other platforms: nothing to do.
+/// at it. It also marks the session as running a terminal UI (see
+/// [`terminal_ui_running`]) and clears a secret the TUI copied when the
+/// console is closed or the process is ended by Ctrl+C, logoff or shutdown
+/// (the TUI's timed clear runs in-process and would never fire). Other
+/// platforms: nothing to do.
 pub fn prepare_cli_console() {
     #[cfg(windows)]
-    windows::new_console();
+    {
+        windows::new_console();
+        windows::guard_terminal_session();
+    }
+}
+
+/// True while a terminal UI (`Keystead --cli`) runs in this Windows session.
+/// The update's setup ends every running `Keystead.exe` without asking, so
+/// `install_update` refuses while one runs (its unsaved input and a copied
+/// secret would be lost resp. stay on the clipboard). Always false elsewhere
+/// (an AppImage update does not end running copies).
+pub fn terminal_ui_running() -> bool {
+    #[cfg(windows)]
+    {
+        windows::terminal_ui_running()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +217,7 @@ mod windows {
     use std::sync::{Arc, OnceLock, Weak};
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Foundation::{
         GENERIC_READ, GENERIC_WRITE, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, WPARAM,
     };
@@ -201,11 +225,15 @@ mod windows {
         CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Console::{
-        AllocConsole, FreeConsole, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
-        STD_OUTPUT_HANDLE,
+        AllocConsole, FreeConsole, SetConsoleCtrlHandler, SetStdHandle, CTRL_BREAK_EVENT,
+        CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, STD_ERROR_HANDLE,
+        STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     use windows_sys::Win32::System::RemoteDesktop::{
         WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
     };
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -251,6 +279,60 @@ mod windows {
                 SetStdHandle(STD_OUTPUT_HANDLE, output);
                 SetStdHandle(STD_ERROR_HANDLE, output);
             }
+        }
+    }
+
+    /// Named mutex a running terminal UI holds for its whole lifetime
+    /// (`Local\`: this logon session only). Only terminal mode creates it –
+    /// never the native host or the desktop app.
+    const TERMINAL_UI_MUTEX: &str = "Local\\Keystead-TerminalUI";
+
+    /// Terminal mode: hold [`TERMINAL_UI_MUTEX`] until the process ends
+    /// (the handle is never closed; Windows releases it at exit) and clear a
+    /// copied secret when the console goes away.
+    pub fn guard_terminal_session() {
+        let name = wide(TERMINAL_UI_MUTEX);
+        // SAFETY: NUL-terminated name that outlives the calls; a null
+        // handler is never passed.
+        unsafe {
+            // Leaked on purpose: held as long as the process runs.
+            let _ = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            SetConsoleCtrlHandler(Some(console_ctrl_handler), 1);
+        }
+    }
+
+    /// Runs on its own thread when the console is closed, the user logs off,
+    /// Windows shuts down or Ctrl+C/Ctrl+Break arrives as a signal (the
+    /// full-screen UI reads Ctrl+C as a key). Clears the TUI's copied secret
+    /// if the clipboard still holds it – the timed clear lives in this
+    /// process and dies with it – and lets the default handler end the
+    /// process (FALSE). Must stay fast (Windows allows ~5 s) and touches
+    /// nothing of the TUI's state.
+    unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> i32 {
+        if matches!(
+            ctrl_type,
+            CTRL_C_EVENT
+                | CTRL_BREAK_EVENT
+                | CTRL_CLOSE_EVENT
+                | CTRL_LOGOFF_EVENT
+                | CTRL_SHUTDOWN_EVENT
+        ) {
+            let _ = keystead_core::clipboard::clear_pending_secret();
+        }
+        0
+    }
+
+    pub fn terminal_ui_running() -> bool {
+        let name = wide(TERMINAL_UI_MUTEX);
+        // SAFETY: NUL-terminated name that outlives the call; the handle is
+        // closed right away.
+        unsafe {
+            let handle = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr());
+            if handle.is_null() {
+                return false;
+            }
+            CloseHandle(handle);
+            true
         }
     }
 

@@ -107,12 +107,12 @@ fn slept_between(previous: (Instant, SystemTime), now: (Instant, SystemTime)) ->
     monotonic.max(wall) > SLEEP_JUMP
 }
 
-/// Locks with reason `system` if `lockOnSystemLock` is on.
+/// Locks with reason `system` if `lockOnSystemLock` is on – also while no
+/// vault is open: `Core::lock` then only starts a new lock epoch, so an
+/// unlock whose key derivation is running (the user pressed Win+L right
+/// after entering the password) does not open the vault afterwards.
 fn lock_for_system(core: &Core) {
-    let enabled = {
-        let st = core.state();
-        st.vault.is_some() && st.settings.lock_on_system_lock
-    };
+    let enabled = core.state().settings.lock_on_system_lock;
     if enabled {
         core.lock(Some(LockReason::System));
     }

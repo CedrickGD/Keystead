@@ -1,4 +1,4 @@
-import type { CardData, IdentityData, ItemType, VaultItem } from "./types";
+import type { CardData, IdentityData, ItemListEntry, ItemType, VaultItem } from "./types";
 
 // ---------------------------------------------------------------------------
 // Avatars
@@ -85,7 +85,7 @@ export function lastDigits(number: string, count = 4): string {
 }
 
 /** Secret-free one-line description shown under the item name in lists. */
-export function itemSubtitle(item: VaultItem): string {
+export function itemSubtitle(item: ItemListEntry): string {
   switch (item.type) {
     case "login": {
       const login = item.login;
@@ -97,6 +97,7 @@ export function itemSubtitle(item: VaultItem): string {
     case "card": {
       const card = item.card;
       if (!card) return "";
+      // `number` is already masked ("•••• 1234"), see `CardListData`.
       const digits = lastDigits(card.number);
       return [card.brand, digits ? `•••• ${digits}` : ""].filter(Boolean).join(" ");
     }
@@ -128,9 +129,12 @@ export function searchTerms(query: string): string[] {
 
 /**
  * Mirrors `UnlockedVault::search` in keystead-core: matches name, username,
- * URIs, notes and card brand; every term must match somewhere.
+ * URIs, notes and card brand (plus identity name / e-mail); every term must
+ * match somewhere. Only non-secret fields: the list holds no passwords, TOTP
+ * keys, card numbers or hidden field values (searching by them was never
+ * supported).
  */
-export function matchesSearch(item: VaultItem, terms: string[]): boolean {
+export function matchesSearch(item: ItemListEntry, terms: string[]): boolean {
   if (terms.length === 0) return true;
   const haystack = [
     item.name,

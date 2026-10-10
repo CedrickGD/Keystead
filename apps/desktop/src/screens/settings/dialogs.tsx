@@ -7,6 +7,7 @@ import { useToast } from "../../components/Toasts";
 import { Modal } from "../../components/Modal";
 import { Button, Field, PasswordInput } from "../../components/Controls";
 import { RecoveryKeyReveal } from "../../components/RecoveryKey";
+import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../../lib/recoveryMarker";
 import {
   MasterPasswordFields,
   masterPasswordProblem,
@@ -19,7 +20,20 @@ import { StrengthMeter } from "../../components/StrengthMeter";
 // Change master password
 // ---------------------------------------------------------------------------
 
-export function ChangeMasterPasswordDialog({ onClose }: { onClose: () => void }) {
+/**
+ * Changes the master password. The backend rotates the vault key, so an
+ * existing recovery key is replaced as well: the dialog says so beforehand
+ * and then shows the new key once – it cannot be closed before the user
+ * confirms having stored it.
+ */
+export function ChangeMasterPasswordDialog({
+  hasRecoveryKey,
+  onClose,
+}: {
+  /** Shows the note that the recovery key will be replaced. */
+  hasRecoveryKey: boolean;
+  onClose: () => void;
+}) {
   const { t, errorText } = useT();
   const toast = useToast();
   const currentId = useId();
@@ -29,6 +43,8 @@ export function ChangeMasterPasswordDialog({ onClose }: { onClose: () => void })
   const [busy, setBusy] = useState(false);
   const [currentError, setCurrentError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [keyStored, setKeyStored] = useState(false);
   const strength = useStrength(next.password);
 
   const submit = async () => {
@@ -47,7 +63,17 @@ export function ChangeMasterPasswordDialog({ onClose }: { onClose: () => void })
         setError(t("master.sameAsOld"));
         return;
       }
-      await api.changeMasterPassword(current, next.password);
+      const { newRecoveryKey } = await api.changeMasterPassword(current, next.password);
+      if (newRecoveryKey) {
+        // The old recovery key no longer works: show the new one once. Until
+        // the user confirms storing it, a lock (which reloads the page and
+        // drops this dialog) leaves a reminder for the next unlock.
+        markRecoveryUnconfirmed();
+        setCurrent("");
+        setNext({ password: "", confirm: "" });
+        setNewKey(newRecoveryKey);
+        return;
+      }
       toast.success(t("master.changed"));
       onClose();
     } catch (err) {
@@ -58,10 +84,38 @@ export function ChangeMasterPasswordDialog({ onClose }: { onClose: () => void })
     }
   };
 
+  if (newKey) {
+    const finish = () => {
+      // Only reachable once `keyStored` is confirmed.
+      clearRecoveryUnconfirmed();
+      toast.success(t("master.changed"));
+      onClose();
+    };
+    return (
+      <Modal
+        // A new instance: focus moves into the dialog.
+        key="new-recovery-key"
+        title={t("master.newRecoveryTitle")}
+        subtitle={t("master.newRecoveryDesc")}
+        icon={<LifeBuoy />}
+        onClose={finish}
+        dismissable={keyStored}
+        wide
+        footer={
+          <Button variant="primary" onClick={finish} disabled={!keyStored}>
+            {t("common.done")}
+          </Button>
+        }
+      >
+        <RecoveryKeyReveal value={newKey} confirmed={keyStored} onConfirmedChange={setKeyStored} />
+      </Modal>
+    );
+  }
+
   return (
     <Modal
       title={t("master.changeTitle")}
-      subtitle={t("master.changeSubtitle")}
+      subtitle={hasRecoveryKey ? t("master.changeSubtitleWithRecovery") : t("master.changeSubtitle")}
       icon={<KeyRound />}
       onClose={onClose}
       dismissable={!busy}
@@ -77,6 +131,12 @@ export function ChangeMasterPasswordDialog({ onClose }: { onClose: () => void })
         </>
       }
     >
+      {hasRecoveryKey && (
+        <div className="callout callout-warning" role="note">
+          <LifeBuoy />
+          <span>{t("master.changeRecoveryNote")}</span>
+        </div>
+      )}
       <Field label={t("master.current")} htmlFor={currentId} error={currentError}>
         <PasswordInput id={currentId} value={current} onChange={setCurrent} invalid={Boolean(currentError)} mono={false} />
       </Field>
@@ -109,7 +169,10 @@ export function RecoveryKeyDialog({
     setBusy(true);
     setError(null);
     try {
-      setKey(await api.createRecoveryKey());
+      const created = await api.createRecoveryKey();
+      // Replaces an older key at once: remind after a reload until confirmed.
+      markRecoveryUnconfirmed();
+      setKey(created);
       onCreated();
     } catch (err) {
       setError(errorText(err));
@@ -119,16 +182,20 @@ export function RecoveryKeyDialog({
   };
 
   if (key) {
+    const done = () => {
+      if (confirmed) clearRecoveryUnconfirmed();
+      onClose();
+    };
     return (
       <Modal
         title={t("recovery.yourKey")}
         subtitle={t("recovery.yourKeyDesc")}
         icon={<LifeBuoy />}
-        onClose={onClose}
+        onClose={done}
         dismissable={confirmed}
         wide
         footer={
-          <Button variant="primary" onClick={onClose} disabled={!confirmed} data-autofocus>
+          <Button variant="primary" onClick={done} disabled={!confirmed} data-autofocus>
             {t("common.done")}
           </Button>
         }

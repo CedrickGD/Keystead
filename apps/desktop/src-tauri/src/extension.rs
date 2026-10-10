@@ -80,25 +80,52 @@ pub enum Deployed {
     Overwritten,
 }
 
+/// The extension folder the last [`deploy_logged`] left holding exactly the
+/// embedded files (`None` before the first success, after a failure).
+static DEPLOYED_TO: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// Writes the embedded extension to `<data_dir>/browser-extension` unless it
 /// is already there. Serialised (startup thread vs. `open_extension_dir`);
 /// errors are logged. Returns the folder.
 pub fn deploy_logged(data_dir: &Path) -> PathBuf {
     static RUNNING: Mutex<()> = Mutex::new(());
     let _guard = RUNNING.lock().unwrap_or_else(|p| p.into_inner());
-    match deploy(data_dir, FILES) {
+    let target = extension_dir(data_dir);
+    let result = deploy(data_dir, FILES);
+    match &result {
         Ok(Deployed::Unchanged) => {}
         Ok(done) => log(format_args!(
             "browser extension {} written to {} ({done:?})",
             bundled_version(),
-            extension_dir(data_dir).display()
+            target.display()
         )),
         Err(e) => log(format_args!(
             "could not write the browser extension to {}: {e}",
-            extension_dir(data_dir).display()
+            target.display()
         )),
     }
-    extension_dir(data_dir)
+    record_deploy(&target, result.is_ok());
+    target
+}
+
+fn record_deploy(target: &Path, ok: bool) {
+    let mut deployed = DEPLOYED_TO.lock().unwrap_or_else(|p| p.into_inner());
+    if ok {
+        *deployed = Some(target.to_path_buf());
+    } else if deployed.as_deref() == Some(target) {
+        *deployed = None;
+    }
+}
+
+/// The embedded version once `<data_dir>/browser-extension` holds it – i.e.
+/// after [`deploy_logged`] succeeded for this folder in this process. Until
+/// then (the deploy thread is still writing, it failed, or the data
+/// directory moved) `None`: the bridge `status` must not announce a version
+/// the folder does not hold yet, or the extension would reload itself from
+/// an old, half-written or missing folder.
+pub fn deployed_version(data_dir: &Path) -> Option<&'static str> {
+    let deployed = DEPLOYED_TO.lock().unwrap_or_else(|p| p.into_inner());
+    (deployed.as_deref() == Some(extension_dir(data_dir).as_path())).then(bundled_version)
 }
 
 /// Writes `files` to `<data_dir>/browser-extension` (see the module docs).
@@ -208,8 +235,15 @@ fn is_current(dir: &Path, files: &[(&str, &[u8])]) -> bool {
             .all(|(rel, bytes)| fs::read(dir.join(rel)).is_ok_and(|on_disk| on_disk == *bytes))
 }
 
+/// Writes `manifest.json` last: a browser that reloads the extension while
+/// the in-place fallback is still overwriting files still sees the old
+/// version (and keeps waiting for the new one).
 fn write_files(dir: &Path, files: &[(&str, &[u8])]) -> io::Result<()> {
-    for (rel, bytes) in files {
+    let manifest_last = files
+        .iter()
+        .filter(|(rel, _)| *rel != "manifest.json")
+        .chain(files.iter().filter(|(rel, _)| *rel == "manifest.json"));
+    for (rel, bytes) in manifest_last {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -500,6 +534,42 @@ mod tests {
             assert!(deploy(dir.path(), &files).is_err(), "{bad}");
         }
         assert!(!extension_dir(dir.path()).exists());
+    }
+
+    #[test]
+    fn version_is_announced_only_after_a_successful_deploy() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        assert_eq!(deployed_version(&data), None, "nothing written yet");
+        let target = deploy_logged(&data);
+        assert_eq!(deployed_version(&data), Some(bundled_version()));
+        assert_eq!(
+            read(&data, "manifest.json"),
+            FILES.iter().find(|(p, _)| *p == "manifest.json").unwrap().1
+        );
+        // Another data directory (portable-mode switch): not before its own
+        // deploy.
+        assert_eq!(deployed_version(&dir.path().join("other")), None);
+        // A failed deploy of the same folder withdraws it.
+        record_deploy(&target, false);
+        assert_eq!(deployed_version(&data), None);
+        // A data directory that cannot be created: never announced.
+        let blocked = dir.path().join("blocked");
+        fs::write(&blocked, "a file, not a folder").unwrap();
+        deploy_logged(&blocked);
+        assert_eq!(deployed_version(&blocked), None);
+    }
+
+    #[test]
+    fn the_manifest_is_written_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = manifest("2.0.0.8");
+        // "x" is a file, so "x/y.js" fails: everything before it is written,
+        // the manifest (sorted first) is not.
+        let files: Vec<(&str, &[u8])> = vec![("manifest.json", &m), ("x", b"1"), ("x/y.js", b"2")];
+        assert!(write_files(dir.path(), &files).is_err());
+        assert!(dir.path().join("x").exists());
+        assert!(!dir.path().join("manifest.json").exists());
     }
 
     #[test]

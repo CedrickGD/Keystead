@@ -59,6 +59,7 @@ export const de = {
   "error.unsupported.bitwarden_encrypted": "Verschlüsselte Bitwarden-Exporte werden nicht unterstützt – bitte in Bitwarden als „JSON“ (unverschlüsselt) oder CSV exportieren.",
   "error.unsupported.file_too_large": "Die Datei ist zu groß (höchstens 50 MB).",
   "error.input.update_in_progress": "Ein Update wird bereits installiert.",
+  "error.input.update_tui_running": "Bitte zuerst die Terminal-Version von Keystead beenden – das Update würde sie sonst ohne Rückfrage schließen.",
   "error.unknown": "Unerwarteter Fehler.",
   "error.unknown_detail": "Unerwarteter Fehler: {detail}",
 
@@ -92,6 +93,10 @@ export const de = {
   "master.changeSubtitle": "Deine Elemente bleiben unverändert – nur das Passwort zum Öffnen des Tresors ändert sich.",
   "master.changeButton": "Passwort ändern",
   "master.changed": "Master-Passwort geändert",
+  "master.changeSubtitleWithRecovery": "Deine Elemente bleiben unverändert.",
+  "master.changeRecoveryNote": "Dabei wird auch ein neuer Wiederherstellungsschlüssel erstellt – der alte wird ungültig. Halte etwas zum Notieren bereit.",
+  "master.newRecoveryTitle": "Dein neuer Wiederherstellungsschlüssel",
+  "master.newRecoveryDesc": "Dein Master-Passwort ist geändert. Notiere jetzt den neuen Schlüssel – der alte gilt nicht mehr, und dieser wird nicht noch einmal angezeigt.",
 
   // Lock
   "lock.timeoutToast": "Tresor nach {minutes} min Inaktivität gesperrt",
@@ -145,6 +150,9 @@ export const de = {
   "recovery.offerText": "Mit diesem Schlüssel kannst du deinen Tresor öffnen und ein neues Master-Passwort festlegen, falls du es einmal vergisst. Er wird nur ein einziges Mal angezeigt.",
   "recovery.create": "Schlüssel erstellen",
   "recovery.later": "Später",
+  "recovery.unconfirmedTitle": "Neuer Wiederherstellungsschlüssel nicht bestätigt",
+  "recovery.unconfirmedText": "Ein neuer Wiederherstellungsschlüssel wurde erstellt, aber nicht als gespeichert bestätigt – ein älterer funktioniert nicht mehr. Erstelle jetzt einen neuen und bewahre ihn sicher auf.",
+  "recovery.unconfirmedAction": "Neuen Schlüssel erstellen",
   "recovery.yourKey": "Dein Wiederherstellungsschlüssel",
   "recovery.yourKeyDesc": "Notiere ihn jetzt – er wird nicht noch einmal angezeigt.",
   "recovery.storeHint": "Bewahre ihn getrennt von diesem Computer auf, z. B. ausgedruckt an einem sicheren Ort. Wer den Schlüssel hat, kann deinen Tresor öffnen.",
@@ -626,7 +634,7 @@ export const de = {
   "settings.startInTray": "Im Infobereich starten",
   "settings.startInTrayDesc": "Beim Start kein Fenster öffnen.",
   "settings.websiteIcons": "Website-Icons automatisch laden",
-  "settings.websiteIconsDesc": "Lädt die Icons direkt von den jeweiligen Websites. Ist ein Proxy eingerichtet, lädt Keystead keine Icons (es umgeht ihn nie). Aus = Keystead geht dafür nicht ins Internet.",
+  "settings.websiteIconsDesc": "Lädt die Icons direkt von den jeweiligen Websites. Dabei kontaktiert Keystead jede gespeicherte Website – DNS-Server und wer im Netzwerk mitliest, sehen so die Liste der Websites in deinem Tresor, auch von Seiten, die du hier nie besuchst. Ist ein Proxy eingerichtet, lädt Keystead keine Icons (es umgeht ihn nie). Aus = Keystead geht dafür nicht ins Internet.",
   "settings.storedIcons": "Icons in diesem Tresor",
   "settings.storedIconsCount_one": "{n} Icon, verschlüsselt im Tresor gespeichert.",
   "settings.storedIconsCount_other": "{n} Icons, verschlüsselt im Tresor gespeichert.",

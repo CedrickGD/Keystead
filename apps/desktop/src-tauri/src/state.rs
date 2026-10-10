@@ -7,7 +7,7 @@
 //! may be waiting for the state), nor across a blocking pairing wait.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -215,6 +215,14 @@ pub struct Core {
     /// Website icon fetcher: told when a vault opens, closes or changes
     /// (see `crate::icons`). Never locked together with `state`.
     icons: crate::icons::IconTracker,
+    /// Incremented by every lock (any reason – also while no vault is open,
+    /// e.g. during an unlock's key derivation), when the portable-mode move
+    /// or `delete_vault` closes the vault, and when another vault replaces
+    /// the open one. An unlock whose key derivation started before such a
+    /// step must not open its vault afterwards ([`Core::install_vault_since`]),
+    /// and a secret read before it is not copied afterwards
+    /// ([`Core::copy_to_clipboard_since`]).
+    lock_epoch: AtomicU64,
 }
 
 fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -261,6 +269,7 @@ impl Core {
             update_wake: Mutex::new(None),
             import_slot: Mutex::new(ImportSlot::default()),
             icons: crate::icons::IconTracker::default(),
+            lock_epoch: AtomicU64::new(0),
         })
     }
 
@@ -405,11 +414,28 @@ impl Core {
         self.state().touch();
     }
 
+    /// The current lock epoch (see the field). Read it together with what
+    /// it protects – under the state lock, before a slow unlock or with a
+    /// secret that is about to be copied.
+    pub fn lock_epoch(&self) -> u64 {
+        self.lock_epoch.load(Ordering::SeqCst)
+    }
+
+    /// Starts a new lock epoch: unlocks in flight will not open their vault,
+    /// secrets read before are not copied. Call it before (or while, under
+    /// the state lock) taking the vault.
+    pub fn begin_lock(&self) {
+        self.lock_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Locks the vault (drops – and thereby wipes – the decrypted data) and
     /// clears a secret still pending in the clipboard. Emits
     /// `vault://locked` with `reason` if given and a vault was open.
-    /// Returns whether a vault was open.
+    /// Returns whether a vault was open. Starts a new lock epoch even when
+    /// no vault is open, so an unlock whose key derivation is running right
+    /// now does not open its vault afterwards.
     pub fn lock(&self, reason: Option<LockReason>) -> bool {
+        self.begin_lock();
         let vault = self.state().vault.take();
         self.finish_lock(vault, reason)
     }
@@ -440,9 +466,27 @@ impl Core {
     /// clipboard history, cleared after `clipboardClearSeconds` (if the
     /// clipboard still holds it) and in any case on lock and quit.
     pub fn copy_to_clipboard(&self, text: &str, sensitive: bool) -> AppResult<()> {
+        self.copy_to_clipboard_since(text, sensitive, None)
+    }
+
+    /// [`Core::copy_to_clipboard`] for a secret read from the vault at lock
+    /// epoch `epoch`: if a lock or vault switch happened since, nothing is
+    /// copied (`locked`) – its clipboard clear may already have run, and the
+    /// closed vault's secret would stay on the clipboard. Checked while
+    /// holding the clipboard-secret lock, which the lock's clear also takes:
+    /// a copy is either refused here or cleared there.
+    pub fn copy_to_clipboard_since(
+        &self,
+        text: &str,
+        sensitive: bool,
+        epoch: Option<u64>,
+    ) -> AppResult<()> {
         let seconds = self.state().settings.clipboard_clear_seconds;
         // Held across the copy so concurrent copies cannot interleave.
         let mut untimed = lock_mutex(&self.untimed_secret);
+        if epoch.is_some_and(|e| e != self.lock_epoch()) {
+            return Err(AppError::Locked);
+        }
         if sensitive {
             let clear_after = (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)));
             clipboard::copy_secret(text, clear_after)?;
@@ -460,11 +504,14 @@ impl Core {
     /// it: the one with a pending clear timer (core) and the one copied
     /// without a timer (`clipboardClearSeconds` = 0).
     fn clear_copied_secret(&self) {
+        // Held across both clears: a copy in flight (`copy_to_clipboard_since`
+        // holds it) has either finished – and is cleared here – or sees the
+        // new lock epoch afterwards and copies nothing.
+        let mut untimed = lock_mutex(&self.untimed_secret);
         if let Err(e) = clipboard::clear_pending_secret() {
             log(format_args!("could not clear the clipboard: {}", e.code()));
         }
-        let untimed = lock_mutex(&self.untimed_secret).take();
-        if let Some(secret) = untimed {
+        if let Some(secret) = untimed.take() {
             if let Err(e) = clipboard::clear_if_equals(&secret) {
                 log(format_args!("could not clear the clipboard: {}", e.code()));
             }
@@ -477,10 +524,15 @@ impl Core {
     /// data wiped, a secret it copied cleared from the clipboard – without a
     /// `vault://locked` event (the caller announces the new vault).
     ///
-    /// Refused (`invalid_input:update_in_progress`, `vault` wiped) once
-    /// [`Core::lock_for_update`] closed the vault for an update: every unlock
-    /// (UI, browser extension, recovery key, new vault) ends here.
-    pub fn install_vault(&self, vault: UnlockedVault) -> AppResult<VaultInfo> {
+    /// Every unlock (UI, browser extension, recovery key, new vault) ends
+    /// here, with the lock epoch read before its key derivation
+    /// ([`Core::unlock_ticket`]). Refused, `vault` wiped:
+    /// * `invalid_input:update_in_progress` once [`Core::lock_for_update`]
+    ///   closed the vault for an update;
+    /// * `locked` if anything locked since `epoch` – a system lock or
+    ///   suspend, the auto-lock, the tray, the extension, the portable-mode
+    ///   move, an update – so such a lock is never undone.
+    pub fn install_vault_since(&self, vault: UnlockedVault, epoch: u64) -> AppResult<VaultInfo> {
         let info = vault.info();
         let previous = {
             let mut st = self.state();
@@ -492,7 +544,19 @@ impl Core {
                 drop(vault);
                 return Err(AppError::invalid("update_in_progress"));
             }
+            // Same for the lock epoch: every lock starts a new one before it
+            // takes the vault under this lock.
+            if epoch != self.lock_epoch() {
+                drop(st);
+                drop(vault);
+                return Err(AppError::Locked);
+            }
             let previous = st.vault.replace(vault);
+            if previous.is_some() {
+                // A switch: secrets read from the old vault are not copied
+                // any more, other unlocks in flight do not replace this one.
+                self.begin_lock();
+            }
             st.touch();
             st.remember_vault(&info.id);
             previous
@@ -502,12 +566,21 @@ impl Core {
         Ok(info)
     }
 
+    /// The lock epoch and a clone of the store, read together before a slow
+    /// unlock or vault creation (key derivation without the state lock);
+    /// pass the epoch to [`Core::install_vault_since`].
+    pub fn unlock_ticket(&self) -> (u64, VaultStore) {
+        let st = self.state();
+        (self.lock_epoch(), st.store.clone())
+    }
+
     /// Unlocks `vault_id` with its master password. The key derivation runs
-    /// without holding the state lock.
+    /// without holding the state lock; a lock meanwhile wins (`locked`, see
+    /// [`Core::install_vault_since`]).
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> AppResult<VaultInfo> {
-        let store = self.state().store.clone();
+        let (epoch, store) = self.unlock_ticket();
         let vault = store.unlock(vault_id, master_password)?;
-        self.install_vault(vault)
+        self.install_vault_since(vault, epoch)
     }
 
     /// Clone of the store (for slow operations outside the state lock).
@@ -539,7 +612,7 @@ impl Core {
     /// [`Core::mutate`] for a command of the UI page that works on
     /// `page_vault_id`. Any other open vault is `locked` for it: the browser
     /// extension may have replaced the page's vault with another one
-    /// (`install_vault`) a moment before the page learns of it and reloads,
+    /// (`install_vault_since`) a moment before the page learns of it and reloads,
     /// and an edit meant for the old vault (an item saved under an id the
     /// new vault does not know becomes a new item) must not land in the new
     /// one. Checked under the same state lock as the operation itself.
@@ -579,7 +652,7 @@ impl Core {
 
     /// Before an update is installed – on Windows the process then ends with
     /// `exit(0)`, without `RunEvent::Exit` and [`Core::shutdown`]: from now on
-    /// no vault can be opened ([`Core::install_vault`]), the browser bridge
+    /// no vault can be opened ([`Core::install_vault_since`]), the browser bridge
     /// stops (no extension request during the install; waiting pairings are
     /// denied), the vault is closed (no event: the UI shows the update
     /// progress) and a copied secret still in the clipboard is cleared.
@@ -689,6 +762,12 @@ pub fn show_main_window(app: &AppHandle) {
 
 #[cfg(test)]
 impl Core {
+    /// [`Core::install_vault_since`] at the current epoch (tests that open
+    /// a vault directly).
+    pub fn install_vault(&self, vault: UnlockedVault) -> AppResult<VaultInfo> {
+        self.install_vault_since(vault, self.lock_epoch())
+    }
+
     /// A core without a window, for unit tests; emitted events are recorded.
     pub fn for_tests(store: VaultStore, settings: Settings) -> Arc<Core> {
         Self::with_frontend(
@@ -882,6 +961,103 @@ mod tests {
             "an unlock finished after lock_for_update"
         );
         assert!(refused.load(Ordering::SeqCst) >= 5);
+    }
+
+    #[test]
+    fn a_lock_during_the_key_derivation_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        let id = core.state().vault.as_ref().unwrap().id().to_owned();
+        assert!(core.lock(None));
+
+        // `Core::unlock` derives the key without the state lock; a system
+        // lock (Win+L, suspend) lands right in it – no vault is open, so it
+        // only starts a new lock epoch.
+        let (epoch, store) = core.unlock_ticket();
+        let vault = store.unlock(&id, "master").unwrap();
+        assert!(!core.lock(Some(LockReason::System)));
+        assert_eq!(
+            core.install_vault_since(vault, epoch).unwrap_err().code(),
+            "locked"
+        );
+        assert!(core.state().vault.is_none(), "the lock was undone");
+        assert!(core.emitted().iter().all(|(e, _)| e != EVENT_UNLOCKED));
+
+        // The same for the other lock sources that close no vault: the
+        // portable-mode move and delete_vault call begin_lock themselves.
+        let (epoch, store) = core.unlock_ticket();
+        let vault = store.unlock(&id, "master").unwrap();
+        core.begin_lock();
+        assert!(core.install_vault_since(vault, epoch).is_err());
+        assert!(core.state().vault.is_none());
+
+        // Nothing in between: it opens.
+        core.unlock(&id, "master").unwrap();
+        assert!(core.state().vault.is_some());
+
+        // A secret read before a lock or a vault switch is not copied
+        // afterwards (refused before the clipboard is touched).
+        let epoch = core.lock_epoch();
+        let other = core
+            .store()
+            .create_vault_with_params("Other", "pw2", KdfParams::insecure_for_tests())
+            .unwrap();
+        core.install_vault(other).unwrap();
+        assert_eq!(
+            core.copy_to_clipboard_since("old-vault-secret", true, Some(epoch))
+                .unwrap_err()
+                .code(),
+            "locked"
+        );
+        let epoch = core.lock_epoch();
+        assert!(core.lock(Some(LockReason::Manual)));
+        assert_eq!(
+            core.copy_to_clipboard_since("old-vault-secret", true, Some(epoch))
+                .unwrap_err()
+                .code(),
+            "locked"
+        );
+    }
+
+    #[test]
+    fn concurrent_unlocks_and_locks_never_leave_a_vault_open() {
+        use std::sync::atomic::AtomicUsize;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        let id = core.state().vault.as_ref().unwrap().id().to_owned();
+        let stop = Arc::new(AtomicBool::new(false));
+        let refused = Arc::new(AtomicUsize::new(0));
+        let unlocker = {
+            let (core, stop, refused, id) = (
+                Arc::clone(&core),
+                Arc::clone(&stop),
+                Arc::clone(&refused),
+                id.clone(),
+            );
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    if core.unlock(&id, "master").is_err() {
+                        refused.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+        };
+        // Lock again and again while the other thread keeps unlocking: some
+        // unlocks lose against a lock (refused), and after the last lock –
+        // once the unlock running at that moment has finished – no vault is
+        // open.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while refused.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+            core.lock(Some(LockReason::System));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        stop.store(true, Ordering::SeqCst);
+        unlocker.join().unwrap();
+        assert!(refused.load(Ordering::SeqCst) >= 3);
+        // The final lock after the unlocker stopped: nothing re-opens.
+        core.lock(Some(LockReason::System));
+        assert!(core.state().vault.is_none());
     }
 
     /// `xvfb-run cargo test -p keystead-desktop -- --ignored clipboard`

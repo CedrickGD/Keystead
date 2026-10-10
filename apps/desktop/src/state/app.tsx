@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext } from "react";
-import type { AppInfo, Settings, VaultInfo } from "../lib/types";
+import type { AppInfo, SecretField, Settings, VaultInfo } from "../lib/types";
 import { api } from "../lib/api";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
@@ -39,17 +39,16 @@ export interface CopyKind {
   sensitive: boolean;
 }
 
-/** Copies via the backend (`copy_text`) and shows a toast; resolves to whether it worked. */
-export function useCopy(): (text: string, kind: CopyKind) => Promise<boolean> {
+/** Runs a copy in the backend and shows a toast; resolves to whether it worked. */
+function useCopyWithToast(): (copy: () => Promise<unknown>, kind: CopyKind) => Promise<boolean> {
   const { t, errorText } = useT();
   const toast = useToast();
   const ctx = useContext(AppContext);
   const clearSeconds = ctx?.settings.clipboardClearSeconds ?? 0;
   return useCallback(
-    async (text: string, kind: CopyKind) => {
-      if (!text) return false;
+    async (copy: () => Promise<unknown>, kind: CopyKind) => {
       try {
-        await api.copyText(text, kind.sensitive);
+        await copy();
         toast.success(
           kind.sensitive && clearSeconds > 0
             ? t("copy.copiedClears", { what: kind.label, seconds: clearSeconds })
@@ -62,5 +61,27 @@ export function useCopy(): (text: string, kind: CopyKind) => Promise<boolean> {
       }
     },
     [clearSeconds, errorText, t, toast],
+  );
+}
+
+/** Copies via the backend (`copy_text`) and shows a toast; resolves to whether it worked. */
+export function useCopy(): (text: string, kind: CopyKind) => Promise<boolean> {
+  const copyWithToast = useCopyWithToast();
+  return useCallback(
+    async (text: string, kind: CopyKind) => (text ? copyWithToast(() => api.copyText(text, kind.sensitive), kind) : false),
+    [copyWithToast],
+  );
+}
+
+/**
+ * Copies a secret of an item as sensitive (`copy_secret_field`): the backend
+ * copies it, the value never reaches the page. `label` names it in the toast.
+ */
+export function useCopySecret(): (itemId: string, field: SecretField, label: string) => Promise<boolean> {
+  const copyWithToast = useCopyWithToast();
+  return useCallback(
+    (itemId: string, field: SecretField, label: string) =>
+      copyWithToast(() => api.copySecretField(itemId, field), { label, sensitive: true }),
+    [copyWithToast],
   );
 }
