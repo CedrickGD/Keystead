@@ -1,7 +1,9 @@
 //! Exporters: encrypted Keystead file, Bitwarden-style CSV (spreadsheet
 //! formulas neutralised, see [`export_csv`]) and unencrypted
 //! Bitwarden-compatible JSON. Trashed items and the generator history are
-//! never exported.
+//! never exported. Item tags travel only in the Keystead file (it carries
+//! the items as they are); the CSV and Bitwarden formats have no place for
+//! them and leave them out.
 
 use std::borrow::Cow;
 use std::path::Path;

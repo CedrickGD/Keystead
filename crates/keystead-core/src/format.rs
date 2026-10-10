@@ -1,5 +1,6 @@
-//! Vault file format version 1 (see "Vault file format" in
-//! docs/ARCHITECTURE.md) and atomic file writing.
+//! Vault file format (see "Vault file format" in docs/ARCHITECTURE.md) and
+//! atomic file writing. This build writes version 1 and reads versions 1
+//! and 2 (see [`SUPPORTED_VERSIONS`]).
 //!
 //! Layout: a random 32-byte vault key encrypts the JSON-serialised
 //! [`VaultData`] with XChaCha20-Poly1305 (AAD binds vault id and revision).
@@ -8,6 +9,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -21,8 +23,15 @@ use crate::util;
 
 /// Value of the `format` field.
 pub const FORMAT_NAME: &str = "keystead";
-/// Current (and only supported) format version.
+/// Format version of new files.
 pub const FORMAT_VERSION: u32 = 1;
+/// Format versions [`VaultFile::parse`] accepts (a file keeps its version
+/// when it is written back). Version 2 is reserved for vaults with
+/// attachments – not written yet; a later build writes it only for such
+/// vaults, so builds before this reader refuse them (`unsupported:vault
+/// format version 2`) instead of dropping what they do not know. Any other
+/// version → `unsupported:vault format version <n>`.
+pub const SUPPORTED_VERSIONS: RangeInclusive<u32> = 1..=2;
 /// File extension of vault files (without dot).
 pub const VAULT_EXTENSION: &str = "keystead";
 /// The only supported key derivation algorithm.
@@ -183,7 +192,7 @@ impl VaultFile {
             return Err(Error::Unsupported("not a Keystead vault file".into()));
         }
         match probe.version.as_ref().and_then(serde_json::Value::as_u64) {
-            Some(v) if v == u64::from(FORMAT_VERSION) => {}
+            Some(v) if u32::try_from(v).is_ok_and(|v| SUPPORTED_VERSIONS.contains(&v)) => {}
             Some(v) => {
                 return Err(Error::Unsupported(format!("vault format version {v}")));
             }
@@ -797,11 +806,10 @@ mod tests {
         ));
         let (file, _, _) = sample_file("pw");
         let mut v: serde_json::Value = serde_json::from_slice(&file.to_json().unwrap()).unwrap();
-        v["version"] = 2.into();
-        assert!(matches!(
-            VaultFile::parse(&serde_json::to_vec(&v).unwrap()),
-            Err(Error::Unsupported(_))
-        ));
+        v["version"] = 3.into();
+        let err = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+        assert_eq!(err.code(), "unsupported:vault format version 3");
         v["version"] = 1.into();
         v["kdf"]["memoryKib"] = (4u64 * 1024 * 1024).into();
         assert!(matches!(
@@ -816,6 +824,42 @@ mod tests {
         ));
         v["kdf"]["alg"] = "argon2id".into();
         v["payload"]["nonce"] = "AAAA".into();
+        assert!(matches!(
+            VaultFile::parse(&serde_json::to_vec(&v).unwrap()),
+            Err(Error::Corrupt(_))
+        ));
+    }
+
+    /// Version 2 (reserved for vaults with attachments) is read like
+    /// version 1, and written back unchanged; version 3 is refused.
+    #[test]
+    fn reads_version_1_and_2_only() {
+        assert_eq!(SUPPORTED_VERSIONS, 1..=2);
+        assert!(SUPPORTED_VERSIONS.contains(&FORMAT_VERSION));
+        let (file, key, data) = sample_file("pw");
+        let mut v: serde_json::Value = serde_json::from_slice(&file.to_json().unwrap()).unwrap();
+        v["version"] = 2.into();
+        let parsed = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(
+            parsed,
+            VaultFile {
+                version: 2,
+                ..file.clone()
+            }
+        );
+        assert_eq!(parsed.decrypt_payload(&key).unwrap(), data);
+        let again: serde_json::Value = serde_json::from_slice(&parsed.to_json().unwrap()).unwrap();
+        assert_eq!(again["version"], 2);
+        for version in [0u64, 3, u64::from(u32::MAX) + 1] {
+            v["version"] = version.into();
+            let err = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap_err();
+            assert_eq!(
+                err.code(),
+                format!("unsupported:vault format version {version}")
+            );
+        }
+        v["version"] = "1".into();
         assert!(matches!(
             VaultFile::parse(&serde_json::to_vec(&v).unwrap()),
             Err(Error::Corrupt(_))

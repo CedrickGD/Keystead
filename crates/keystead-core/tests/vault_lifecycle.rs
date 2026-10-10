@@ -322,6 +322,170 @@ fn summaries_search_and_url_lookup() {
     assert_eq!(v.logins_for_url("https://www.amazon.de/").len(), 1);
 }
 
+fn tagged(name: &str, tags: &[&str]) -> VaultItem {
+    let mut item = login(name, "user", "pw", "");
+    item.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+    item
+}
+
+fn tags_of(v: &UnlockedVault, id: &str) -> Vec<String> {
+    v.item(id).expect("item").tags.clone()
+}
+
+#[test]
+fn tags_are_normalised_on_save() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    let saved = v
+        .save_item(tagged(
+            "Sparkasse",
+            &["  Bank ", "", "   ", "bank", "Familie", "BANK", "Wichtig"],
+        ))
+        .unwrap();
+    assert_eq!(saved.tags, ["Bank", "Familie", "Wichtig"]);
+    // Persisted inside the encrypted payload, in the user's order.
+    let again = store.unlock(v.id(), PW).unwrap();
+    assert_eq!(again.item(&saved.id), Some(&saved));
+    assert!(!fs::read_to_string(v.path()).unwrap().contains("Familie"));
+    let mut reordered = saved.clone();
+    reordered.tags = vec!["Wichtig".into(), "bank".into()];
+    assert_eq!(v.save_item(reordered).unwrap().tags, ["Wichtig", "bank"]);
+    assert!(v.save_item(tagged("None", &[])).unwrap().tags.is_empty());
+
+    // Limits: 50 characters per tag, 20 distinct tags per item.
+    let fifty = "ä".repeat(50);
+    assert_eq!(
+        v.save_item(tagged("Long", &[format!(" {fifty} ").as_str()]))
+            .unwrap()
+            .tags,
+        [fifty.as_str()]
+    );
+    let twenty: Vec<String> = (1..=20).map(|n| format!("t{n}")).collect();
+    let mut many: Vec<&str> = twenty.iter().map(String::as_str).collect();
+    many.push("T1"); // a duplicate does not count
+    assert_eq!(v.save_item(tagged("Many", &many)).unwrap().tags, twenty);
+
+    let revision = v.revision();
+    let err = v
+        .save_item(tagged("Too long", &["ä".repeat(51).as_str()]))
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidInput(_)), "{err:?}");
+    assert_eq!(err.code(), "invalid_input:tag_too_long");
+    many.push("t21");
+    let err = v.save_item(tagged("Too many", &many)).unwrap_err();
+    assert_eq!(err.code(), "invalid_input:tags_too_many");
+    // A refused save changes nothing.
+    assert_eq!(v.revision(), revision);
+    assert!(v.items().iter().all(|i| i.name != "Too many"));
+}
+
+#[test]
+fn search_matches_tags() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(tagged("Sparkasse", &["Bank", "Familie"]))
+        .unwrap();
+    v.save_item(tagged("Mail", &["Familie"])).unwrap();
+    v.save_item(tagged("Forum", &[])).unwrap();
+    let old = v.save_item(tagged("Old", &["Bank"])).unwrap();
+    v.trash_item(&old.id).unwrap();
+
+    let search = |q: &str| -> Vec<String> { v.search(q).into_iter().map(|s| s.name).collect() };
+    assert_eq!(search("bank"), ["Sparkasse"]);
+    assert_eq!(search("FAMILIE"), ["Mail", "Sparkasse"]);
+    assert_eq!(search("familie bank"), ["Sparkasse"]);
+    assert_eq!(search("fam user"), ["Mail", "Sparkasse"]);
+    assert!(search("wichtig").is_empty());
+    // Summaries (bridge/extension protocol) stay as they are.
+    let summary = serde_json::to_value(&v.summaries()[0]).unwrap();
+    assert!(summary.get("tags").is_none());
+}
+
+#[test]
+fn rename_and_delete_tag() {
+    let (_dir, store) = store();
+    let id = create(&store, "Shared").id().to_owned();
+    let mut app = store.unlock(&id, PW).unwrap();
+    let a = app.save_item(tagged("A", &["Bank", "Familie"])).unwrap();
+    let b = app.save_item(tagged("B", &["bank"])).unwrap();
+    let c = app.save_item(tagged("C", &["Finanzen", "Bank"])).unwrap();
+    let d = app.save_item(tagged("D", &["Sonstiges"])).unwrap();
+    let t = app.save_item(tagged("Trashed", &["Bank"])).unwrap();
+    app.trash_item(&t.id).unwrap();
+
+    // The new name is validated like a tag.
+    for bad in ["", "  "] {
+        assert_eq!(
+            app.rename_tag("Bank", bad).unwrap_err().code(),
+            "invalid_input:tag_required"
+        );
+    }
+    assert_eq!(
+        app.rename_tag("Bank", &"x".repeat(51)).unwrap_err().code(),
+        "invalid_input:tag_too_long"
+    );
+
+    // Case-insensitive, the trash included, one revision.
+    let revision = app.revision();
+    assert_eq!(app.rename_tag("BANK", " Geld ").unwrap(), 4);
+    assert_eq!(app.revision(), revision + 1);
+    assert_eq!(tags_of(&app, &a.id), ["Geld", "Familie"]);
+    assert_eq!(tags_of(&app, &b.id), ["Geld"]);
+    assert_eq!(tags_of(&app, &c.id), ["Finanzen", "Geld"]);
+    assert_eq!(tags_of(&app, &d.id), ["Sonstiges"]);
+    assert_eq!(tags_of(&app, &t.id), ["Geld"]);
+    // Idempotent: nothing to change → no new revision.
+    assert_eq!(app.rename_tag("Bank", "Geld").unwrap(), 0);
+    assert_eq!(app.rename_tag("geld", "Geld").unwrap(), 0);
+    assert_eq!(app.revision(), revision + 1);
+    // Only the spelling changes.
+    assert_eq!(app.rename_tag("geld", "GELD").unwrap(), 4);
+    assert_eq!(tags_of(&app, &a.id), ["GELD", "Familie"]);
+    // Merge: an item that has the target already just loses the old tag;
+    // the existing spelling stays.
+    assert_eq!(app.rename_tag("Finanzen", "geld").unwrap(), 1);
+    assert_eq!(tags_of(&app, &c.id), ["GELD"]);
+    // A renamed tag keeps its position.
+    assert_eq!(app.rename_tag("Familie", "Sonstiges").unwrap(), 1);
+    assert_eq!(tags_of(&app, &a.id), ["GELD", "Sonstiges"]);
+    assert_eq!(tags_of(&app, &d.id), ["Sonstiges"]);
+
+    // Delete: unknown or empty → nothing changes.
+    let revision = app.revision();
+    assert_eq!(app.delete_tag("nope").unwrap(), 0);
+    assert_eq!(app.delete_tag("").unwrap(), 0);
+    assert_eq!(app.revision(), revision);
+    assert_eq!(app.delete_tag("geld").unwrap(), 4);
+    assert_eq!(app.revision(), revision + 1);
+    assert_eq!(tags_of(&app, &a.id), ["Sonstiges"]);
+    for id in [&b.id, &c.id, &t.id] {
+        assert!(tags_of(&app, id).is_empty());
+    }
+    assert_eq!(tags_of(&app, &d.id), ["Sonstiges"]);
+    assert_eq!(app.delete_tag("Geld").unwrap(), 0);
+    assert_eq!(app.revision(), revision + 1);
+    assert_eq!(store.unlock(&id, PW).unwrap().data(), app.data());
+
+    // Another session saved in between: nothing changed in memory, reload
+    // and retry.
+    let mut tui = store.unlock(&id, PW).unwrap();
+    tui.save_item(tagged("From tui", &["sonstiges"])).unwrap();
+    assert!(matches!(
+        app.rename_tag("Sonstiges", "Rest"),
+        Err(Error::Conflict)
+    ));
+    assert!(matches!(app.delete_tag("Sonstiges"), Err(Error::Conflict)));
+    assert_eq!(tags_of(&app, &a.id), ["Sonstiges"]);
+    assert_eq!(app.items().len(), 5);
+    assert!(app.reload_if_changed().unwrap());
+    assert_eq!(app.rename_tag("Sonstiges", "Rest").unwrap(), 3);
+    assert_eq!(app.items().iter().filter(|i| i.tags == ["Rest"]).count(), 3);
+    assert!(tui.reload_if_changed().unwrap());
+    assert_eq!(tui.data(), app.data());
+    assert_eq!(tui.delete_tag("REST").unwrap(), 3);
+    assert!(tui.items().iter().all(|i| i.tags.is_empty()));
+}
+
 #[test]
 fn folders() {
     let (_dir, store) = store();

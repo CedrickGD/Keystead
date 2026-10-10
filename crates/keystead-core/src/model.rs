@@ -67,6 +67,12 @@ pub struct VaultItem {
     pub name: String,
     pub folder_id: Option<String>,
     pub favorite: bool,
+    /// Free user tags ("Bank", "Familie"), normalised by the core on every
+    /// save (see `vault::normalize_tags`): trimmed, non-empty, unique
+    /// (case-insensitive, the first spelling wins), in the user's order, at
+    /// most `vault::TAGS_MAX` of at most `vault::TAG_MAX_CHARS` characters
+    /// each. Missing in older payloads → empty.
+    pub tags: Vec<String>,
     pub notes: String,
     /// Present (Some) iff `item_type == Login`.
     pub login: Option<LoginData>,
@@ -393,6 +399,7 @@ mod tests {
     fn item_json_shape() {
         let mut item = VaultItem::new(ItemType::Login, "GitHub");
         item.id = "x".into();
+        item.tags = vec!["Arbeit".into(), "Code".into()];
         let v = serde_json::to_value(&item).unwrap();
         assert_eq!(v["type"], "login");
         assert_eq!(v["folderId"], serde_json::Value::Null);
@@ -400,6 +407,11 @@ mod tests {
         assert_eq!(v["card"], serde_json::Value::Null);
         assert_eq!(v["deletedAt"], serde_json::Value::Null);
         assert!(v["passwordHistory"].is_array());
+        assert_eq!(v["tags"], serde_json::json!(["Arbeit", "Code"]));
+        assert_eq!(
+            serde_json::to_value(VaultItem::new(ItemType::Note, "n")).unwrap()["tags"],
+            serde_json::json!([])
+        );
         let uri = LoginUri {
             uri: "https://a".into(),
             match_type: UriMatch::StartsWith,
@@ -409,6 +421,11 @@ mod tests {
         let parsed: VaultItem = serde_json::from_str(r#"{"type":"note","name":"n"}"#).unwrap();
         assert_eq!(parsed.item_type, ItemType::Note);
         assert!(parsed.login.is_none());
+        // Payloads written before tags existed have none.
+        assert!(parsed.tags.is_empty());
+        let tagged: VaultItem =
+            serde_json::from_str(r#"{"type":"note","name":"n","tags":["a","b"]}"#).unwrap();
+        assert_eq!(tagged.tags, ["a", "b"]);
     }
 
     #[test]

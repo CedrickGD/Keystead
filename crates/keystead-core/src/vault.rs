@@ -32,6 +32,10 @@ pub const PASSWORD_HISTORY_MAX: usize = 10;
 pub const GENERATOR_HISTORY_MAX: usize = 50;
 /// Maximum length of vault, item and folder names (characters).
 pub const NAME_MAX_CHARS: usize = 200;
+/// Maximum length of one item tag (characters).
+pub const TAG_MAX_CHARS: usize = 50;
+/// Maximum number of tags per item.
+pub const TAGS_MAX: usize = 20;
 
 /// A vault that has been unlocked with its master password or recovery key.
 pub struct UnlockedVault {
@@ -91,6 +95,7 @@ pub(crate) fn wipe_items(items: &mut [VaultItem]) {
 pub(crate) fn wipe_item(item: &mut VaultItem) {
     item.name.zeroize();
     item.notes.zeroize();
+    wipe_tags(&mut item.tags);
     if let Some(l) = item.login.as_mut() {
         l.username.zeroize();
         l.password.zeroize();
@@ -130,6 +135,13 @@ pub(crate) fn wipe_item(item: &mut VaultItem) {
     }
 }
 
+/// Overwrites tags (personal data like notes) before the memory is freed.
+fn wipe_tags(tags: &mut [String]) {
+    for tag in tags {
+        tag.zeroize();
+    }
+}
+
 /// Trims a user supplied name and checks it is non-empty and not too long.
 pub(crate) fn validate_name(name: &str, what: &str) -> Result<String> {
     let trimmed = name.trim();
@@ -140,6 +152,70 @@ pub(crate) fn validate_name(name: &str, what: &str) -> Result<String> {
         return Err(Error::invalid(format!("{what}_too_long")));
     }
     Ok(trimmed.to_owned())
+}
+
+/// Trims one tag and checks it is non-empty (`tag_required`) and at most
+/// [`TAG_MAX_CHARS`] characters (`tag_too_long`).
+fn validate_tag(tag: &str) -> Result<String> {
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        return Err(Error::invalid("tag_required"));
+    }
+    if trimmed.chars().count() > TAG_MAX_CHARS {
+        return Err(Error::invalid("tag_too_long"));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Tags are compared case-insensitively ("Bank" and "bank" are one tag).
+fn tag_eq(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+fn has_tag(tags: &[String], tag: &str) -> bool {
+    tags.iter().any(|t| tag_eq(t, tag))
+}
+
+/// Normalises the tags of an item as the user typed them: each tag is
+/// trimmed, empty ones are dropped, duplicates are removed
+/// case-insensitively (the first spelling stays) and the order is kept.
+/// A tag longer than [`TAG_MAX_CHARS`] → `invalid_input:tag_too_long`;
+/// more than [`TAGS_MAX`] distinct tags → `invalid_input:tags_too_many`.
+pub(crate) fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in tags {
+        if tag.trim().is_empty() {
+            continue;
+        }
+        let tag = validate_tag(&tag)?;
+        if has_tag(&out, &tag) {
+            continue;
+        }
+        if out.len() == TAGS_MAX {
+            return Err(Error::invalid("tags_too_many"));
+        }
+        out.push(tag);
+    }
+    Ok(out)
+}
+
+/// [`normalize_tags`] for imported items, where nothing is refused: a tag
+/// longer than [`TAG_MAX_CHARS`] is shortened and tags beyond [`TAGS_MAX`]
+/// are dropped.
+fn normalize_tags_lossy(tags: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in tags {
+        let shortened = truncate_chars(tag.trim(), TAG_MAX_CHARS);
+        let tag = shortened.trim();
+        if tag.is_empty() || has_tag(&out, tag) {
+            continue;
+        }
+        if out.len() == TAGS_MAX {
+            break;
+        }
+        out.push(tag.to_owned());
+    }
+    out
 }
 
 impl UnlockedVault {
@@ -208,8 +284,8 @@ impl UnlockedVault {
     }
 
     /// Non-trashed items matching every whitespace-separated term of
-    /// `query` (case-insensitive) in name, username, URIs, notes or card
-    /// brand. An empty query returns all summaries.
+    /// `query` (case-insensitive) in name, username, URIs, notes, tags or
+    /// card brand. An empty query returns all summaries.
     pub fn search(&self, query: &str) -> Vec<ItemSummary> {
         let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         let mut v: Vec<&VaultItem> = self
@@ -250,8 +326,11 @@ impl UnlockedVault {
     ///   history (max 10) and sets `passwordRevisedAt`.
     /// * login/card/identity are normalised to the item type; an unknown
     ///   folder id is cleared.
+    /// * Tags are normalised (see [`normalize_tags`]): `tag_too_long` /
+    ///   `tags_too_many` refuse the save.
     pub fn save_item(&mut self, mut item: VaultItem) -> Result<VaultItem> {
         item.name = validate_name(&item.name, "name")?;
+        item.tags = normalize_tags(std::mem::take(&mut item.tags))?;
         item.normalize();
         let now = now_ms();
         self.mutate(move |data| Ok(store_item(data, item, now)))
@@ -336,6 +415,34 @@ impl UnlockedVault {
                 }
             }
             Ok(())
+        })
+    }
+
+    /// Renames the tag `from` to `to` on every item – the trash included –
+    /// in one save. `from` is matched case-insensitively; `to` is validated
+    /// like a single tag (`tag_required`, `tag_too_long`). An item that
+    /// already carries `to` (in any spelling) just loses `from` (merge).
+    /// Returns the number of changed items; nothing to change → `Ok(0)`
+    /// without a new revision, so a second call is a no-op. On
+    /// `Error::Conflict` nothing changed: `reload_if_changed()` and call
+    /// again.
+    pub fn rename_tag(&mut self, from: &str, to: &str) -> Result<usize> {
+        let to = validate_tag(to)?;
+        let from = from.trim();
+        self.mutate_if_changed(|data| {
+            let changed = retag_items(&mut data.items, from, Some(&to));
+            Ok((changed, changed > 0))
+        })
+    }
+
+    /// Removes the tag `tag` (matched case-insensitively) from every item –
+    /// the trash included – in one save. Returns the number of changed
+    /// items; see [`Self::rename_tag`] for the no-op and conflict behaviour.
+    pub fn delete_tag(&mut self, tag: &str) -> Result<usize> {
+        let tag = tag.trim();
+        self.mutate_if_changed(|data| {
+            let changed = retag_items(&mut data.items, tag, None);
+            Ok((changed, changed > 0))
         })
     }
 
@@ -885,6 +992,7 @@ fn add_imported(
         if item.name.is_empty() {
             item.name = "?".to_owned();
         }
+        item.tags = normalize_tags_lossy(std::mem::take(&mut item.tags));
         item.folder_id = item.folder_id.and_then(|f| id_map.get(&f).cloned());
         item.deleted_at = None;
         if item.created_at <= 0 {
@@ -897,6 +1005,49 @@ fn add_imported(
         data.items.push(item);
     }
     count
+}
+
+/// The data part of [`UnlockedVault::rename_tag`] (`to = Some`) and
+/// [`UnlockedVault::delete_tag`] (`to = None`): replaces or removes every
+/// tag equal to `from` (case-insensitive) on every item. Returns the number
+/// of changed items.
+fn retag_items(items: &mut [VaultItem], from: &str, to: Option<&str>) -> usize {
+    let mut changed = 0;
+    for item in items {
+        if retag_item(item, from, to) {
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// [`retag_items`] for one item. An item that carries `to` already (in
+/// any spelling, besides `from` itself) keeps that tag and only loses
+/// `from`; otherwise `from` is replaced in place, so the order is kept.
+/// True if the item changed.
+fn retag_item(item: &mut VaultItem, from: &str, to: Option<&str>) -> bool {
+    if !has_tag(&item.tags, from) {
+        return false;
+    }
+    let merge = to.is_some_and(|to| item.tags.iter().any(|t| !tag_eq(t, from) && tag_eq(t, to)));
+    let mut tags = Vec::with_capacity(item.tags.len());
+    let mut replaced = false;
+    for tag in &item.tags {
+        if !tag_eq(tag, from) {
+            tags.push(tag.clone());
+        } else if let Some(to) = to {
+            if !merge && !replaced {
+                tags.push(to.to_owned());
+                replaced = true;
+            }
+        }
+    }
+    if tags == item.tags {
+        return false;
+    }
+    let mut old = std::mem::replace(&mut item.tags, tags);
+    wipe_tags(&mut old);
+    true
 }
 
 fn find_item_mut<'a>(data: &'a mut VaultData, id: &str) -> Result<&'a mut VaultItem> {
@@ -918,9 +1069,10 @@ fn matches_terms(item: &VaultItem, terms: &[String]) -> bool {
     if terms.is_empty() {
         return true;
     }
-    let mut haystack = Vec::with_capacity(4);
+    let mut haystack = Vec::with_capacity(4 + item.tags.len());
     haystack.push(item.name.to_lowercase());
     haystack.push(item.notes.to_lowercase());
+    haystack.extend(item.tags.iter().map(|t| t.to_lowercase()));
     if let Some(l) = &item.login {
         haystack.push(l.username.to_lowercase());
         haystack.extend(l.uris.iter().map(|u| u.uri.to_lowercase()));

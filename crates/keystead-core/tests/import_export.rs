@@ -519,6 +519,7 @@ fn sample_data() -> VaultData {
         name: "Konto, \"Haupt\"".into(),
         folder_id: Some(folder.id.clone()),
         favorite: true,
+        tags: vec!["Finanzen".into(), "Wichtig".into()],
         notes: "Zeile 1\nZeile 2".into(),
         login: Some(LoginData {
             username: "max@example.com".into(),
@@ -579,6 +580,7 @@ fn sample_data() -> VaultData {
         id: "item-2".into(),
         item_type: ItemType::Note,
         name: "Notiz".into(),
+        tags: vec!["Familie".into()],
         notes: "geheim; mit, Zeichen".into(),
         created_at: 1_600_000_000_000,
         updated_at: 1_600_000_000_000,
@@ -652,10 +654,16 @@ fn bitwarden_json_round_trip() {
     assert_eq!(v["items"].as_array().unwrap().len(), 4);
     assert!(!text.contains("Im Papierkorb"));
     assert!(!text.contains("generated-secret"));
+    // Bitwarden's format has no tags: they are left out, not smuggled in.
+    assert!(!text.contains("Finanzen") && !text.contains("Familie"));
     let (items, folders, warnings) = import_bitwarden_json(&text).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(folders, data.folders);
-    assert_eq!(items, data.items[..4]);
+    let mut expected = data.items[..4].to_vec();
+    for item in &mut expected {
+        item.tags.clear();
+    }
+    assert_eq!(items, expected);
 }
 
 #[test]
@@ -670,6 +678,10 @@ fn csv_round_trip() {
         !text.contains("4111111111111111"),
         "cards are not exported to CSV"
     );
+    assert!(
+        !text.contains("Finanzen") && !text.contains("Familie"),
+        "tags are not exported to CSV"
+    );
     let (items, folders, warnings) = import_csv(&text).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(items.len(), 2);
@@ -680,6 +692,7 @@ fn csv_round_trip() {
     let back = &items[0];
     assert_eq!(back.name, orig.name);
     assert_eq!(back.notes, orig.notes);
+    assert!(back.tags.is_empty());
     assert!(back.favorite);
     assert_eq!(back.folder_id.as_deref(), Some(folders[0].id.as_str()));
     let (ol, bl) = (login_of(orig), login_of(back));
@@ -871,6 +884,7 @@ fn encrypted_export_round_trip() {
     assert_eq!(file.name, "backup");
     let (items, folders) = import_keystead_export(&path, "export-pw").unwrap();
     assert_eq!(items, data.items[..4]);
+    assert_eq!(items[0].tags, ["Finanzen", "Wichtig"], "tags round-trip");
     assert_eq!(folders, data.folders);
     // Generator history is never exported.
     let key = file.unwrap_key("export-pw").unwrap();
@@ -891,6 +905,62 @@ fn encrypted_export_round_trip() {
         import_keystead_export(&fixture("legacy_v2.json"), "x"),
         Err(Error::Unsupported(_))
     ));
+}
+
+/// Tags come back from a Keystead export normalised like a save (lossy:
+/// shortened and capped instead of refused), and never make an item new.
+#[test]
+fn keystead_import_normalises_tags_and_ignores_them_for_duplicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tags.keystead");
+    let mut data = sample_data();
+    // Tags as another tool or a hand-edited export may write them.
+    data.items[1].tags = vec![
+        " Familie ".into(),
+        "familie".into(),
+        String::new(),
+        "x".repeat(60),
+    ];
+    data.items[1].tags.extend((1..=25).map(|n| format!("t{n}")));
+    export_encrypted_with_params(&data, &path, "pw", KdfParams::insecure_for_tests()).unwrap();
+    let (items, _) = import_keystead_export(&path, "pw").unwrap();
+    assert_eq!(items[1].tags, data.items[1].tags, "read as written");
+
+    let store = VaultStore::new(dir.path().join("data"));
+    let mut vault = store
+        .create_vault_with_params("Ziel", "pw", KdfParams::insecure_for_tests())
+        .unwrap();
+    let report = import_into(&mut vault, "keystead", &path, Some("pw")).unwrap();
+    assert_eq!(report.imported, 4);
+    let by_name = |name: &str| {
+        vault
+            .items()
+            .iter()
+            .find(|i| i.name == name)
+            .expect("imported item")
+    };
+    assert_eq!(by_name(&data.items[0].name).tags, ["Finanzen", "Wichtig"]);
+    let mut expected = vec!["Familie".to_owned(), "x".repeat(50)];
+    expected.extend((1..=18).map(|n| format!("t{n}")));
+    assert_eq!(by_name("Notiz").tags, expected);
+    assert!(by_name("Visa").tags.is_empty());
+
+    // The same items with other tags are duplicates: nothing is imported
+    // and nothing is written.
+    for item in &mut data.items {
+        item.tags = vec!["Anders".into()];
+    }
+    export_encrypted_with_params(&data, &path, "pw", KdfParams::insecure_for_tests()).unwrap();
+    let revision = vault.revision();
+    let report = import_into(&mut vault, "keystead", &path, Some("pw")).unwrap();
+    assert_eq!(report.imported, 0, "{report:?}");
+    assert_eq!(report.duplicate_count, 4);
+    assert!(report.conflicts_skipped.is_empty());
+    assert_eq!(vault.revision(), revision);
+    assert!(vault
+        .items()
+        .iter()
+        .all(|i| !i.tags.iter().any(|t| t == "Anders")));
 }
 
 #[test]

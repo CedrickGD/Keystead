@@ -300,14 +300,18 @@ fn detects_encrypted_formats() {
     fs::copy(fixture("legacy_v2.json"), &renamed).unwrap();
     assert_eq!(detected(&renamed), ImportFormat::Legacy);
 
-    // A Keystead file of an unknown format version is refused right away.
+    // A Keystead file of an unknown format version is refused right away;
+    // version 2 (reserved for vaults with attachments) is read.
     let mut header: Value = serde_json::from_slice(&fs::read(&export).unwrap()).unwrap();
+    header["version"] = json!(3);
+    let v3 = write(d, "v3.keystead", serde_json::to_vec(&header).unwrap());
+    assert_eq!(
+        detect_import(&v3).unwrap_err().code(),
+        "unsupported:vault format version 3"
+    );
     header["version"] = json!(2);
     let v2 = write(d, "v2.keystead", serde_json::to_vec(&header).unwrap());
-    assert_eq!(
-        detect_import(&v2).unwrap_err().code(),
-        "unsupported:vault format version 2"
-    );
+    assert_eq!(detected(&v2), ImportFormat::Keystead);
 }
 
 #[test]

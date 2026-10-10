@@ -31,7 +31,7 @@ pub struct DetectedImport {
 /// decides which reading is tried first when the content could be either.
 ///
 /// * `{"format":"keystead",…}` → `keystead` (needs password; the header is
-///   validated, e.g. `unsupported:vault format version 2`);
+///   validated, e.g. `unsupported:vault format version 3`);
 /// * VaultX 1.x vault (`Salt`, `Iterations`, `IV`/`Data`, optional `Mac`,
 ///   keys case-insensitive) → `legacy` (needs password; header validated);
 /// * Bitwarden JSON with `"encrypted": true` →

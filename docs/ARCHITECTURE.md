@@ -190,6 +190,14 @@ files, settings, plain-text exports) share this.
   `zeroize`/`secrecy` where practical.
 * Argon2id default params: m = 64 MiB, t = 3, p = 4. Tests may use a cheaper
   `KdfParams::insecure_for_tests()`.
+* `version`: new files are written as 1 (`format::FORMAT_VERSION`); the
+  reader accepts 1 and 2 (`format::SUPPORTED_VERSIONS`) and a file keeps
+  its version when it is written back. Version 2 is reserved for vaults
+  with attachments and not written yet – a later build writes it only for
+  such vaults, so builds without this reader refuse them
+  (`unsupported:vault format version 2`) instead of silently dropping what
+  they do not know. Any other version → `unsupported:vault format version
+  <n>`; a missing one → `corrupt:missing format version`.
 
 ## Core API – `keystead-core` (Rust)
 
@@ -236,18 +244,20 @@ impl UnlockedVault {
     pub fn items(&self) -> &[VaultItem];                 // includes trashed items
     pub fn item(&self, id: &str) -> Option<&VaultItem>;
     pub fn summaries(&self) -> Vec<ItemSummary>;         // non-trashed, sorted by name (case-insensitive)
-    pub fn search(&self, query: &str) -> Vec<ItemSummary>; // non-trashed; matches name, username, uris, notes, card brand; case-insensitive, all whitespace-separated terms must match
+    pub fn search(&self, query: &str) -> Vec<ItemSummary>; // non-trashed; matches name, username, uris, notes, tags, card brand; case-insensitive, all whitespace-separated terms must match
     pub fn logins_for_url(&self, url: &str) -> Vec<ItemSummary>; // non-trashed logins whose URIs match (matching::uri_matches), favorites first
     pub fn save_item(&mut self, item: VaultItem) -> Result<VaultItem>;
         // new if id empty or unknown: assigns uuid, createdAt; always sets updatedAt;
         // for logins: if password changed, pushes old one to password_history (max 10) and sets passwordRevisedAt;
-        // normalises: login/card/identity Some/None according to type. Persists (save()).
+        // normalises: login/card/identity Some/None according to type; tags (see "Tags" below). Persists (save()).
     pub fn trash_item(&mut self, id: &str) -> Result<()>;      // sets deletedAt, persists
     pub fn restore_item(&mut self, id: &str) -> Result<()>;
     pub fn delete_item(&mut self, id: &str) -> Result<()>;     // permanent
     pub fn empty_trash(&mut self) -> Result<usize>;
     pub fn save_folder(&mut self, folder: Folder) -> Result<Folder>;
     pub fn delete_folder(&mut self, id: &str) -> Result<()>;   // items in it get folder_id = None
+    pub fn rename_tag(&mut self, from: &str, to: &str) -> Result<usize>; // on every item incl. trash, one save; case-insensitive; `to` validated like a tag; merges into an existing spelling; returns changed items, 0 = nothing written
+    pub fn delete_tag(&mut self, tag: &str) -> Result<usize>;            // same matching and return; both: Conflict → reload_if_changed + retry (memory unchanged)
     pub fn add_generated_password(&mut self, password: &str) -> Result<()>; // history max 50, persists
     pub fn clear_generator_history(&mut self) -> Result<()>;
     pub fn icon_hosts_needing_fetch(&self, now: i64) -> Vec<String>; // website icons due (see "Website icons"): none yet, 30 days old, failure 7 days old; fetchable hosts only
@@ -380,6 +390,23 @@ Behaviour notes:
   (> 200 chars → `name_too_long`); `createdAt`, `deletedAt` and
   `passwordRevisedAt` of existing items are kept by the core (trash state
   changes only via trash/restore); unknown `folderId` → `null`.
+* **Tags** (`VaultItem.tags`, free strings such as "Bank", "Familie";
+  personal data like notes – wiped like them, never in `ItemSummary`):
+  `save_item` normalises them – each tag trimmed, empty ones dropped,
+  duplicates removed case-insensitively keeping the first spelling, order
+  kept; a tag over `vault::TAG_MAX_CHARS` (50) → `invalid_input:tag_too_long`,
+  more than `vault::TAGS_MAX` (20) distinct tags → `invalid_input:tags_too_many`.
+  Imports (`import_items`, `commit_import`) normalise lossily instead:
+  shortened to 50 characters, at most 20 kept. `search` matches tags like
+  notes. `rename_tag(from, to)` / `delete_tag(tag)` work on every item
+  including the trash in one save (case-insensitive match; `to` trimmed,
+  `tag_required` / `tag_too_long`; an item that already has `to` in any
+  spelling just loses `from`) and return the number of changed items –
+  nothing to change → `Ok(0)` and no new revision, so a retry after a
+  `conflict` (`reload_if_changed`, then call again) is safe. The Keystead
+  export carries tags and brings them back (normalised lossily on import);
+  CSV and Bitwarden JSON have no field for them and leave them out, their
+  importers never set them, and duplicate/conflict detection ignores them.
 * Every mutation is committed to memory only after the file was written,
   so after `conflict` the in-memory state is unchanged: call
   `reload_if_changed()` and retry. A save never recreates a deleted vault
@@ -409,6 +436,7 @@ Behaviour notes:
   by the current user on Unix; on Windows the file gets the target folder's
   default permissions.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
+  `tag_required`, `tag_too_long`, `tags_too_many`,
   `password_empty`, `password_required`, `kdf_params`, `recovery_key_format`,
   `length`, `words`, `separator`, `no_character_set`,
   `minimums_exceed_length`, `totp_secret`, `totp_secret_empty`, `totp_uri`,
@@ -418,7 +446,7 @@ Behaviour notes:
   `bitwarden_encrypted` (from `detect_import`, and from `read_import` /
   `import_into` / `import_bitwarden_json` with `bitwarden_json`),
   `file_too_large` (others are English free text, e.g.
-  `vault format version 2`, `not a Keystead vault file`).
+  `vault format version 3`, `not a Keystead vault file`).
 * Strength texts (`crackTime`, `warning`, `suggestions`) and import warnings
   are English.
 
@@ -443,7 +471,7 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
   which reading is tried first (`.csv`/`.tsv`/`.txt` → CSV first):
   1. JSON object with `"format": "keystead"` → `keystead`, needs password
      (header validated like a vault file, e.g.
-     `unsupported:vault format version 2`);
+     `unsupported:vault format version 3`);
   2. `"encrypted": true` → `unsupported:bitwarden_encrypted` (password- or
      account-protected Bitwarden export);
   3. `items` array and `"encrypted": false` (or a `folders`/`collections`
