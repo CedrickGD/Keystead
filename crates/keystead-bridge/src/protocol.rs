@@ -188,6 +188,20 @@ pub enum Payload {
         /// Partial options; missing fields take the generator defaults.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         options: Option<GeneratorOptions>,
+        /// `false`: only a preview (the extension's password suggestion) –
+        /// not stored in the generator history and no user activity; the
+        /// password goes into the history with `remember_generated` once
+        /// the user takes it. Absent or `true`: stored in the history if
+        /// unlocked (the behaviour before this field existed; older apps
+        /// ignore it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remember: Option<bool>,
+    },
+    /// Stores a password the user took from a preview (`generate_password`
+    /// with `remember: false`) in the generator history of the open vault.
+    RememberGenerated {
+        #[serde(with = "secret_string")]
+        password: Zeroizing<String>,
     },
     SaveLogin {
         name: String,
@@ -264,6 +278,7 @@ impl Payload {
             Payload::GetLogin { .. } => "get_login",
             Payload::GetTotp { .. } => "get_totp",
             Payload::GeneratePassword { .. } => "generate_password",
+            Payload::RememberGenerated { .. } => "remember_generated",
             Payload::SaveLogin { .. } => "save_login",
             Payload::UpdatePassword { .. } => "update_password",
             Payload::CheckLoginPassword { .. } => "check_login_password",
@@ -293,29 +308,38 @@ impl Payload {
                 | Payload::CheckLoginPassword { .. }
                 | Payload::CopyField { .. }
                 | Payload::CopySecret { .. }
+                | Payload::RememberGenerated { .. }
         )
     }
 
     /// True for requests that represent a deliberate user action in the
     /// browser (as opposed to background traffic such as `status` polling or
-    /// the automatic `logins_for_url` on page load, or the
-    /// `check_login_password` comparison after a form submission, which a
-    /// page can trigger). Only these are reported to
+    /// the automatic `logins_for_url` on page load, the
+    /// `check_login_password` comparison after a form submission, or a
+    /// password preview shown when a signup field gets the focus – all of
+    /// which a page can trigger). Only these are reported to
     /// [`VaultBackend::on_activity`](crate::dispatcher::VaultBackend::on_activity),
     /// so the extension cannot keep the vault from auto-locking by itself.
     pub fn is_user_action(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Payload::GeneratePassword { remember, .. } => *remember != Some(false),
             Payload::Unlock { .. }
-                | Payload::Search { .. }
-                | Payload::GetLogin { .. }
-                | Payload::GetTotp { .. }
-                | Payload::GeneratePassword { .. }
-                | Payload::SaveLogin { .. }
-                | Payload::UpdatePassword { .. }
-                | Payload::CopyField { .. }
-                | Payload::CopySecret { .. }
-        )
+            | Payload::Search { .. }
+            | Payload::GetLogin { .. }
+            | Payload::GetTotp { .. }
+            | Payload::SaveLogin { .. }
+            | Payload::UpdatePassword { .. }
+            | Payload::CopyField { .. }
+            | Payload::CopySecret { .. }
+            | Payload::RememberGenerated { .. } => true,
+            Payload::Status
+            | Payload::Pair { .. }
+            | Payload::ListVaults
+            | Payload::Lock
+            | Payload::FocusApp
+            | Payload::LoginsForUrl { .. }
+            | Payload::CheckLoginPassword { .. } => false,
+        }
     }
 }
 
@@ -347,9 +371,14 @@ impl fmt::Debug for Payload {
                 .debug_struct("get_totp")
                 .field("item_id", item_id)
                 .finish(),
-            Payload::GeneratePassword { options } => f
+            Payload::GeneratePassword { options, remember } => f
                 .debug_struct("generate_password")
                 .field("options", options)
+                .field("remember", remember)
+                .finish(),
+            Payload::RememberGenerated { .. } => f
+                .debug_struct("remember_generated")
+                .field("password", &REDACTED)
                 .finish(),
             Payload::SaveLogin {
                 name,
@@ -792,6 +821,9 @@ mod tests {
             Payload::CopySecret {
                 text: Zeroizing::new("hunter2".into()),
             },
+            Payload::RememberGenerated {
+                password: Zeroizing::new("hunter2".into()),
+            },
         ] {
             let s = format!("{payload:?}");
             assert!(!s.contains("hunter2"), "{s}");
@@ -835,8 +867,28 @@ mod tests {
         let p = Payload::ListVaults;
         assert!(p.needs_pairing() && !p.needs_unlocked() && !p.is_user_action());
         assert!(Payload::Lock.needs_pairing() && !Payload::Lock.needs_unlocked());
-        let p = Payload::GeneratePassword { options: None };
-        assert!(p.needs_pairing() && !p.needs_unlocked());
+        let p = Payload::GeneratePassword {
+            options: None,
+            remember: None,
+        };
+        assert!(p.needs_pairing() && !p.needs_unlocked() && p.is_user_action());
+        let p = Payload::GeneratePassword {
+            options: None,
+            remember: Some(true),
+        };
+        assert!(p.is_user_action());
+        // A preview (password suggestion on focus) is no user activity: a
+        // page that focuses its signup field must not keep the vault open.
+        let p = Payload::GeneratePassword {
+            options: None,
+            remember: Some(false),
+        };
+        assert!(p.needs_pairing() && !p.needs_unlocked() && !p.is_user_action());
+        // Taking the suggestion is; the history lives in the open vault.
+        let p = Payload::RememberGenerated {
+            password: Zeroizing::new("pw".into()),
+        };
+        assert!(p.needs_pairing() && p.needs_unlocked() && p.is_user_action());
         let p = Payload::GetTotp {
             item_id: "x".into(),
         };
@@ -920,6 +972,12 @@ mod tests {
                     text: Zeroizing::new("pw".into()),
                 },
             ),
+            (
+                r#"{"id":"1","type":"remember_generated","password":"pw \"2\""}"#,
+                Payload::RememberGenerated {
+                    password: Zeroizing::new("pw \"2\"".into()),
+                },
+            ),
         ];
         for (json, payload) in cases {
             let request = Request::new("1", payload);
@@ -933,6 +991,9 @@ mod tests {
             r#"{"id":"1","type":"check_login_password","itemId":"i","password":7}"#,
             r#"{"id":"1","type":"copy_secret"}"#,
             r#"{"id":"1","type":"unlock","password":"pw","vaultId":7}"#,
+            r#"{"id":"1","type":"remember_generated"}"#,
+            r#"{"id":"1","type":"remember_generated","password":null}"#,
+            r#"{"id":"1","type":"generate_password","remember":"no"}"#,
         ] {
             assert_eq!(
                 Request::parse(bad.as_bytes()).unwrap_err(),

@@ -50,6 +50,8 @@ pub struct FakeBackend {
     pub lock_calls: AtomicUsize,
     /// Texts passed to `copy_secret` (instead of the real clipboard).
     pub copied: Mutex<Vec<String>>,
+    /// The generator history of the open vault (newest last).
+    pub generated: Mutex<Vec<String>>,
 }
 
 fn login(id: &str, name: &str, username: &str, password: &str, uri: &str, totp: &str) -> VaultItem {
@@ -102,6 +104,7 @@ impl FakeBackend {
             focus_calls: AtomicUsize::new(0),
             lock_calls: AtomicUsize::new(0),
             copied: Mutex::new(Vec::new()),
+            generated: Mutex::new(Vec::new()),
         }
     }
 
@@ -300,7 +303,18 @@ impl VaultBackend for FakeBackend {
     }
 
     fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> {
-        Ok(generator::generate(&options)?)
+        let password = generator::generate(&options)?;
+        if self.unlocked_id().is_some() {
+            self.generated.lock().unwrap().push(password.clone());
+        }
+        Ok(password)
+    }
+
+    // `preview_password`: the trait's default (the core generator, nothing stored).
+
+    fn remember_generated(&self, password: &str) -> Result<(), BridgeError> {
+        self.generated.lock().unwrap().push(password.to_owned());
+        Ok(())
     }
 
     fn save_login(

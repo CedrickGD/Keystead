@@ -3,14 +3,16 @@
 // MV3 service workers are stopped when idle, so nothing essential may live
 // only in memory:
 // * chrome.storage.local   – pairing credentials, "never save" sites, last
-//                            used login per site, generator options, the id
+//                            used login per site, generator options, the
+//                            extension settings (written by the popup), the id
 //                            of the vault last unlocked from this browser
 //                            (written by the popup, lib/popup-api.js), the
 //                            extension version a self-update reload was
 //                            attempted for (lib/version.js).
 // * chrome.storage.session – cached status, pairing progress, pending save
 //                            prompts (contain a password; in memory only and
-//                            not readable by content scripts), per-tab hints.
+//                            not readable by content scripts), 2FA offers
+//                            (item ids only), per-tab hints.
 
 const local = chrome.storage.local;
 const session = chrome.storage.session;
@@ -19,6 +21,15 @@ const session = chrome.storage.session;
 export const PENDING_TTL_MS = 2 * 60_000;
 /** How long the username of a username-only login step is remembered. */
 const USERNAME_STEP_TTL_MS = 5 * 60_000;
+/** How long "2FA-Code einfügen" is offered after a login with TOTP was filled. */
+export const TOTP_OFFER_TTL_MS = 2 * 60_000;
+/** Extension settings (popup → "Einstellungen") and their defaults. */
+export const SETTINGS_DEFAULTS = Object.freeze({
+  /** Copy the current 2FA code (through the app) after filling a login that has one. */
+  autoCopyTotp: true,
+  /** Suggest a strong password in signup / password change forms. */
+  suggestPasswords: true,
+});
 const MAX_LAST_USED = 300;
 const MAX_NEVER_SITES = 1000;
 
@@ -178,8 +189,21 @@ export async function getGeneratorOptions() {
   return value && typeof value === "object" ? value : null;
 }
 
+/** The extension settings: stored values of the known keys over SETTINGS_DEFAULTS. */
+export async function getSettings() {
+  const stored = await getKey(local, "settings", null);
+  const settings = { ...SETTINGS_DEFAULTS };
+  if (stored && typeof stored === "object") {
+    for (const key of Object.keys(SETTINGS_DEFAULTS)) {
+      if (typeof stored[key] === typeof SETTINGS_DEFAULTS[key]) settings[key] = stored[key];
+    }
+  }
+  return settings;
+}
+
 // ---------------------------------------------------------------------------
-// Per-tab session data: pending save prompts, username steps, focused frame
+// Per-tab session data: pending save prompts, 2FA offers, username steps,
+// focused frame
 // ---------------------------------------------------------------------------
 
 function tabKey(prefix, tabId) {
@@ -207,15 +231,34 @@ export async function removePending(tabId, id = null) {
   });
 }
 
-/** Drops every pending save prompt (vault locked or switched). */
+/** Drops every pending save prompt and 2FA offer (vault locked or switched). */
 export async function clearAllPending() {
   try {
     const all = await session.get(null);
-    const keys = Object.keys(all).filter((key) => key.startsWith("pending:"));
+    const keys = Object.keys(all).filter((key) => key.startsWith("pending:") || key.startsWith("totp:"));
     if (keys.length) await session.remove(keys);
   } catch {
     // Best effort.
   }
+}
+
+/**
+ * The 2FA offer of a tab: `{ itemId, site, vaultId, expiresAt }` after a
+ * login with TOTP was filled (no secret: the code is fetched when the user
+ * inserts it), or null.
+ */
+export async function getTotpOffer(tabId) {
+  const offer = await getKey(session, tabKey("totp", tabId), null);
+  if (!offer || typeof offer.itemId !== "string" || !(offer.expiresAt > Date.now())) return null;
+  return offer;
+}
+
+export async function setTotpOffer(tabId, offer) {
+  await session.set({ [tabKey("totp", tabId)]: offer });
+}
+
+export async function removeTotpOffer(tabId) {
+  await session.remove(tabKey("totp", tabId));
 }
 
 export async function getUsernameStep(tabId, site) {
@@ -239,7 +282,7 @@ export async function setFocusedFrame(tabId, frameId) {
 
 /** Drops everything remembered for a closed tab. */
 export async function forgetTab(tabId) {
-  await session.remove([tabKey("pending", tabId), tabKey("username", tabId), tabKey("focus", tabId)]);
+  await session.remove([tabKey("pending", tabId), tabKey("totp", tabId), tabKey("username", tabId), tabKey("focus", tabId)]);
 }
 
 /** Removes expired per-tab entries (called on service worker start). */
@@ -251,6 +294,7 @@ export async function pruneSession() {
       .filter(([key, value]) => {
         if (key.startsWith("pending:")) return !value || now - value.createdAt > PENDING_TTL_MS;
         if (key.startsWith("username:")) return !value || now - value.at > USERNAME_STEP_TTL_MS;
+        if (key.startsWith("totp:")) return !value || !(value.expiresAt > now);
         return false;
       })
       .map(([key]) => key);

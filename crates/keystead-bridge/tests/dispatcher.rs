@@ -115,6 +115,8 @@ fn everything_but_status_pair_focus_needs_pairing() {
         json!({"id": "12", "type": "copy_secret", "text": "y"}),
         json!({"id": "13", "type": "list_vaults"}),
         json!({"id": "14", "type": "unlock", "password": WORK_PASSWORD, "vaultId": WORK_VAULT_ID}),
+        json!({"id": "15", "type": "generate_password", "remember": false}),
+        json!({"id": "16", "type": "remember_generated", "password": "y"}),
     ];
     for req in requests {
         let r = call(f.dispatcher.as_ref(), req.clone());
@@ -304,6 +306,7 @@ fn locked_vault_and_unlock_flow() {
         json!({"id": "4", "type": "get_totp", "itemId": GITHUB_ID}),
         json!({"id": "5", "type": "save_login", "name": "n", "url": "u", "username": "x", "password": "y"}),
         json!({"id": "6", "type": "update_password", "itemId": GITHUB_ID, "password": "y"}),
+        json!({"id": "7", "type": "remember_generated", "password": "y"}),
     ] {
         assert_eq!(err(&call(d, c(req.clone()))), BridgeError::Locked, "{req}");
     }
@@ -763,6 +766,88 @@ fn generate_password_options() {
         c(json!({"id": "5", "type": "generate_password", "options": {"length": "long"}})),
     );
     assert_eq!(err(&r), BridgeError::InvalidRequest);
+}
+
+/// The extension's password suggestion: a preview (`remember: false`) is
+/// neither stored nor user activity; `remember_generated` stores the password
+/// once the user took it.
+#[test]
+fn password_previews_are_remembered_only_when_taken() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+    let activity = || f.backend.activity.load(Ordering::SeqCst);
+    let history = || f.backend.generated.lock().unwrap().clone();
+
+    f.backend.set_unlocked(true);
+    let r = call(
+        d,
+        c(json!({"id": "1", "type": "generate_password", "remember": false, "options": {"length": 24}})),
+    );
+    let preview = r.data_as::<String>().unwrap();
+    assert_eq!(preview.chars().count(), 24);
+    assert!(history().is_empty(), "a preview is not stored");
+    assert_eq!(activity(), 0, "a preview is no user activity");
+    // Invalid options are still rejected.
+    let r = call(
+        d,
+        c(json!({"id": "2", "type": "generate_password", "remember": false, "options": {"length": 2}})),
+    );
+    assert_eq!(err(&r), BridgeError::InvalidRequest);
+
+    let r = call(
+        d,
+        c(json!({"id": "3", "type": "remember_generated", "password": preview})),
+    );
+    assert_eq!(r, Response::null("3"));
+    assert_eq!(history(), vec![preview.clone()]);
+    assert_eq!(activity(), 1);
+
+    // Without `remember` (and with `true`): stored right away, as before.
+    for (id, req) in [
+        ("4", json!({"id": "4", "type": "generate_password"})),
+        ("5", json!({"id": "5", "type": "generate_password", "remember": true})),
+    ] {
+        let r = call(d, c(req));
+        assert!(r.ok, "{id}");
+        assert_eq!(history().last(), Some(&r.data_as::<String>().unwrap()));
+    }
+    assert_eq!(history().len(), 3);
+    assert_eq!(activity(), 3);
+
+    for bad in [
+        json!({"id": "6", "type": "remember_generated", "password": ""}),
+        json!({"id": "6", "type": "remember_generated", "password": "x".repeat(1025)}),
+        json!({"id": "6", "type": "remember_generated"}),
+    ] {
+        assert_eq!(
+            err(&call(d, c(bad.clone()))),
+            BridgeError::InvalidRequest,
+            "{bad}"
+        );
+    }
+    let r = call(
+        d,
+        c(json!({"id": "7", "type": "remember_generated", "password": "ä".repeat(1024)})),
+    );
+    assert!(r.ok, "1024 characters (not bytes) are accepted");
+    assert_eq!(history().len(), 4);
+
+    // Locked: previews still work (the extension only asks while unlocked),
+    // remembering needs the vault.
+    f.backend.set_unlocked(false);
+    let r = call(
+        d,
+        c(json!({"id": "8", "type": "generate_password", "remember": false})),
+    );
+    assert_eq!(r.data_as::<String>().unwrap().chars().count(), 20);
+    let r = call(
+        d,
+        c(json!({"id": "9", "type": "remember_generated", "password": "pw"})),
+    );
+    assert_eq!(err(&r), BridgeError::Locked);
+    assert_eq!(history().len(), 4);
 }
 
 #[test]

@@ -175,6 +175,10 @@ impl VaultBackend for CoreBackend {
         Ok(password)
     }
 
+    fn remember_generated(&self, password: &str) -> Result<(), BridgeError> {
+        self.with_vault(|v| Ok(v.add_generated_password(password)?))
+    }
+
     fn save_login(
         &self,
         name: &str,
@@ -394,6 +398,23 @@ fn browser_to_vault_through_host_and_socket() {
     ));
     assert_eq!(r.data["period"], 30);
 
+    // A password suggestion: previewed (not stored), remembered once taken.
+    let r = browser.send(auth(
+        json!({"id": "b7a", "type": "generate_password", "remember": false}),
+    ));
+    let preview = r.data.as_str().unwrap().to_owned();
+    assert_eq!(preview.chars().count(), 20);
+    let history = |b: &CoreBackend| {
+        b.with_vault(|v| Ok(v.generator_history().len()))
+            .unwrap()
+    };
+    assert_eq!(history(&backend), 0);
+    let r = browser.send(auth(
+        json!({"id": "b7b", "type": "remember_generated", "password": preview}),
+    ));
+    assert_eq!(r, Response::null("b7b"));
+    assert_eq!(history(&backend), 1);
+
     let r = browser.send(auth(
         json!({"id": "b8", "type": "generate_password", "options": {"length": 24}}),
     ));
@@ -418,6 +439,7 @@ fn browser_to_vault_through_host_and_socket() {
     let reopened = backend.store.unlock(&backend.vault_id, MASTER).unwrap();
     assert_eq!(reopened.item(&shop_id).unwrap().password(), "neu");
     assert_eq!(reopened.generator_history()[0].password, generated);
+    assert_eq!(reopened.generator_history()[1].password, preview);
 
     let r = browser.send(auth(json!({"id": "b12", "type": "lock"})));
     assert_eq!(r, Response::null("b12"));

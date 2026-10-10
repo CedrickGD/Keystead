@@ -81,7 +81,23 @@ fn every_request_type_parses() {
         ),
         (
             r#"{"id":"1","type":"generate_password"}"#,
-            Payload::GeneratePassword { options: None },
+            Payload::GeneratePassword {
+                options: None,
+                remember: None,
+            },
+        ),
+        (
+            r#"{"id":"1","type":"generate_password","remember":false}"#,
+            Payload::GeneratePassword {
+                options: None,
+                remember: Some(false),
+            },
+        ),
+        (
+            r#"{"id":"1","type":"remember_generated","password":"Gen-pw-1!"}"#,
+            Payload::RememberGenerated {
+                password: Zeroizing::new("Gen-pw-1!".into()),
+            },
         ),
         (
             r#"{"id":"1","type":"save_login","name":"GitHub","url":"https://github.com","username":"me","password":"pw"}"#,
@@ -174,7 +190,11 @@ fn unknown_fields_are_ignored() {
 fn partial_generator_options() {
     let req =
         parse(r#"{"id":"1","type":"generate_password","options":{"length":32,"symbols":false}}"#);
-    let Payload::GeneratePassword { options: Some(o) } = req.payload else {
+    let Payload::GeneratePassword {
+        options: Some(o),
+        remember: None,
+    } = req.payload
+    else {
         panic!("options expected");
     };
     assert_eq!(o.length, 32);
@@ -185,7 +205,22 @@ fn partial_generator_options() {
         (d.uppercase, d.words, GeneratorKind::Password)
     );
     let req = parse(r#"{"id":"1","type":"generate_password","options":null}"#);
-    assert_eq!(req.payload, Payload::GeneratePassword { options: None });
+    assert_eq!(
+        req.payload,
+        Payload::GeneratePassword {
+            options: None,
+            remember: None
+        }
+    );
+    // `remember: null` is the same as leaving it out (the old behaviour).
+    let req = parse(r#"{"id":"1","type":"generate_password","remember":null,"options":{"length":24}}"#);
+    assert!(matches!(
+        req.payload,
+        Payload::GeneratePassword {
+            options: Some(_),
+            remember: None
+        }
+    ));
 }
 
 #[test]

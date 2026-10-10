@@ -29,6 +29,9 @@ pub const MAX_CLIENT_NAME_CHARS: usize = 100;
 const PEER_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// At most this many pairing requests can wait for the user at once.
 const MAX_PENDING_PAIRINGS: usize = 4;
+/// Longest password `remember_generated` accepts (characters; generated
+/// passwords and passphrases are far shorter).
+pub const MAX_REMEMBERED_CHARS: usize = 1024;
 
 /// What the app provides to the bridge. Called from connection threads,
 /// possibly concurrently. Errors are protocol codes; `From<keystead_core::Error>`
@@ -87,6 +90,24 @@ pub trait VaultBackend: Send + Sync + 'static {
         &self,
         options: GeneratorOptions,
     ) -> std::result::Result<String, BridgeError>;
+    /// Generates a password without storing it anywhere (`generate_password`
+    /// with `remember: false`: the extension's suggestion bubble shows it
+    /// before the user decides). Invalid options → `InvalidRequest`.
+    /// Default: the core generator.
+    fn preview_password(
+        &self,
+        options: GeneratorOptions,
+    ) -> std::result::Result<String, BridgeError> {
+        Ok(keystead_core::generator::generate(&options)?)
+    }
+    /// Stores a password the user took from a preview in the generator
+    /// history of the unlocked vault (`remember_generated`). Default:
+    /// `InvalidRequest` – not supported, the extension then treats the app
+    /// like an older one.
+    fn remember_generated(&self, password: &str) -> std::result::Result<(), BridgeError> {
+        let _ = password;
+        Err(BridgeError::InvalidRequest)
+    }
     /// Creates a new login; returns its id.
     fn save_login(
         &self,
@@ -376,8 +397,20 @@ impl Dispatcher {
             }
             Payload::GetLogin { item_id } => json(&backend.get_login(&item_id)?),
             Payload::GetTotp { item_id } => json(&backend.get_totp(&item_id)?),
-            Payload::GeneratePassword { options } => {
-                json(&backend.generate_password(options.unwrap_or_default())?)
+            Payload::GeneratePassword { options, remember } => {
+                let options = options.unwrap_or_default();
+                if remember == Some(false) {
+                    json(&backend.preview_password(options)?)
+                } else {
+                    json(&backend.generate_password(options)?)
+                }
+            }
+            Payload::RememberGenerated { password } => {
+                if password.is_empty() || password.chars().count() > MAX_REMEMBERED_CHARS {
+                    return Err(BridgeError::InvalidRequest);
+                }
+                backend.remember_generated(&password)?;
+                Ok(Value::Null)
             }
             Payload::SaveLogin {
                 name,

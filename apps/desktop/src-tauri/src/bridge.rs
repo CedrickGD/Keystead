@@ -281,6 +281,14 @@ impl VaultBackend for Backend {
         }
     }
 
+    /// A password the user took from the extension's suggestion (generated
+    /// with `remember: false`, i.e. `preview_password`, which stores nothing).
+    fn remember_generated(&self, password: &str) -> Result<(), BridgeError> {
+        Ok(self
+            .core()?
+            .mutate(|v| v.add_generated_password(password))?)
+    }
+
     fn save_login(
         &self,
         name: &str,
@@ -703,6 +711,42 @@ mod tests {
         assert_ne!(
             keystead_core::clipboard::read_text().unwrap().as_deref(),
             Some("copied-from-test")
+        );
+    }
+
+    /// The extension's password suggestion: the preview stays out of the
+    /// generator history until the user takes it (`remember_generated`).
+    #[test]
+    fn suggested_passwords_enter_the_history_only_when_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, _test_id, _work_id) = two_vaults(dir.path());
+        let history = |core: &Core| {
+            core.read(|v| {
+                v.generator_history()
+                    .iter()
+                    .map(|g| g.password.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+
+        let preview = backend
+            .preview_password(GeneratorOptions::default())
+            .unwrap();
+        assert_eq!(preview.chars().count(), 20);
+        assert!(history(&core).is_empty());
+
+        backend.remember_generated(&preview).unwrap();
+        assert_eq!(history(&core), vec![preview.clone()]);
+        let generated = backend
+            .generate_password(GeneratorOptions::default())
+            .unwrap();
+        assert_eq!(history(&core), vec![generated, preview]);
+
+        core.lock(None);
+        assert_eq!(
+            backend.remember_generated("pw"),
+            Err(BridgeError::Locked)
         );
     }
 
