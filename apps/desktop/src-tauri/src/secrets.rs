@@ -47,6 +47,7 @@ pub struct ItemListEntry {
     pub folder_id: Option<String>,
     pub favorite: bool,
     pub notes: String,
+    pub tags: Vec<String>,
     pub login: Option<LoginListData>,
     pub card: Option<CardListData>,
     pub identity: Option<IdentityData>,
@@ -125,6 +126,7 @@ impl From<&VaultItem> for ItemListEntry {
             folder_id: item.folder_id.clone(),
             favorite: item.favorite,
             notes: item.notes.clone(),
+            tags: item.tags.clone(),
             login: item.login.as_ref().map(|l| LoginListData {
                 username: l.username.clone(),
                 password: Redacted,
@@ -173,12 +175,15 @@ impl From<&VaultItem> for ItemListEntry {
     }
 }
 
-/// Names, usernames, websites, notes and identities are no secrets in the
-/// sense of the redaction, but personal: wiped like the full items were.
+/// Names, usernames, websites, notes, tags and identities are no secrets in
+/// the sense of the redaction, but personal: wiped like the full items were.
 impl Wipe for ItemListEntry {
     fn wipe(&mut self) {
         self.name.zeroize();
         self.notes.zeroize();
+        for t in &mut self.tags {
+            t.zeroize();
+        }
         if let Some(l) = self.login.as_mut() {
             l.username.zeroize();
             for u in &mut l.uris {
@@ -506,6 +511,7 @@ mod tests {
     fn fill(c: &Core) -> Ids {
         let mut login = VaultItem::new(ItemType::Login, "Bank");
         login.notes = "plain notes".into();
+        login.tags = vec!["Finanzen".into(), "Privat".into()];
         login.login = Some(LoginData {
             username: "alice".into(),
             password: "old-pass-1".into(),
@@ -611,6 +617,7 @@ mod tests {
             "alice",
             "bank.example",
             "plain notes",
+            "Finanzen",
             "C-100",
             "Alice Doe",
             "alice@example.com",
@@ -629,6 +636,36 @@ mod tests {
         assert_eq!(login["uris"][0]["match"], "domain");
         assert!(login["passwordRevisedAt"].is_i64());
         assert_eq!(value["type"], "login");
+        assert_eq!(value["tags"], serde_json::json!(["Finanzen", "Privat"]));
+        // The exact key set: a new field of `VaultItem` must be added here
+        // deliberately (redacted or not), never leak through by accident.
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "card",
+                "createdAt",
+                "deletedAt",
+                "favorite",
+                "fields",
+                "folderId",
+                "id",
+                "identity",
+                "login",
+                "name",
+                "notes",
+                "passwordHistory",
+                "tags",
+                "type",
+                "updatedAt",
+            ]
+        );
         assert_eq!(
             value["fields"],
             serde_json::json!([
@@ -662,8 +699,17 @@ mod tests {
         assert!(note.login.is_none() && note.card.is_none() && note.identity.is_none());
         assert!(entry(&entries, &ids.identity).identity.is_some());
         let empty = VaultItem::new(ItemType::Login, "Empty");
-        let empty = ItemListEntry::from(&empty).login.unwrap();
+        let empty = ItemListEntry::from(&empty);
+        assert!(empty.tags.is_empty());
+        let empty = empty.login.unwrap();
         assert!(!empty.has_password && !empty.has_totp);
+
+        // Wiping overwrites the personal strings, tags included.
+        let mut wiped = entry(&entries, &ids.login).clone();
+        wiped.wipe();
+        assert!(wiped.name.is_empty() && wiped.notes.is_empty());
+        assert_eq!(wiped.tags.len(), 2);
+        assert!(wiped.tags.iter().all(String::is_empty));
     }
 
     #[test]

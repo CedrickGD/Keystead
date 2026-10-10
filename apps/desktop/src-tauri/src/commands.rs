@@ -353,6 +353,47 @@ pub async fn delete_folder(
     .await
 }
 
+/// `rename_tag(from, to, pageVaultId)` † → the number of changed items.
+/// One save over every item incl. trash (see "Tags" in docs/ARCHITECTURE.md);
+/// no event, the UI refetches `list_items`.
+#[tauri::command]
+pub async fn rename_tag(
+    core: Shared<'_>,
+    from: String,
+    to: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<usize> {
+    run(&core, true, move |c| {
+        rename_tag_on(c, page_vault_id.as_deref(), &from, &to)
+    })
+    .await
+}
+
+/// `delete_tag(tag, pageVaultId)` † → the number of changed items, like
+/// [`rename_tag`].
+#[tauri::command]
+pub async fn delete_tag(
+    core: Shared<'_>,
+    tag: String,
+    page_vault_id: Option<String>,
+) -> CmdResult<usize> {
+    run(&core, true, move |c| {
+        delete_tag_on(c, page_vault_id.as_deref(), &tag)
+    })
+    .await
+}
+
+/// The work of [`rename_tag`]: the core's validation of `to`
+/// (`invalid_input:tag_required` / `tag_too_long`) passes through.
+fn rename_tag_on(c: &Core, page_vault_id: Option<&str>, from: &str, to: &str) -> AppResult<usize> {
+    c.mutate_for_page(page_vault_id, |v| v.rename_tag(from, to))
+}
+
+/// The work of [`delete_tag`].
+fn delete_tag_on(c: &Core, page_vault_id: Option<&str>, tag: &str) -> AppResult<usize> {
+    c.mutate_for_page(page_vault_id, |v| v.delete_tag(tag))
+}
+
 // ---------------------------------------------------------------------------
 // Generator, strength, TOTP, clipboard, health
 // ---------------------------------------------------------------------------
@@ -814,6 +855,7 @@ fn switch_portable_mode(
 
 #[cfg(test)]
 mod tests {
+    use keystead_core::model::ItemType;
     use keystead_core::settings::Settings;
 
     use super::*;
@@ -865,6 +907,80 @@ mod tests {
             Err(CoreError::WrongPassword)
         ));
         assert!(store.unlock_with_recovery_key(&id, &new, "x").is_ok());
+    }
+
+    #[test]
+    fn tag_commands_change_every_item_of_the_pages_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let id = c.read(|v| v.id().to_owned()).unwrap();
+        let page = Some(id.as_str());
+        let save = |name: &str, tags: &[&str]| {
+            let mut item = VaultItem::new(ItemType::Login, name);
+            item.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+            c.mutate(|v| v.save_item(item.clone())).unwrap().id
+        };
+        let bank = save("Bank", &["Finanzen", "Privat"]);
+        let shop = save("Shop", &["finanzen"]);
+        let note = save("Note", &["Arbeit"]);
+        let old = save("Old", &["Finanzen"]);
+        c.mutate(|v| v.trash_item(&old)).unwrap();
+        // What the UI sees after it refetches the list.
+        let tags_of = |id: &str| {
+            let entries = c.read(secrets::list_entries).unwrap();
+            entries.into_iter().find(|e| e.id == id).unwrap().tags
+        };
+
+        // Another page's vault or none: nothing changes.
+        for page in [None, Some("other-vault")] {
+            assert_eq!(
+                rename_tag_on(&c, page, "Finanzen", "Geld")
+                    .unwrap_err()
+                    .code(),
+                "locked"
+            );
+            assert_eq!(
+                delete_tag_on(&c, page, "Finanzen").unwrap_err().code(),
+                "locked"
+            );
+        }
+        assert_eq!(tags_of(&bank), ["Finanzen", "Privat"]);
+
+        // Renaming matches case-insensitively, trash included; the list
+        // entries show the new tag in place.
+        assert_eq!(rename_tag_on(&c, page, "finanzen", "Geld").unwrap(), 3);
+        assert_eq!(tags_of(&bank), ["Geld", "Privat"]);
+        assert_eq!(tags_of(&shop), ["Geld"]);
+        assert_eq!(tags_of(&old), ["Geld"]);
+        assert_eq!(tags_of(&note), ["Arbeit"]);
+        // Renaming onto a tag an item already has merges the two.
+        assert_eq!(rename_tag_on(&c, page, "Geld", "Privat").unwrap(), 3);
+        assert_eq!(tags_of(&bank), ["Privat"]);
+        assert_eq!(tags_of(&shop), ["Privat"]);
+        // Nothing to rename; an invalid new name is the core's error.
+        assert_eq!(rename_tag_on(&c, page, "Nope", "X").unwrap(), 0);
+        assert_eq!(
+            rename_tag_on(&c, page, "Privat", "  ").unwrap_err().code(),
+            "invalid_input:tag_required"
+        );
+        assert_eq!(
+            rename_tag_on(&c, page, "Privat", &"x".repeat(51))
+                .unwrap_err()
+                .code(),
+            "invalid_input:tag_too_long"
+        );
+        assert_eq!(tags_of(&bank), ["Privat"]);
+
+        assert_eq!(delete_tag_on(&c, page, "privat").unwrap(), 3);
+        assert!(tags_of(&bank).is_empty());
+        assert!(tags_of(&shop).is_empty());
+        assert!(tags_of(&old).is_empty());
+        assert_eq!(tags_of(&note), ["Arbeit"]);
+        assert_eq!(delete_tag_on(&c, page, "Arbeit").unwrap(), 1);
+        assert_eq!(delete_tag_on(&c, page, "Arbeit").unwrap(), 0);
+        assert!(c
+            .read(|v| v.items().iter().all(|i| i.tags.is_empty()))
+            .unwrap());
     }
 
     #[test]

@@ -17,6 +17,9 @@ impl Wipe for VaultItem {
     fn wipe(&mut self) {
         self.name.zeroize();
         self.notes.zeroize();
+        for t in &mut self.tags {
+            t.zeroize();
+        }
         if let Some(l) = self.login.as_mut() {
             l.username.zeroize();
             l.password.zeroize();
@@ -114,6 +117,7 @@ mod tests {
             item_type: ItemType::Login,
             name: "Bank".into(),
             notes: "backup codes 1234".into(),
+            tags: vec!["Finanzen".into()],
             login: Some(LoginData {
                 username: "alice".into(),
                 password: "hunter2".into(),
@@ -159,6 +163,7 @@ mod tests {
         for secret in [
             "Bank",
             "backup codes",
+            "Finanzen",
             "alice",
             "hunter2",
             "bank.example",
@@ -174,5 +179,6 @@ mod tests {
         // Ids and structure stay (no secrets).
         assert_eq!(item.id, "id-1");
         assert_eq!(item.password_history.len(), 1);
+        assert_eq!(item.tags, [""]);
     }
 }

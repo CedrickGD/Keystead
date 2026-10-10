@@ -662,6 +662,8 @@ history. The bridge's own writes are not affected.
 | `empty_trash` † | – | `number` |
 | `save_folder` † | `folder: Folder` | `Folder` |
 | `delete_folder` † | `id` | `null` |
+| `rename_tag` † | `from, to` | `number` – the changed items; renames the tag on every item incl. trash in one save (case-insensitive, merges into an existing spelling, see "Tags"); `0` if no item has it; `to` empty → `invalid_input:tag_required`, > 50 chars → `tag_too_long`. No event: the UI refetches `list_items` |
+| `delete_tag` † | `tag` | `number` – the changed items; removes the tag from every item incl. trash in one save (case-insensitive); `0` if no item has it. No event, like `rename_tag` |
 | `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
 | `generator_history` | – | `GeneratedPassword[]` |
 | `clear_generator_history` † | – | `null` |
@@ -806,7 +808,7 @@ item; copying never sends it there.
   a `hidden` one has `value: ""` (name and kind stay; `text` and `boolean`
   values stay); `passwordHistory` entries are `{ replacedAt }` only. Not
   secret, so unchanged: name, folder, favourite, notes (notes are still
-  copied as sensitive), username, websites, cardholder, brand, expiry,
+  copied as sensitive), tags, username, websites, cardholder, brand, expiry,
   identity, dates. The UI's search filters these non-secret fields only
   (name, username, websites, notes, card brand, identity name / e-mail);
   searching by a password, TOTP key, card number or hidden value is not

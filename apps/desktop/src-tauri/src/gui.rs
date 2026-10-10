@@ -55,6 +55,8 @@ pub fn run(background: bool) -> i32 {
             commands::empty_trash,
             commands::save_folder,
             commands::delete_folder,
+            commands::rename_tag,
+            commands::delete_tag,
             commands::generate_password,
             commands::generator_history,
             commands::clear_generator_history,
