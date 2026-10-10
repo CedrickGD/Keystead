@@ -58,11 +58,25 @@ generate a password into the focused field. Right-click on an input field:
   amber sparkle) opens it again. Locked or not connected: no bubble on focus –
   a click on the field icon says *Keystead entsperren für Passwortvorschläge*
   (or *verbinden*) with a button that opens the popup. Never on login forms,
-  username steps or search fields. Signup forms get no login icon (also not a
-  username asked for after the password, as on GitHub) and never take a
-  stored login: popup *Ausfüllen* / `Ctrl+Shift+L` fill the page's login form
-  instead, else say that there is none – a stored password is never written
-  into a field that asks for a new one.
+  username steps or search fields.
+* **Stored logins and signup forms** – signup forms get no login icon and no
+  inline dropdown (also not on a username asked for after the password, as
+  on GitHub – with or without a `<form>`), and `Ctrl+Shift+L`, which picks
+  the login itself (last used, else the first match), never fills them: it
+  fills the page's login form instead, else says that there is none – on a
+  page with only a registration form, that a login picked in the popup still
+  fills it. Popup *Ausfüllen* is the user's explicit choice of a login: it
+  also goes to the page's login form first (even with the focus in a
+  registration form beside it), but if no frame of the tab has a login form
+  (the service worker asks the frames a second time) it fills the form
+  Keystead takes for a registration – the username, and the password into
+  the new-password field and every field confirming it. So a login form
+  mistaken for a registration (say a password field marked `new-password`
+  under a neutral *Weiter*) can still be filled, and so can a registration
+  with a login prepared in Keystead beforehand. Without that explicit pick a
+  stored password is never written into a field that asks for a new one.
+  After such a fill no suggestion bubble pops up over the field (its icon
+  still offers one).
 * **Multi-step logins** – a lone e-mail/username field in a form or
   container whose words say log in/sign in/Konto/passwor… (e.g. Amazon's
   *E-Mail-Adresse oder Mobiltelefonnummer* + *Weiter*) is a username-only
@@ -70,7 +84,17 @@ generate a password into the focused field. Right-click on an input field:
   page. "E-Mail-Adresse"/"email address" is no postal address (street, city,
   *Lieferadresse* … still rule a field out). A field inside a detected
   password form (a customer number beside the username, the username of a
-  signup form) is never a separate step.
+  signup form) is never a separate step, nor is one whose container (its
+  form, else the nearest element with a button) holds such a form's password
+  field (a div-based signup asking for the username in a section of its
+  own). The first step of a registration is no login step either: if the
+  words of the step's container (action, id, buttons, headings) or of the
+  page (title, path) read like a registration (*Konto erstellen*, *Create
+  account*, *Sign up*, *Registrieren* …) and none of them says log in / sign
+  in / anmelden, the field is handled like a signup form (no icon, no
+  `Ctrl+Shift+L`; a login picked in the popup fills it). *Anmelden oder
+  Konto erstellen*, or a *Konto erstellen* button beside *Weiter* under the
+  heading *Anmelden* (Google), stay login steps.
 * **2FA codes** – after a login with a 2FA seed was filled (popup *Ausfüllen*,
   inline dropdown, `Ctrl+Shift+L`) the app copies the current code
   (`copy_field` `totp`: cleared after `clipboardClearSeconds`, excluded from
@@ -136,7 +160,13 @@ accepted (*Zurück* returns to it).
   supplied by the page or the content script.
 * Fills happen only after a user gesture: a trusted click in our dropdown, a
   key in the dropdown, the popup, or a keyboard command. The autofill
-  command/popup fills the top frame and same-origin frames only.
+  command/popup fills the top frame and same-origin frames only. Only the
+  popup's *Ausfüllen* marks a fill as the user's explicit pick
+  (`bg:autofill` with `explicit: true`, which may fill a form taken for a
+  registration): the service worker sets it for `popup:fill`, a message only
+  extension pages can send, and only after no frame claimed the fill
+  without it; content scripts accept `bg:autofill` only from the extension
+  itself.
 * Clickjacking: the inline icons, dropdown items, Enter in the dropdown, the
   *Verwenden* button of a suggestion, *2FA-Code einfügen* and the buttons of
   the save/update bar only act if that control has been really

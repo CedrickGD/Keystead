@@ -1594,14 +1594,28 @@ The extension's security model and file roles are in
   field with login context (form/button words, title, path) is a `username`
   step (multi-step logins) – unless it lies inside a password form found
   before (a signup form's username after the password, a second identifier
-  of a login). "E-Mail-Adresse"/"email address" does not count as a postal
-  address. Login icons go to username/current-password fields, password
-  suggestions to the first new-password field of `signup`/`change` forms
-  (never to login forms, username steps or search fields). A stored login
-  (popup *Ausfüllen*, `Ctrl+Shift+L`, `rankForms`) goes to the focused
-  `login`/`change`/`username` form, else the first by that order – never to
-  a `signup` form (no form → `no_fields` toast), and `fillForm` never writes
-  a stored password into a signup form's new-password field.
+  of a login) or its container (its form, else the nearest element with a
+  button) holds such a form's password field (div-based signups). If the
+  step's words (action, id, buttons, h1–h3/legend, title, path) read like a
+  registration and none says log in/sign in/anmelden, the field is a
+  `signup` form without password fields (a registration's first step).
+  "E-Mail-Adresse"/"email address" does not count as a postal address.
+  Login icons go to username/current-password fields, password suggestions
+  to the first new-password field of `signup`/`change` forms (never to
+  login forms, username steps or search fields). A stored login
+  (`rankForms`) goes to the focused `login`/`change`/`username` form, else
+  the first by that order. A `signup` form takes one only when the user
+  picked it in the popup (*Ausfüllen*, `popup:fill`) and no frame of the tab
+  has another form: the service worker then sends `bg:autofill` a second
+  time with `explicit: true`, and `fillForm(form,
+  credentials, { explicit: true })` writes the username and the
+  password into the new-password field and its confirmations, so a login
+  form taken for a registration can still be filled. `Ctrl+Shift+L` (the
+  service worker picks the login) never fills a `signup` form; when no frame
+  has a form to fill it toasts `csNoFields`, which the top frame shows as
+  `csNoFieldsSignup` (pick the login in the popup) if the popup could fill
+  one of its forms. Without the explicit pick `fillForm` never writes a
+  stored password into a field that asks for a new one.
 * **Web components**: everything above also works inside *open* shadow roots
   (composed tree: a shadow root's content belongs to its host; a host's
   `name`/`id`/`label`/`autocomplete` are hints for its input). The content

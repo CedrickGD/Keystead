@@ -1865,10 +1865,19 @@
     return fromUser ? credentials : null;
   }
 
-  /** Fills stored credentials; the fields no longer hold user input. */
-  function fillStored(form, credentials) {
+  /**
+   * Fills stored credentials; the fields no longer hold user input.
+   * `options.explicit`: the user picked the login in the popup (see
+   * Forms.rankForms) – a signup form then takes the password, and no password
+   * suggestion pops up over it any more (the field icon still offers one).
+   */
+  function fillStored(form, credentials, options = {}) {
     for (const field of [form.username, ...form.passwords]) if (field) userValues.delete(field);
-    return Forms.fillForm(form, credentials);
+    if (form.kind === "signup" && options.explicit === true) {
+      for (const field of form.passwords) quietFields.add(field);
+      if (bubble && form.passwords.includes(bubble.field)) closeBubble();
+    }
+    return Forms.fillForm(form, credentials, options);
   }
 
   function captureForm(form) {
@@ -2021,21 +2030,39 @@
   // Messages from the service worker
   // ---------------------------------------------------------------------------
 
+  /**
+   * Popup "Ausfüllen" or Ctrl+Shift+L: fills the most likely form of this
+   * frame. `msg.explicit` (only in the service worker's second round for a
+   * login the user picked in the popup, after no frame had a login, change
+   * or username-step form): a form taken for a registration may take it
+   * (Forms.rankForms).
+   */
   function handleAutofill(msg, sendResponse) {
     if (typeof msg.nonce !== "string") return false;
     // Autofill only fills the top frame and frames of the same origin.
     if (typeof msg.origin !== "string" || msg.origin !== location.origin) return false;
-    const [form] = Forms.rankForms(refreshForms(), deepActiveElement());
+    const options = { explicit: msg.explicit === true };
+    const [form] = Forms.rankForms(refreshForms(), deepActiveElement(), options);
     if (!form) return false; // no answer: another frame may have the form
     sendResponse({ hasForm: true });
     send({ type: "cs:fill-request", nonce: msg.nonce })
       .then((credentials) => {
-        if (!fillStored(form, credentials)) toast(t("csFillFailed"));
+        if (!fillStored(form, credentials, options)) toast(t("csFillFailed"));
       })
       .catch((err) => {
         if (err.code === "insecure") toast(t("csInsecureBlocked"));
       });
     return false;
+  }
+
+  /**
+   * "No login form" after Ctrl+Shift+L (sent to the top frame once no frame
+   * had a form to fill) while this page shows a form taken for a
+   * registration: say that a login picked in the popup still fills it.
+   */
+  function toastKey(key) {
+    if (key !== "csNoFields") return key;
+    return Forms.rankForms(refreshForms(), null, { explicit: true }).length ? "csNoFieldsSignup" : key;
   }
 
   function onMessage(msg, sender, sendResponse) {
@@ -2057,7 +2084,7 @@
         if (otpTargets.length) checkOtpOffer(true);
         return false;
       case "bg:toast":
-        if (typeof msg.key === "string" && /^cs[A-Z][A-Za-z]+$/.test(msg.key)) toast(t(msg.key));
+        if (typeof msg.key === "string" && /^cs[A-Z][A-Za-z]+$/.test(msg.key)) toast(t(toastKey(msg.key)));
         return false;
       case "bg:totp-copied":
         totpToast(msg.remaining);

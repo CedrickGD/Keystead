@@ -61,7 +61,7 @@
     /current|existing|bisherig|aktuell|derzeit|(?:^|[^a-z])(?:old|alte[sn]?)(?:[^a-z]|$)|oldp|passwordold|passwortalt|altpass/;
   /** Context (form action, id, buttons, title, path) of a registration form. */
   const SIGNUP_CONTEXT =
-    /regist|sign\s*-?\s*up|create\s*(an?\s*|your\s*)?account|new\s*account|join\s*(now|us|free|\b)|enrol|konto\s*(anlegen|erstellen|er[öo]ffnen)|neues?\s*konto|mitglied\s*werden|get\s*started/;
+    /regist|sign\s*-?\s*up|create\s*(an?\s*|your\s*)?(free\s*)?account|new\s*account|join\s*(now|us|free|\b)|enrol|(konto|account)\s*(anlegen|erstellen|er[öo]ffnen)|neues?\s*konto|mitglied\s*werden|get\s*started/;
   /** Context of a login (wins over signup words when both appear). */
   const LOGIN_ACTION = /log\s*-?\s*in|logon|sign\s*-?\s*in|signin|einlogg|anmelden\b/;
 
@@ -492,20 +492,51 @@
     return composedParent(el) || doc.body;
   }
 
-  /** True for the username/e-mail field of a username-only login step. */
-  function isUsernameStepField(el, tree) {
-    if (!isUsernameCandidate(el)) return false;
+  /** The first headings (h1–h3, legend) inside a container: "Konto erstellen", "Anmelden" … */
+  function headingContext(scope, tree) {
+    return queryDeep(tree, scope, "h1, h2, h3, legend")
+      .slice(0, 3)
+      .map((h) => String(h.textContent || "").slice(0, 120))
+      .join(" ")
+      .toLowerCase();
+  }
+
+  /**
+   * True if the step of a lone username/e-mail field reads like a
+   * registration: the words of its container (action, id, buttons,
+   * headings) or of the page (title, path) say sign up / create account /
+   * Konto erstellen …, and none of them says log in / sign in / anmelden
+   * ("Anmelden oder Konto erstellen", a login step with a "Konto erstellen"
+   * button beside "Weiter" stay login steps).
+   */
+  function signupStep(scope, tree) {
+    const words = `${ownContext(scope, tree)} ${headingContext(scope, tree)} ${pageContext(scope.ownerDocument)}`;
+    return SIGNUP_CONTEXT.test(words) && !LOGIN_ACTION.test(words);
+  }
+
+  /**
+   * The kind of step a lone username/e-mail field is: "username" (the first
+   * step of a multi-step login), "signup" (the first step of a registration:
+   * e-mail + "Weiter" under "Konto erstellen" – no login icon, see
+   * rankForms) or null (no step). `passwordFields`: the password fields of
+   * the forms found on the page – a field whose container holds one of them
+   * belongs to that form (a div-based signup asking for the username in a
+   * section of its own, after the password), it is no step of its own.
+   */
+  function stepKind(el, tree, passwordFields = []) {
+    if (!isUsernameCandidate(el)) return null;
     const score = usernameScore(el);
-    if (score < 35) return false;
+    if (score < 35) return null;
     const scope = stepScopeFor(el, tree);
+    if (passwordFields.some((p) => composedContains(scope, p))) return null;
     let textFields = 0;
     for (const input of queryDeep(tree, scope, "input")) {
       if (USERNAME_TYPES.has(typeOf(input)) && !isPasswordInput(input) && isVisible(input)) textFields += 1;
     }
     // A login step asks for one identifier (rarely a second field, e.g. a tenant).
-    if (textFields > 2) return false;
-    if (score >= 100) return true;
-    return LOGIN_CONTEXT.test(scopeContext(scope, tree));
+    if (textFields > 2) return null;
+    if (signupStep(scope, tree)) return "signup";
+    return score >= 100 || LOGIN_CONTEXT.test(scopeContext(scope, tree)) ? "username" : null;
   }
 
   /** True if the form's own words (buttons, action …) say "log in" and nothing about signing up. */
@@ -555,8 +586,10 @@
    *
    * Returns `LoginForm[]` with `{ scope, kind, username, password, passwords,
    * newPasswords }`: `kind` is "login" (one password field), "change"
-   * (current + new password), "signup" (new password, usually + confirmation)
-   * or "username" (username-only step of a multi-step login); `password` is
+   * (current + new password), "signup" (new password, usually + confirmation;
+   * or the e-mail/username-only first step of a registration, without
+   * password fields) or "username" (username-only step of a multi-step
+   * login); `password` is
    * the field for the *current* password (null for signup/username steps);
    * `passwords` are all visible password fields of the form in document
    * order, `newPasswords` the ones that ask for the new password (the first
@@ -585,14 +618,19 @@
       if (username) used.add(username);
     }
 
-    // Username-only login steps. A field inside a form found above belongs to
-    // that form (e.g. the username asked for after the password on a signup
-    // form, a customer number beside a login's username): no login step.
+    // Username-only steps (of a login, or of a registration). A field inside
+    // a form found above belongs to that form (e.g. the username asked for
+    // after the password on a signup form, a customer number beside a
+    // login's username), and so does a field whose container holds such a
+    // form's password (a div-based signup with the username in a section of
+    // its own): no step.
     const passwordForms = forms.slice();
+    const passwordFields = passwordForms.flatMap((f) => f.passwords);
     for (const input of inputs) {
       if (used.has(input) || passwordForms.some((f) => composedContains(f.scope, input))) continue;
-      if (!isUsernameStepField(input, tree)) continue;
-      forms.push({ scope: stepScopeFor(input, tree), kind: "username", username: input, password: null, passwords: [], newPasswords: [] });
+      const kind = stepKind(input, tree, passwordFields);
+      if (!kind) continue;
+      forms.push({ scope: stepScopeFor(input, tree), kind, username: input, password: null, passwords: [], newPasswords: [] });
       used.add(input);
     }
     return forms;
@@ -631,18 +669,25 @@
   }
 
   /**
-   * The forms a stored login may be filled into (popup "Ausfüllen",
-   * Ctrl+Shift+L), most likely first: the form with the focus, then login,
-   * change (its current-password field), username step. Signup forms never
-   * take a stored login – they ask for a new password, which Keystead
-   * suggests instead (see suggestionTargets).
+   * The forms a stored login may be filled into, most likely first: the form
+   * with the focus, then login, change (its current-password field),
+   * username step. Signup forms ask for a new password, which Keystead
+   * suggests instead (see suggestionTargets): Ctrl+Shift+L (which picks the
+   * login itself) never fills them. Only when the user picked the login in
+   * the popup ("Ausfüllen", `options.explicit` – the service worker sets it
+   * only after no frame had another form) does a signup form qualify – after
+   * every other form, whatever has the focus – so a login form taken for a
+   * registration can still be filled.
    */
-  function rankForms(forms, activeElement) {
-    const priority = { login: 0, change: 1, username: 2 };
+  function rankForms(forms, activeElement, options = {}) {
+    const explicit = options.explicit === true;
+    const priority = { login: 0, change: 1, username: 2, signup: 3 };
     const active = formForElement(forms, activeElement);
+    const fillable = (f) => (f.username && isFillableNow(f.username)) || f.passwords.some(isFillableNow);
+    const signup = (f) => (f.kind === "signup" ? 1 : 0);
     return forms
-      .filter((f) => f.kind !== "signup" && ((f.username && isFillableNow(f.username)) || f.passwords.some(isFillableNow)))
-      .sort((a, b) => (b === active) - (a === active) || priority[a.kind] - priority[b.kind]);
+      .filter((f) => (explicit || f.kind !== "signup") && fillable(f))
+      .sort((a, b) => signup(a) - signup(b) || (b === active) - (a === active) || priority[a.kind] - priority[b.kind]);
   }
 
   // ---------------------------------------------------------------------------
@@ -753,18 +798,28 @@
 
   /**
    * Fills a login form with `{ username, password }`. Only writes into fields
-   * that are visible and editable; a stored password never goes into a field
-   * that asks for a new one (signup forms get the username at most). Returns
-   * the number of filled fields.
+   * that are visible and editable. A stored password never goes into a field
+   * that asks for a new one (signup forms get the username at most) – unless
+   * the user picked this login in the popup (`options.explicit`, see
+   * rankForms): then a signup form gets it in its new-password field and every
+   * field confirming it (a login form taken for a registration, or a
+   * registration with a login prepared in Keystead). Returns the number of
+   * filled fields.
    */
-  function fillForm(form, credentials) {
+  function fillForm(form, credentials, options = {}) {
     let filled = 0;
     const username = typeof credentials.username === "string" ? credentials.username : "";
     const password = typeof credentials.password === "string" ? credentials.password : "";
     if (form.username && username && isFillableNow(form.username)) {
       if (setValue(form.username, username)) filled += 1;
     }
-    if (form.kind === "signup") return filled;
+    if (form.kind === "signup") {
+      if (options.explicit !== true || !password) return filled;
+      for (const field of form.newPasswords.length ? form.newPasswords : form.passwords) {
+        if (isFillableNow(field) && setValue(field, password)) filled += 1;
+      }
+      return filled;
+    }
     const passwordField = form.password || form.passwords[0] || null;
     if (passwordField && password && isFillableNow(passwordField)) {
       if (setValue(passwordField, password)) filled += 1;

@@ -16,6 +16,7 @@
   "csNoUsername": { "message": "(ohne Benutzername)" },
   "csNoMatches": { "message": "Keine passenden Logins für diese Seite." },
   "csNoFields": { "message": "Auf dieser Seite wurde kein Login-Formular gefunden." },
+  "csNoFieldsSignup": { "message": "Hier gibt es nur ein Registrierungsformular. Ein gespeichertes Login setzt du trotzdem ein, indem du es im Keystead-Popup auswählst." },
   "csNoField": { "message": "Klicke zuerst in das Eingabefeld, in das das Passwort soll." },
   "csFillFailed": { "message": "Das Login konnte nicht ausgefüllt werden." },
   "csGenerateFailed": { "message": "Es konnte kein Passwort generiert werden." },

@@ -483,9 +483,14 @@ async function afterFill(sender, itemId) {
 /**
  * Fills `itemId` into the top frame of a tab and its same-origin frames.
  * The frames are asked to claim the credentials themselves (cs:fill-request
- * with a nonce), so each frame is checked with its own URL.
+ * with a nonce), so each frame is checked with its own URL. `explicit`: the
+ * user picked this login in the popup – then, if no frame has a login,
+ * password change or username-step form, the frames are asked once more and
+ * a form the page detection takes for a registration may take it (see
+ * KeysteadForms.rankForms). Ctrl+Shift+L, which picks the login itself, never
+ * fills a registration form.
  */
-async function fillTab(tabId, itemId) {
+async function fillTab(tabId, itemId, { explicit = false } = {}) {
   if (typeof itemId !== "string" || !itemId) throw new BridgeError("invalid_request");
   const tab = await chrome.tabs.get(tabId);
   const top = parseWebUrl(tab.url);
@@ -517,7 +522,11 @@ async function fillTab(tabId, itemId) {
   outcome.catch(() => undefined);
 
   // Frames with a fillable form answer { hasForm: true }; no answer means no form anywhere.
-  const probe = await chrome.tabs.sendMessage(tabId, { type: "bg:autofill", nonce, origin: top.origin }).catch(() => null);
+  const ask = (signupToo) =>
+    chrome.tabs.sendMessage(tabId, { type: "bg:autofill", nonce, origin: top.origin, explicit: signupToo }).catch(() => null);
+  let probe = await ask(false);
+  // Registration forms only in a second round: never while any frame has a real login form.
+  if (!probe?.hasForm && explicit === true) probe = await ask(true);
   if (!probe?.hasForm) {
     autofillWindows.get(nonce)?.settle(new BridgeError("no_fields"));
   }
@@ -973,7 +982,8 @@ const popupHandlers = {
     await call("copy_secret", { text });
     return null;
   },
-  "popup:fill": (msg) => fillTab(requireTabId(msg.tabId), requireString(msg.itemId, 200)),
+  // The user picked the login in the popup: explicit (see fillTab).
+  "popup:fill": (msg) => fillTab(requireTabId(msg.tabId), requireString(msg.itemId, 200), { explicit: true }),
   "popup:generate": (msg) => generatePassword(msg.options),
   "popup:fill-generated": async (msg) => {
     const tabId = requireTabId(msg.tabId);

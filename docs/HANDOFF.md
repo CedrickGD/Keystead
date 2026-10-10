@@ -84,19 +84,26 @@ und Passwort-ändern-Seiten, 2FA-Code nach dem Ausfüllen kopieren +
 2FA-Countdown + Tastatursteuerung im Popup, Plugin-Einstellungen; Bridge:
 `generate_password.remember`, `remember_generated`.
 
-Zuletzt offen (zweite Prüfrunde), wird gerade behoben:
-1. Div-basierte Registrierung (ohne `<form>`, Benutzername nach dem Passwort,
-   GitHub-artig) – Benutzername-Feld bekam Login-Icon/gespeicherte Logins.
-2. „Konto erstellen“-Seite mit zuerst nur E-Mail + „Weiter“ wurde als
-   Login-Schritt behandelt.
-3. Entscheidung: Popup-„Ausfüllen“ soll auch auf fälschlich als Registrierung
-   erkannten Seiten funktionieren (explizite Nutzerabsicht), das automatische
-   Inline-Menü bleibt dort aus.
+Funde der zweiten Prüfrunde – behoben (Unit-Tests + echter Browser):
+1. Div-basierte Registrierung (ohne `<form>`, Benutzername in eigenem
+   Abschnitt nach dem Passwort, GitHub-artig): Ein Feld, dessen Container
+   (Formular, sonst nächstes Element mit Button) ein Passwortfeld eines
+   erkannten Formulars enthält, ist kein Login-Schritt mehr.
+2. „Konto erstellen“-Seite mit zuerst nur E-Mail + „Weiter“: Lesen sich die
+   Wörter des Schritts (Action, ID, Buttons, Überschriften) oder der Seite
+   (Titel, Pfad) nach Registrierung und keins nach Anmelden, ist es kein
+   Login-Schritt („Anmelden oder Konto erstellen“, Google mit
+   „Konto erstellen“-Button unter „Anmelden“ bleiben Login-Schritte).
+3. Entscheidung umgesetzt: Popup-„Ausfüllen“ (explizite Auswahl) füllt auch
+   ein als Registrierung erkanntes Formular, wenn die Seite kein anderes hat
+   (Benutzername + Passwort ins Neues-Passwort-Feld und die Bestätigung).
+   Inline-Icon/-Menü und `Strg+Umschalt+L` bleiben dort aus;
+   `Strg+Umschalt+L` weist per Hinweis auf das Popup hin.
 
 **Wenn im `git log` ein Commit „… [release]“ nach „Smarter browser extension“
-(beta.8) steht, ist Block 2 abgeschlossen.** Sonst: diese drei Punkte in
-`extension/chrome/lib/forms.js` (+ Tests in `extension/tests/forms.test.mjs`)
-fertigstellen, im echten Browser prüfen, mit `[release]` veröffentlichen.
+(beta.8) steht, ist Block 2 abgeschlossen.** Sonst: die Änderungen
+(`extension/chrome/lib/forms.js`, `content.js`, `background.js`, Locales,
+Tests, Doku) committen und mit `[release]` veröffentlichen.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 

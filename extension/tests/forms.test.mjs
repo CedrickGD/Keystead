@@ -194,7 +194,7 @@ test("GitHub-style signup (e-mail, password, then username): no login step, no l
   assert.deepEqual(Forms.iconFields(forms), [], "no login icon anywhere on the signup form");
   const [target] = Forms.suggestionTargets(forms);
   assert.equal(target.field, byName(doc, "user[password]"));
-  // Popup "Ausfüllen" / Ctrl+Shift+L: a signup form is no fill target, even with the focus in it.
+  // Ctrl+Shift+L (Keystead picks the login): a signup form is no fill target, even with the focus in it.
   byName(doc, "user[email]").focus();
   assert.deepEqual(Forms.rankForms(forms, doc.activeElement), []);
   // And a stored password never goes into a field asking for a new one.
@@ -202,6 +202,200 @@ test("GitHub-style signup (e-mail, password, then username): no login step, no l
   assert.equal(byName(doc, "user[email]").value, "tom@example.com");
   assert.equal(byName(doc, "user[password]").value, "");
   assert.equal(byName(doc, "user[login]").value, "");
+});
+
+/** gh-signup-div.html of the browser check: React-style, no <form>, the username in a section after the password. */
+const GITHUB_DIV_SIGNUP = `
+  <div class="card" id="root"><h2>Create your free account</h2>
+    <div class="section" id="credentials">
+      <div class="row"><label for="email">Email address</label><input type="email" id="email" name="email"></div>
+      <div class="row"><label for="password">Password</label><input type="password" id="password" name="password"></div>
+    </div>
+    <div class="section" id="profile">
+      <div class="row"><label for="username">Username</label><input type="text" id="username" name="username"></div>
+    </div>
+    <div><button type="button" id="create">Create account</button></div>
+  </div>`;
+
+test("div-based GitHub-style signup (no <form>, username in its own section after the password): no login step", () => {
+  const doc = page(GITHUB_DIV_SIGNUP, { title: "Create your account", path: "/join" });
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["signup"], "the username section is no username-only login step");
+  assert.deepEqual(Forms.iconFields(forms), [], "no login icon (neither e-mail nor username)");
+  assert.equal(Forms.suggestionTargets(forms)[0].field, byName(doc, "password"));
+  byName(doc, "username").focus();
+  assert.deepEqual(Forms.rankForms(forms, doc.activeElement), [], "Ctrl+Shift+L with the focus in the username: nothing to fill");
+
+  // Even on a page without any signup words (but with "account", a login-step
+  // word): the username's container – the card with the only button – holds
+  // the form's password, so the username belongs to that form.
+  const neutral = page(
+    GITHUB_DIV_SIGNUP.replace("Create your free account", "Welcome")
+      .replace("Create account", "Continue")
+      .replace('id="password" name="password"', 'id="password" name="password" autocomplete="new-password"'),
+    { title: "Your account", path: "/" },
+  );
+  const neutralForms = Forms.findLoginForms(neutral);
+  assert.deepEqual(neutralForms.map((f) => f.kind), ["signup"]);
+  assert.deepEqual(Forms.iconFields(neutralForms), []);
+});
+
+test("div-based signup whose username section has a button of its own: the page's signup words rule out a login step", () => {
+  const doc = page(`
+    <div id="root"><h1>Konto erstellen</h1>
+      <div id="credentials"><input type="email" name="email" placeholder="E-Mail-Adresse">
+        <input type="password" name="password" placeholder="Passwort"></div>
+      <div id="profile"><input type="text" name="username" placeholder="Benutzername"><button type="button">Verfügbarkeit prüfen</button></div>
+      <button type="button">Weiter</button>
+    </div>`, { title: "Konto erstellen – Beispiel", path: "/konto" });
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["signup", "signup"], "the username section is part of the registration, no login step");
+  assert.deepEqual(Forms.iconFields(forms), []);
+  byName(doc, "username").focus();
+  assert.deepEqual(Forms.rankForms(forms, doc.activeElement), []);
+});
+
+/** The kinds of the forms found, and whether any field gets a login icon. */
+const stepsOf = (doc) => {
+  const forms = Forms.findLoginForms(doc);
+  return { kinds: forms.map((f) => f.kind), icons: Forms.iconFields(forms).length, forms };
+};
+
+test("e-mail-first registration ('Konto erstellen' + 'Weiter') is no login step", () => {
+  // ms-signup.html of the browser check: the first step of a registration –
+  // no login icon, no Ctrl+Shift+L; only an explicit popup pick fills it.
+  const ms = page(`
+    <div class="card"><form id="signup" action="/signup" method="post"><h1>Konto erstellen</h1>
+      <label for="MemberName">E-Mail-Adresse</label><input type="email" id="MemberName" name="MemberName" placeholder="jemand@example.com">
+      <button type="submit" id="next">Weiter</button></form></div>`, { title: "Konto erstellen", path: "/ms-signup.html" });
+  const { kinds, icons, forms } = stepsOf(ms);
+  assert.deepEqual(kinds, ["signup"]);
+  assert.equal(icons, 0, "no login icon");
+  assert.deepEqual(Forms.suggestionTargets(forms), [], "nothing to suggest without a password field");
+  assert.deepEqual(Forms.rankForms(forms, null), [], "Ctrl+Shift+L: no target");
+  assert.deepEqual(Forms.rankForms(forms, null, { explicit: true }), forms, "popup pick: the step is a target");
+  assert.equal(Forms.fillForm(forms[0], { username: "tom@example.com", password: "Tom-Pw-7" }, { explicit: true }), 1);
+  assert.equal(byName(ms, "MemberName").value, "tom@example.com");
+  assert.equal(Forms.readCredentials(forms[0]), null, "a registration's e-mail is not remembered as a login step");
+
+  // Only the heading says so (neutral form; the page title "Mein Konto" alone would read like a login step).
+  const heading = page(`
+    <form><h2>Konto erstellen</h2><label>E-Mail-Adresse <input type="email" name="email"></label><button>Weiter</button></form>`,
+  { title: "Mein Konto – Beispiel", path: "/start" });
+  assert.deepEqual(stepsOf(heading).kinds, ["signup"]);
+  const sameAsLogin = page(`
+    <form><h2>Willkommen</h2><label>E-Mail-Adresse <input type="email" name="email"></label><button>Weiter</button></form>`,
+  { title: "Mein Konto – Beispiel", path: "/start" });
+  assert.deepEqual(stepsOf(sameAsLogin).kinds, ["username"], "the same page without the heading is a login step");
+
+  // Only the page title says so; an explicit autocomplete=username does not make it a login step either.
+  const title = page(`<form><input type="email" name="email" autocomplete="username"><button>Next</button></form>`,
+    { title: "Create account – Example", path: "/" });
+  assert.deepEqual(stepsOf(title).kinds, ["signup"]);
+  assert.equal(stepsOf(title).icons, 0);
+
+  // English wizard (GitHub's old e-mail step): action /signup, 'Join GitHub'.
+  const wizard = page(`<form action="/signup?social=false"><label for="e">Enter your email*</label>
+    <input type="email" id="e" name="user[email]" autocomplete="off"><button type="button">Continue</button></form>`,
+  { title: "Join GitHub · GitHub", path: "/signup" });
+  assert.deepEqual(stepsOf(wizard).kinds, ["signup"]);
+  assert.equal(stepsOf(wizard).icons, 0);
+
+  // More registration wordings: "Create your free account", "Account erstellen".
+  for (const heading of ["Create your free account", "Account erstellen"]) {
+    const doc = page(`<form><h1>${heading}</h1><input type="email" name="email" placeholder="E-Mail"><button>Continue</button></form>`,
+      { title: "Your account", path: "/start" });
+    assert.deepEqual(stepsOf(doc).kinds, ["signup"], heading);
+  }
+});
+
+test("login steps that also mention creating an account stay login steps", () => {
+  // "Anmelden oder Konto erstellen": login words win.
+  const either = page(`
+    <form><h1>Anmelden oder Konto erstellen</h1>
+      <label>E-Mail-Adresse <input type="email" name="email"></label><button>Weiter</button></form>`,
+  { title: "Anmelden oder Konto erstellen", path: "/start" });
+  const [step] = Forms.findLoginForms(either);
+  assert.equal(step?.kind, "username");
+
+  // Google-style: a "Konto erstellen" button beside "Weiter" inside the form, "Anmelden" as heading.
+  const googleHtml = `
+    <form method="post"><h1>Anmelden</h1>
+      <input type="email" id="identifierId" name="identifier" autocomplete="username" aria-label="E-Mail oder Telefonnummer">
+      <button type="button">Konto erstellen</button><button type="button">Weiter</button></form>`;
+  const google = page(googleHtml, { title: "Google Konten", path: "/v3/signin/identifier" });
+  assert.deepEqual(Forms.findLoginForms(google).map((f) => f.kind), ["username"]);
+  // The heading alone keeps it a login step (no login word in the title or path).
+  const googleNoPath = page(googleHtml, { title: "Google Konten", path: "/v3/identifier" });
+  assert.deepEqual(Forms.findLoginForms(googleNoPath).map((f) => f.kind), ["username"]);
+
+  // Amazon's markup: submit <input> labelled by a span, "Erstellen Sie Ihr Amazon-Konto" outside the form.
+  const amazon = page(`
+    <div id="authportal-main-section">
+      <form name="signIn" method="post" action="/ap/signin" class="auth-validate-form">
+        <h1>Anmelden</h1>
+        <label for="ap_email">E-Mail-Adresse oder Mobiltelefonnummer</label>
+        <input type="email" maxlength="128" id="ap_email" name="email">
+        <span id="continue"><input id="continue-input" type="submit" aria-labelledby="continue-announce"><span id="continue-announce">Weiter</span></span>
+      </form>
+      <div>Neu bei Amazon?</div><a id="createAccountSubmit" href="/register">Erstellen Sie Ihr Amazon-Konto</a>
+    </div>`, { title: "Amazon Anmelden", path: "/ap/signin" });
+  const forms = Forms.findLoginForms(amazon);
+  assert.deepEqual(forms.map((f) => f.kind), ["username"]);
+  assert.equal(forms[0].username, byName(amazon, "email"));
+  assert.deepEqual(Forms.rankForms(forms, null), forms, "Ctrl+Shift+L fills the step");
+});
+
+test("popup 'Ausfüllen' (explicit pick) also fills a form taken for a registration; Ctrl+Shift+L does not", () => {
+  // A login whose password field says new-password and whose button says nothing: taken for a signup.
+  const doc = page(`<form action="/session"><input name="user" placeholder="Benutzername">
+    <input name="pw" type="password" autocomplete="new-password"><button>Weiter</button></form>`, { title: "Mein Konto" });
+  const forms = Forms.findLoginForms(doc);
+  assert.deepEqual(forms.map((f) => f.kind), ["signup"]);
+  assert.deepEqual(Forms.iconFields(forms), [], "no inline login icon / dropdown on it");
+  assert.deepEqual(Forms.rankForms(forms, null), [], "Ctrl+Shift+L: no target");
+  const [target] = Forms.rankForms(forms, null, { explicit: true });
+  assert.equal(target, forms[0], "popup: the form is a target");
+  // Without the explicit flag the password stays out of it …
+  assert.equal(Forms.fillForm(target, { username: "alice", password: "Alice-Pw-1" }), 1);
+  assert.equal(byName(doc, "pw").value, "");
+  // … with it, username and password are filled.
+  assert.equal(Forms.fillForm(target, { username: "alice", password: "Alice-Pw-1" }, { explicit: true }), 2);
+  assert.equal(byName(doc, "user").value, "alice");
+  assert.equal(byName(doc, "pw").value, "Alice-Pw-1");
+  assert.deepEqual(byName(doc, "pw").events.map((e) => e.type), ["input", "change", "keyup"]);
+});
+
+test("explicit fill of a real signup form: the new password and its confirmation", () => {
+  const doc = page(`<form action="/register"><input name="mail" type="email">
+    <input name="n1" type="password" autocomplete="new-password"><input name="n2" type="password" autocomplete="new-password">
+    <button>Registrieren</button></form>`);
+  const [form] = Forms.findLoginForms(doc);
+  assert.equal(form.kind, "signup");
+  assert.equal(Forms.fillForm(form, { username: "neu@example.com", password: "Prepared-Pw-9" }, { explicit: true }), 3);
+  assert.deepEqual([byName(doc, "mail").value, byName(doc, "n1").value, byName(doc, "n2").value], ["neu@example.com", "Prepared-Pw-9", "Prepared-Pw-9"]);
+  // An empty stored password writes nothing into the password fields.
+  const empty = page(`<form action="/register"><input name="mail" type="email"><input name="n1" type="password" autocomplete="new-password"></form>`);
+  const [emptyForm] = Forms.findLoginForms(empty);
+  assert.equal(Forms.fillForm(emptyForm, { username: "x@example.com", password: "" }, { explicit: true }), 1);
+  assert.equal(byName(empty, "n1").value, "");
+});
+
+test("explicit fill on a page with a login and a signup form: the login form first, even with the focus in the signup", () => {
+  const doc = page(`
+    <form action="/login"><input name="user" autocomplete="username"><input name="pw" type="password"><button>Anmelden</button></form>
+    <form action="/register"><input name="mail" type="email"><input name="n1" type="password" autocomplete="new-password">
+      <button>Registrieren</button></form>`);
+  const forms = Forms.findLoginForms(doc);
+  byName(doc, "n1").focus();
+  assert.deepEqual(Forms.rankForms(forms, doc.activeElement, { explicit: true }).map((f) => f.kind), ["login", "signup"]);
+  // Two signup-like forms: the focused one first.
+  const two = page(`
+    <form action="/register"><input name="a" type="email"><input name="a1" type="password" autocomplete="new-password"><button>Registrieren</button></form>
+    <form action="/join"><input name="b" type="email"><input name="b1" type="password" autocomplete="new-password"><button>Konto erstellen</button></form>`);
+  const twoForms = Forms.findLoginForms(two);
+  byName(two, "b").focus();
+  assert.deepEqual(names(Forms.rankForms(twoForms, two.activeElement, { explicit: true }).map((f) => f.username)), ["b", "a"]);
 });
 
 test("a second identifier inside a login form is no separate login step", () => {

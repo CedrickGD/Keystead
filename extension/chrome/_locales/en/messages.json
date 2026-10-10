@@ -16,6 +16,7 @@
   "csNoUsername": { "message": "(no username)" },
   "csNoMatches": { "message": "No matching logins for this page." },
   "csNoFields": { "message": "No login form found on this page." },
+  "csNoFieldsSignup": { "message": "There is only a sign-up form here. To fill a saved login anyway, pick it in the Keystead popup." },
   "csNoField": { "message": "Click into the field that should receive the password first." },
   "csFillFailed": { "message": "The login could not be filled." },
   "csGenerateFailed": { "message": "No password could be generated." },
