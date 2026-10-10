@@ -3,9 +3,15 @@
 //! while the browser port lives). Requests on a connection are answered in
 //! order.
 
+#[cfg(windows)]
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::panic::{self, AssertUnwindSafe};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(windows)]
+use std::sync::Mutex;
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -24,6 +30,10 @@ use crate::util::log;
 const MAX_CONNECTIONS: usize = 32;
 /// How long [`ServerHandle::stop`] waits for the accept thread.
 const STOP_WAIT: Duration = Duration::from_secs(3);
+/// Windows: how long [`ServerHandle::stop`] waits for the disconnected
+/// connection threads to close their pipe instances.
+#[cfg(windows)]
+const CONNECTION_CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Answers bridge requests. Implemented by
 /// [`Dispatcher`](crate::dispatcher::Dispatcher); called concurrently from
@@ -45,6 +55,16 @@ pub trait BridgeHandler: Send + Sync + 'static {
 struct Shared {
     stopping: AtomicBool,
     connections: AtomicUsize,
+    /// Windows: a duplicate handle of every open connection, by id, so that
+    /// [`ServerHandle::stop`] can disconnect them: an open server-side pipe
+    /// instance – even one that only waits for the next request – keeps the
+    /// pipe name taken (`FILE_FLAG_FIRST_PIPE_INSTANCE`) and would make a
+    /// restart of the server fail. Unix sockets have no such problem (the
+    /// socket file is simply unlinked).
+    #[cfg(windows)]
+    open: Mutex<HashMap<u64, Stream>>,
+    #[cfg(windows)]
+    next_id: AtomicU64,
 }
 
 /// A running bridge server. Stops on [`ServerHandle::stop`] or when dropped.
@@ -115,9 +135,11 @@ impl ServerHandle {
     }
 
     /// Stops accepting connections and releases the endpoint. Connections
-    /// that are still open are closed (unanswered) on their next request, so
-    /// the native host reconnects – to a restarted server, if any. Requests
-    /// already being handled complete normally. Idempotent.
+    /// that are still open are closed (unanswered) on their next request –
+    /// on Windows right away, see [`Shared::open`] –, so the native host
+    /// reconnects – to a restarted server, if any. Requests already being
+    /// handled complete normally (Windows: unless their connection is
+    /// disconnected first). Idempotent.
     pub fn stop(&mut self) {
         let Some(thread) = self.accept_thread.take() else {
             return;
@@ -140,7 +162,55 @@ impl ServerHandle {
             // our back; the thread exits with the next connection.
             log("bridge accept thread did not stop in time; detaching it");
         }
+        #[cfg(windows)]
+        self.disconnect_open();
     }
+
+    /// Windows: disconnects every open connection (its thread ends with a
+    /// read error and closes its handle) and waits briefly until they are
+    /// gone, so the pipe name is free for a restart (see [`Shared::open`]).
+    #[cfg(windows)]
+    fn disconnect_open(&self) {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+
+        if let Ok(mut open) = self.shared.open.lock() {
+            for stream in open.values() {
+                let Stream::NamedPipe(inner) = stream;
+                // SAFETY: a valid duplicate handle of a server-side pipe
+                // instance, owned by the map for the duration of the call.
+                unsafe { DisconnectNamedPipe(inner.as_handle().as_raw_handle().cast()) };
+            }
+            open.clear();
+        }
+        let deadline = std::time::Instant::now() + CONNECTION_CLOSE_WAIT;
+        while self.shared.connections.load(Ordering::SeqCst) > 0
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Windows: remembers a duplicate handle of `stream` under a fresh id (see
+/// [`Shared::open`]); `None` if the handle could not be duplicated (the
+/// connection is served anyway).
+#[cfg(windows)]
+fn register_open(shared: &Shared, stream: &Stream) -> Option<u64> {
+    use interprocess::TryClone;
+
+    let clone = match stream.try_clone() {
+        Ok(clone) => clone,
+        Err(e) => {
+            log(format_args!(
+                "could not duplicate a bridge connection handle: {e}"
+            ));
+            return None;
+        }
+    };
+    let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
+    shared.open.lock().ok()?.insert(id, clone);
+    Some(id)
 }
 
 impl Drop for ServerHandle {
@@ -149,12 +219,23 @@ impl Drop for ServerHandle {
     }
 }
 
-/// Decrements the connection counter when a connection thread ends.
-struct ConnectionSlot(Arc<Shared>);
+/// Decrements the connection counter (and, on Windows, forgets the
+/// connection's duplicate handle) when a connection thread ends.
+struct ConnectionSlot {
+    shared: Arc<Shared>,
+    #[cfg(windows)]
+    id: Option<u64>,
+}
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
-        self.0.connections.fetch_sub(1, Ordering::SeqCst);
+        #[cfg(windows)]
+        if let Some(id) = self.id.take() {
+            if let Ok(mut open) = self.shared.open.lock() {
+                open.remove(&id);
+            }
+        }
+        self.shared.connections.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -192,7 +273,11 @@ fn accept_loop(listener: &Listener, handler: &Arc<dyn BridgeHandler>, shared: &A
         }
         // Moved into the thread; frees the slot when the thread ends (or
         // right away if it cannot be spawned).
-        let slot = ConnectionSlot(Arc::clone(shared));
+        let slot = ConnectionSlot {
+            shared: Arc::clone(shared),
+            #[cfg(windows)]
+            id: register_open(shared, &stream),
+        };
         let handler = Arc::clone(handler);
         let spawned = thread::Builder::new()
             .name("keystead-bridge-conn".into())
@@ -200,7 +285,7 @@ fn accept_loop(listener: &Listener, handler: &Arc<dyn BridgeHandler>, shared: &A
                 serve_connection(
                     stream,
                     handler.as_ref(),
-                    &slot.0.stopping,
+                    &slot.shared.stopping,
                     socket::peer_hung_up,
                 );
             });

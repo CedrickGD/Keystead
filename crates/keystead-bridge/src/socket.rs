@@ -12,7 +12,9 @@
 //!   the pipe they connected to *before sending anything* and refuse pipes
 //!   owned by anyone else (`PermissionDenied`); a server that finds the name
 //!   taken does the same check to tell its own second instance
-//!   (`AlreadyRunning`) from a hijacked name (`PermissionDenied`).
+//!   (`AlreadyRunning`) from a hijacked name (`PermissionDenied`). Connection
+//!   attempts go through the named-pipe API so that their timeout is honoured
+//!   (see [`connect_named_pipe`]).
 //! * Unix: `$XDG_RUNTIME_DIR/keystead-bridge.sock`, fallback
 //!   `/tmp/keystead-bridge-<uid>.sock`, mode 0600. Both ends additionally
 //!   check that the peer runs as the same user (`SO_PEERCRED`).
@@ -26,8 +28,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use interprocess::local_socket::prelude::*;
+#[cfg(not(windows))]
+use interprocess::local_socket::ConnectOptions;
 use interprocess::local_socket::{
-    ConnectOptions, GenericFilePath, GenericNamespaced, Listener, ListenerOptions, Name, Stream,
+    GenericFilePath, GenericNamespaced, Listener, ListenerOptions, Name, Stream,
 };
 use interprocess::ConnectWaitMode;
 
@@ -202,10 +206,48 @@ fn connect_verified(
 }
 
 fn connect_unverified(endpoint: &Endpoint, timeout: Duration) -> io::Result<Stream> {
-    ConnectOptions::new()
-        .name(endpoint.name()?)
-        .wait_mode(ConnectWaitMode::Timeout(timeout))
-        .connect_sync()
+    #[cfg(windows)]
+    {
+        connect_named_pipe(endpoint, timeout)
+    }
+    #[cfg(not(windows))]
+    {
+        ConnectOptions::new()
+            .name(endpoint.name()?)
+            .wait_mode(ConnectWaitMode::Timeout(timeout))
+            .connect_sync()
+    }
+}
+
+/// Windows: connects through the named-pipe API so that `timeout` is
+/// honoured.
+///
+/// The local-socket layer of `interprocess` 2.4.4 drops the wait mode of
+/// `ConnectOptions` on Windows and always waits unboundedly (`WaitNamedPipe`
+/// with `NMPWAIT_WAIT_FOREVER`). The listener keeps exactly one listening
+/// pipe instance; a client that connected and hung up before the server
+/// accepted leaves it with a dead-on-arrival connection, and every further
+/// connection attempt then blocks until the server accepts – forever if the
+/// app is frozen or has stopped accepting. (Reproduced on Windows 11: a
+/// probe with a 500 ms timeout blocked for an hour; `WaitNamedPipe` itself
+/// honours a finite timeout.) The typed named-pipe API takes the wait mode;
+/// the stream is handed back to the local-socket `Stream` through its handle.
+#[cfg(windows)]
+fn connect_named_pipe(endpoint: &Endpoint, timeout: Duration) -> io::Result<Stream> {
+    use interprocess::os::windows::named_pipe::{local_socket as np, pipe_mode, DuplexPipeStream};
+    use std::os::windows::io::OwnedHandle;
+
+    // `Display` gives the full `\\.\pipe\…` path for both endpoint kinds.
+    let path = endpoint.to_string();
+    let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
+        path.as_str(),
+        ConnectWaitMode::Timeout(timeout),
+    )?;
+    // Fails only for a split stream, which this one never is.
+    let handle = OwnedHandle::try_from(pipe)
+        .map_err(|_| io::Error::other("named pipe stream could not be converted"))?;
+    let stream = np::Stream::try_from(handle).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(Stream::from(stream))
 }
 
 /// Client side: true if the *server* end of `stream` belongs to the current

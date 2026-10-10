@@ -1360,7 +1360,14 @@ Max message 1 MiB (host → browser) / 4 MiB otherwise.
   `app_unavailable`), and a starting app that finds the name taken does the
   same check: owned by its user → `AlreadyRunning`, otherwise (or not
   verifiable) a `PermissionDenied` I/O error ("possible hijack", logged) and
-  the bridge stays off.
+  the bridge stays off. Connection attempts (the host's 2 s, the 500 ms probe
+  of a taken name) go through `interprocess`'s typed named-pipe API
+  (`socket::connect_named_pipe`), because its local-socket layer (2.4.4)
+  ignores the wait mode on Windows and waits unboundedly: a pipe instance
+  that holds a connection the server has not accepted yet (a client that
+  connected and hung up – "dead on arrival") would then block every further
+  attempt until the app accepts – forever on a frozen app, hanging the host
+  and the browser.
 * Unix: `$XDG_RUNTIME_DIR/keystead-bridge.sock`, fallback
   `/tmp/keystead-bridge-<uid>.sock`, mode 0600. Both ends check the peer uid
   (`SO_PEERCRED`).
@@ -1529,7 +1536,13 @@ Behaviour (additive to the table above):
   Win32 failure counts as "not ours"), the server relies on the DACL for its
   clients. After `stop()` open connections are closed unanswered on their
   next request, so the host reconnects to a restarted server (or launches the
-  app).
+  app). On Windows `stop()` disconnects them right away (`DisconnectNamedPipe`
+  on a duplicate handle of every open connection, then it waits up to 2 s for
+  their threads to close) – an open server-side pipe instance keeps the pipe
+  name taken (`FILE_FLAG_FIRST_PIPE_INSTANCE`), so a restart of the server
+  (browser integration toggled, portable-mode switch, failed update) would
+  otherwise fail with "possible hijack" while the native host's connection
+  lives.
 * Host: oversized browser frame → `invalid_request` and exit; app reply
   > 1 MiB → `internal`; after a failed launch, requests within 30 s fail fast
   with `app_unavailable`; an endpoint that fails the owner check →

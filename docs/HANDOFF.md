@@ -98,6 +98,36 @@ erkanntes Formular; Inline-Menü und `Strg+Umschalt+L` bleiben dort aus.
 Bekannte Grenze: Die Erkennung ist heuristisch. Fehlklassifizierte Seiten
 lassen sich immer über das Popup ausfüllen.
 
+## Lokal verifiziert (Windows, 2026-10-10)
+
+Die Arbeit läuft seit beta.8 lokal auf dem Windows-PC des Besitzers (Rust
+1.97.0 aus `rust-toolchain.toml`, MSVC aus Visual Studio Community 2026,
+Node 22). Erster vollständiger Lauf der Prüfkette unter Windows: fmt, clippy,
+`cargo test --workspace`, `npm run build`, `node --test` – grün, nachdem zwei
+Windows-Fehler in `crates/keystead-bridge` behoben wurden (noch nicht
+veröffentlicht, gehen mit dem nächsten `[release]` raus):
+
+1. **Verbindungs-Timeout wurde ignoriert** (`socket.rs`): Die Local-Socket-
+   Schicht von `interprocess` 2.4.4 verwirft unter Windows den Wait-Modus und
+   wartet unbegrenzt (`WaitNamedPipe` mit `NMPWAIT_WAIT_FOREVER`). Hält die
+   einzige Pipe-Instanz eine Verbindung, die der Server noch nicht angenommen
+   hat, blockiert jeder weitere Verbindungsversuch – Host und Browser hingen
+   bei einer eingefrorenen App endlos; drei Tests hingen deshalb. Jetzt wird
+   über die typisierte Named-Pipe-API mit Timeout verbunden
+   (`socket::connect_named_pipe`).
+2. **Neustart des Bridge-Servers schlug fehl** (`server.rs`): Offene
+   Host-Verbindungen halten unter Windows ihre Pipe-Instanz und damit den
+   Namen (`FILE_FLAG_FIRST_PIPE_INSTANCE`); `stop()` + `start_server()`
+   (Browser-Integration aus/ein, Portable-Modus, fehlgeschlagenes Update)
+   endete mit „possible hijack“ und die Bridge blieb aus. `stop()` trennt
+   offene Verbindungen unter Windows jetzt sofort (`DisconnectNamedPipe` über
+   ein Handle-Duplikat) und wartet bis zu 2 s auf ihr Ende.
+
+Außerdem liegt in `docs/BLOCK3-DESIGN.md` der zusammengeführte Entwurf für
+Block 3 (Anhänge, HIBP, Tags, Assistent) mit den offenen Entscheidungen D1–D8;
+nach der Entscheidung des Besitzers wandern die festgelegten Teile nach
+`ARCHITECTURE.md`.
+
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
 3. **Block 3 „Neue Funktionen“**: verschlüsselte Dateianhänge an Einträgen
@@ -115,8 +145,12 @@ lassen sich immer über das Popup ausfüllen.
 
 - EXE ist nicht code-signiert → SmartScreen-Warnung. Lösung später z. B. über
   Azure Trusted Signing (kostenpflichtig, Konto des Besitzers nötig).
-- Windows-spezifischer Code wurde in der Cloud nur per Cross-Clippy geprüft; real
-  getestet hat nur der Besitzer (Installer, Updates, Plugin-Kopplung laufen).
+- Windows-spezifischer Code wurde in der Cloud nur per Cross-Clippy geprüft.
+  Seit 2026-10-10 läuft die komplette Prüfkette (fmt, clippy, alle Tests, npm,
+  node) auch lokal auf dem Windows-PC des Besitzers – dabei kamen zwei reine
+  Windows-Fehler der Bridge zum Vorschein, beide behoben (siehe „Lokal
+  verifiziert“). CI testet weiterhin nur unter Linux; Windows-Tests laufen nur
+  lokal.
 - Website-Icons verraten Netzwerk-Mitlesern die Liste der Websites (dokumentiert,
   Schalter vorhanden); hinter Firmen-Proxys werden bewusst keine Icons geladen.
 - Verschlüsselte Bitwarden-Exporte, 1Password-/KeePass-Formate: nicht unterstützt.
