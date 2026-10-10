@@ -18,7 +18,8 @@ import type { VaultInfo } from "../lib/types";
 import { useT } from "../i18n";
 import { useApp } from "../state/app";
 import { Logo } from "../components/Logo";
-import { Button, Field } from "../components/Controls";
+import { Button, Field, Switch } from "../components/Controls";
+import { SettingRow } from "./settings/SettingsPage";
 import { RecoveryKeyReveal } from "../components/RecoveryKey";
 import { ImportFlow } from "../components/import/ImportFlow";
 import { useNoDropTargetMode } from "../components/import/FileDrop";
@@ -167,7 +168,7 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
         {step === "vault" && (
           <CreateVaultStep
             withImport={withImport}
-            defaultName={vaults.length === 0 ? t("welcome.defaultVaultName") : ""}
+            firstRun={vaults.length === 0}
             onCreated={(info) => {
               setCreated(info);
               setStep(withImport ? "import" : "recovery");
@@ -188,19 +189,27 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
   );
 }
 
+/**
+ * Step "Tresor": name and master password. On the very first start (no vault
+ * yet) it also offers the global setting "Website-Icons automatisch laden",
+ * so the user decides before anything could be fetched.
+ */
 function CreateVaultStep({
   withImport,
-  defaultName,
+  firstRun,
   onCreated,
 }: {
   withImport: boolean;
-  defaultName: string;
+  firstRun: boolean;
   onCreated: (info: VaultInfo) => void;
 }) {
   const { t, errorText } = useT();
+  const { settings, updateSettings } = useApp();
   const nameId = useId();
-  const [name, setName] = useState(defaultName);
+  const iconsId = useId();
+  const [name, setName] = useState(firstRun ? t("welcome.defaultVaultName") : "");
   const [master, setMaster] = useState<MasterPasswordState>({ password: "", confirm: "" });
+  const [websiteIcons, setWebsiteIcons] = useState(settings.websiteIcons);
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +225,9 @@ function CreateVaultStep({
       // Evaluate the final value (the live meter is debounced).
       const finalStrength = master.password ? await api.passwordStrength(master.password) : null;
       if (masterPasswordProblem(master, finalStrength)) return;
+      // Saved before the vault exists: an import in the next step starts the
+      // icon fetcher ~2 s after it finishes. A failed save toasts; stay here.
+      if (firstRun && websiteIcons !== settings.websiteIcons && !(await updateSettings({ websiteIcons }))) return;
       const info = await api.createVault(name.trim(), master.password);
       onCreated(info);
     } catch (err) {
@@ -258,6 +270,14 @@ function CreateVaultStep({
           <strong>{t("wizard.noRecoveryTitle")}</strong> {t("wizard.noRecoveryText")}
         </span>
       </div>
+
+      {firstRun && (
+        <div className="wizard-setting">
+          <SettingRow title={t("settings.websiteIcons")} description={t("wizard.websiteIconsHint")} htmlFor={iconsId}>
+            <Switch id={iconsId} checked={websiteIcons} onChange={setWebsiteIcons} label={t("settings.websiteIcons")} />
+          </SettingRow>
+        </div>
+      )}
 
       {error && <div className="field-error">{error}</div>}
 

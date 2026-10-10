@@ -62,7 +62,8 @@ neue Betas per In-App-Update.
   Bitwarden JSON, Keystead-Export, VaultX 1.x), Vorschau, Duplikat-/Konflikt-
   Behandlung (überspringen/aktualisieren/beide behalten); vereinfachter Export.
 - Website-Icons (direkt von den Websites, verschlüsselt im Tresor, abschaltbar
-  unter Einstellungen → Allgemein; bei Proxy „fail closed“).
+  unter Einstellungen → Allgemein und beim allerersten Start im Schritt „Tresor“
+  des Einrichtungsassistenten; bei Proxy „fail closed“).
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.

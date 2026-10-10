@@ -140,6 +140,7 @@ export const en: Record<MessageKey, string> = {
   "wizard.createdTitle": "Your vault is ready",
   "wizard.createdDesc": "Now set up a safeguard for emergencies.",
   "wizard.finish": "Done – open vault",
+  "wizard.websiteIconsHint": "Keystead contacts every saved website for this, which shows DNS resolvers and the network the list of your websites. You can change this any time under Settings → General.",
 
   "recovery.key": "Recovery key",
   "recovery.keyAria": "Your recovery key",

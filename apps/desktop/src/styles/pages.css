@@ -557,6 +557,18 @@ code {
   font-size: 13px;
 }
 
+/* Setup wizard, step "Tresor": the website-icons switch on the very first start. */
+.wizard-setting {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-app);
+}
+
+.wizard-setting .setting-row {
+  padding: 12px 14px;
+  gap: 16px;
+}
+
 .recovery-reveal {
   display: flex;
   flex-direction: column;

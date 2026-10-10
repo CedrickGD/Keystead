@@ -1156,7 +1156,13 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   laden" (hint: loaded directly from the websites, which shows DNS servers
   and the network the list of saved sites; never around a proxy – with a
   proxy set up, no icons are loaded; off = no requests for this) and
-  "Gespeicherte Icons löschen" (`clear_icons`).
+  "Gespeicherte Icons löschen" (`clear_icons`). On the very first start (no
+  vault yet – the setting is global) the setup wizard's step "Tresor" offers
+  the same switch below the master password, prefilled from the setting with
+  a short hint (what the loading reveals; changeable under Settings →
+  Allgemein) and saved with `save_settings` before `create_vault` runs, so
+  an import in the next step (which starts a fetch ~2 s after it finishes)
+  already respects it.
 * **Browser extension**: `logins_for_url` and `search` rows carry the stored
   icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
   (see the bridge protocol); the popup shows it, else the letter. The
@@ -1314,7 +1320,9 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   compact card "Browser-Erweiterung einrichten" below the recovery-key offer:
   the folder path, "Ordner öffnen" and "Anleitung" – a toggle; once the
   wizard is finished the main window opens on Settings → Browser-Integration
-  (`src/lib/startView.ts`).
+  (`src/lib/startView.ts`). Its first step ("Tresor") carries the switch
+  "Website-Icons automatisch laden" on the very first start only (see
+  "Website icons").
 
 ## Releases & in-app updates (CI, `.github/workflows/build.yml`)
 

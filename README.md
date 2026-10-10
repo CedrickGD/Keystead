@@ -81,7 +81,10 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
    - `Keystead-<version>-browser-extension.zip` – nur die Browser-Erweiterung.
 2. Die EXE ist nicht signiert. Zeigt Windows SmartScreen „Der Computer wurde durch
    Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
-3. Beim ersten Start einen Tresor anlegen und ein starkes Master-Passwort wählen.
+3. Beim ersten Start einen Tresor anlegen und ein starkes Master-Passwort wählen;
+   dabei lässt sich auch festlegen, ob Keystead Website-Icons automatisch lädt
+   (siehe [Sicherheit in Kürze](#sicherheit-in-kürze), jederzeit änderbar unter
+   Einstellungen → Allgemein).
    Danach gleich einen **Wiederherstellungsschlüssel** erstellen und sicher
    aufbewahren – ohne ihn ist ein vergessenes Master-Passwort nicht wiederherstellbar.
 
@@ -266,9 +269,11 @@ and also available in English.
    - `Keystead-<version>-browser-extension.zip` – the browser extension only.
 2. The exe is not code-signed. If Windows SmartScreen says "Windows protected your
    PC", click "More info" → "Run anyway".
-3. Create a vault with a strong master password on first start, then create a
-   **recovery key** and keep it safe – without it a forgotten master password cannot
-   be recovered.
+3. Create a vault with a strong master password on first start; the same step lets
+   you decide whether Keystead loads website icons automatically (see
+   [Security design](#security-design); changeable any time under Settings →
+   General). Then create a **recovery key** and keep it safe – without it a
+   forgotten master password cannot be recovered.
 
 Requires Windows 10 or 11 (the WebView2 runtime they need is normally already installed).
 

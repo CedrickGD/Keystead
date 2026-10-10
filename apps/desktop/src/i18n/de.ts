@@ -145,6 +145,7 @@ export const de = {
   "wizard.createdTitle": "Dein Tresor ist bereit",
   "wizard.createdDesc": "Jetzt noch eine Absicherung für den Notfall einrichten.",
   "wizard.finish": "Fertig – Tresor öffnen",
+  "wizard.websiteIconsHint": "Dafür kontaktiert Keystead jede gespeicherte Website – DNS-Server und das Netzwerk sehen so die Liste deiner Websites. Jederzeit änderbar unter Einstellungen → Allgemein.",
 
   // Recovery key
   "recovery.key": "Wiederherstellungsschlüssel",
