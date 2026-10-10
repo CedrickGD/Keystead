@@ -306,6 +306,13 @@ fn detail_lines(app: &App, item: &VaultItem, width: usize) -> Vec<Line<'static>>
         meta.push_str(&format!(" · * {}", lang.t(M::FieldFavorite)));
     }
     b.lines.push(Line::from(Span::styled(meta, dim())));
+    // Tags are shown read-only (the editor keeps them unchanged).
+    if !item.tags.is_empty() {
+        let tags = format!("{}: {}", lang.t(M::FieldTags), item.tags.join(", "));
+        for l in wrap(&tags, width) {
+            b.lines.push(Line::from(Span::styled(l, dim())));
+        }
+    }
     b.lines.push(Line::default());
 
     match item.item_type {

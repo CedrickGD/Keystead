@@ -445,6 +445,8 @@ fn edit_and_discard_confirmation() {
     assert_eq!(github.username(), "hubot");
     assert_eq!(github.password(), "gh-secret-pw-123");
     assert_eq!(github.login.as_ref().unwrap().totp, TOTP_SEED);
+    // What the form does not show survives the edit.
+    assert_eq!(github.tags, ["Arbeit", "Code"]);
 
     // Discarding keeps the stored item.
     app.handle_key(ch('e'));

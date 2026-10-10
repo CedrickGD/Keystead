@@ -92,8 +92,8 @@ pub enum FormFocus {
 #[derive(Debug)]
 pub struct ItemForm {
     /// The item being edited (a fresh template for a new one). Fields the
-    /// form does not show (folder, further websites, custom fields, …) are
-    /// kept unchanged.
+    /// form does not show (folder, tags, further websites, custom fields, …)
+    /// are kept unchanged.
     original: VaultItem,
     pub is_new: bool,
     pub fields: Vec<FormField>,
@@ -112,9 +112,13 @@ impl Drop for ItemForm {
     }
 }
 
-/// Overwrites the secret parts of an item copy before it is freed.
+/// Overwrites the secret parts of an item copy before it is freed (tags are
+/// personal data like notes and go with them).
 fn wipe_item(item: &mut VaultItem) {
     item.notes.zeroize();
+    for t in &mut item.tags {
+        t.zeroize();
+    }
     if let Some(l) = item.login.as_mut() {
         l.password.zeroize();
         l.totp.zeroize();
@@ -447,6 +451,7 @@ mod tests {
         let mut item = VaultItem::new(ItemType::Login, "GitHub");
         item.id = "id-1".into();
         item.folder_id = Some("folder".into());
+        item.tags = vec!["Arbeit".into(), "Code".into()];
         if let Some(l) = item.login.as_mut() {
             l.username = "me".into();
             l.password = "pw".into();
@@ -472,8 +477,25 @@ mod tests {
         // The first website was removed, the second one is kept.
         assert_eq!(login.uris.len(), 1);
         assert_eq!(login.uris[0].uri, "https://gist.github.com");
+        // Fields the form does not show are kept.
         assert_eq!(built.folder_id.as_deref(), Some("folder"));
+        assert_eq!(built.tags, ["Arbeit", "Code"]);
         assert_eq!(built.id, "id-1");
+    }
+
+    #[test]
+    fn wipe_clears_notes_tags_and_secrets() {
+        let mut item = VaultItem::new(ItemType::Login, "GitHub");
+        item.notes = "recovery codes".into();
+        item.tags = vec!["Arbeit".into(), "Code".into()];
+        if let Some(l) = item.login.as_mut() {
+            l.password = "pw".into();
+        }
+        wipe_item(&mut item);
+        assert!(item.notes.is_empty());
+        // The vector keeps its shape, every tag is blank.
+        assert_eq!(item.tags, ["", ""]);
+        assert!(item.login.unwrap().password.is_empty());
     }
 
     #[test]

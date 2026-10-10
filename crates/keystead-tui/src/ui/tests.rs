@@ -77,6 +77,18 @@ fn main_screen_lists_items_and_masks_secrets() {
     assert!(screen.contains("https://github.com"));
     assert!(screen.contains("Recovery codes are in the safe"));
     assert!(screen.contains("Login · * Favorit"));
+    // Tags follow the type line, read-only.
+    let type_line = screen
+        .lines()
+        .position(|l| l.contains("Login · * Favorit"))
+        .unwrap();
+    assert!(
+        screen
+            .lines()
+            .nth(type_line + 1)
+            .is_some_and(|l| l.contains("Tags: Arbeit, Code")),
+        "{screen}"
+    );
 
     // Live TOTP code with the remaining seconds.
     let code = totp::totp_at(TOTP_SEED, NOW).unwrap();
@@ -106,6 +118,8 @@ fn main_screen_other_item_types() {
     assert!(!screen.contains("4111"));
     assert!(screen.contains("03/2028"));
     assert!(!screen.contains("987"));
+    // An item without tags has no tags line.
+    assert!(!screen.contains("Tags:"));
 
     select(&mut app, "WLAN");
     let screen = render(&mut app, 110, 30);

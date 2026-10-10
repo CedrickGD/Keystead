@@ -74,12 +74,16 @@ One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
 returned code: `0` success, `1` error, `2` invalid usage.
 * No subcommand → interactive full-screen UI (needs a terminal on stdout,
   else exit 1): vault picker (> 1 vault; preselects `lastVaultId`, which an
-  unlock updates), master-password prompt, item list + details; copy
+  unlock updates), master-password prompt, item list + details (the details
+  list an item's tags under its type line, read-only; the search matches
+  them like the desktop); copy
   (`u`/`p`/`t`, secrets via `clipboard::copy_secret` with
   `clipboardClearSeconds`, pending secret cleared on lock/quit), `o` open
-  http(s) website, `n`/`e` edit, `d` trash, `g` generator (copies are added
-  to the vault's generator history), auto-lock after `autoLockMinutes`, file
-  re-checked every 5 s (`reload_if_changed`), `Conflict` → reload + retry once;
+  http(s) website, `n`/`e` edit (the editor keeps what it does not show:
+  folder, tags, further websites, custom fields), `d` trash, `g` generator
+  (copies are added to the vault's generator history), auto-lock after
+  `autoLockMinutes`, file re-checked every 5 s (`reload_if_changed`),
+  `Conflict` → reload + retry once;
   `KeyChanged` (master password changed elsewhere) locks the TUI, `Rollback`
   is shown as an error (the newer in-memory state stays open).
   `--vault NAME|ID` preselects a vault. Creating a vault is possible when none
@@ -193,8 +197,8 @@ files, settings, plain-text exports) share this.
 * `version`: new files are written as 1 (`format::FORMAT_VERSION`); the
   reader accepts 1 and 2 (`format::SUPPORTED_VERSIONS`) and a file keeps
   its version when it is written back. Version 2 is reserved for vaults
-  with attachments and not written yet – a later build writes it only for
-  such vaults, so builds without this reader refuse them
+  with attachments and not written yet – the upcoming attachments feature
+  writes it only for such vaults, so builds without this reader refuse them
   (`unsupported:vault format version 2`) instead of silently dropping what
   they do not know. Any other version → `unsupported:vault format version
   <n>`; a missing one → `corrupt:missing format version`.
@@ -203,7 +207,7 @@ files, settings, plain-text exports) share this.
 
 ```rust
 pub mod error;    // pub enum Error { Io, Json, WrongPassword, Corrupt(String), Conflict, KeyChanged, Rollback, NotFound(String), InvalidInput(String), Unsupported(String) }  pub type Result<T>
-pub mod model;    // see crates/keystead-core/src/model.rs (the data contract)
+pub mod model;    // see crates/keystead-core/src/model.rs (the data contract); VaultItem.tags = free user tags, normalised and limited by the core (see "Tags")
 pub mod crypto;   // KdfParams, derive_key, seal/open (XChaCha20-Poly1305), random bytes
 pub mod format;   // VaultFile (serde of the JSON above), read/write atomic
 pub mod paths;    // data_dir(), vaults_dir(), settings_path(), legacy_dir(), is_portable()
@@ -345,9 +349,9 @@ pub fn import_csv(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String
 pub fn import_bitwarden_json(text: &str) -> Result<(Vec<VaultItem>, Vec<Folder>, Vec<String>)>; // unencrypted Bitwarden export
 pub fn import_keystead_export(path: &Path, password: &str) -> Result<(Vec<VaultItem>, Vec<Folder>)>;
 // export
-pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v1 file (own random key/salt), trash excluded
-pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded; formula-like values get a leading ' (see below)
-pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded
+pub fn export_encrypted(data: &VaultData, path: &Path, password: &str) -> Result<()>; // standalone v1 file (own random key/salt), trash excluded; the only export that carries tags
+pub fn export_csv(data: &VaultData) -> String;            // Bitwarden-style CSV (logins + notes), trash excluded, no tags; formula-like values get a leading ' (see below)
+pub fn export_bitwarden_json(data: &VaultData) -> String; // unencrypted Bitwarden JSON, trash excluded, no tags
 ```
 
 ### Core additions & behaviour details (implemented in `keystead-core`)
@@ -466,7 +470,9 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
   Windows-1252. `read_import` checks `password_required` (missing/empty
   password for `legacy`/`keystead`) before touching the file; a wrong one →
   `wrong_password`. Keystead files: trash and generator history are never
-  imported.
+  imported. Tags come only from Keystead files (normalised lossily, see
+  "Tags"); CSV and Bitwarden JSON carry none, so those imports never create
+  tags.
 * **Detection by content** (`detect_import`); the extension only decides
   which reading is tried first (`.csv`/`.tsv`/`.txt` → CSV first):
   1. JSON object with `"format": "keystead"` → `keystead`, needs password
@@ -562,7 +568,7 @@ incoming secrets in memory until it is committed or dropped (wiped on drop,
     and `updatedAt` set); the incoming TOTP seed is added if the existing
     login has none. An existing TOTP seed is never replaced and an empty
     incoming password never clears one – such a conflict with nothing to take
-    over goes to `conflictsSkipped`. Name, URIs, notes, folder stay.
+    over goes to `conflictsSkipped`. Name, URIs, notes, folder, tags stay.
   * `keepBoth`: the incoming login is added as a new item.
   * New items get fresh ids (like `import_items`); the file's folders are
     merged by name into existing folders or created – only folders used by
@@ -757,6 +763,10 @@ two changed passwords, new logins and one invalid row (against "Privat"),
 `*encrypted*.json` = refused encrypted Bitwarden export, other `*.json` =
 Bitwarden JSON, `vault_*.json` / paths containing `VaultX` = VaultX 1.x and
 `*.keystead` (both password `demo`), anything else = unknown format.
+Tags: both sample vaults carry a few ("Privat": Bank, Familie, Reisen,
+Streaming, Arbeit; "Arbeit": Entwicklung, Cloud, Intern); the mock
+normalises tags like the core (`normalizeTags`) and mirrors `rename_tag` /
+`delete_tag`.
 Website icons: "Privat" starts with a few stored sample icons
 (`src/lib/demo/sampleIcons.ts` – original abstract drawings, not the sites'
 real icons); ~1.5 s after an unlock, a save or turning `websiteIcons` on, a

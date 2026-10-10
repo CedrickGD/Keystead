@@ -81,6 +81,7 @@ messages! {
     FieldNotes => "Notizen", "Notes";
     FieldFolder => "Ordner", "Folder";
     FieldFavorite => "Favorit", "Favorite";
+    FieldTags => "Tags", "Tags";
     FieldCardholder => "Karteninhaber", "Cardholder";
     FieldBrand => "Marke", "Brand";
     FieldCardNumber => "Kartennummer", "Card number";

@@ -131,6 +131,7 @@ fn sample_items() -> Vec<VaultItem> {
     }
     github.notes = "Recovery codes are in the safe".into();
     github.favorite = true;
+    github.tags = vec!["Arbeit".into(), "Code".into()];
     let amazon = login("Amazon", "me@example.com", "amz-pass", "amazon.de");
     let mut card = VaultItem::new(ItemType::Card, "Visa");
     card.card = Some(CardData {

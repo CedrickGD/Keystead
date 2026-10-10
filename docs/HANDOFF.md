@@ -64,6 +64,16 @@ neue Betas per In-App-Update.
 - Website-Icons (direkt von den Websites, verschlüsselt im Tresor, abschaltbar
   unter Einstellungen → Allgemein und beim allerersten Start im Schritt „Tresor“
   des Einrichtungsassistenten; bei Proxy „fail closed“).
+- Tags zusätzlich zu Ordnern: freie Schlagwörter je Eintrag (höchstens 20 à
+  50 Zeichen; der Core trimmt, entfernt leere und doppelte – ohne Rücksicht
+  auf Groß-/Kleinschreibung, die erste Schreibweise bleibt). Sidebar-Gruppe
+  „Tags“ mit Zähler als Filter, Umbenennen/Löschen eines Tags über alle
+  Einträge inkl. Papierkorb, Chips in der Detailansicht (klickbar → Filter)
+  und im Editor (Enter/Komma, Vorschläge, Limits inline), die Suche findet
+  Tags, ein neuer Eintrag im Tag-Filter startet mit dem Tag. Keystead-Export
+  nimmt Tags mit, CSV/Bitwarden-JSON nicht. Die TUI zeigt sie nur an (Zeile
+  „Tags: …“ unter der Typzeile) und bewahrt sie beim Bearbeiten. Noch nicht
+  veröffentlicht (geht mit dem nächsten `[release]` raus).
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -125,16 +135,21 @@ veröffentlicht, gehen mit dem nächsten `[release]` raus):
    ein Handle-Duplikat) und wartet bis zu 2 s auf ihr Ende.
 
 Außerdem liegt in `docs/BLOCK3-DESIGN.md` der zusammengeführte Entwurf für
-Block 3 (Anhänge, HIBP, Tags, Assistent) mit den offenen Entscheidungen D1–D8;
-nach der Entscheidung des Besitzers wandern die festgelegten Teile nach
-`ARCHITECTURE.md`.
+Block 3 (Anhänge, HIBP, Tags, Assistent) mit den Entscheidungen D1–D8. Tags
+und die Assistenten-Zeile sind umgesetzt und in `ARCHITECTURE.md`
+festgehalten (mit D1: der Tresordatei-Leser akzeptiert schon Version 1 und
+2, geschrieben wird weiter 1; D7: Umbenennen/Löschen über die Sidebar); die
+Teile zu Anhängen und HIBP wandern nach der Entscheidung des Besitzers
+ebenfalls dorthin.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
-3. **Block 3 „Neue Funktionen“**: verschlüsselte Dateianhänge an Einträgen
-   (z. B. Ausweis-Scan), optionale Prüfung auf geleakte Passwörter
-   (Have I Been Pwned, k-Anonymität – nur die ersten 5 Zeichen des SHA-1 gehen
-   raus; standardmäßig aus oder nur auf Knopfdruck), Tags zusätzlich zu Ordnern.
+3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern sind fertig
+   (siehe „Was fertig ist“; geplant als beta.9). Offen: verschlüsselte
+   Dateianhänge an Einträgen (z. B. Ausweis-Scan; die Tresordatei bekommt
+   dafür Version 2, der Leser dafür ist schon drin), optionale Prüfung auf
+   geleakte Passwörter (Have I Been Pwned, k-Anonymität – nur die ersten
+   5 Zeichen des SHA-1 gehen raus; standardmäßig aus oder nur auf Knopfdruck).
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
    der vielen WIP-Commits), `v2.0.0` als Latest veröffentlichen, VaultX-1.x-
    Nutzern den Umstieg anbieten. Achtung: Das 1.x-Updater liest `version.yml` auf
@@ -155,7 +170,8 @@ nach der Entscheidung des Besitzers wandern die festgelegten Teile nach
 - Website-Icons verraten Netzwerk-Mitlesern die Liste der Websites (dokumentiert,
   Schalter vorhanden); hinter Firmen-Proxys werden bewusst keine Icons geladen.
 - Verschlüsselte Bitwarden-Exporte, 1Password-/KeePass-Formate: nicht unterstützt.
-- TUI: Ordner, Zusatzfelder, mehrere Websites, Papierkorb nicht bearbeitbar.
+- TUI: Ordner, Tags, Zusatzfelder, mehrere Websites, Papierkorb nicht
+  bearbeitbar (Tags werden angezeigt und beim Bearbeiten bewahrt).
 - `Keystead.exe --cli <Unterbefehl>` öffnet eine Konsole, die sich sofort
   schließt – für Skripte `keystead-cli.exe` in einem Terminal nutzen.
 - Erweiterung: geschlossene Shadow Roots sind nicht erreichbar (technische
