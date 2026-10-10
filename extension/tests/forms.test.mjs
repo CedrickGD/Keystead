@@ -346,6 +346,125 @@ test("login steps that also mention creating an account stay login steps", () =>
   assert.deepEqual(Forms.rankForms(forms, null), forms, "Ctrl+Shift+L fills the step");
 });
 
+test("German Google login step: 'Konto erstellen' beside 'Weiter', 'Anmelden' above the form, title 'Anmeldung …'", () => {
+  // google-in.html of the browser check: the heading sits outside the <form>,
+  // "Konto erstellen" is a type=button beside the "Weiter" submit button.
+  const googleIn = `
+    <div class="card" id="initialView"><h1 id="headingText"><span>Anmelden</span></h1><div id="headingSubtext">Weiter zu Gmail</div>
+      <form method="post" novalidate action="/g/identifier">
+        <label for="identifierId">E-Mail oder Telefonnummer</label>
+        <input type="email" autocomplete="username" name="identifier" id="identifierId" aria-label="E-Mail oder Telefonnummer">
+        <div><button type="button" id="forgot">E-Mail-Adresse vergessen?</button></div>
+        <div><button type="button" id="create">Konto erstellen</button> <button type="submit" id="next">Weiter</button></div>
+      </form></div>`;
+  for (const title of ["Anmeldung – Google Konten", "Anmelden – Google Konten", "Google Konten"]) {
+    const doc = page(googleIn, { title, path: "/google-in.html" });
+    const { kinds, forms } = stepsOf(doc);
+    assert.deepEqual(kinds, ["username"], title);
+    assert.deepEqual(names(Forms.iconFields(forms)), ["identifier"], `${title}: the step gets the login icon`);
+    assert.deepEqual(Forms.rankForms(forms, null), forms, `${title}: Ctrl+Shift+L fills the step`);
+  }
+  // Without autocomplete=username (no shortcut by the field's score): the heading above the form decides.
+  const plain = page(googleIn.replace('autocomplete="username" ', ""), { title: "Google Konten", path: "/v3/x" });
+  assert.deepEqual(stepsOf(plain).kinds, ["username"]);
+
+  // google-split.html: the same step without a <form>, every button type=button.
+  const split = page(`
+    <div class="card" id="view"><div id="headingArea"><h1 id="headingText"><span>Anmelden</span></h1><div id="headingSubtext">Weiter zu Gmail</div></div>
+      <div id="content"><div id="ident">
+        <label for="identifierId">E-Mail oder Telefonnummer</label>
+        <input type="email" autocomplete="username" name="identifier" id="identifierId" aria-label="E-Mail oder Telefonnummer">
+        <div><button type="button" id="forgot">E-Mail-Adresse vergessen?</button></div>
+        <div><button type="button" id="create">Konto erstellen</button> <button type="button" id="next">Weiter</button></div>
+      </div></div></div>`, { title: "Anmeldung – Google Konten", path: "/google-split.html" });
+  assert.deepEqual(stepsOf(split).kinds, ["username"]);
+  assert.equal(stepsOf(split).icons, 1);
+
+  // Two submit buttons, "Konto erstellen" and "Weiter": the one that only moves on speaks for the step.
+  const twoSubmits = page(`<form action="/k"><input type="email" name="email" autocomplete="username">
+    <button>Konto erstellen</button><button>Weiter</button></form>`, { title: "Anmeldung", path: "/k" });
+  assert.deepEqual(stepsOf(twoSubmits).kinds, ["username"]);
+
+  // ms-signup.html stays a registration step: "Konto erstellen" heading, only "Weiter".
+  const ms = page(`<div class="card"><form id="signup" action="/signup" method="post"><h1>Konto erstellen</h1>
+    <label for="MemberName">E-Mail-Adresse</label><input type="email" id="MemberName" name="MemberName" placeholder="jemand@example.com">
+    <button type="submit" id="next">Weiter</button></form></div>`, { title: "Konto erstellen", path: "/ms-signup.html" });
+  assert.deepEqual(stepsOf(ms).kinds, ["signup"]);
+  // … also with a neutral action, id and title: its heading says so (role="heading" counts as one).
+  const msNeutral = page(`<div class="card"><form action="/s" method="post"><div role="heading" aria-level="1">Create account</div>
+    <input type="email" id="MemberName" name="MemberName" placeholder="someone@example.com" aria-label="New email">
+    <input type="submit" id="iSignupAction" value="Next"></form></div>`, { title: "Microsoft", path: "/s" });
+  assert.deepEqual(stepsOf(msNeutral).kinds, ["signup"]);
+  assert.equal(stepsOf(msNeutral).icons, 0);
+});
+
+/** shop-dual.html of the browser check: a login form beside the first step of a registration. */
+const SHOP_DUAL = `
+  <div class="cols">
+    <div class="card"><h2>Ich bin bereits Kunde</h2><form id="login" action="/login" method="post">
+      <label for="lemail">E-Mail-Adresse</label><input type="email" id="lemail" name="lemail">
+      <label for="lpw">Passwort</label><input type="password" id="lpw" name="lpw">
+      <button type="submit">Anmelden</button></form></div>
+    <div class="card"><h2>Neues Kundenkonto erstellen</h2><form id="reg" action="/register/start" method="post">
+      <label for="remail">E-Mail-Adresse</label><input type="email" id="remail" name="remail">
+      <button type="submit">Weiter</button></form></div>
+  </div>`;
+
+test("a registration step stays one on a page titled 'Anmelden': its own words decide before the page's", () => {
+  for (const html of [SHOP_DUAL, SHOP_DUAL.replace("/register/start", "/checkout/b").replace('action="/login"', 'action="/checkout/a"')]) {
+    // With a neutral action the heading above the registration form decides ("Neues Kundenkonto erstellen").
+    const doc = page(html, { title: "Kasse – Anmelden", path: "/checkout" });
+    const forms = Forms.findLoginForms(doc);
+    assert.deepEqual(forms.map((f) => f.kind), ["login", "signup"]);
+    assert.equal(forms[1].username, byName(doc, "remail"));
+    assert.deepEqual(names(Forms.iconFields(forms)), ["lemail", "lpw"], "login icons on the login form only");
+    // Ctrl+Shift+L and popup 'Ausfüllen' with the focus in the registration e-mail: the login form.
+    byName(doc, "remail").focus();
+    assert.deepEqual(Forms.rankForms(forms, doc.activeElement).map((f) => f.kind), ["login"]);
+    const [first] = Forms.rankForms(forms, doc.activeElement, { explicit: true });
+    assert.equal(first, forms[0]);
+    assert.equal(Forms.fillForm(first, { username: "alice", password: "Alice-Pw-1" }), 2);
+    assert.deepEqual(["lemail", "lpw", "remail"].map((n) => byName(doc, n).value), ["alice", "Alice-Pw-1", ""]);
+  }
+
+  // shop-reg-titled.html: "Anmelden oder registrieren" only in the title, the form itself registers.
+  const titled = page(`<div class="card"><h2>Neu hier?</h2><form id="reg" action="/register/start" method="post">
+    <label for="remail">E-Mail-Adresse</label><input type="email" id="remail" name="remail">
+    <button type="submit">Konto erstellen</button></form></div>`, { title: "Anmelden oder registrieren – Shop", path: "/shop" });
+  assert.deepEqual(stepsOf(titled).kinds, ["signup"]);
+  assert.equal(stepsOf(titled).icons, 0);
+
+  // A div-based registration step with a "Stattdessen anmelden" button beside "Weiter": still a registration.
+  const switchToLogin = page(`<div class="card"><h1>Konto erstellen</h1>
+    <div id="step"><input type="email" name="email" placeholder="E-Mail-Adresse">
+      <button type="button">Stattdessen anmelden</button><button type="button">Weiter</button></div></div>`,
+  { title: "Beispiel", path: "/" });
+  assert.deepEqual(stepsOf(switchToLogin).kinds, ["signup"]);
+
+  // "Neuanmeldung" is a registration, "Anmeldung" a login.
+  const step = `<form action="/k"><input type="email" name="email" placeholder="E-Mail"><button>Weiter</button></form>`;
+  assert.deepEqual(stepsOf(page(step, { title: "Neuanmeldung – Shop", path: "/k" })).kinds, ["signup"]);
+  assert.deepEqual(stepsOf(page(step, { title: "Anmeldung – Shop", path: "/k" })).kinds, ["username"]);
+});
+
+test("a heading after the step (a signup column beside a login step) or above another form's fields says nothing about it", () => {
+  const doc = page(`
+    <div class="row">
+      <div class="col"><form action="/step1"><label for="e">E-Mail-Adresse</label><input type="email" id="e" name="email"><button>Weiter</button></form></div>
+      <div class="col"><h2>Neues Konto erstellen</h2><a href="/register">Jetzt registrieren</a></div>
+    </div>`, { title: "Mein Konto", path: "/" });
+  assert.deepEqual(stepsOf(doc).kinds, ["username"]);
+
+  // The registration heading is above both columns, the login step sits beside a password form: not the step's heading.
+  const shared = page(`
+    <div class="wrap"><h1>Neues Konto erstellen</h1>
+      <div class="cols">
+        <form action="/a"><input type="email" name="a" placeholder="E-Mail"><input type="password" name="pw"><button>Los</button></form>
+        <form action="/b"><input type="email" name="b" placeholder="E-Mail"><button>Weiter</button></form>
+      </div></div>`, { title: "Mein Konto", path: "/" });
+  assert.deepEqual(stepsOf(shared).kinds, ["login", "username"]);
+});
+
 test("popup 'Ausfüllen' (explicit pick) also fills a form taken for a registration; Ctrl+Shift+L does not", () => {
   // A login whose password field says new-password and whose button says nothing: taken for a signup.
   const doc = page(`<form action="/session"><input name="user" placeholder="Benutzername">

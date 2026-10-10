@@ -1596,9 +1596,15 @@ The extension's security model and file roles are in
   before (a signup form's username after the password, a second identifier
   of a login) or its container (its form, else the nearest element with a
   button) holds such a form's password field (div-based signups). If the
-  step's words (action, id, buttons, h1–h3/legend, title, path) read like a
-  registration and none says log in/sign in/anmelden, the field is a
-  `signup` form without password fields (a registration's first step).
+  step reads like a registration, the field is a `signup` form without
+  password fields (a registration's first step). The first of these that
+  says log in/sign in/anmelden/Anmeldung (wins) or sign up/create account/
+  Konto erstellen/Neuanmeldung decides: the step's own words (action, id,
+  class, name, its submit buttons – in a `<form>` the submit buttons, else
+  all; a button with login/signup words beside a plain Weiter/Next is
+  left out), its headings (h1–h3, legend, role=heading), the last heading
+  before it in its nearest ancestors (up to 3, below `<body>`, none holding
+  another form's fields), the page (title, path).
   "E-Mail-Adresse"/"email address" does not count as a postal address.
   Login icons go to username/current-password fields, password suggestions
   to the first new-password field of `signup`/`change` forms (never to

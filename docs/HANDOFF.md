@@ -89,11 +89,16 @@ Funde der zweiten Prüfrunde – behoben (Unit-Tests + echter Browser):
    Abschnitt nach dem Passwort, GitHub-artig): Ein Feld, dessen Container
    (Formular, sonst nächstes Element mit Button) ein Passwortfeld eines
    erkannten Formulars enthält, ist kein Login-Schritt mehr.
-2. „Konto erstellen“-Seite mit zuerst nur E-Mail + „Weiter“: Lesen sich die
-   Wörter des Schritts (Action, ID, Buttons, Überschriften) oder der Seite
-   (Titel, Pfad) nach Registrierung und keins nach Anmelden, ist es kein
-   Login-Schritt („Anmelden oder Konto erstellen“, Google mit
-   „Konto erstellen“-Button unter „Anmelden“ bleiben Login-Schritte).
+2. „Konto erstellen“-Seite mit zuerst nur E-Mail + „Weiter“: Liest sich der
+   Schritt nach Registrierung, ist es kein Login-Schritt. Es entscheiden die
+   nächsten Wörter (Anmelden/Anmeldung gewinnt bei beidem): erst die eigenen
+   des Schritts (Action, ID, Name, Submit-Buttons – ein „Konto erstellen“
+   neben einem reinen „Weiter“ zählt nicht), dann seine Überschriften, dann
+   die Überschrift über dem Formular, zuletzt die Seite (Titel, Pfad). So
+   bleibt der Registrierungsschritt eines Shops neben dessen Login auch
+   unter dem Titel „Kasse – Anmelden“ eine Registrierung, und „Anmelden
+   oder Konto erstellen“ sowie Google („Konto erstellen“-Button neben
+   „Weiter“, Titel „Anmeldung – Google Konten“) bleiben Login-Schritte.
 3. Entscheidung umgesetzt: Popup-„Ausfüllen“ (explizite Auswahl) füllt auch
    ein als Registrierung erkanntes Formular, wenn die Seite kein anderes hat
    (Benutzername + Passwort ins Neues-Passwort-Feld und die Bestätigung).

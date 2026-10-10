@@ -87,14 +87,20 @@ generate a password into the focused field. Right-click on an input field:
   signup form) is never a separate step, nor is one whose container (its
   form, else the nearest element with a button) holds such a form's password
   field (a div-based signup asking for the username in a section of its
-  own). The first step of a registration is no login step either: if the
-  words of the step's container (action, id, buttons, headings) or of the
-  page (title, path) read like a registration (*Konto erstellen*, *Create
-  account*, *Sign up*, *Registrieren* …) and none of them says log in / sign
-  in / anmelden, the field is handled like a signup form (no icon, no
-  `Ctrl+Shift+L`; a login picked in the popup fills it). *Anmelden oder
-  Konto erstellen*, or a *Konto erstellen* button beside *Weiter* under the
-  heading *Anmelden* (Google), stay login steps.
+  own). The first step of a registration is no login step either: if it
+  reads like a registration (*Konto erstellen*, *Create account*, *Sign up*,
+  *Registrieren*, *Neuanmeldung* …), the field is handled like a signup form
+  (no icon, no `Ctrl+Shift+L`; a login picked in the popup fills it). The
+  nearest words decide (log in / sign in / *anmelden* / *Anmeldung* win
+  when both appear): first the step's own (action, id, name, its submit
+  buttons – a *Konto erstellen* or *Anmelden* button beside a plain
+  *Weiter*/*Next* is left out), then its headings, then the heading it sits
+  under (outside its form, as long as no other form's fields are in
+  between), then the page (title, path). So a shop's registration step
+  (`/register`, *Neues Kundenkonto erstellen*) beside its login form stays
+  a registration on a page titled *Kasse – Anmelden*, while *Anmelden oder
+  Konto erstellen* and Google's *Konto erstellen* button beside *Weiter*
+  under *Anmelden* (title *Anmeldung – Google Konten*) stay login steps.
 * **2FA codes** – after a login with a 2FA seed was filled (popup *Ausfüllen*,
   inline dropdown, `Ctrl+Shift+L`) the app copies the current code
   (`copy_field` `totp`: cleared after `clipboardClearSeconds`, excluded from

@@ -61,9 +61,16 @@
     /current|existing|bisherig|aktuell|derzeit|(?:^|[^a-z])(?:old|alte[sn]?)(?:[^a-z]|$)|oldp|passwordold|passwortalt|altpass/;
   /** Context (form action, id, buttons, title, path) of a registration form. */
   const SIGNUP_CONTEXT =
-    /regist|sign\s*-?\s*up|create\s*(an?\s*|your\s*)?(free\s*)?account|new\s*account|join\s*(now|us|free|\b)|enrol|(konto|account)\s*(anlegen|erstellen|er[öo]ffnen)|neues?\s*konto|mitglied\s*werden|get\s*started/;
-  /** Context of a login (wins over signup words when both appear). */
-  const LOGIN_ACTION = /log\s*-?\s*in|logon|sign\s*-?\s*in|signin|einlogg|anmelden\b/;
+    /regist|sign\s*-?\s*up|create\s*(an?\s*|your\s*)?(free\s*)?account|new\s*account|join\s*(now|us|free|\b)|enrol|(konto|account)\s*(anlegen|erstellen|er[öo]ffnen)|neues?\s*konto|neu-?anmeld|mitglied\s*werden|get\s*started/;
+  /**
+   * Context of a login (wins over signup words when both appear): log in,
+   * sign in, anmelden, Anmeldung – not "Neuanmeldung" (a registration).
+   */
+  const LOGIN_ACTION = /log\s*-?\s*in|logon|sign\s*-?\s*in|signin|einlogg|(?<!neu-?)anmeld(?:en|ung)\b/;
+  /** A button label that only moves on to the next step: "Weiter", "Next", "Continue ›" … */
+  const CONTINUE_ONLY = /^[\s›»>→.…]*(?:weiter|next|continue|fortfahren|proceed)[\s›»>→.…]*$/;
+  /** Headings of a form or section. */
+  const HEADINGS = 'h1, h2, h3, legend, [role="heading"]';
 
   /** One-time code hints in name/id (with a 6–8 character limit). */
   const OTP_ID_HINT = /otp|totp|2fa|mfa|one.?time|onetime|verification.?code|verify.?code|auth.?code|security.?code|token|code/;
@@ -449,26 +456,68 @@
     return plausible.length ? plausible[plausible.length - 1] : null;
   }
 
-  /** The form's own words: action, id, class, name, aria-label and its buttons' labels. */
-  function ownContext(scope, tree) {
-    const parts = [
+  /** The words of a form or container itself: action, id, class, aria-label, name. */
+  function scopeAttributes(scope) {
+    return [
       scope.getAttribute?.("action"),
       scope.id,
       typeof scope.className === "string" ? scope.className : "",
       scope.getAttribute?.("aria-label"),
       scope.getAttribute?.("name"),
     ];
-    let buttons = 0;
-    for (const btn of queryDeep(tree, scope, 'button, input[type="submit"], [role="button"]')) {
-      parts.push(btn.textContent || btn.value || btn.getAttribute("aria-label"));
-      buttons += 1;
-      if (buttons >= 6) break;
-    }
+  }
+
+  function buttonLabel(btn) {
+    return btn.textContent || btn.value || btn.getAttribute("aria-label");
+  }
+
+  function joinWords(parts) {
     return parts
       .filter(Boolean)
       .map((p) => String(p).slice(0, 160))
       .join(" ")
       .toLowerCase();
+  }
+
+  /** The form's own words: action, id, class, name, aria-label and its buttons' labels. */
+  function ownContext(scope, tree) {
+    const parts = scopeAttributes(scope);
+    let buttons = 0;
+    for (const btn of queryDeep(tree, scope, 'button, input[type="submit"], [role="button"]')) {
+      parts.push(buttonLabel(btn));
+      buttons += 1;
+      if (buttons >= 6) break;
+    }
+    return joinWords(parts);
+  }
+
+  function isSubmitButton(btn) {
+    if (btn.localName === "button") return String(btn.type || "submit").toLowerCase() === "submit";
+    return btn.localName === "input";
+  }
+
+  /**
+   * The labels of the buttons that act on a step itself: in a <form> its
+   * submit buttons (all of its buttons if none submits), elsewhere every
+   * button. A button leading to another flow ("Konto erstellen", "Anmelden
+   * mit Passkey") beside one that only moves on ("Weiter", "Next") is left
+   * out: Google's "Konto erstellen" next to "Weiter" says nothing about the
+   * step.
+   */
+  function stepButtonLabels(scope, tree) {
+    const buttons = queryDeep(tree, scope, 'button, input[type="submit"], [role="button"]').slice(0, 10);
+    let primary = scope.localName === "form" ? buttons.filter(isSubmitButton) : buttons;
+    if (!primary.length) primary = buttons;
+    let labels = primary.map((btn) => String(buttonLabel(btn) || "").trim().slice(0, 160).toLowerCase()).filter(Boolean);
+    if (labels.some((label) => CONTINUE_ONLY.test(label))) {
+      labels = labels.filter((label) => !SIGNUP_CONTEXT.test(label) && !LOGIN_ACTION.test(label));
+    }
+    return labels;
+  }
+
+  /** A step's own words: action, id, class, name, aria-label and the labels of its own buttons (stepButtonLabels). */
+  function stepOwnContext(scope, tree) {
+    return joinWords([...scopeAttributes(scope), ...stepButtonLabels(scope, tree)]);
   }
 
   /** The page's words: title and path. */
@@ -492,26 +541,67 @@
     return composedParent(el) || doc.body;
   }
 
-  /** The first headings (h1–h3, legend) inside a container: "Konto erstellen", "Anmelden" … */
+  function headingText(h) {
+    return String(h.textContent || "").slice(0, 120);
+  }
+
+  /** The first headings (h1–h3, legend, role=heading) inside a container: "Konto erstellen", "Anmelden" … */
   function headingContext(scope, tree) {
-    return queryDeep(tree, scope, "h1, h2, h3, legend")
-      .slice(0, 3)
-      .map((h) => String(h.textContent || "").slice(0, 120))
-      .join(" ")
-      .toLowerCase();
+    return queryDeep(tree, scope, HEADINGS).slice(0, 3).map(headingText).join(" ").toLowerCase();
+  }
+
+  /**
+   * The heading a step sits under outside its own container: the last one
+   * before it in the nearest of its ancestors (up to 3, below <body>) that
+   * hold no other login field – "Neues Kundenkonto erstellen" above a
+   * shop's registration form, "Anmelden" above Google's. An ancestor that
+   * also holds another form's fields (a shop's login form beside its
+   * registration) is beyond the step: its headings say nothing about it.
+   */
+  function headingBefore(scope, tree) {
+    const doc = scope.ownerDocument;
+    let node = composedParent(scope);
+    for (let depth = 0; node && node !== doc.body && node !== doc.documentElement && depth < 3; depth += 1) {
+      const inputs = queryDeep(tree, node, "input");
+      if (inputs.length > 40) return "";
+      if (inputs.some((i) => !composedContains(scope, i) && (isPasswordCandidate(i) || isUsernameCandidate(i)))) return "";
+      const before = queryDeep(tree, node, HEADINGS, true).filter((h) => !composedContains(scope, h) && precedes(h, scope));
+      if (before.length) return headingText(before[before.length - 1]).toLowerCase();
+      node = composedParent(node);
+    }
+    return "";
+  }
+
+  /** "login" if the words say log in / anmelden (also beside signup words), "signup" if they only say sign up, else null. */
+  function wordsIntent(words) {
+    if (LOGIN_ACTION.test(words)) return "login";
+    return SIGNUP_CONTEXT.test(words) ? "signup" : null;
   }
 
   /**
    * True if the step of a lone username/e-mail field reads like a
-   * registration: the words of its container (action, id, buttons,
-   * headings) or of the page (title, path) say sign up / create account /
-   * Konto erstellen …, and none of them says log in / sign in / anmelden
-   * ("Anmelden oder Konto erstellen", a login step with a "Konto erstellen"
-   * button beside "Weiter" stay login steps).
+   * registration. Decided by the nearest words that say log in / sign in /
+   * anmelden or sign up / create account / Konto erstellen … (login words
+   * win when both appear), in this order: the step's own words (action, id,
+   * name, its own buttons – see stepButtonLabels), its headings, the
+   * heading it sits under (headingBefore), the page (title, path). So a
+   * registration step (action /register, "Neues Kundenkonto erstellen")
+   * stays one on a page titled "Kasse – Anmelden", and "Anmelden oder Konto
+   * erstellen" or Google's "Konto erstellen" button beside "Weiter" on
+   * "Anmeldung – Google Konten" stay login steps.
    */
   function signupStep(scope, tree) {
-    const words = `${ownContext(scope, tree)} ${headingContext(scope, tree)} ${pageContext(scope.ownerDocument)}`;
-    return SIGNUP_CONTEXT.test(words) && !LOGIN_ACTION.test(words);
+    const tiers = [
+      () => stepOwnContext(scope, tree),
+      () => headingContext(scope, tree),
+      () => headingBefore(scope, tree),
+      () => pageContext(scope.ownerDocument),
+    ];
+    for (const words of tiers) {
+      const intent = wordsIntent(words());
+      if (intent) return intent === "signup";
+    }
+    return false;
   }
 
   /**
