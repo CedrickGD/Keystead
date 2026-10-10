@@ -5,7 +5,8 @@
 // talk to it with runtime messages ({ type, ... } → { ok, data | error }).
 // Credentials are only released to a content script for a login that the app
 // matches against the URL of *that* frame (sender.url, as known by the
-// browser) – never against a URL the page or a content script provides.
+// browser) – never against a URL the page or a content script provides. The
+// same holds for a 2FA code inserted into a one-time code field.
 //
 // MV3 service workers are stopped when idle: all state that matters lives in
 // chrome.storage (see lib/store.js); in-memory state here is only a cache or
@@ -39,7 +40,10 @@ const UNLOCKED_TYPES = new Set([
   "check_login_password",
   "copy_field",
   "copy_secret",
+  "remember_generated",
 ]);
+/** Longest generated password a content script may report as used (see remember_generated). */
+const MAX_SUGGESTION_CHARS = 1024;
 
 const t = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
 
@@ -414,11 +418,11 @@ async function cancelPairing() {
 const autofillWindows = new Map();
 
 /**
- * Releases the credentials of `itemId` for a page URL – only if the app
- * matches the login to that URL, and never into plain http pages unless the
- * login itself is stored for http.
+ * The login `itemId` (get_login) if it may be used on a page URL: the app
+ * matches the login to that URL, and plain http pages only get logins that
+ * are stored for http themselves.
  */
-async function releaseLogin(itemId, pageUrl) {
+async function releasableLogin(itemId, pageUrl) {
   const parsed = parseWebUrl(pageUrl);
   if (!parsed) throw new BridgeError("not_fillable");
   const matches = await call("logins_for_url", { url: pageUrl });
@@ -428,11 +432,52 @@ async function releaseLogin(itemId, pageUrl) {
   if (parsed.protocol === "http:" && !uris.some((u) => typeof u === "string" && /^http:\/\//i.test(u.trim()))) {
     throw new BridgeError("insecure");
   }
-  await store.setLastUsed(siteKey(parsed.hostname), itemId);
+  return login;
+}
+
+/**
+ * Releases the credentials of `itemId` for a page URL (see releasableLogin).
+ * `hasTotp`: the login has a 2FA seed (see afterFill); not sent to the page.
+ */
+async function releaseLogin(itemId, pageUrl) {
+  const login = await releasableLogin(itemId, pageUrl);
+  await store.setLastUsed(siteKey(parseWebUrl(pageUrl).hostname), itemId);
   return {
-    username: typeof login?.username === "string" ? login.username : "",
-    password: typeof login?.password === "string" ? login.password : "",
+    credentials: {
+      username: typeof login?.username === "string" ? login.username : "",
+      password: typeof login?.password === "string" ? login.password : "",
+    },
+    hasTotp: !!login?.totp && typeof login.totp === "object",
   };
+}
+
+/**
+ * After a login with 2FA was filled into a frame (popup "Ausfüllen", inline
+ * dropdown, Ctrl+Shift+L): the tab gets a 2FA offer (a one-time code field on
+ * this or the next page of the site may insert the code for 2 minutes, see
+ * cs:otp-fill), and – unless switched off – the app copies the current code
+ * (copy_field: cleared after clipboardClearSeconds, excluded from clipboard
+ * history) and the page shows a toast with the seconds it stays valid.
+ */
+async function afterFill(sender, itemId) {
+  const tabId = sender.tab?.id;
+  const url = parseWebUrl(sender.url);
+  if (tabId === undefined || !url) return;
+  await store.setTotpOffer(tabId, {
+    itemId,
+    site: siteKey(url.hostname),
+    vaultId: openVaultId(await store.getStatus()),
+    expiresAt: Date.now() + store.TOTP_OFFER_TTL_MS,
+  });
+  notifyTab(tabId, { type: "bg:otp-offer" });
+  if (!(await store.getSettings()).autoCopyTotp) return;
+  let data;
+  try {
+    data = await call("copy_field", { itemId, field: "totp" });
+  } catch {
+    return; // e.g. no clipboard: the field offer still works
+  }
+  notifyTab(tabId, { type: "bg:totp-copied", remaining: Number.isInteger(data?.remaining) ? data.remaining : null }, 0);
 }
 
 /**
@@ -490,19 +535,56 @@ async function handleFillRequest(msg, sender) {
     // Autofill (popup button / keyboard shortcut) only fills same-origin frames.
     const frameOrigin = sender.origin || url.origin;
     if (frameOrigin !== pending.topOrigin) throw new BridgeError("cross_origin");
+    let released;
     try {
-      const credentials = await releaseLogin(pending.itemId, sender.url);
+      released = await releaseLogin(pending.itemId, sender.url);
       pending.settle(null);
-      return credentials;
     } catch (err) {
       pending.settle(err);
       throw err;
     }
+    // Split username/password frames claim the same fill: copy the code once.
+    if (released.hasTotp && !pending.totpHandled) {
+      pending.totpHandled = true;
+      afterFill(sender, pending.itemId).catch(() => undefined);
+    }
+    return released.credentials;
   }
 
   // A click in the inline dropdown of this frame.
   if (typeof msg.itemId !== "string" || !msg.itemId) throw new BridgeError("invalid_request");
-  return releaseLogin(msg.itemId, sender.url);
+  const released = await releaseLogin(msg.itemId, sender.url);
+  if (released.hasTotp) afterFill(sender, msg.itemId).catch(() => undefined);
+  return released.credentials;
+}
+
+/** The tab's 2FA offer if it applies to this frame's site and the open vault (else null). */
+async function frameTotpOffer(sender) {
+  const tabId = sender.tab?.id;
+  const url = parseWebUrl(sender.url);
+  if (tabId === undefined || !url) return null;
+  const offer = await store.getTotpOffer(tabId);
+  if (!offer || offer.site !== siteKey(url.hostname)) return null;
+  if (pendingVaultState(offer, await store.getStatus()) === "stale") {
+    await store.removeTotpOffer(tabId);
+    return null;
+  }
+  return offer;
+}
+
+/**
+ * "2FA-Code einfügen" was clicked in a one-time code field: the current code
+ * of the login filled before – only if that login matches this frame's own
+ * URL (like credentials, see releasableLogin). The offer is used up.
+ */
+async function handleOtpFill(sender) {
+  const offer = await frameTotpOffer(sender);
+  if (!offer) throw new BridgeError("not_found");
+  const login = await releasableLogin(offer.itemId, sender.url);
+  const code = typeof login?.totp?.code === "string" ? login.totp.code.replace(/\s+/g, "") : "";
+  if (!/^\d{4,10}$/.test(code)) throw new BridgeError("not_found");
+  await store.removeTotpOffer(sender.tab.id);
+  return { code, remaining: Number.isInteger(login.totp.remaining) ? login.totp.remaining : null };
 }
 
 async function focusedFrameId(tabId) {
@@ -566,6 +648,43 @@ async function generatePassword(rawOptions) {
   const password = await call("generate_password", { options });
   if (typeof password !== "string" || !password) throw new BridgeError("internal");
   return password;
+}
+
+/**
+ * A password suggestion for a signup / password change field: generated with
+ * the user's generator options from the popup (else the app's defaults: 20
+ * characters, all classes) as a preview – `remember: false`, so it is
+ * neither stored in the generator history nor counted as activity until the
+ * user takes it (cs:suggestion-used). Only while the vault is unlocked.
+ */
+async function suggestPassword(sender) {
+  if (!parseWebUrl(sender.url)) throw new BridgeError("invalid_request");
+  if (!(await store.getSettings()).suggestPasswords) throw new BridgeError("disabled");
+  const status = await store.getStatus();
+  if (status?.state !== "unlocked") throw new BridgeError(status?.state === "not_paired" ? "not_paired" : "locked");
+  const options = sanitizeGeneratorOptions(await store.getGeneratorOptions());
+  const password = await call("generate_password", { options, remember: false }, { auto: true });
+  if (typeof password !== "string" || !password || password.length > MAX_SUGGESTION_CHARS) throw new BridgeError("internal");
+  return { password, vaultId: openVaultId(status) };
+}
+
+/**
+ * The user took a suggestion ("Verwenden"): into the generator history of the
+ * vault it was suggested for. Apps without `remember_generated` stored the
+ * preview already (they ignore `remember: false`).
+ */
+async function suggestionUsed(msg) {
+  const password = requireString(msg.password, MAX_SUGGESTION_CHARS);
+  if (!password) throw new BridgeError("invalid_request");
+  const open = openVaultId(await store.getStatus());
+  if (typeof msg.vaultId === "string" && msg.vaultId && open && open !== msg.vaultId) return { remembered: false };
+  try {
+    await call("remember_generated", { password });
+    return { remembered: true };
+  } catch (err) {
+    if (errorCode(err) === "invalid_request") return { remembered: false };
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +931,29 @@ const popupHandlers = {
     const data = await call("copy_field", { itemId: requireString(msg.itemId, 200), field });
     return { remaining: Number.isInteger(data?.remaining) ? data.remaining : null };
   },
+  /**
+   * Countdown of the 2FA codes of listed logins: `[{ id, period, remaining }]`
+   * – the codes themselves stay here (get_totp; the popup only counts down).
+   */
+  "popup:totp-timers": async (msg) => {
+    const ids = (Array.isArray(msg.itemIds) ? msg.itemIds : [])
+      .filter((id) => typeof id === "string" && id && id.length <= 200)
+      .slice(0, 20);
+    const timers = [];
+    for (const itemId of ids) {
+      let totp;
+      try {
+        totp = await call("get_totp", { itemId });
+      } catch (err) {
+        if (errorCode(err) === "not_found") continue;
+        throw err;
+      }
+      const period = Number.isInteger(totp?.period) && totp.period > 0 && totp.period <= 300 ? totp.period : 30;
+      const remaining = Number.isInteger(totp?.remaining) ? Math.min(Math.max(totp.remaining, 1), period) : null;
+      if (remaining !== null) timers.push({ id: itemId, period, remaining });
+    }
+    return timers;
+  },
   "popup:copy-secret": async (msg) => {
     const text = requireString(msg.text);
     if (!text) throw new BridgeError("invalid_request");
@@ -845,18 +987,27 @@ const contentHandlers = {
   "cs:page-info": async (_msg, sender) => {
     const url = parseWebUrl(sender.url);
     if (!url) return { state: "unsupported", matches: [] };
+    const { suggestPasswords } = await store.getSettings();
     try {
       const matches = loginSummaries(await call("logins_for_url", { url: sender.url }, { auto: true }));
       if (sender.frameId === 0 && sender.tab?.active) setBadge(sender.tab.id, matches.length);
       return {
         state: "unlocked",
         insecure: url.protocol === "http:",
+        suggest: suggestPasswords,
         matches: matches.map((m) => ({ id: m.id, name: String(m.name ?? ""), username: String(m.subtitle ?? "") })),
       };
     } catch (err) {
-      return { state: stateForError(errorCode(err)), matches: [] };
+      return { state: stateForError(errorCode(err)), suggest: suggestPasswords, matches: [] };
     }
   },
+  "cs:suggest-password": (_msg, sender) => suggestPassword(sender),
+  "cs:suggestion-used": (msg) => suggestionUsed(msg),
+  "cs:otp-offer": async (_msg, sender) => {
+    const offer = await frameTotpOffer(sender);
+    return offer ? { available: true, expiresIn: Math.max(0, offer.expiresAt - Date.now()) } : { available: false };
+  },
+  "cs:otp-fill": (_msg, sender) => handleOtpFill(sender),
   "cs:fill-request": (msg, sender) => handleFillRequest(msg, sender),
   "cs:focus": async (_msg, sender) => {
     await store.setFocusedFrame(sender.tab.id, sender.frameId);
@@ -1033,6 +1184,11 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   store.forgetTab(tabId).catch(() => undefined);
+});
+
+// The popup changed the settings: pages show or hide the suggestion icons.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.settings) refreshActiveTab().catch(() => undefined);
 });
 
 chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR }).catch(() => undefined);
