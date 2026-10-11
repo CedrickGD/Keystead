@@ -1,5 +1,6 @@
 //! Keystead core library: crypto, vault file format, storage, data model,
-//! generator, TOTP, URL matching, health report, import/export, settings and
+//! generator, TOTP, URL matching, health report, leaked-password check (HIBP
+//! k-anonymity hashing, no networking), import/export, settings and
 //! clipboard. No UI and no IPC. See docs/ARCHITECTURE.md for the contract.
 
 pub mod attachments;
@@ -15,6 +16,7 @@ pub mod import;
 pub mod matching;
 pub mod model;
 pub mod paths;
+pub mod pwned;
 pub mod settings;
 pub mod store;
 pub mod totp;
