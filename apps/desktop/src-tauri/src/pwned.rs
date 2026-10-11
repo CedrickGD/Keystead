@@ -1,5 +1,5 @@
 //! Leaked-password check against Have I Been Pwned's "Pwned Passwords"
-//! range API (see "Leaked passwords" in docs/ARCHITECTURE.md).
+//! range API (see "Leaked-password check" in docs/ARCHITECTURE.md).
 //!
 //! Only on the user's button press, never automatically: `check_pwned_password`
 //! for one password (item editor) and `check_pwned_vault` for every distinct

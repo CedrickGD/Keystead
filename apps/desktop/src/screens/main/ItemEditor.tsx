@@ -86,7 +86,7 @@ type LeakResult = { kind: "count"; count: number } | { kind: "error"; text: stri
 /**
  * "Auf Leaks prüfen" under the strength meter: `check_pwned_password` with
  * the typed password (hashed in the backend; only the SHA-1 prefix leaves
- * the app, see "Leaked passwords" in docs/ARCHITECTURE.md). The answer
+ * the app, see "Leaked-password check" in docs/ARCHITECTURE.md). The answer
  * belongs to the password it was asked for, so any change clears it.
  */
 function LeakCheck({ password }: { password: string }) {

@@ -57,6 +57,11 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Generator** für Passwörter und Passphrasen (EFF-Wortliste) mit Verlauf.
 - **Einmalcodes (TOTP/2FA)** direkt im Eintrag, kompatibel mit Google Authenticator & Co.
 - **Sicherheitsbericht**: schwache, mehrfach verwendete und alte Passwörter.
+- **Geleakte Passwörter**: auf Knopfdruck prüft der Sicherheitsbericht alle
+  Passwörter gegen bekannte Datenlecks (Have I Been Pwned), der Editor ein
+  einzelnes. Dabei verlassen nur die ersten 5 Zeichen eines Prüfwerts das Gerät,
+  nie ein Passwort – siehe [Sicherheit in Kürze](#sicherheit-in-kürze). Nichts
+  läuft automatisch.
 - **Wiederherstellungsschlüssel**, falls das Master-Passwort vergessen wird.
 - **Automatische Sperre** nach Inaktivität und beim Sperren des Computers;
   kopierte Passwörter werden aus der Zwischenablage gelöscht.
@@ -186,8 +191,9 @@ von der App verwaltet). Den portablen Modus schaltest du unter
 - Keine Netzwerkverbindungen für deine Daten: Die Erweiterung spricht per Native
   Messaging mit der App, die App lauscht nur auf einer lokalen Named Pipe bzw. einem
   Unix-Socket, die ausschließlich dem eigenen Benutzer zugänglich sind. Ins Internet
-  gehen nur die (abschaltbare) Update-Prüfung bei GitHub und – ebenfalls abschaltbar –
-  das Laden der Website-Icons.
+  gehen nur die (abschaltbare) Update-Prüfung bei GitHub, – ebenfalls abschaltbar –
+  das Laden der Website-Icons und, ausschließlich auf Knopfdruck, die Prüfung auf
+  geleakte Passwörter (siehe unten).
 - Website-Icons werden direkt bei der jeweiligen Website abgerufen (nur `https`,
   ohne Cookies, ohne Tresordaten); die Website sieht dabei wie bei jedem Besuch
   deine IP-Adresse. Einen eingerichteten Proxy umgeht die App nie: Ist für eine
@@ -199,6 +205,20 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   Betreiber des Netzwerks (z. B. ein öffentliches WLAN) und große CDNs können
   daran die Liste der Websites in deinem Tresor erkennen. Wer das nicht möchte,
   schaltet „Website-Icons automatisch laden“ in den Einstellungen aus.
+- Die Prüfung auf geleakte Passwörter läuft nie von selbst – nur wenn du im
+  Sicherheitsbericht auf „Geleakte Passwörter prüfen“ oder im Editor auf „Auf Leaks
+  prüfen“ klickst; vor dem tresorweiten Lauf erklärt ein Dialog, was passiert. Die
+  App sendet dann von jedem Passwort nur die ersten 5 Zeichen seines
+  SHA-1-Prüfwerts an `api.pwnedpasswords.com` (Have I Been Pwned, über HTTPS) –
+  kein Passwort, keinen Benutzernamen, keine Website. Der Dienst antwortet mit
+  allen bekannten Treffern zu diesen 5 Zeichen (viele hundert; die Antworten
+  sind auf gleiche Größe aufgefüllt) und erfährt nicht, welches Passwort gemeint
+  war; der Vergleich passiert auf deinem Gerät. Das Ergebnis wird weder
+  gespeichert noch protokolliert und ist nach dem Sperren weg. Einen
+  eingerichteten System-Proxy benutzt die App dafür (er sieht nur den
+  Verbindungsaufbau zu `api.pwnedpasswords.com`, nie die 5 Zeichen); lässt sich
+  die Proxy-Konfiguration nicht auswerten (z. B. ein PAC-Skript), sendet sie
+  nichts und sagt das.
 - Updates sind signiert (minisign/Ed25519); die App installiert nur Dateien mit
   gültiger Signatur für genau die angekündigte Version.
 - Ein Browser wird erst nach Bestätigung eines 6-stelligen Codes in der App
@@ -264,6 +284,10 @@ and also available in English.
 - **Generator** for passwords and passphrases (EFF word list), with history.
 - **One-time codes (TOTP/2FA)** inside items, compatible with Google Authenticator & co.
 - **Security report**: weak, reused and old passwords.
+- **Leaked passwords**: at the press of a button the security report checks all
+  passwords against known data breaches (Have I Been Pwned), the editor a single
+  one. Only the first 5 characters of a hash leave your device, never a
+  password – see [Security design](#security-design). Nothing runs automatically.
 - **Recovery key** in case the master password is forgotten.
 - **Auto-lock** after inactivity and when the computer is locked; copied secrets are
   cleared from the clipboard.
@@ -386,8 +410,9 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 - No network access for your data: the extension talks to the app via Native
   Messaging; the app only listens on a local named pipe (Windows, restricted to the
   current user) or a Unix socket (mode 0600, peer uid checked). The only internet
-  access is the update check against GitHub and loading website icons (both can be
-  switched off).
+  access is the update check against GitHub, loading website icons (both can be
+  switched off) and – only when you press the button – the leaked-password check
+  (see below).
 - Website icons are fetched directly from each website (`https` only, no cookies, no
   vault data); like any visit, the site sees your IP address. The app never goes
   around a proxy: if one is configured for a site (system settings or
@@ -398,6 +423,19 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   DNS resolvers, the network operator (e.g. a public Wi-Fi) and large CDNs can
   therefore see the list of websites in your vault. If you don't want that, turn
   off "Load website icons automatically" in the settings.
+- The leaked-password check never runs on its own – only when you click "Geleakte
+  Passwörter prüfen" (check for leaked passwords) in the security report or "Auf
+  Leaks prüfen" (check for leaks) in the editor; before the vault-wide run a
+  dialog explains what happens. The app then sends, for each password, only the
+  first 5 characters of its SHA-1 hash to `api.pwnedpasswords.com` (Have I Been
+  Pwned, over HTTPS) – no password, no username, no website. The service answers
+  with every known match for those 5 characters (many hundreds; answers are padded
+  to the same size) and cannot tell which password you meant; the comparison
+  happens on your device. The result is neither stored nor logged and is gone
+  after a lock. A configured system proxy is used for this (it sees only the
+  connection to `api.pwnedpasswords.com`, never the 5 characters); if the proxy
+  configuration cannot be evaluated (e.g. a PAC script), the app sends nothing
+  and says so.
 - Updates are signed (minisign/Ed25519): the app installs only files with a valid
   signature for exactly the announced version.
 - A browser is paired only after you confirm a 6-digit code in the app; the app

@@ -4,6 +4,10 @@ Keystead – Schnellstart
 Keystead ist ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf
 diesem Rechner – es gibt keinen Server und keine Cloud.
 (Keystead = Key + Homestead: deine Schlüssel bleiben zu Hause.)
+Ins Internet geht Keystead nur für die Update-Prüfung, das (abschaltbare) Laden
+der Website-Icons und – ausschließlich auf Knopfdruck im Sicherheitsbericht oder
+im Editor – die Prüfung auf geleakte Passwörter, bei der nur die ersten
+5 Zeichen eines Prüfwerts (SHA-1) an Have I Been Pwned gehen, nie ein Passwort.
 
 1. Starten
 ----------

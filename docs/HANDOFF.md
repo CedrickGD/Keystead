@@ -118,6 +118,43 @@ neue Betas per In-App-Update.
   entschieden); wer das weiter einengen will, öffnet die Dialoge aus Rust
   (`tauri_plugin_dialog::DialogExt`, Befehle ohne `path`) oder verlangt für
   „Speichern unter …“ das Master-Passwort wie beim Export.
+- Prüfung auf geleakte Passwörter (Block 3, D5/D6; Have I Been Pwned,
+  k-Anonymität): nur auf Knopfdruck, kein Setting, nichts läuft automatisch.
+  Core `crates/keystead-core/src/pwned.rs` (SHA-1 in Präfix 5 / Suffix 35,
+  `Debug` zeigt nur den Präfix; Antwort-Parser mit Vergleich in konstanter
+  Zeit über alle Zeilen; Kandidaten je unterschiedlichem Passwort der nicht
+  gelöschten Logins; ohne Netzwerk). Desktop `src-tauri/src/pwned.rs`: ein
+  `reqwest::Client` wie beim Updater (User-Agent `Keystead/<version>`,
+  `Add-Padding: true`, `Accept: text/plain`, 10 s, 512-KiB-Deckel, keine
+  Redirects, keine Cookies, kein Referer), System-Proxy mit „fail closed“
+  bei PAC/unklarer Konfiguration (`unsupported:pwned_proxy`, geprüft vor der
+  ersten Anfrage über `icons::proxy_setup_unclear`), Nicht-2xx →
+  `io:HTTP <n>` ohne Retry, Netzfehler → `io:<detail>` ohne URL;
+  `check_pwned_password(password)` → Zähler und `check_pwned_vault(pageVaultId)`
+  → `PwnedReport { checkedAt, checked, leaked: [{ itemId, count }], failed }`
+  (Kandidaten + Lock-Epoche unter dem State-Lock, dann höchstens 4 parallele
+  Anfragen je unterschiedlichem Präfix, Abbruch bei Sperre/Tresorwechsel/
+  App-Ende (`locked`) und beim ersten HTTP-Fehler; ein Netzfehler vor der
+  ersten Antwort bricht ab, einer danach zählt nur `failed` hoch; nach dem
+  Lauf wird die Epoche erneut geprüft). UI: erste Karte „Geleakte Passwörter“
+  im Sicherheitsbericht (Zustände nicht geprüft / prüfend / Ergebnis mit
+  Zeilen nach Treffern sortiert / sauber / Fehler; Chip „{n} geleakt“;
+  „Erneut prüfen“, „Zuletzt geprüft“, Hinweis bei `failed` > 0),
+  Bestätigungsdialog vor jedem tresorweiten Lauf mit „Nicht mehr fragen“
+  nur in `localStorage` (`keystead.pwnedConfirmed`), roter Callout mit
+  „Passwort ändern“ in der Detailansicht, Link „Auf Leaks prüfen“ unter dem
+  Stärke-Meter im Editor (Ergebnis hängt am geprüften Passwort). Ergebnis
+  nur im Seitenspeicher je Tresor (`state/breaches.tsx`): verfällt je
+  Element, sobald sich sein `updatedAt` ändert, und ganz beim Sperren oder
+  Tresorwechsel; nichts wird gecacht oder in den Tresor geschrieben, Logs
+  enthalten nur Zähler. Mock mit fester Treffertabelle
+  (`src/lib/demo/pwned.ts`). Fehlertexte: `io:` → „Have I Been Pwned ist
+  nicht erreichbar: …“, Proxy-Fall mit eigener Erklärung. Vertrag: Abschnitt
+  „Leaked-password check“ in `ARCHITECTURE.md`. Geprüft: Core- und
+  Desktop-Tests gegen einen lokalen Server (der einzige Live-Test ist
+  `#[ignore]`), einmal lokal live gegen api.pwnedpasswords.com („password“:
+  52.372.427 Treffer), Mock-Ablauf im Browser durchgeklickt. Noch nicht
+  veröffentlicht und in der echten Tauri-App noch nicht ausprobiert.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -186,17 +223,24 @@ festgehalten (mit D1: der Tresordatei-Leser akzeptiert schon Version 1 und
 später die Anhang-Schlüssel – überleben jedes Speichern
 (`model::UnknownFields`); D2–D6: Anhänge, siehe „Was fertig ist“ und den
 Abschnitt „Attachments“ in `ARCHITECTURE.md`; D7: Umbenennen/Löschen über
-die Sidebar; D8: Schalter im Assistenten, Standard an); offen ist nur noch
-HIBP, dessen Teile nach der Entscheidung des Besitzers ebenfalls dorthin
-wandern.
+die Sidebar; D8: Schalter im Assistenten, Standard an; D5/D6: HIBP nur auf
+Knopfdruck ohne Setting, durch den System-Proxy mit „fail closed“ bei PAC –
+umgesetzt, siehe „Was fertig ist“ und den Abschnitt „Leaked-password check“
+in `ARCHITECTURE.md`). Damit steht alles aus Block 3 in `ARCHITECTURE.md`;
+`BLOCK3-DESIGN.md` enthält nur noch die Begründungen und kann gekürzt oder
+entfernt werden.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
-3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern (beta.9) und
-   verschlüsselte Dateianhänge an Einträgen (beta.10, siehe „Was fertig
-   ist“) sind fertig. Offen: optionale Prüfung auf geleakte Passwörter (Have I Been
-   Pwned, k-Anonymität – nur die ersten 5 Zeichen des SHA-1 gehen raus;
-   standardmäßig aus oder nur auf Knopfdruck).
+3. **Block 3 „Neue Funktionen“** ist umgesetzt: Tags zusätzlich zu Ordnern
+   (beta.9), verschlüsselte Dateianhänge an Einträgen (beta.10) und die
+   Prüfung auf geleakte Passwörter (Have I Been Pwned, k-Anonymität, nur auf
+   Knopfdruck; auf dem Branch, siehe „Was fertig ist“). Wirklich offen: ein
+   `[release]`-Commit für die Leak-Prüfung (beta.11; die erste Zeile deutsch,
+   sie wird der „Was ist neu?“-Text), danach vom Besitzer in der echten App
+   durchklicken (Bestätigungsdialog, Karte, Callout im Element, Knopf im
+   Editor, Fehlertext ohne Netz), und `docs/BLOCK3-DESIGN.md` kürzen oder
+   entfernen.
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
    der vielen WIP-Commits), `v2.0.0` als Latest veröffentlichen, VaultX-1.x-
    Nutzern den Umstieg anbieten. Achtung: Das 1.x-Updater liest `version.yml` auf
@@ -225,6 +269,14 @@ wandern.
   lokal.
 - Website-Icons verraten Netzwerk-Mitlesern die Liste der Websites (dokumentiert,
   Schalter vorhanden); hinter Firmen-Proxys werden bewusst keine Icons geladen.
+- Prüfung auf geleakte Passwörter: nur auf Knopfdruck, keine automatische
+  Prüfung und kein Setting dafür; Have I Been Pwned ist nur direkt oder über
+  einen Proxy erreichbar, dessen Konfiguration die App auswerten kann – bei
+  PAC-Skript oder unverständlicher Proxy-Einstellung sendet sie nichts
+  (`unsupported:pwned_proxy`); das Ergebnis wird nicht gespeichert (nach dem
+  Sperren oder einem Tresorwechsel wieder weg); nicht in TUI und Erweiterung;
+  „Nicht mehr fragen“ lässt sich nur durch Löschen der WebView-Daten
+  zurücksetzen.
 - Verschlüsselte Bitwarden-Exporte, 1Password-/KeePass-Formate: nicht unterstützt.
 - TUI: Ordner, Tags, Zusatzfelder, mehrere Websites, Papierkorb nicht
   bearbeitbar (Tags werden angezeigt und beim Bearbeiten bewahrt); Anhänge

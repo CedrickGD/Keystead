@@ -1,4 +1,4 @@
-// The leaked-password check of the open vault (see "Leaked passwords" in
+// The leaked-password check of the open vault (see "Leaked-password check" in
 // docs/ARCHITECTURE.md): the security report runs `check_pwned_vault` on the
 // user's button press – never automatically – and the result lives here, in
 // page memory only, so the item view can warn about a leaked item too.

@@ -180,7 +180,7 @@ function PwnedConfirmDialog({ onClose, onConfirm }: { onClose: () => void; onCon
 /**
  * "Geleakte Passwörter": the one card that needs a button press – the check
  * sends the SHA-1 prefixes of the vault's passwords to Have I Been Pwned
- * (`check_pwned_vault`, see "Leaked passwords" in docs/ARCHITECTURE.md), so
+ * (`check_pwned_vault`, see "Leaked-password check" in docs/ARCHITECTURE.md), so
  * it never runs on its own. The result lives in the breaches context (page
  * memory); `rows` are the leaked items of the last check that are unchanged
  * since, in the report's order (count desc).

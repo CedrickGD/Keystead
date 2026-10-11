@@ -1085,7 +1085,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "health_report":
       return healthReport(openVault().data);
 
-    // Leaked passwords (see "Leaked passwords" in docs/ARCHITECTURE.md): the
+    // Leaked passwords (see "Leaked-password check" in docs/ARCHITECTURE.md): the
     // real app asks Have I Been Pwned (~150 ms per request); the demo answers
     // from a table after about a second. Both count as user activity.
     case "check_pwned_password": {

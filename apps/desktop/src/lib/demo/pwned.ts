@@ -1,5 +1,5 @@
 // Breach counts of the demo backend. The real app asks Have I Been Pwned's
-// range API (see "Leaked passwords" in docs/ARCHITECTURE.md); the mock
+// range API (see "Leaked-password check" in docs/ARCHITECTURE.md); the mock
 // answers from this table so the security report and the editor's check
 // have something to show: the weak sample passwords are "leaked" with large
 // counts, everything else is clean.

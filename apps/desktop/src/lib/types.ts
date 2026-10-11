@@ -314,7 +314,7 @@ export interface LeakedItem {
 }
 
 /**
- * Result of `check_pwned_vault` (see "Leaked passwords" in
+ * Result of `check_pwned_vault` (see "Leaked-password check" in
  * docs/ARCHITECTURE.md): only on the user's button press, never stored –
  * the UI keeps it in page memory (`state/breaches.tsx`).
  */

@@ -5,9 +5,12 @@ password manager in the spirit of Bitwarden:
 a desktop app (Tauri 2: Rust backend + React UI), a terminal UI, and a
 Chromium browser extension that talks to the desktop app via Native
 Messaging. **No vault data ever leaves the machine** – there is no server and
-no cloud sync. The app itself only goes online for the update check and,
-unless turned off, to load website icons directly from the websites (see
-"Website icons").
+no cloud sync. The app itself only goes online for the update check, unless
+turned off to load website icons directly from the websites (see "Website
+icons"), and – only when the user presses the button, never on its own – to
+check passwords against Have I Been Pwned, where just the first 5 hex
+characters of a password's SHA-1 leave the device (see "Leaked-password
+check").
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -30,7 +33,7 @@ an interface here, change every side.
 | Path | What |
 |------|------|
 | `Cargo.toml` | Cargo workspace |
-| `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report. No UI, no IPC. |
+| `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report, the offline half of the leaked-password check (hashing, answer parsing). No UI, no IPC, no networking. |
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
@@ -248,6 +251,7 @@ pub mod generator;// GeneratorOptions, generate()
 pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
+pub mod pwned;    // leaked-password check: PwnedHash, pwned_hash, pwned_count, breach_candidates (no networking – the desktop app sends the range request, see "Leaked-password check")
 pub mod icons;    // website icons: host keys, due/fetchable hosts, prune (no networking – the desktop app fetches)
 pub mod attachments; // encrypted file attachments: limits, blob seal/open (KSAT1 + nonce + XChaCha20-Poly1305), prune, sweep; the vault methods are on UnlockedVault (see "Attachments")
 pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export; format detection, duplicate/conflict check
@@ -356,6 +360,13 @@ pub struct Strength { pub score: u8 /*0..=4*/, pub crack_time: String, pub warni
 pub fn strength(password: &str, user_inputs: &[&str]) -> Strength;
 pub struct HealthReport { pub total_logins: usize, pub weak: Vec<String> /*item ids*/, pub reused: Vec<Vec<String>> /*groups of item ids*/, pub old: Vec<String> /* >365 days */, pub missing_totp_count: usize, pub score: u8 /*0..=100*/ }
 pub fn health_report(data: &VaultData) -> HealthReport;
+// pwned (see "Leaked-password check"; no networking – the desktop app sends the request)
+pub const PREFIX_LEN: usize = 5; pub const SUFFIX_LEN: usize = 35;
+pub struct PwnedHash { pub prefix: String /*5 upper-case hex – the only part that goes online*/, pub suffix: Zeroizing<String> /*35 upper-case hex, never leaves the device*/ } // Debug prints the prefix only
+pub fn pwned_hash(password: &str) -> PwnedHash;            // SHA-1 as upper-case hex, split 5/35; the digest buffer is zeroized
+pub fn pwned_count(body: &str, hash: &PwnedHash) -> u64;   // range-API answer (`SUFFIX:COUNT` lines, CRLF or LF, any case) → breach count; 0 when absent or a padding line; constant-time compare over every line, malformed lines ignored
+pub struct BreachCandidate { pub hash: PwnedHash, pub item_ids: Vec<String> /*sorted*/ }
+pub fn breach_candidates(data: &VaultData) -> Vec<BreachCandidate>; // non-trashed logins with a non-empty password, one candidate per distinct password, deterministic order
 // attachments (see "Attachments"; the vault methods are on UnlockedVault)
 pub const ATTACHMENT_MAX_BYTES: u64 = 20 * 1024 * 1024; pub const ATTACHMENTS_PER_ITEM_MAX: usize = 10; pub const ATTACHMENT_NAME_MAX_CHARS: usize = 200;
 pub const DIR_SUFFIX: &str = ".attachments"; pub const BLOB_EXTENSION: &str = "bin"; pub const SWEEP_MIN_AGE: Duration = 1 h; pub const BLOB_OVERHEAD: usize = 45; // magic 5 + nonce 24 + tag 16
@@ -753,7 +764,7 @@ history. The bridge's own writes are not affected.
 | `totp_code` | `seed` | `TotpCode` (kept for compatibility; the item view has no keys and uses `totp_for_item`) |
 | `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies notes of every item type, generated passwords and the recovery key as sensitive; the secrets of items – passwords, TOTP codes, card number/code, hidden fields, old passwords – go through `copy_secret_field`, which copies the same way) |
 | `health_report` | – | `HealthReport` |
-| `check_pwned_password` | `password` | `number` – the password's breach count at Have I Been Pwned (0: not in known breaches), only on the user's button press; only the first 5 hex characters of its SHA-1 leave the process (`GET https://api.pwnedpasswords.com/range/<PREFIX>`, see "Leaked passwords"). No vault needed. Errors: `unsupported:pwned_proxy` (a proxy configuration the app cannot evaluate – it never goes around a proxy), `io:HTTP <status>` (non-2xx, also 429; no retry), `io:<detail>` (network) |
+| `check_pwned_password` | `password` | `number` – the password's breach count at Have I Been Pwned (0: not in known breaches), only on the user's button press; only the first 5 hex characters of its SHA-1 leave the process (`GET https://api.pwnedpasswords.com/range/<PREFIX>`, see "Leaked-password check"). No vault needed. Errors: `unsupported:pwned_proxy` (a proxy configuration the app cannot evaluate – it never goes around a proxy), `io:HTTP <status>` (non-2xx, also 429; no retry), `io:<detail>` (network) |
 | `check_pwned_vault` | `pageVaultId` | `PwnedReport { checkedAt: number, checked: number, leaked: { itemId, count: number }[], failed: number }` – checks every distinct password of the page's vault's non-trashed logins (one request per distinct prefix, ≤ 4 at a time; `checked` = distinct passwords, `leaked` = the items behind the leaked ones sorted by count desc, `failed` = passwords whose request failed after others succeeded). `locked` if another vault is open, or if the vault was locked or switched while the requests ran (the result is discarded); the first HTTP error (`io:HTTP <status>`) or a network error before any answer (`io:<detail>`) ends the run; `unsupported:pwned_proxy` as above. Nothing is cached or written into the vault; counts as user activity |
 | `change_master_password` † | `current, newPassword` | `{ newRecoveryKey: string \| null }` – rotates the vault key; a vault with a recovery key gets a new one (the old one stops working), shown once by the UI like a newly created key; `null` without recovery key (see "Key rotation"). Unconfirmed new keys: see below the table |
 | `create_recovery_key` † | – | `string` |
@@ -858,6 +869,14 @@ Website icons: "Privat" starts with a few stored sample icons
 real icons); ~1.5 s after an unlock, a save or turning `websiteIcons` on, a
 simulated fetch adds the sample icon of hosts that have none and emits
 `vault://icons`.
+Leaked passwords: `src/lib/demo/pwned.ts` holds a fixed breach table (the
+weak sample passwords – "Sommer2019!", "hallo123", "passwort", "admin", … –
+with large counts, plus "password", "123456", "qwertz", "hallo" and "demo"
+for the editor's button; everything else 0); `check_pwned_password` answers
+after ~0.9 s, `check_pwned_vault` builds the report like the backend
+(non-trashed logins with a password, grouped by identical password, sorted
+by count desc then item id) and answers after ~1 s – `locked` if the
+page's vault was locked or switched meanwhile (see "Leaked-password check").
 
 Frontend integration requirements for `src-tauri`:
 * File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
@@ -961,7 +980,10 @@ item; copying never sends it there.
   redacted entry). The password history lists dates and reveals / copies an
   entry on demand. The health report comes from `health_report`; its "no
   2FA" list uses `hasPassword` / `hasTotp`. The mock backend redacts the same
-  way (`src/lib/demo/redact.ts`).
+  way (`src/lib/demo/redact.ts`). The leaked-password check (see
+  "Leaked-password check") brings no secret into the page either: the
+  vault-wide run sends only `pageVaultId` and gets item ids and counts back;
+  the editor's button sends the password the editor already holds.
 
 ### Recovery keys waiting for confirmation (`src/lib/recoveryMarker.ts`)
 A new recovery key exists only in the dialog that shows it (created in
@@ -1063,8 +1085,8 @@ vault without recovery key is dropped silently.
   the vault and retry once (the UI then also gets `vault://changed`).
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
   mutations, `copy_text`, `reveal_secret`, `copy_secret_field`,
-  `get_item_for_edit`, the attachment commands, generator, import/export,
-  settings, …) and bridge
+  `get_item_for_edit`, the attachment commands, the leaked-password
+  checks, generator, import/export, settings, …) and bridge
   user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
   `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
   `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
@@ -1286,6 +1308,174 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
   (see the bridge protocol); the popup shows it, else the letter. The
   extension never loads icons itself.
+
+## Leaked-password check (`keystead_core::pwned`, `src-tauri/src/pwned.rs`)
+
+The security report and the item editor can ask Have I Been Pwned's "Pwned
+Passwords" range API whether a password appears in known data breaches.
+This is the only network access that involves vault data, so it runs
+**only when the user presses the button** – never on unlock, save, opening
+the report or a timer; there is no setting that turns it on and nothing
+runs in the background. It uses k-anonymity: the device sends the first
+5 hex characters of the password's SHA-1, the service answers with every
+known hash suffix under that prefix and its breach count (`SUFFIX:COUNT`
+lines), and the match happens on the device. The service never sees a
+password, a full hash, a user name or a website, and cannot tell which of
+the hundreds of suffixes was meant.
+
+* **Core** (`keystead_core::pwned`, no networking, no dependencies beyond
+  the existing `sha1`, `data-encoding`, `subtle` and `zeroize`):
+  `pwned_hash(password)` → `PwnedHash { prefix /*5 upper-case hex*/,
+  suffix: Zeroizing<String> /*35*/ }` (the SHA-1 digest buffer is zeroized;
+  `Debug` prints only the prefix – prefix and suffix together are the full
+  hash, brute-forceable for a weak password). `pwned_count(body, &hash)`
+  parses the answer (CRLF or LF, suffixes in any case, lines trimmed; a line
+  whose suffix is not exactly 35 hex characters or whose count is not a
+  `u64` is ignored), compares every line's suffix in constant time and
+  visits every line, so neither a match nor its position shows in the
+  timing; a missing suffix or a padding line with count 0 → 0.
+  `breach_candidates(&VaultData)` groups the non-trashed logins with a
+  non-empty password by identical password → one `BreachCandidate { hash,
+  item_ids /*sorted*/ }` per distinct password, in a deterministic order
+  (by id list); notes, cards, identities and the trash are never checked.
+* **What leaves the device** (per distinct password):
+  `GET https://api.pwnedpasswords.com/range/<PREFIX>` over HTTPS – the
+  5 characters in the URL path, no query, no body – with the fixed headers
+  `Accept: text/plain` and `Add-Padding: true` and the user agent
+  `Keystead/<version>` (like the updater; the service answers without one
+  too). `Add-Padding` makes the service pad every answer to ~800–1000
+  lines (~80 KB), so the size of an answer says nothing about the prefix.
+  No cookie is ever sent (the client has no cookie store; the one
+  Cloudflare sets is dropped), no `Referer`, no credentials. Nothing from
+  the vault but those 5 characters is sent – not the item, not the user
+  name, not the website.
+* **Client** (one `reqwest::Client` in a `OnceLock`, built like
+  `update::probe_client`, incl. installing the ring provider that the
+  `rustls-no-provider` feature needs): 10 s timeout for the connect and for
+  the whole request, `referer(false)`, redirects not followed (a 3xx is an
+  error status), answer capped at 512 KiB (`Content-Length` checked first,
+  then while reading; above it → `io:answer larger than 512 KiB`). A
+  non-2xx status is `io:HTTP <status>` – no automatic retry, also for 429
+  (the range API has no documented rate limit; checked live 2026-10-10:
+  200 without a user agent, CRLF, upper-case suffixes, padding, a
+  Cloudflare cookie) –, a network error `io:<detail>`, where the detail is
+  reqwest's message without the URL (it would carry the prefix) plus its
+  cause chain (e.g. the DNS or TLS error).
+* **Proxy**: the client uses the system proxy (reqwest's `system-proxy`
+  feature: `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, the Windows Internet
+  settings, the macOS network settings). This differs from the icon
+  fetcher, which never uses a proxy, on purpose: its reasons – hosts taken
+  from vault data (SSRF), the user's own address shown to the websites of
+  their accounts – do not apply to one fixed public host, and a proxy sees
+  only `CONNECT api.pwnedpasswords.com:443`, never the prefix. The rule
+  "never *around* a proxy" is kept the same way: before the first request
+  `icons::proxy_setup_unclear(&icons::proxy_matcher())` is evaluated (on
+  the blocking pool – it reads the environment and, on Windows, the
+  registry), and a proxy configuration that exists but that reqwest would
+  not use (a PAC/auto-config script, the per-protocol Windows form
+  `http=…;https=…`) **fails closed** with `unsupported:pwned_proxy` – nothing
+  is sent. A vault check without candidates skips the proxy check too
+  (nothing would be sent). Networks that allow web access only through a
+  proxy the matcher cannot evaluate therefore get no check; the UI text
+  says so.
+* **Never stored, never logged**: the result is not cached and not written
+  into the vault or the settings (a stored count would travel into Keystead
+  exports) and does not survive a lock; the full SHA-1 exists only as
+  `Zeroizing` strings inside the core during the call; the `password`
+  argument of `check_pwned_password` is moved into a `Zeroizing<String>` at
+  once; the single log line carries counts only (`pwned check: 12 distinct
+  passwords, 2 leaked items, 0 not checked`), never prefixes, hashes or
+  item names; error details never contain the URL.
+* **Commands** (see the command table; both count as user activity):
+  * `check_pwned_password(password)` → `number`: hash in the core, proxy
+    check, one request, `pwned_count`. Needs no vault (the editor uses it
+    for a new item too).
+  * `check_pwned_vault(pageVaultId)` → `PwnedReport { checkedAt /*Unix
+    ms*/, checked /*distinct passwords*/, leaked: [{ itemId, count }]
+    /*count desc, then itemId; an item at most once*/, failed /*distinct
+    passwords not checked*/ }` in three steps. (1) On the blocking pool,
+    under the state lock: `page_vault(pageVaultId)` (`locked` if another
+    vault is open), `breach_candidates` and the lock epoch (see "Lock
+    epoch"); then, lock released, the proxy check. (2) Without the lock:
+    one request per **distinct prefix** (passwords sharing a prefix share
+    the answer, so never more than one request per distinct password), at
+    most 4 at a time (`tokio::task::JoinSet` + `Semaphore`, like
+    `icons::fetch_all`); the coordinator polls every 100 ms for a lock, a
+    vault switch (epoch change) or app exit → `locked`, open requests
+    dropped at once (`JoinSet::shutdown`), no further request sent. The
+    first HTTP error ends the run with `io:HTTP <status>` (the task that
+    got it records the status before releasing its permit, so waiting
+    requests stop without connecting – at most 4 requests reach a server
+    that answers 429); a network error **before any answer** ends the run
+    with `io:<detail>` (probably offline); one **after** an answer only
+    leaves that password's items unchecked (`failed` + 1; the UI notes
+    it). (3) The epoch is compared again – changed → `locked`, result
+    discarded – and the counts are mapped to the candidates' item ids. A
+    vault without candidates answers `{ checked: 0, leaked: [], failed: 0 }`
+    without any request.
+* **Errors the UI maps** (`usePwnedErrorText` in `src/state/breaches.tsx`):
+  `io:…` → `pwned.errorNetwork` ("Have I Been Pwned ist nicht erreichbar:
+  {detail}", like `useUpdateErrorText`), `unsupported:pwned_proxy` →
+  `error.unsupported.pwned_proxy` (the system's proxy settings could not be
+  evaluated, Keystead never goes around a proxy, nothing was sent), `locked`
+  → the unlock screen like every other page command, the rest via
+  `errorText`.
+* **UI** (strings under `pwned.*` in `src/i18n/de.ts` / `en.ts`). The
+  result lives in `BreachesProvider` (`src/state/breaches.tsx`, mounted in
+  `App.tsx` inside `IconsProvider`, keyed by the vault id): page memory
+  only – a lock (page reload) and a vault switch (remount) drop it. Per
+  leaked item it pins the count to the item's `updatedAt` at the start of
+  the check; `breachCount(item)` answers only while that still matches, so
+  an edit or save of the item (e.g. a new password) expires its entry
+  without a re-check. One run at a time.
+  * **Security report** (`HealthPage`, `PwnedCard`): the card "Geleakte
+    Passwörter" comes first. Idle: a description (what the check does, that
+    only 5 characters of a hash leave the device) and the primary button
+    "Geleakte Passwörter prüfen". Checking: spinner, "Frage Have I Been
+    Pwned an …", button loading; previous rows stay visible. Result with
+    leaks (danger): the count, the leaked items of the report that still
+    exist outside the trash and are unchanged since, in the report's order
+    (count desc), each with "in {n} Datenlecks gefunden" (locale number
+    format) and opening the item, "Alle n anzeigen" after 4, "Erneut
+    prüfen" and "Zuletzt geprüft: <checkedAt>"; the note "{n} Passwörter
+    konnten nicht geprüft werden" when `failed` > 0. Clean (ok): "{n}
+    Passwörter geprüft – keins in einem bekannten Datenleck." or "Keine
+    Passwörter zu prüfen.". Error (danger, `role="alert"`): the mapped
+    text, the button retries. The summary shows the chip "{n} geleakt" once
+    a report exists (red, or green with 0). Before **every** vault-wide run
+    – also "Erneut prüfen" – the dialog "Geleakte Passwörter prüfen?"
+    (`PwnedConfirmDialog`) says exactly what leaves the device: the first
+    5 characters of each password's SHA-1, to api.pwnedpasswords.com over
+    HTTPS, nothing else – no password, no user name, no website; the
+    service answers with every match for those 5 characters and cannot
+    tell which password was meant; the comparison happens on the device
+    and nothing is stored. "Abbrechen" / "Jetzt prüfen" and the checkbox
+    "Nicht mehr fragen", which is remembered only in `localStorage` as
+    `keystead.pwnedConfirmed` = `"1"` (`localPrefs`) – no backend setting,
+    no reset in the UI (clearing the webview's site data brings the dialog
+    back).
+  * **Item view** (`LeakWarning`): a `callout-danger` "Dieses Passwort ist
+    in Datenlecks aufgetaucht." with the count and "Passwort ändern" (opens
+    the editor) on a non-trashed login the context knows as leaked.
+  * **Item editor** (`LeakCheck`): the link button "Auf Leaks prüfen" under
+    the strength meter calls `check_pwned_password` with the current
+    password (disabled while empty or running); the answer is shown inline –
+    "In {n} Datenlecks gefunden – bitte nicht verwenden" or "Nicht in
+    bekannten Datenlecks" – or the mapped error; it belongs to the password
+    it was asked for: any change hides it, restoring the same password shows
+    it again.
+  * Not in the TUI (no HTTP dependency) and not in the browser extension;
+    the breach count is not part of `HealthReport` or its score (the core
+    stays offline and synchronous).
+* **Tests**: the core's unit tests use the known vector SHA-1("password")
+  = `5BAA6` + `1E4C9B93F3F0682250B6CF8331B7EE68FD8` with canned bodies
+  (CRLF/LF, lower case, padding, garbage lines); the desktop tests run
+  against a local plain-HTTP server (request shape and headers, no cookie
+  or referer, error mapping, 512 KiB cap, prefix sharing, concurrency and
+  the stop at the first HTTP error, a lock during a run, the proxy
+  fail-closed). The one test against the live service
+  (`pwned::tests::live_range_api_knows_password`) is `#[ignore = "needs the
+  internet"]` – CI never goes online.
 
 ## Attachments (`keystead_core::attachments`, `src-tauri/src/attachments.rs`)
 
@@ -2027,6 +2217,13 @@ The extension's security model and file roles are in
 * Logins show their website's icon (see "Website icons") on a light rounded
   tile, otherwise a tinted letter tile; cards, identities and notes a type
   icon. Same in the extension popup.
+* Nothing goes online behind the user's back: the leaked-password check
+  (see "Leaked-password check") is a button in the security report – the
+  first card, "Geleakte Passwörter" – and a link button under the strength
+  meter in the editor; a dialog before the vault-wide run says exactly what
+  leaves the device ("Nicht mehr fragen" is remembered locally); the result
+  is shown as the card's rows, as a red callout with "Passwort ändern" on
+  the item and inline in the editor, and is never stored.
 * No hidden options: settings is one page with clear sections.
 * Import: drop a file anywhere or pick one – the format is detected, nothing
   is written before the preview is confirmed, and existing entries are never
