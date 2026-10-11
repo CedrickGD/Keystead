@@ -75,8 +75,10 @@ returned code: `0` success, `1` error, `2` invalid usage.
 * No subcommand → interactive full-screen UI (needs a terminal on stdout,
   else exit 1): vault picker (> 1 vault; preselects `lastVaultId`, which an
   unlock updates), master-password prompt, item list + details (the details
-  list an item's tags under its type line, read-only; the search matches
-  them like the desktop); copy
+  list an item's tags under its type line and, below them, the number of
+  its attachments – `Anhänge: 2`, only when it has any; both read-only, the
+  TUI neither adds nor reads attachments; the search matches tags like the
+  desktop); copy
   (`u`/`p`/`t`, secrets via `clipboard::copy_secret` with
   `clipboardClearSeconds`, pending secret cleared on lock/quit), `o` open
   http(s) website, `n`/`e` edit (the editor keeps what it does not show:
@@ -112,6 +114,12 @@ returned code: `0` success, `1` error, `2` invalid usage.
   revision (or removed), so no local copy still opens with the old secret;
   `<vault-id>.keystead.lock` = empty inter-process lock file held only while a
   save runs).
+* Attachments: `<data_dir>/vaults/<vault-id>.keystead.attachments/<attachment-id>.bin`
+  – one encrypted blob per file attached to an item (see "Attachments");
+  the directory appears with the first attached file and goes with the
+  vault (`delete_vault`, the portable-mode move). A complete backup is the
+  data directory – vault file plus this folder –, since no export contains
+  attachments.
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
@@ -122,7 +130,7 @@ returned code: `0` success, `1` error, `2` invalid usage.
   `vault_*.json` (Linux/macOS: none – only manual file import).
   `$KEYSTEAD_LEGACY_DIR` overrides this directory on every OS (tests).
 
-## Vault file format (version 1) – `keystead_core::format`
+## Vault file format (versions 1 and 2) – `keystead_core::format`
 
 UTF-8 JSON, written atomically: write a new temporary file
 `.<file name>.<16 random hex>.tmp` in the same dir (created exclusively –
@@ -194,22 +202,37 @@ files, settings, plain-text exports) share this.
   `zeroize`/`secrecy` where practical.
 * Argon2id default params: m = 64 MiB, t = 3, p = 4. Tests may use a cheaper
   `KdfParams::insecure_for_tests()`.
-* `version`: new files are written as 1 (`format::FORMAT_VERSION`); the
-  reader accepts 1 and 2 (`format::SUPPORTED_VERSIONS`) and a file keeps
-  its version when it is written back. Version 2 is reserved for vaults
-  with attachments and not written yet – the upcoming attachments feature
-  writes it only for such vaults, so builds without this reader refuse them
-  (`unsupported:vault format version 2`) instead of silently dropping what
-  they do not know. A build with this reader does not drop it either:
-  header keys (`VaultFile.extra`) and top-level payload keys
-  (`VaultData.extra` – e.g. a later `attachments` map with its blob keys)
-  it does not know are kept as they are (`model::UnknownFields`,
-  `#[serde(flatten)]`) and written back with every save, re-encryption
-  included; their `Debug` shows only the key names, `wipe_data` blanks
-  their strings, and the Keystead export leaves them out (a standalone
-  version-1 file). Unknown keys *inside* items, folders, icons etc. are not
-  kept. Any other version → `unsupported:vault format version <n>`; a
-  missing one → `corrupt:missing format version`.
+* `version`: derived from the payload on every write (`format::version_for`):
+  `1` (`format::FORMAT_VERSION`) for a vault without attachments – new
+  vaults, and always the Keystead export –, `2`
+  (`format::FORMAT_VERSION_ATTACHMENTS`) iff `VaultData.attachments` is not
+  empty, and `1` again with the save that removes the last attachment. Both
+  versions have the layout above; version 2 only announces that the payload
+  carries attachment entries with their blob keys (see "Attachments"). The
+  reader accepts 1 and 2 (`format::SUPPORTED_VERSIONS`). Mixed versions:
+  builds that read version 1 only (before beta.9) refuse a vault with
+  attachments cleanly (`unsupported:vault format version 2`) instead of
+  silently dropping the keys on their next save; beta.9 (this reader, no
+  attachments code yet) opens it and carries the `attachments` map it does
+  not know through every save: header keys (`VaultFile.extra`) and
+  top-level payload keys (`VaultData.extra`) a build does not know are kept
+  as they are (`model::UnknownFields`, `#[serde(flatten)]`) and written
+  back with every save, re-encryption included; their `Debug` shows only
+  the key names, `wipe_data` blanks their strings, and the Keystead export
+  leaves them out (a standalone version-1 file). Unknown keys *inside*
+  items, folders, icons etc. are not kept. Any other version →
+  `unsupported:vault format version <n>`; a missing one →
+  `corrupt:missing format version`.
+* **Attachment blobs** (`<vault path>.attachments/<attachment id>.bin`, see
+  "Attachments"): 5 magic bytes `KSAT1` + 24-byte nonce + XChaCha20-Poly1305
+  ciphertext (tag included) of the file bytes, under the attachment's own
+  random 32-byte key (base64 in its payload entry), AAD = UTF-8 bytes of
+  `"keystead:v1:attachment:" + vault id + ":" + attachment id` – a blob
+  moved to another vault or entry fails to open (`corrupt:…`). Written with
+  `write_atomic`, no `.bak`. Because the keys live in the payload, a key
+  rotation of the vault re-encrypts no blob, and a copy of the vault made
+  before a rotation – which still opens with the old secret (see above) –
+  still opens the attachments it knew back then.
 
 ## Core API – `keystead-core` (Rust)
 
@@ -226,6 +249,7 @@ pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
 pub mod icons;    // website icons: host keys, due/fetchable hosts, prune (no networking – the desktop app fetches)
+pub mod attachments; // encrypted file attachments: limits, blob seal/open (KSAT1 + nonce + XChaCha20-Poly1305), prune, sweep; the vault methods are on UnlockedVault (see "Attachments")
 pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export; format detection, duplicate/conflict check
 pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
@@ -243,7 +267,8 @@ impl VaultStore {
     pub fn create_vault_with_params(&self, name: &str, master_password: &str, kdf: KdfParams) -> Result<UnlockedVault>;
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault>;   // Error::WrongPassword on bad pw
     pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid (re-wrapped)
-    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak + leftover temp files
+    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak + leftover temp files + the <id>.keystead.attachments directory
+    // create_vault*, unlock and unlock_with_recovery_key also run UnlockedVault::sweep_attachments (best effort) on the vault they return
     pub fn vault_path(&self, vault_id: &str) -> PathBuf;
 }
 ```
@@ -277,6 +302,17 @@ impl UnlockedVault {
     pub fn icon_for_host(&self, host: &str) -> Option<&str>;      // base64 PNG
     pub fn icon_for_item(&self, item: &VaultItem) -> Option<&str>;
     pub fn clear_icons(&mut self) -> Result<usize>;              // one save
+    pub fn attachments_dir(&self) -> PathBuf;                    // <vault path>.attachments – exists once a file was attached (see "Attachments")
+    pub fn attachments_of(&self, item_id: &str) -> Vec<AttachmentInfo>; // oldest first (createdAt, then id); empty for an unknown item
+    pub fn attachment_info(&self, id: &str) -> Option<AttachmentInfo>;  // the key-free view of one entry
+    pub fn add_attachment(&mut self, item_id: &str, name: &str, bytes: &[u8]) -> Result<AttachmentInfo>;
+        // checks before writing anything: item exists (NotFound) → not trashed (invalid_input:item_trashed) → fewer than 10 (attachments_too_many)
+        // → name trimmed, 1–200 chars (attachment_name_required / attachment_name_too_long) → ≤ 20 MiB (unsupported:attachment_too_large);
+        // then seals the bytes under a fresh key into <dir>/<new id>.bin (write_atomic, no .bak) and records the entry in one save;
+        // any Err of that save (Conflict too) removes the blob again → reload_if_changed + call again
+    pub fn remove_attachment(&mut self, id: &str) -> Result<()>;  // drops the entry (the only key) in one save, then deletes the blob best effort; NotFound for an unknown id
+    pub fn read_attachment(&self, id: &str) -> Result<Zeroizing<Vec<u8>>>; // decrypts the blob; NotFound (unknown id, missing file), Corrupt (tampered, swapped, not a blob, larger than 20 MiB + 45 B – never read whole)
+    pub fn sweep_attachments(&self) -> usize;                    // deletes unreferenced *.bin and leftover *.tmp at least 1 h old; run by VaultStore after create/unlock
     pub fn import_items(&mut self, items: Vec<VaultItem>, folders: Vec<Folder>) -> Result<usize>; // assigns fresh ids, maps folder ids, persists once (no duplicate check)
     pub fn commit_import(&mut self, plan: ImportPlan, mode: ConflictMode) -> Result<ImportReport>;      // applies an import plan in one save, see "Import: detection, duplicates, conflicts"
     pub fn commit_import_ref(&mut self, plan: &ImportPlan, mode: ConflictMode) -> Result<ImportReport>; // same, keeps the plan (retry after `conflict` + reload_if_changed)
@@ -320,6 +356,17 @@ pub struct Strength { pub score: u8 /*0..=4*/, pub crack_time: String, pub warni
 pub fn strength(password: &str, user_inputs: &[&str]) -> Strength;
 pub struct HealthReport { pub total_logins: usize, pub weak: Vec<String> /*item ids*/, pub reused: Vec<Vec<String>> /*groups of item ids*/, pub old: Vec<String> /* >365 days */, pub missing_totp_count: usize, pub score: u8 /*0..=100*/ }
 pub fn health_report(data: &VaultData) -> HealthReport;
+// attachments (see "Attachments"; the vault methods are on UnlockedVault)
+pub const ATTACHMENT_MAX_BYTES: u64 = 20 * 1024 * 1024; pub const ATTACHMENTS_PER_ITEM_MAX: usize = 10; pub const ATTACHMENT_NAME_MAX_CHARS: usize = 200;
+pub const DIR_SUFFIX: &str = ".attachments"; pub const BLOB_EXTENSION: &str = "bin"; pub const SWEEP_MIN_AGE: Duration = 1 h; pub const BLOB_OVERHEAD: usize = 45; // magic 5 + nonce 24 + tag 16
+pub fn dir_for(vault_path: &Path) -> PathBuf; pub fn blob_path(dir: &Path, attachment_id: &str) -> PathBuf;
+pub fn seal_blob(key: &SecretKey, vault_id: &str, attachment_id: &str, plaintext: &[u8]) -> Result<Vec<u8>>;
+pub fn open_blob(key: &SecretKey, vault_id: &str, attachment_id: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>>; // Corrupt on any mismatch
+pub fn validate_name(name: &str) -> Result<String>; pub fn of_item(data: &VaultData, item_id: &str) -> Vec<AttachmentInfo>;
+pub fn prune(data: &mut VaultData) -> Vec<String> /* ids of the removed entries */; pub fn sweep(dir: &Path, data: &VaultData) -> usize;
+// model (attachments)
+pub struct AttachmentEntry { pub item_id: String, pub name: String, pub size: u64, pub created_at: i64, pub key: String /* base64 blob key */ } // VaultData.attachments: BTreeMap<attachment id, AttachmentEntry>, #[serde(default)]; Debug prints the key's length only
+pub struct AttachmentInfo { pub id: String, pub item_id: String, pub name: String, pub size: u64, pub created_at: i64 } // camelCase; the key-free view (AttachmentEntry::info(id)) for UI and TUI
 // import (drag & drop flow: detect_import → read_import → plan_import → UnlockedVault::commit_import)
 pub struct ImportReport {          // camelCase
     pub imported: usize,           // items added as new items (incl. conflicts kept with keepBoth)
@@ -450,8 +497,17 @@ Behaviour notes:
   `write_atomic` (new temporary file, see "Vault file format"): readable only
   by the current user on Unix; on Windows the file gets the target folder's
   default permissions.
+* **Attachments** (see "Attachments"): every save that changes the data
+  also prunes the attachment entries of items that no longer exist
+  (`delete_item`, `empty_trash`; trashed items keep theirs) and deletes
+  their blobs best effort after the write; `VaultStore::delete_vault`
+  removes the side-car directory; the Keystead, CSV and Bitwarden exports
+  carry no attachments (`export.rs` builds the exported `VaultData` with an
+  empty map) and no import brings any.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
-  `tag_required`, `tag_too_long`, `tags_too_many`,
+  `tag_required`, `tag_too_long`, `tags_too_many`, `item_trashed`,
+  `attachments_too_many`, `attachment_name_required`,
+  `attachment_name_too_long`,
   `password_empty`, `password_required`, `kdf_params`, `recovery_key_format`,
   `length`, `words`, `separator`, `no_character_set`,
   `minimums_exceed_length`, `totp_secret`, `totp_secret_empty`, `totp_uri`,
@@ -462,6 +518,10 @@ Behaviour notes:
   `import_into` / `import_bitwarden_json` with `bitwarden_json`),
   `file_too_large` (others are English free text, e.g.
   `vault format version 3`, `not a Keystead vault file`).
+* `unsupported` details of the attachments: `attachment_too_large` (core:
+  more than 20 MiB of bytes; desktop `add_attachment`: already from the
+  file's metadata, before reading) and – desktop only –
+  `attachment_preview` (`reveal_attachment`, see "Attachments").
 * Strength texts (`crackTime`, `warning`, `suggestions`) and import warnings
   are English.
 
@@ -681,6 +741,10 @@ history. The bridge's own writes are not affected.
 | `delete_folder` † | `id` | `null` |
 | `rename_tag` † | `from, to` | `number` – the changed items; renames the tag on every item incl. trash in one save (case-insensitive, merges into an existing spelling, see "Tags"); `0` if no item has it; `to` empty → `invalid_input:tag_required`, > 50 chars → `tag_too_long`. No event: the UI refetches `list_items` |
 | `delete_tag` † | `tag` | `number` – the changed items; removes the tag from every item incl. trash in one save (case-insensitive); `0` if no item has it. No event, like `rename_tag` |
+| `add_attachment` † | `itemId, path` | `ItemListEntry` – attaches the file at `path` (the native open dialog's choice; its file name becomes the attachment's name) to the saved item and answers the item's new entry, see "Attachments". Errors: `invalid_input:path_required`, `not_found` (file or item), `unsupported:attachment_too_large` (from the file's metadata, before reading), `invalid_input:item_trashed` / `attachments_too_many` / `attachment_name_required` / `attachment_name_too_long`, `io:…` |
+| `save_attachment` † | `attachmentId, path` | `null` – decrypts the attachment and writes it to `path` (the native save dialog's choice) atomically; refuses a target inside the vaults directory or with the `.keystead` extension (`invalid_input:attachment_target`); `not_found`, `corrupt:…`, `io:…`; `locked` also when the vault was locked or switched between reading and writing. Changes nothing but counts as user activity; the file is remembered for `show_export` |
+| `remove_attachment` † | `attachmentId` | `ItemListEntry` – deletes the attachment (entry, then blob) and answers its item's new entry; `not_found` |
+| `reveal_attachment` | `attachmentId, pageVaultId` | `string` – a `data:image/…;base64,…` URL for the in-app preview: only PNG, JPEG, GIF and WebP recognised by their magic bytes and at most 8 MiB, anything else `unsupported:attachment_preview` (a too large file without reading it); `not_found`, `corrupt:…`. The only command that brings attachment bytes into the webview; wiped after serialization |
 | `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
 | `generator_history` | – | `GeneratedPassword[]` |
 | `clear_generator_history` † | – | `null` |
@@ -699,7 +763,7 @@ history. The bridge's own writes are not affected.
 | `commit_import` † | `importId, conflictMode: "skip"\|"update"\|"keepBoth"` | `ImportReport` |
 | `cancel_import` | `importId` | `null` (unknown ids are ignored) |
 | `export_data` † | `format: "keystead"\|"csv"\|"bitwarden_json", path, password: string \| null, masterPassword` | `null` (re-verifies master pw) |
-| `show_export` | – | `null` – shows the file the last successful `export_data` wrote in the file manager (Windows: Explorer with the file selected; elsewhere its folder); `not_found` if nothing was exported since the start or the file is gone. Never a path the page names. |
+| `show_export` | – | `null` – shows the file the last successful `export_data` or `save_attachment` wrote in the file manager (Windows: Explorer with the file selected; elsewhere its folder); `not_found` if nothing was exported since the start or the file is gone. Never a path the page names. |
 | `get_icons` | `pageVaultId` | `{ [host]: "data:image/png;base64,…" }` – the stored website icons of the page's vault (`locked` if another vault is open); hosts as in "Website icons" |
 | `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
@@ -778,6 +842,14 @@ Tags: both sample vaults carry a few ("Privat": Bank, Familie, Reisen,
 Streaming, Arbeit; "Arbeit": Entwicklung, Cloud, Intern); the mock
 normalises tags like the core (`normalizeTags`) and mirrors `rename_tag` /
 `delete_tag`.
+Attachments: `src/lib/demo/mockAttachments.ts` is a side store per vault
+(name, size, date – no bytes) with the backend's order of checks and error
+codes (see "Attachments"); "Telekom Kundencenter" in "Privat" starts with
+`Vertrag.pdf` and `Personalausweis.png`; the file picker returns the next of
+a few sample paths (`mockPickAttachmentFile`), whose name decides the
+pretend size (a video is 25 MiB → `attachment_too_large`); the preview of an
+image is a canvas drawing; entries are pruned on `delete_item` /
+`empty_trash` and go with `delete_vault`.
 Website icons: "Privat" starts with a few stored sample icons
 (`src/lib/demo/sampleIcons.ts` – original abstract drawings, not the sites'
 real icons); ~1.5 s after an unlock, a save or turning `websiteIcons` on, a
@@ -818,7 +890,8 @@ Frontend integration requirements for `src-tauri`:
 The page never holds the secrets of the whole vault. A secret reaches the
 webview only when the user explicitly reveals one (eye toggle) or edits the
 item; copying never sends it there.
-* **Redaction contract.** `list_items`, `save_item` and `set_favorite` answer
+* **Redaction contract.** `list_items`, `save_item`, `set_favorite`,
+  `add_attachment` and `remove_attachment` answer
   `ItemListEntry` (TS `src/lib/types.ts`, Rust `secrets::ItemListEntry`,
   camelCase): the shape of `VaultItem` with the secrets replaced –
   `login.password` and `login.totp` are always `""` with `hasPassword` /
@@ -827,9 +900,14 @@ item; copying never sends it there.
   shorter one (never half of it), `""` for none – with `hasNumber`, and
   `card.code` is `""` with `hasCode`; every custom field has `hasValue`, and
   a `hidden` one has `value: ""` (name and kind stay; `text` and `boolean`
-  values stay); `passwordHistory` entries are `{ replacedAt }` only. Not
+  values stay); `passwordHistory` entries are `{ replacedAt }` only; plus
+  `attachments: AttachmentListEntry[]` – `{ id, name, size, createdAt }` of
+  the item's attachments, oldest first (never the blob key; not part of
+  `VaultItem`, so the editor neither sees nor sends them – see
+  "Attachments"). Not
   secret, so unchanged: name, folder, favourite, notes (notes are still
-  copied as sensitive), tags, username, websites, cardholder, brand, expiry,
+  copied as sensitive), tags, attachment names (personal like notes, wiped
+  with them), username, websites, cardholder, brand, expiry,
   identity, dates. The UI's search filters these non-secret fields only
   (name, username, websites, notes, tags, card brand, identity name / e-mail);
   searching by a password, TOTP key, card number or hidden value is not
@@ -854,7 +932,12 @@ item; copying never sends it there.
   `reveal_secret`, `copy_secret_field`, `get_item_for_edit` and
   `set_favorite` count as user activity for auto-lock; `totp_for_item` is
   polled and does not. Their results are wiped after serialization
-  (`Wiped`, like `list_items`). The bridge / extension path is unchanged.
+  (`Wiped`, like `list_items`). The attachment commands (`add_attachment`,
+  `save_attachment`, `remove_attachment`, `reveal_attachment` – see
+  "Attachments") follow the same rules: `pageVaultId`, user activity,
+  results wiped; `reveal_attachment` is the only way attachment bytes reach
+  the webview, as a data URL the UI treats like a revealed secret. The
+  bridge / extension path is unchanged.
 * **UI.** The item list (`MainScreen`) holds only `ItemListEntry`s. Eye
   toggles (`SecretFieldRow`, `useRevealedSecret`) call `reveal_secret` and
   hide the value again after 30 s, when the item or its `updatedAt` changes,
@@ -862,7 +945,13 @@ item; copying never sends it there.
   lives only in that component's state. Copy buttons (password, TOTP code,
   card number/code, hidden fields, old passwords), the list rows' password
   button and Ctrl+Shift+C call `copy_secret_field`. The TOTP row polls
-  `totp_for_item`. "Bearbeiten" loads `get_item_for_edit` into the editor's
+  `totp_for_item`. The attachment preview (`AttachmentRow`,
+  `useRevealedAttachment` on the same `useRevealedValue` hook) calls
+  `reveal_attachment` and drops the data URL under the same rules (30 s,
+  item or `updatedAt` change, blur / hidden window, lock, unmount); the
+  `<img>` is not draggable and has no context menu. Files pass only through
+  the native dialogs: the page hands the backend paths (`add_attachment`,
+  `save_attachment`), never bytes. "Bearbeiten" loads `get_item_for_edit` into the editor's
   state, which is dropped after save / cancel (`save_item` answers the
   redacted entry). The password history lists dates and reveals / copies an
   entry on demand. The health report comes from `health_report`; its "no
@@ -969,7 +1058,8 @@ vault without recovery key is dropped silently.
   the vault and retry once (the UI then also gets `vault://changed`).
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
   mutations, `copy_text`, `reveal_secret`, `copy_secret_field`,
-  `get_item_for_edit`, generator, import/export, settings, …) and bridge
+  `get_item_for_edit`, the attachment commands, generator, import/export,
+  settings, …) and bridge
   user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
   `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
   `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
@@ -987,7 +1077,8 @@ vault without recovery key is dropped silently.
   quitting the app. `lock_vault` (the UI's own request) emits no event;
   tray "Sperren" and the extension's `lock` emit `vault://locked {manual}`.
 * `list_items`, `save_item`, `set_favorite`, `reveal_secret`,
-  `totp_for_item`, `get_item_for_edit` and `generator_history` overwrite the
+  `totp_for_item`, `get_item_for_edit`, `generator_history`,
+  `add_attachment`, `remove_attachment` and `reveal_attachment` overwrite the
   strings of their cloned result once Tauri has serialized it
   (`src/wipe.rs`); the serialized IPC message itself is out of reach.
 * Every unlock/create stores the vault as `lastVaultId` (also an
@@ -1040,7 +1131,9 @@ vault without recovery key is dropped silently.
   `$KEYSTEAD_DATA_DIR`), `unsupported:portable_installed` (enabling while the
   exe lives in the default data directory itself – the per-user NSIS setup
   installs to `%LOCALAPPDATA%\Keystead`), `invalid_input:target_exists` (a
-  vault file with the same id already exists at the destination), `io:…`.
+  vault file with the same id – or its `<id>.keystead.attachments`
+  directory – already exists at the destination; the attachment directories
+  move with their vault files), `io:…`.
 * Pairing requests that arrived before the page subscribed (app launched
   hidden by the native host) are re-sent ~1 s after the first
   `session_state` call of each page load; the UI de-duplicates by
@@ -1188,6 +1281,132 @@ reveal which sites the user has accounts with. `Settings.websiteIcons`
   icon as `icon` (data URL) for the first 20 rows of a reply, if ≤ 16 KiB
   (see the bridge protocol); the popup shows it, else the letter. The
   extension never loads icons itself.
+
+## Attachments (`keystead_core::attachments`, `src-tauri/src/attachments.rs`)
+
+Items can carry files – an ID scan, a contract, a PDF of recovery codes.
+The vault payload holds only the bookkeeping (name, size, date and the
+blob's key); the bytes live as one encrypted file each **next to the vault
+file**, never in plain text on disk. The browser bridge and the extension
+are not involved (`ItemSummary` is unchanged).
+
+* **Model** (`VaultData.attachments`, `#[serde(default)]` – older vaults
+  open unchanged): `{ [attachment id (UUID v4)]: AttachmentEntry { itemId,
+  name /* trimmed, 1–200 chars */, size /* plaintext bytes */, createdAt,
+  key /* base64 of the blob's own random 32-byte key */ } }`. `VaultItem`
+  is unchanged: attachments act on the saved item, never through the
+  editor. `AttachmentEntry`'s `Debug` prints the key's length only;
+  `AttachmentInfo { id, itemId, name, size, createdAt }` (camelCase) is the
+  key-free view for UI and TUI. Names are personal data like notes (wiped
+  with them), not secret.
+* **Storage**: the side-car directory `<vault path>.attachments/`
+  (`format::sibling`, i.e. `vaults/<id>.keystead.attachments/`), created
+  with the first attached file; one blob `<attachment id>.bin` per
+  attachment: `KSAT1` + 24-byte nonce + XChaCha20-Poly1305 ciphertext of
+  the file bytes, AAD `keystead:v1:attachment:<vault id>:<attachment id>`
+  (see "Vault file format"). Because every blob has its own key in the
+  payload, a key rotation of the vault re-encrypts nothing, deleting an
+  attachment = removing its entry (the file is deleted best effort
+  afterwards), and a blob without its entry is worthless.
+* **File version**: the vault file is version 2 while the map is not empty
+  and version 1 again once it is empty (`format::version_for`). Mixed
+  versions: builds before beta.9 refuse a vault with attachments
+  (`unsupported:vault format version 2`) instead of silently dropping the
+  keys on their next save; beta.9 (reader for 1 and 2, `UnknownFields`)
+  opens it and carries the map it does not know through its saves.
+* **Limits** (checked in this order, before anything is written): the item
+  exists (`not_found`) and is not in the trash (`invalid_input:item_trashed`);
+  fewer than `ATTACHMENTS_PER_ITEM_MAX` (10) attachments
+  (`invalid_input:attachments_too_many`); the trimmed name has 1 to
+  `ATTACHMENT_NAME_MAX_CHARS` (200) characters
+  (`invalid_input:attachment_name_required` / `attachment_name_too_long`);
+  at most `ATTACHMENT_MAX_BYTES` (20 MiB)
+  (`unsupported:attachment_too_large`). No total per vault.
+* **Lifecycle** (`UnlockedVault`): `add_attachment` seals the bytes under a
+  fresh key, writes the blob (`write_atomic`, no `.bak`, the directory
+  created if missing) **before** the payload mutation and records the
+  entry in one save; if that save fails – `Conflict` included – the blob is
+  removed again and nothing changed, so `reload_if_changed` + retry (the
+  desktop's one `mutate_for_page` retry) starts clean. `remove_attachment`
+  drops the entry in one save, then deletes the blob best effort.
+  `read_attachment` decrypts into a `Zeroizing` buffer – `not_found` for an
+  unknown id or a missing file, `corrupt:…` for a tampered, swapped or
+  foreign blob; a file larger than 20 MiB + 45 bytes is never read whole.
+  Every save prunes the entries of items that no longer exist
+  (`delete_item`, `empty_trash`; trashed items keep theirs) next to
+  `icons::prune_icons` and deletes their blobs best effort after the
+  write. `sweep_attachments` – run by `VaultStore` after every create /
+  unlock, best effort – removes `*.bin` files no entry references and
+  leftover `*.tmp` files, but only those whose mtime is at least 1 h old
+  (`SWEEP_MIN_AGE`): another process (the TUI) may be in the middle of
+  attaching. `VaultStore::delete_vault` removes the directory with the
+  vault. Exports (Keystead, CSV, Bitwarden JSON) never contain attachments
+  and imports never bring any – a full backup is the data directory (vault
+  file + folder). Portable mode moves the folder with its vault file and
+  refuses a target where such a folder already exists
+  (`invalid_input:target_exists`).
+* **Desktop commands** (all take `pageVaultId` – another open vault or
+  none → `locked` –, all count as user activity, results wiped after
+  serialization like `list_items`):
+  * `add_attachment(itemId, path)` † → `ItemListEntry`: the page passes the
+    path the native open dialog chose (a blank one →
+    `invalid_input:path_required`); the backend checks the page's vault
+    first, takes the file name component as the name
+    (`attachment_name_required` without one), checks the size from the
+    file's metadata **before** reading (`unsupported:attachment_too_large`;
+    missing → `not_found`; a directory or other non-regular file → `io:…`),
+    reads the bytes outside the state lock into a `Zeroizing` buffer with a
+    `take(limit + 1)` guard, then calls `add_attachment` through
+    `Core::mutate_for_page` (the core's cleanup makes its single retry
+    safe) and answers the item's redacted entry.
+  * `save_attachment(attachmentId, path)` † → `null`: under the state lock
+    it checks the page's vault and the target –
+    `invalid_input:attachment_target` for a path inside the vaults
+    directory (the store's and `paths::vaults_dir()`, textually and with
+    the parent resolved) or with the `.keystead` extension, so a saved
+    attachment never overwrites or poses as a vault file –, decrypts the
+    bytes and reads the lock epoch; outside the lock it re-checks the epoch
+    right before `write_atomic` to the dialog path (a lock or vault switch
+    in between → `locked`, nothing written) and remembers the file like
+    `export_data`, so `show_export` ("Im Ordner anzeigen") reveals it. No
+    plaintext temporary files, no "open with the default app".
+  * `remove_attachment(attachmentId)` † → `ItemListEntry` (`not_found` for an
+    unknown id).
+  * `reveal_attachment(attachmentId)` → `string`: a `data:<mime>;base64,…`
+    URL for the in-app preview – only PNG, JPEG, GIF and WebP, recognised
+    by their magic bytes (`image_mime`, hand-written), and at most
+    `PREVIEW_MAX_BYTES` (8 MiB, checked against the entry's size before
+    reading), anything else `unsupported:attachment_preview`. The only
+    command that brings attachment bytes into the webview; the UI treats
+    the URL like a revealed secret (see "Secrets and the webview").
+* **Redaction**: `ItemListEntry.attachments: AttachmentListEntry[]`
+  (`{ id, name, size, createdAt }`, oldest first) in every answer that
+  carries an entry (`list_items`, `save_item`, `set_favorite`,
+  `add_attachment`, `remove_attachment`); the blob key never leaves the
+  core, names are wiped with the entry like notes.
+* **UI**: a section "Anhänge" in the detail pane after the custom fields –
+  per row a type icon, the name, size (`formatBytes`) and date, and the
+  actions "Vorschau" (eye; offered for names ending in
+  `.png/.jpg/.jpeg/.gif/.webp`, the backend's magic-byte check decides – a
+  mismatch shows the `attachment_preview` toast; the image is rendered
+  contained, not draggable, without context menu, and hidden again like a
+  revealed secret), "Speichern unter …" (native save dialog with the name
+  suggested, then `save_attachment`; the success toast offers "Im Ordner
+  anzeigen") and "Entfernen" (confirm dialog, then `remove_attachment`);
+  below the list "Datei anhängen …" (native open dialog, then
+  `add_attachment`; disabled with a hint at 10) and the limits. A paperclip
+  chip with the count sits in the detail header. Trashed items show the
+  list read-only (preview and save, no add or remove; hidden when empty).
+  The editor has no attachments. The answers replace the item's entry in
+  the list (no refetch); `locked` → unlock screen, `not_found` / `conflict`
+  → `list_items` is refetched, other errors are toasts. The export dialog
+  notes under the format cards that no export contains attachments;
+  Settings → Tresor shows "Anhänge: N Dateien, <size> insgesamt" (summed
+  client-side over the list entries, trash included), the backup hint and
+  "Ordner öffnen" (`open_data_dir`). The TUI shows "Anhänge: N" under the
+  tags line (only when N > 0) and nothing else.
+* **Mock backend**: see the mock paragraph under "Desktop backend ↔
+  frontend" (`src/lib/demo/mockAttachments.ts`).
 
 ## In-app updates (`src-tauri/src/update.rs`)
 
@@ -1758,6 +1977,14 @@ The extension's security model and file roles are in
   item on blur and on Ctrl+S / Ctrl+Enter, like a click on "Speichern"); a
   new item created inside a tag filter starts with that tag. List rows show
   no tags.
+* Attachments belong to the saved item: a section "Anhänge" in the detail
+  pane after the custom fields (name, size, date; "Vorschau" for images,
+  "Speichern unter …", "Entfernen"; "Datei anhängen …" below), a paperclip
+  chip with the count in the detail header, read-only on trashed items; the
+  editor has no attachments section. Files go only through the native
+  open / save dialogs, a preview is hidden again like a revealed secret,
+  and the export dialog says that no export contains attachments (a backup
+  is the data directory). List rows show no attachments.
 * Calm, clean design: system font stack (Segoe UI Variable / Inter
   fallback), 8-px spacing grid, 1 accent colour (blue `#3b82f6`-ish), soft
   borders, no gradients, light + dark theme via CSS variables, follows

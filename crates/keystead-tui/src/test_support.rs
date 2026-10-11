@@ -168,7 +168,19 @@ pub fn fixture_with(lang: Language, with_items: bool) -> Fixture {
         .expect("create vault");
     if with_items {
         for item in sample_items() {
-            vault.save_item(item).expect("save item");
+            let saved = vault.save_item(item).expect("save item");
+            // GitHub carries two attachments (blobs next to the vault file,
+            // so the fixture's vault file is a version-2 file).
+            if saved.name == "GitHub" {
+                for (name, bytes) in [
+                    ("Vertrag.pdf", &b"%PDF-1.4 demo"[..]),
+                    ("Ausweis.png", &b"\x89PNG\r\n\x1a\n demo"[..]),
+                ] {
+                    vault
+                        .add_attachment(&saved.id, name, bytes)
+                        .expect("attach file");
+                }
+            }
         }
     }
     let settings = Settings {

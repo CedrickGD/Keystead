@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-10)
+# Übergabe – Stand Keystead (2026-10-11)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -78,6 +78,30 @@ neue Betas per In-App-Update.
   Tags mit, CSV/Bitwarden-JSON nicht. Die TUI zeigt sie nur an (Zeile
   „Tags: …“ unter der Typzeile) und bewahrt sie beim Bearbeiten.
   Veröffentlicht mit beta.9.
+- Verschlüsselte Dateianhänge an Einträgen (Block 3, D2–D6; Entscheidungen
+  des Besitzers vom 2026-10-10): bis zu 10 Dateien à 20 MiB je Eintrag, jede
+  als eigene verschlüsselte Datei (`KSAT1` + Nonce + XChaCha20-Poly1305,
+  eigener Zufallsschlüssel je Anhang im Tresor-Payload – eine Schlüsselrotation
+  des Tresors fasst die Dateien nicht an) im Ordner
+  `vaults/<id>.keystead.attachments/<anhang-id>.bin`; die Tresordatei trägt
+  Version 2, solange Anhänge da sind, danach wieder 1. Der Core schreibt den
+  Blob vor der Payload-Änderung und räumt ihn bei jedem Fehler (auch
+  `Conflict`) wieder ab, löscht Einträge gelöschter Elemente bei jedem
+  Speichern (Papierkorb behält seine), fegt verwaiste Dateien älter als 1 h
+  beim Entsperren weg und entfernt den Ordner mit dem Tresor. Desktop:
+  Abschnitt „Anhänge“ in der Detailansicht (Bildvorschau bis 8 MiB wie ein
+  aufgedecktes Geheimnis – nach 30 s, bei Fokusverlust, Sperre und
+  Elementwechsel wieder weg; „Speichern unter …“ und „Datei anhängen …“ nur
+  über die nativen Dialoge, die Seite reicht nur Pfade weiter; „Entfernen“
+  mit Rückfrage; Büroklammer-Chip mit Anzahl; Papierkorb nur lesend; kein
+  Editor-Teil), Hinweis im Export-Dialog, Zeile mit Anzahl/Gesamtgröße plus
+  Sicherungshinweis unter Einstellungen → Tresor; Mock-Backend mit
+  Beispieldaten („Telekom Kundencenter“). Die TUI zeigt nur „Anhänge: N“
+  unter der Tags-Zeile. Vertrag in `ARCHITECTURE.md` (Abschnitt
+  „Attachments“). Noch nicht veröffentlicht (nächste Beta); in der echten
+  Tauri-App mit einer echten Datei bisher nicht durchgeklickt (nur Mock) –
+  vor dem `[release]` einmal `npx tauri dev`: Datei anhängen, Vorschau,
+  „Speichern unter …“ + „Im Ordner anzeigen“, Entfernen.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -144,20 +168,20 @@ und die Assistenten-Zeile sind umgesetzt und in `ARCHITECTURE.md`
 festgehalten (mit D1: der Tresordatei-Leser akzeptiert schon Version 1 und
 2, geschrieben wird weiter 1, und unbekannte Felder in Kopf und Payload –
 später die Anhang-Schlüssel – überleben jedes Speichern
-(`model::UnknownFields`); D7: Umbenennen/Löschen über die Sidebar; D8:
-Schalter im Assistenten, Standard an); offen sind nur noch D2–D6 zu
-Anhängen und HIBP, deren Teile nach der Entscheidung des Besitzers ebenfalls
-dorthin wandern.
+(`model::UnknownFields`); D2–D6: Anhänge, siehe „Was fertig ist“ und den
+Abschnitt „Attachments“ in `ARCHITECTURE.md`; D7: Umbenennen/Löschen über
+die Sidebar; D8: Schalter im Assistenten, Standard an); offen ist nur noch
+HIBP, dessen Teile nach der Entscheidung des Besitzers ebenfalls dorthin
+wandern.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
-3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern sind fertig
-   (siehe „Was fertig ist“; beta.9). Offen: verschlüsselte
-   Dateianhänge an Einträgen (z. B. Ausweis-Scan; die Tresordatei bekommt
-   dafür Version 2 – der Leser dafür ist schon drin und bewahrt die noch
-   unbekannten Felder beim Speichern), optionale Prüfung auf
-   geleakte Passwörter (Have I Been Pwned, k-Anonymität – nur die ersten
-   5 Zeichen des SHA-1 gehen raus; standardmäßig aus oder nur auf Knopfdruck).
+3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern (beta.9) und
+   verschlüsselte Dateianhänge an Einträgen (siehe „Was fertig ist“; kommt
+   mit der nächsten Beta, vorher einmal in der echten App durchklicken) sind
+   fertig. Offen: optionale Prüfung auf geleakte Passwörter (Have I Been
+   Pwned, k-Anonymität – nur die ersten 5 Zeichen des SHA-1 gehen raus;
+   standardmäßig aus oder nur auf Knopfdruck).
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
    der vielen WIP-Commits), `v2.0.0` als Latest veröffentlichen, VaultX-1.x-
    Nutzern den Umstieg anbieten. Achtung: Das 1.x-Updater liest `version.yml` auf
@@ -188,7 +212,16 @@ dorthin wandern.
   Schalter vorhanden); hinter Firmen-Proxys werden bewusst keine Icons geladen.
 - Verschlüsselte Bitwarden-Exporte, 1Password-/KeePass-Formate: nicht unterstützt.
 - TUI: Ordner, Tags, Zusatzfelder, mehrere Websites, Papierkorb nicht
-  bearbeitbar (Tags werden angezeigt und beim Bearbeiten bewahrt).
+  bearbeitbar (Tags werden angezeigt und beim Bearbeiten bewahrt); Anhänge
+  nur als Anzahl („Anhänge: N“), kein Anhängen/Speichern.
+- Anhänge: in keinem Export enthalten (Sicherung = Datenordner, also
+  Tresordatei plus Ordner `<id>.keystead.attachments`); kein „Öffnen mit“ –
+  nur die Bildvorschau in der App (PNG/JPEG/GIF/WebP bis 8 MiB) und
+  „Speichern unter …“ über den nativen Dialog; ältere Keystead-Versionen vor
+  beta.9 öffnen einen Tresor mit Anhängen nicht (Dateiversion 2,
+  `unsupported:vault format version 2`), beta.9 öffnet ihn und bewahrt die
+  ihr unbekannten Einträge; keine Gesamtgrenze je Tresor, 20 MiB je Datei,
+  10 je Eintrag.
 - `Keystead.exe --cli <Unterbefehl>` öffnet eine Konsole, die sich sofort
   schließt – für Skripte `keystead-cli.exe` in einem Terminal nutzen.
 - Erweiterung: geschlossene Shadow Roots sind nicht erreichbar (technische

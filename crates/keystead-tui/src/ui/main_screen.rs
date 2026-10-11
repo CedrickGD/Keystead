@@ -313,6 +313,15 @@ fn detail_lines(app: &App, item: &VaultItem, width: usize) -> Vec<Line<'static>>
             b.lines.push(Line::from(Span::styled(l, dim())));
         }
     }
+    // Attachments are shown as a count only: the TUI neither adds nor
+    // reads them (the desktop app does).
+    let attachments = app.attachment_count(&item.id);
+    if attachments > 0 {
+        b.lines.push(Line::from(Span::styled(
+            format!("{}: {attachments}", lang.t(M::FieldAttachments)),
+            dim(),
+        )));
+    }
     b.lines.push(Line::default());
 
     match item.item_type {

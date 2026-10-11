@@ -89,6 +89,16 @@ fn main_screen_lists_items_and_masks_secrets() {
             .is_some_and(|l| l.contains("Tags: Arbeit, Code")),
         "{screen}"
     );
+    // The attachment count follows the tags, read-only (names and bytes
+    // stay out of the TUI).
+    assert!(
+        screen
+            .lines()
+            .nth(type_line + 2)
+            .is_some_and(|l| l.contains("Anhänge: 2")),
+        "{screen}"
+    );
+    assert!(!screen.contains("Vertrag.pdf"));
 
     // Live TOTP code with the remaining seconds.
     let code = totp::totp_at(TOTP_SEED, NOW).unwrap();
@@ -118,8 +128,10 @@ fn main_screen_other_item_types() {
     assert!(!screen.contains("4111"));
     assert!(screen.contains("03/2028"));
     assert!(!screen.contains("987"));
-    // An item without tags has no tags line.
+    // An item without tags has no tags line, one without attachments no
+    // count line.
     assert!(!screen.contains("Tags:"));
+    assert!(!screen.contains("Attachments:"));
 
     select(&mut app, "WLAN");
     let screen = render(&mut app, 110, 30);
@@ -131,6 +143,11 @@ fn main_screen_other_item_types() {
     let screen = render(&mut app, 110, 30);
     assert!(screen.contains("max@example.com"));
     assert!(screen.contains("Identity"));
+
+    // The attachment count in English.
+    select(&mut app, "GitHub");
+    let screen = render(&mut app, 110, 30);
+    assert!(screen.contains("Attachments: 2"), "{screen}");
 }
 
 #[test]

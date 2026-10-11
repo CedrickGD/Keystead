@@ -38,7 +38,8 @@ Keystead 2.0 ist der Nachfolger von VaultX 1.x (PowerShell). Alte VaultX-Tresore
 lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 
 > **Status:** Testversion (Beta). Erstelle regelmäßig einen verschlüsselten Export
-> als Sicherung.
+> als Sicherung – Dateianhänge sind darin nicht enthalten, sichere dafür den
+> Datenordner (siehe [Wo liegen meine Daten?](#wo-liegen-meine-daten)).
 
 ### Funktionen
 
@@ -47,6 +48,9 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Tags**: freie Schlagwörter je Eintrag („Bank“, „Familie“ …), als Filter in
   der Seitenleiste, als Chips in Detailansicht und Editor, in der Suche;
   Umbenennen und Löschen eines Tags wirkt auf alle Einträge.
+- **Dateianhänge**: an jeden Eintrag lassen sich bis zu 10 Dateien (je bis 20 MB)
+  anhängen, z. B. ein Ausweis-Scan oder ein Vertrag – verschlüsselt neben der
+  Tresordatei gespeichert, mit Bildvorschau in der App und „Speichern unter …“.
 - **Website-Icons**: Logins zeigen automatisch das Icon ihrer Website – die App
   lädt es selbst direkt von der Website (kein Icon-Dienst) und speichert es
   verschlüsselt im Tresor; abschaltbar unter Einstellungen → Allgemein.
@@ -160,7 +164,9 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
-Stand), `settings.json` (Einstellungen, nicht geheim), `bridge-clients.json`
+Stand), `vaults\<id>.keystead.attachments\` (die verschlüsselten Dateianhänge dieses
+Tresors – zusammen mit der Tresordatei sichern), `settings.json` (Einstellungen,
+nicht geheim), `bridge-clients.json`
 (verbundene Browser, nur Hashes) und `browser-extension` (die Browser-Erweiterung,
 von der App verwaltet). Den portablen Modus schaltest du unter
 **Einstellungen → Erweitert** um – oder du legst den Ordner `Keystead-Data` selbst an.
@@ -203,6 +209,12 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   Kartennummern und verborgene Felder. Ein Geheimnis lädt sie nur, wenn du es
   anzeigst (nach 30 s wieder verborgen) oder das Element bearbeitest; beim Kopieren
   kopiert die App selbst, ohne dass der Wert die Oberfläche erreicht.
+- Dateianhänge liegen als einzeln verschlüsselte Dateien (eigener Zufallsschlüssel
+  je Anhang, gespeichert im Tresor) im Ordner neben der Tresordatei – nie im
+  Klartext auf der Platte, und in keinem Export enthalten; die Oberfläche bekommt
+  nur Namen und Größen, eine Bildvorschau nur auf Wunsch (nach 30 s wieder weg).
+  Eine vollständige Sicherung ist der Datenordner (Tresordatei und Anhänge-Ordner).
+  Ältere Keystead-Versionen öffnen einen Tresor mit Anhängen nicht.
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -233,7 +245,8 @@ Keystead 2.0 is the successor of VaultX 1.x (PowerShell); old VaultX vaults can 
 imported (see [Legacy VaultX vaults](#legacy-vaultx-vaults)). The UI is German first
 and also available in English.
 
-> **Status:** beta. Keep an encrypted export as a backup.
+> **Status:** beta. Keep an encrypted export as a backup – attachments are not part
+> of it, back up the data directory for those (see [Where is my data?](#where-is-my-data)).
 
 ### Features
 
@@ -242,6 +255,9 @@ and also available in English.
 - **Tags**: free keywords per entry ("Bank", "Family" …), as a filter in the
   sidebar, as chips in the detail view and the editor, and in search; renaming
   or deleting a tag applies to every entry.
+- **File attachments**: up to 10 files (20 MB each) per entry, e.g. an ID scan or a
+  contract – stored encrypted next to the vault file, with an in-app image preview
+  and "Save as …".
 - **Website icons**: logins show their website's icon automatically – the app loads
   it itself, directly from the website (no icon service), and stores it encrypted in
   the vault; can be switched off in Settings → General.
@@ -348,7 +364,9 @@ the shell history may see it).
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
-previous version), `settings.json` (non-secret settings), `bridge-clients.json`
+previous version), `vaults/<id>.keystead.attachments/` (that vault's encrypted file
+attachments – back it up together with the vault file), `settings.json` (non-secret
+settings), `bridge-clients.json`
 (paired browsers, hashes only) and `browser-extension` (the browser extension,
 managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 
@@ -392,6 +410,12 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   and hidden fields. It loads a secret only when you reveal it (hidden again after
   30 s) or edit the item; copying is done by the app itself, the value never
   reaches the UI.
+- File attachments are stored as individually encrypted files (each under its own
+  random key, kept in the vault) in the folder next to the vault file – never in
+  plain text on disk, and never part of an export; the UI gets only names and
+  sizes, an image preview only on request (hidden again after 30 s). A complete
+  backup is the data directory (vault file plus attachments folder). Older
+  Keystead versions refuse a vault with attachments.
 
 The full specification (file format, IPC protocol, commands) is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

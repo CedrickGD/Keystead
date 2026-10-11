@@ -20,6 +20,9 @@ Alte VaultX-1.x-Tresore: beim ersten Start „Von VaultX umsteigen“ wählen od
 später unter Einstellungen → Import & Export → Importieren.
 
 Speicherort der Daten: %LOCALAPPDATA%\Keystead
+Dateianhänge liegen verschlüsselt im Ordner neben der Tresordatei; eine
+vollständige Sicherung ist der ganze Datenordner (Exporte enthalten keine
+Anhänge).
 Portabler Modus (Daten neben der EXE): Einstellungen → Erweitert → Portabler
 Modus, oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
 

@@ -310,6 +310,17 @@ impl App {
             .map(|f| f.name.as_str())
     }
 
+    /// Number of files attached to an item (the TUI only shows the count).
+    pub fn attachment_count(&self, item_id: &str) -> usize {
+        self.vault.as_ref().map_or(0, |v| {
+            v.data()
+                .attachments
+                .values()
+                .filter(|a| a.item_id == item_id)
+                .count()
+        })
+    }
+
     pub fn unix_time(&self) -> u64 {
         self.platform.unix_time()
     }

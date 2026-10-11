@@ -82,6 +82,7 @@ messages! {
     FieldFolder => "Ordner", "Folder";
     FieldFavorite => "Favorit", "Favorite";
     FieldTags => "Tags", "Tags";
+    FieldAttachments => "Anhänge", "Attachments";
     FieldCardholder => "Karteninhaber", "Cardholder";
     FieldBrand => "Marke", "Brand";
     FieldCardNumber => "Kartennummer", "Card number";
