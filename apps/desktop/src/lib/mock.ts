@@ -11,7 +11,8 @@
 // `window.__keysteadMock` exposes helpers to simulate backend events.
 // Like the backend, `list_items` answers items without their secrets
 // (demo/redact.ts); `reveal_secret`, `copy_secret_field`, `totp_for_item` and
-// `get_item_for_edit` hand them out one at a time.
+// `get_item_for_edit` hand them out one at a time. Attachments live in a side
+// store without bytes (demo/mockAttachments.ts).
 
 import type {
   AppInfo,
@@ -52,7 +53,19 @@ import {
   type MockPlan,
 } from "./demo/importFiles";
 import { mockClearIcons, mockFetchIcons, mockGetIcons, seedSampleIcons } from "./demo/mockIcons";
+import {
+  mockAddAttachment,
+  mockAttachmentsOf,
+  mockDeleteAttachments,
+  mockPruneAttachments,
+  mockRemoveAttachment,
+  mockRevealAttachment,
+  mockSaveAttachment,
+  seedSampleAttachments,
+} from "./demo/mockAttachments";
 import { parseSecretField, redactItem, storedSecret } from "./demo/redact";
+
+export { mockPickAttachmentFile } from "./demo/mockAttachments";
 
 const DEMO_PASSWORD = "demo";
 const DEMO_RECOVERY_KEY = "VXDMO-2K7QF-9MZ4T-H8WRC-31PNA";
@@ -148,6 +161,7 @@ function normalizeRecovery(key: string): string {
 let state: MockState | null = null;
 
 function vaultFromSample(sample: SampleVault, id: string, now: number): MockVault {
+  seedSampleAttachments(id, sample.attachments, now);
   return {
     info: {
       id,
@@ -571,10 +585,21 @@ function findItem(id: string): VaultItem {
   return item;
 }
 
-/** The item `itemId` of the page's vault (`pageVaultId`; another open vault is `locked`). */
-function pageItem(args: Record<string, unknown>): VaultItem {
+/** `ItemListEntry` of an item: redacted, with its attachments (name, size, date). */
+function entryOf(vault: MockVault, item: VaultItem) {
+  return redactItem(item, mockAttachmentsOf(vault.info.id, item.id));
+}
+
+/** The open vault if it is the page's one (`pageVaultId`), otherwise `locked`. */
+function pageVault(args: Record<string, unknown>): MockVault {
   const vault = openVault();
   if (optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+  return vault;
+}
+
+/** The item `itemId` of the page's vault (`pageVaultId`; another open vault is `locked`). */
+function pageItem(args: Record<string, unknown>): VaultItem {
+  const vault = pageVault(args);
   const item = vault.data.items.find((i) => i.id === str(args, "itemId"));
   if (!item) fail("not_found");
   return item;
@@ -867,19 +892,55 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       s.lastActivity = Date.now();
       return null;
 
-    case "list_items":
+    case "list_items": {
       // Without secrets, like the backend (see demo/redact.ts).
-      return openVault().data.items.map(redactItem);
+      const vault = openVault();
+      return vault.data.items.map((item) => entryOf(vault, item));
+    }
 
     case "list_folders":
       return clone(openVault().data.folders).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
     case "save_item":
-      return redactItem(saveItem(args.item as VaultItem));
+      return entryOf(openVault(), saveItem(args.item as VaultItem));
 
     case "set_favorite": {
       const favorite = bool(args, "favorite");
-      return redactItem(saveItem({ ...pageItem(args), favorite }));
+      return entryOf(openVault(), saveItem({ ...pageItem(args), favorite }));
+    }
+
+    case "add_attachment": {
+      const vault = pageVault(args);
+      const itemId = str(args, "itemId");
+      // The backend reads the file first; the demo only has its path.
+      await sleep(300);
+      mockAddAttachment(vault.info.id, vault.data.items, itemId, str(args, "path"));
+      touch(vault);
+      s.lastActivity = Date.now();
+      return entryOf(vault, findItem(itemId));
+    }
+
+    case "remove_attachment": {
+      const vault = pageVault(args);
+      const itemId = mockRemoveAttachment(vault.info.id, str(args, "attachmentId"));
+      touch(vault);
+      s.lastActivity = Date.now();
+      return entryOf(vault, findItem(itemId));
+    }
+
+    case "save_attachment": {
+      const vault = pageVault(args);
+      await sleep(300);
+      mockSaveAttachment(vault.info.id, str(args, "attachmentId"), str(args, "path"), s.appInfo.dataDir);
+      s.lastActivity = Date.now();
+      return null;
+    }
+
+    case "reveal_attachment": {
+      const vault = pageVault(args);
+      await sleep(250);
+      s.lastActivity = Date.now();
+      return mockRevealAttachment(vault.info.id, str(args, "attachmentId"));
     }
 
     case "reveal_secret": {
@@ -919,6 +980,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const id = str(args, "id");
       findItem(id);
       vault.data.items = vault.data.items.filter((i) => i.id !== id);
+      // Like the core on save: attachments of items that no longer exist go too.
+      mockPruneAttachments(vault.info.id, vault.data.items);
       touch(vault);
       return null;
     }
@@ -927,6 +990,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const vault = openVault();
       const before = vault.data.items.length;
       vault.data.items = vault.data.items.filter((i) => i.deletedAt === null);
+      mockPruneAttachments(vault.info.id, vault.data.items);
       touch(vault);
       return before - vault.data.items.length;
     }
@@ -1068,6 +1132,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       if (!vault) fail("not_found");
       if (vault.password !== str(args, "masterPassword")) fail("wrong_password");
       s.vaults.delete(id);
+      mockDeleteAttachments(id);
       if (s.unlockedId === id) s.unlockedId = null;
       if (s.settings.lastVaultId === id) s.settings.lastVaultId = null;
       return null;

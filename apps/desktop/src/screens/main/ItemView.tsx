@@ -2,9 +2,15 @@ import { useRef, useState } from "react";
 import {
   Check,
   ChevronRight,
+  Download,
+  Eye,
+  EyeOff,
+  FileText,
   Folder as FolderIcon,
   History,
+  Image as ImageIcon,
   MoreHorizontal,
+  Paperclip,
   Pencil,
   RotateCcw,
   Star,
@@ -12,21 +18,24 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { Folder, ItemListEntry } from "../../lib/types";
+import { ATTACHMENTS_PER_ITEM_MAX, type AttachmentListEntry, type Folder, type ItemListEntry } from "../../lib/types";
 import { normalizeUrl } from "../../lib/api";
-import { formatCardNumber, identityFullName } from "../../lib/utils";
+import { formatBytes, formatCardNumber, identityFullName } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { CopyButton } from "../../components/CopyButton";
 import { Avatar } from "../../components/Avatar";
+import { Button } from "../../components/Controls";
 import { iconHost } from "../../lib/icons";
 import { Menu, MenuItem } from "../../components/Menu";
 import { TotpValue, useItemTotp } from "../../components/Totp";
+import { useRevealedAttachment } from "../../components/useRevealedAttachment";
 import { FieldRow, SecretFieldRow, Section } from "./FieldRow";
 import { TYPE_ICONS } from "./ItemList";
 
 // The item list holds no secrets (`ItemListEntry`): every secret row fetches
 // its value on demand (`reveal_secret`) and copies in the backend
-// (`copy_secret_field`); see `SecretFieldRow`.
+// (`copy_secret_field`); see `SecretFieldRow`. Attachments are listed by
+// name, size and date only; their bytes stay in the backend too.
 
 function TotpRow({ item }: { item: ItemListEntry }) {
   const { t } = useT();
@@ -116,6 +125,150 @@ function CustomFields({ item }: { item: ItemListEntry }) {
         ),
       )}
     </Section>
+  );
+}
+
+/** Only these get the in-app preview (the backend checks the magic bytes, not the name). */
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp)$/i;
+
+function AttachmentRow({
+  item,
+  attachment,
+  readOnly,
+  onSave,
+  onRemove,
+}: {
+  item: ItemListEntry;
+  attachment: AttachmentListEntry;
+  readOnly: boolean;
+  onSave: () => void;
+  onRemove: () => void;
+}) {
+  const { t, locale, formatDate } = useT();
+  const image = IMAGE_NAME.test(attachment.name);
+  const preview = useRevealedAttachment(item.id, attachment.id, item.updatedAt);
+  const shown = preview.value !== null;
+  const previewLabel = shown ? t("attachments.previewHide") : t("attachments.preview");
+  return (
+    <>
+      <div className="attachment-row">
+        <div className="attachment-icon" aria-hidden>
+          {image ? <ImageIcon /> : <FileText />}
+        </div>
+        <div className="attachment-main">
+          <div className="attachment-name selectable" title={attachment.name}>
+            {attachment.name}
+          </div>
+          <div className="attachment-meta">
+            {formatBytes(attachment.size, locale)} · {formatDate(attachment.createdAt)}
+          </div>
+        </div>
+        <div className="fieldrow-actions">
+          {image && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={preview.toggle}
+              aria-busy={preview.loading}
+              aria-pressed={shown}
+              title={previewLabel}
+              aria-label={`${previewLabel}: ${attachment.name}`}
+            >
+              {shown ? <EyeOff /> : <Eye />}
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onSave}
+            title={t("attachments.save")}
+            aria-label={`${t("attachments.save")}: ${attachment.name}`}
+          >
+            <Download />
+          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              className="icon-btn danger"
+              onClick={onRemove}
+              title={t("attachments.remove")}
+              aria-label={`${t("attachments.remove")}: ${attachment.name}`}
+            >
+              <Trash2 />
+            </button>
+          )}
+        </div>
+      </div>
+      {(shown || preview.loading) && (
+        <div className={`attachment-preview ${shown ? "" : "loading"}`}>
+          {preview.value !== null ? (
+            // Saving goes through the backend ("Speichern unter …"), not the webview's image menu.
+            <img
+              src={preview.value}
+              alt={t("attachments.previewAlt", { name: attachment.name })}
+              draggable={false}
+              onContextMenu={(e) => e.preventDefault()}
+            />
+          ) : (
+            <span className="spinner" aria-hidden />
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The item's attachments: preview (images), "Speichern unter …" and
+ * "Entfernen" per file, "Datei anhängen …" below. A trashed item shows its
+ * files read-only (preview and save still work, nothing changes).
+ */
+function Attachments({
+  item,
+  attaching,
+  onAdd,
+  onSave,
+  onRemove,
+}: {
+  item: ItemListEntry;
+  attaching: boolean;
+  onAdd: () => void;
+  onSave: (attachment: AttachmentListEntry) => void;
+  onRemove: (attachment: AttachmentListEntry) => void;
+}) {
+  const { t } = useT();
+  const trashed = item.deletedAt !== null;
+  const list = item.attachments;
+  if (trashed && list.length === 0) return null;
+  const full = list.length >= ATTACHMENTS_PER_ITEM_MAX;
+  return (
+    <section className="detail-section">
+      <div className="section-label">
+        <span>{t("attachments.title")}</span>
+        {list.length > 0 && <span className="chip">{list.length}</span>}
+      </div>
+      <div className="card field-card">
+        {list.map((attachment) => (
+          <AttachmentRow
+            key={attachment.id}
+            item={item}
+            attachment={attachment}
+            readOnly={trashed}
+            onSave={() => onSave(attachment)}
+            onRemove={() => onRemove(attachment)}
+          />
+        ))}
+        {list.length === 0 && <div className="attachment-empty">{t("attachments.empty")}</div>}
+        {!trashed && (
+          <div className="attachment-add">
+            <Button variant="secondary" size="sm" icon={<Paperclip />} loading={attaching} disabled={full} onClick={onAdd}>
+              {t("attachments.add")}
+            </Button>
+            <span className="attachment-limits">{full ? t("attachments.full") : t("attachments.limits")}</span>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -237,10 +390,28 @@ export interface ItemViewProps {
   onToggleFavorite: () => void;
   /** A tag chip was clicked: show the items with that tag. */
   onOpenTag: (tag: string) => void;
+  /** "Datei anhängen …" is running (the picked file is read and encrypted in the backend). */
+  attaching: boolean;
+  onAddAttachment: () => void;
+  onSaveAttachment: (attachment: AttachmentListEntry) => void;
+  onRemoveAttachment: (attachment: AttachmentListEntry) => void;
 }
 
-export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteForever, onToggleFavorite, onOpenTag }: ItemViewProps) {
-  const { t, formatDateTime, formatRelative } = useT();
+export function ItemView({
+  item,
+  folders,
+  onEdit,
+  onTrash,
+  onRestore,
+  onDeleteForever,
+  onToggleFavorite,
+  onOpenTag,
+  attaching,
+  onAddAttachment,
+  onSaveAttachment,
+  onRemoveAttachment,
+}: ItemViewProps) {
+  const { t, tp, formatDateTime, formatRelative } = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLButtonElement>(null);
   const folder = folders.find((f) => f.id === item.folderId);
@@ -286,6 +457,13 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
                   {tag}
                 </button>
               ),
+            )}
+            {item.attachments.length > 0 && (
+              <span className="chip" title={tp("attachments.count", item.attachments.length)}>
+                <Paperclip />
+                {item.attachments.length}
+                <span className="sr-only">{tp("attachments.count", item.attachments.length)}</span>
+              </span>
             )}
           </div>
         </div>
@@ -362,6 +540,7 @@ export function ItemView({ item, folders, onEdit, onTrash, onRestore, onDeleteFo
         {item.type === "identity" && <IdentityBody item={item} />}
         <Notes item={item} />
         <CustomFields item={item} />
+        <Attachments item={item} attaching={attaching} onAdd={onAddAttachment} onSave={onSaveAttachment} onRemove={onRemoveAttachment} />
         {item.type === "login" && <PasswordHistory item={item} />}
 
         <dl className="detail-meta">

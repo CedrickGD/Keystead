@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api, events, subscribeEffect } from "../../lib/api";
-import type { Folder, ItemListEntry, ItemType, VaultItem } from "../../lib/types";
-import { cloneItem, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
+import { ApiError, api, events, pickAttachmentFile, pickSaveFile, subscribeEffect } from "../../lib/api";
+import type { AttachmentListEntry, Folder, ItemListEntry, ItemType, VaultItem } from "../../lib/types";
+import { cloneItem, fileNameOf, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
 import { hasModalLayer } from "../../lib/layers";
 import { useT, type MessageKey } from "../../i18n";
 import { useApp, useCopy, useCopySecret } from "../../state/app";
@@ -377,6 +377,90 @@ export function MainScreen() {
     }
   };
 
+  // --------------------------------------------------------- attachments
+  // Files act on the saved item (never through the editor): the backend reads
+  // the picked file and writes the saved one itself, the page only passes
+  // paths from the native dialogs. The answer is the item's new entry.
+
+  const [attaching, setAttaching] = useState(false);
+
+  /** `locked` → unlock screen like every other command; `not_found` → the list is stale: refetch. */
+  const reportItemError = (err: unknown) => {
+    if (err instanceof ApiError && err.code === "locked") {
+      showUnlockRef.current();
+      return;
+    }
+    toast.error(errorText(err));
+    if (err instanceof ApiError && (err.code === "not_found" || err.code === "conflict")) void reload();
+  };
+
+  const addAttachment = async (item: ItemListEntry) => {
+    if (attaching) return;
+    let path: string | null;
+    try {
+      path = await pickAttachmentFile(t("attachments.pickTitle"));
+    } catch (err) {
+      toast.error(errorText(err));
+      return;
+    }
+    if (!path) return;
+    setAttaching(true);
+    try {
+      const saved = await api.addAttachment(item.id, path);
+      upsertLocal(saved);
+      toast.success(t("attachments.added", { name: fileNameOf(path) }));
+    } catch (err) {
+      reportItemError(err);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  const saveAttachment = async (attachment: AttachmentListEntry) => {
+    let path: string | null;
+    try {
+      path = await pickSaveFile({ title: t("attachments.saveTitle"), defaultPath: attachment.name });
+    } catch (err) {
+      toast.error(errorText(err));
+      return;
+    }
+    if (!path) return;
+    try {
+      await api.saveAttachment(attachment.id, path);
+      // The backend remembers the path like an export: "Im Ordner anzeigen" works.
+      toast.show({
+        kind: "success",
+        message: t("attachments.saved", { path: fileNameOf(path) }),
+        duration: 8000,
+        action: {
+          label: t("export.showInFolder"),
+          onClick: () => {
+            api.showExport().catch((err: unknown) => toast.error(errorText(err)));
+          },
+        },
+      });
+    } catch (err) {
+      reportItemError(err);
+    }
+  };
+
+  const removeAttachment = async (attachment: AttachmentListEntry) => {
+    const ok = await confirm({
+      title: t("attachments.removeTitle"),
+      message: t("attachments.removeText", { name: attachment.name }),
+      confirmLabel: t("attachments.remove"),
+      tone: "danger",
+    });
+    if (!ok) return;
+    try {
+      const saved = await api.removeAttachment(attachment.id);
+      upsertLocal(saved);
+      toast.success(t("attachments.removed", { name: attachment.name }));
+    } catch (err) {
+      reportItemError(err);
+    }
+  };
+
   // ------------------------------------------------------------- folders
 
   const createFolder = async (name: string) => {
@@ -570,6 +654,10 @@ export function MainScreen() {
             const known = counts.tags.get(tagKey(tag));
             if (known) navigate({ kind: "vault", filter: { kind: "tag", tag: known.tag } });
           }}
+          attaching={attaching}
+          onAddAttachment={() => void addAttachment(selected)}
+          onSaveAttachment={(attachment) => void saveAttachment(attachment)}
+          onRemoveAttachment={(attachment) => void removeAttachment(attachment)}
         />
       );
     }
@@ -637,7 +725,7 @@ export function MainScreen() {
             }}
           />
         )}
-        {view.kind === "settings" && <SettingsPage initialSection={view.section} />}
+        {view.kind === "settings" && <SettingsPage initialSection={view.section} items={allItems} />}
         {importDialog && <ImportDialog request={importDialog.request} onClose={() => setImportDialog(null)} />}
       </div>
     </ImportLauncherContext.Provider>

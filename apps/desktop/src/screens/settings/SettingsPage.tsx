@@ -17,6 +17,7 @@ import {
   LifeBuoy,
   Monitor,
   Moon,
+  Paperclip,
   Plug,
   ShieldCheck,
   SlidersHorizontal,
@@ -30,11 +31,13 @@ import { IS_MOCK, api } from "../../lib/api";
 import type {
   BrowserInfo,
   BrowserStatus,
+  ItemListEntry,
   Language,
   ThemeSetting,
   UpdateChannel,
   UpdateInfo,
 } from "../../lib/types";
+import { formatBytes } from "../../lib/utils";
 import { useT } from "../../i18n";
 import { useApp, useCopy } from "../../state/app";
 import { useToast } from "../../components/Toasts";
@@ -613,8 +616,9 @@ function AdvancedSection() {
   );
 }
 
-function VaultSection() {
-  const { t, errorText } = useT();
+/** `items`: the main screen's list entries (incl. trash) for the attachment totals. */
+function VaultSection({ items }: { items: ItemListEntry[] }) {
+  const { t, tp, locale, errorText } = useT();
   const toast = useToast();
   const { vault, setVault, refreshVaults, showUnlock } = useApp();
   const nameId = useId();
@@ -622,6 +626,18 @@ function VaultSection() {
   const [busy, setBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const changed = name.trim() !== "" && name.trim() !== vault?.name;
+  // Attachments live beside the vault file, outside every export: count and
+  // size over the current entries (no extra command), with the backup hint.
+  const attachments = items.flatMap((item) => item.attachments);
+  const attachmentBytes = attachments.reduce((sum, a) => sum + a.size, 0);
+
+  const openFolder = async () => {
+    try {
+      await api.openDataDir();
+    } catch (err) {
+      toast.error(errorText(err));
+    }
+  };
 
   const rename = async () => {
     if (!changed) return;
@@ -654,6 +670,26 @@ function VaultSection() {
             {t("danger.renameButton")}
           </Button>
         </form>
+      </SettingRow>
+      <SettingRow
+        title={
+          <>
+            <Paperclip size={15} className="inline-icon" />
+            {t("attachments.title")}
+          </>
+        }
+        description={
+          <>
+            {attachments.length > 0
+              ? tp("attachments.usage", attachments.length, { size: formatBytes(attachmentBytes, locale) })
+              : t("attachments.usageNone")}{" "}
+            {t("attachments.backupHint")}
+          </>
+        }
+      >
+        <Button variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
+          {t("data.openFolder")}
+        </Button>
       </SettingRow>
       <SettingRow title={t("danger.delete")} description={t("danger.deleteDesc")}>
         <Button variant="danger-outline" onClick={() => setDeleteOpen(true)}>
@@ -803,7 +839,8 @@ function AboutSection() {
 /** Old section ids (deep links from elsewhere) → current ones. */
 const SECTION_ALIASES: Record<string, string> = { appearance: "general", terminal: "advanced", danger: "vault" };
 
-export function SettingsPage({ initialSection }: { initialSection?: string }) {
+/** `items`: the main screen's list entries, for the attachment totals in the vault section. */
+export function SettingsPage({ initialSection, items }: { initialSection?: string; items: ItemListEntry[] }) {
   const { t } = useT();
   const scrollRef = useRef<HTMLElement>(null);
   /** Section picked in the list: keeps it highlighted until the user scrolls by hand. */
@@ -914,7 +951,7 @@ export function SettingsPage({ initialSection }: { initialSection?: string }) {
           <BrowserSection />
           <ImportExportSection />
           <AdvancedSection />
-          <VaultSection />
+          <VaultSection items={items} />
           <AboutSection />
         </div>
       </div>

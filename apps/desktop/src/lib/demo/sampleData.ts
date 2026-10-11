@@ -87,11 +87,22 @@ function note(now: number, b: Base): VaultItem {
   return { ...base(now, b), type: "note", login: null, card: null, identity: null };
 }
 
+/** A file attached to a sample item (the mock keeps no bytes, see demo/mockAttachments.ts). */
+export interface SampleAttachment {
+  id: string;
+  itemId: string;
+  name: string;
+  size: number;
+  /** Days since it was attached. */
+  created: number;
+}
+
 export interface SampleVault {
   name: string;
   items: VaultItem[];
   folders: Folder[];
   generatorHistory: GeneratedPassword[];
+  attachments: SampleAttachment[];
   createdDaysAgo: number;
   hasRecoveryKey: boolean;
 }
@@ -253,6 +264,11 @@ export function privateVault(now: number): SampleVault {
       { password: "gh$Wq9!nVb3@Lr7tYp2", createdAt: now - 3 * DAY },
       { password: "Maple-Harbor-Comet7-Velvet-Tundra", createdAt: now - 2 * DAY },
     ],
+    // The contract and the ID copy the provider asked for (one image for the preview).
+    attachments: [
+      { id: "a-telekom-vertrag", itemId: "p-telekom", name: "Vertrag.pdf", size: 1_264_533, created: 260 },
+      { id: "a-telekom-ausweis", itemId: "p-telekom", name: "Personalausweis.png", size: 418_306, created: 259 },
+    ],
     createdDaysAgo: 1500,
     hasRecoveryKey: true,
   };
@@ -300,6 +316,7 @@ export function workVault(now: number): SampleVault {
       { id: tools, name: "Tools" },
     ],
     generatorHistory: [],
+    attachments: [],
     createdDaysAgo: 720,
     hasRecoveryKey: false,
   };

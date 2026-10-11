@@ -3,7 +3,7 @@
 // `set_favorite` answer, and the single secrets of `reveal_secret` /
 // `copy_secret_field`. Keep both in sync.
 
-import type { ItemListEntry, SecretField, VaultItem } from "../types";
+import type { AttachmentListEntry, ItemListEntry, SecretField, VaultItem } from "../types";
 
 /** "•••• 1234" for a number with at least 8 digits, "••••" for a shorter one, "" for none. */
 export function maskedCardNumber(number: string): string {
@@ -12,8 +12,8 @@ export function maskedCardNumber(number: string): string {
   return number.trim() ? "••••" : "";
 }
 
-/** A full item without its secrets. */
-export function redactItem(item: VaultItem): ItemListEntry {
+/** A full item without its secrets, plus its attachments (name, size, date – `demo/mockAttachments.ts`). */
+export function redactItem(item: VaultItem, attachments: AttachmentListEntry[] = []): ItemListEntry {
   return {
     id: item.id,
     type: item.type,
@@ -53,6 +53,7 @@ export function redactItem(item: VaultItem): ItemListEntry {
       hasValue: f.value !== "",
     })),
     passwordHistory: item.passwordHistory.map((h) => ({ replacedAt: h.replacedAt })),
+    attachments: attachments.map((a) => ({ ...a })),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,

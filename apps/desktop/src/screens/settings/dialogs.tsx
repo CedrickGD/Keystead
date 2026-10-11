@@ -1,5 +1,16 @@
 import { useId, useState, type ReactNode } from "react";
-import { Braces, Check, FileDown, FileLock2, FileSpreadsheet, KeyRound, LifeBuoy, Trash2, TriangleAlert } from "lucide-react";
+import {
+  Braces,
+  Check,
+  FileDown,
+  FileLock2,
+  FileSpreadsheet,
+  KeyRound,
+  LifeBuoy,
+  Paperclip,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { ApiError, api, pickSaveFile } from "../../lib/api";
 import type { ExportFormat, VaultInfo } from "../../lib/types";
 import { useT, type MessageKey } from "../../i18n";
@@ -378,6 +389,11 @@ export function ExportDialog({ vaultName, onClose }: { vaultName: string; onClos
           </label>
         ))}
       </div>
+      {/* No format carries attachments: they are encrypted files beside the vault, see "Attachments". */}
+      <p className="export-note">
+        <Paperclip aria-hidden />
+        <span>{t("export.noAttachments")}</span>
+      </p>
       {encrypted ? (
         <div className="export-fields">
           <Field

@@ -10,20 +10,20 @@ export const REVEAL_MS = 30_000;
 export interface RevealedSecret {
   /** The value while it is shown, otherwise null. */
   value: string | null;
-  /** `reveal_secret` is running. */
+  /** The reveal command is running. */
   loading: boolean;
   /** Shows the value, or hides it again. */
   toggle: () => void;
 }
 
 /**
- * An eye toggle for one secret of an item (`reveal_secret`). The value lives
- * only in this component's state – never in the item list or another store –
- * and is dropped again after 30 s, when the item or the field changes (also a
- * new `revision`, e.g. the item was saved), when the window loses focus or is
- * hidden, on lock and on unmount.
+ * The reveal pattern of the detail pane, shared by secrets and attachment
+ * previews: `fetch` runs on demand, its answer lives only in this component's
+ * state – never in the item list or another store – and is dropped again
+ * after 30 s, when `key` changes (another item, field or version of the
+ * item), when the window loses focus or is hidden, on lock and on unmount.
  */
-export function useRevealedSecret(itemId: string, field: SecretField, revision: number): RevealedSecret {
+export function useRevealedValue(key: string, fetch: () => Promise<string>): RevealedSecret {
   const { errorText } = useT();
   const toast = useToast();
   const [value, setValue] = useState<string | null>(null);
@@ -31,10 +31,9 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
   // Answers of requests started before a hide are ignored.
   const generation = useRef(0);
   const timer = useRef(0);
-  // `{ custom: 1 }` is a new object on every render: compare by value.
-  const fieldKey = JSON.stringify(field);
-  const fieldRef = useRef(field);
-  fieldRef.current = field;
+  // `fetch` is a new closure on every render: always call the latest one.
+  const fetchRef = useRef(fetch);
+  fetchRef.current = fetch;
 
   const hide = useCallback(() => {
     generation.current += 1;
@@ -43,8 +42,8 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
     setLoading(false);
   }, []);
 
-  // A different item, field or version of the item: hide, also on unmount.
-  useEffect(() => hide, [itemId, fieldKey, revision, hide]);
+  // Another key (item, field, version): hide, also on unmount.
+  useEffect(() => hide, [key, hide]);
 
   const shown = value !== null;
   useEffect(() => {
@@ -66,7 +65,7 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
     const mine = ++generation.current;
     setLoading(true);
     try {
-      const secret = await api.revealSecret(itemId, fieldRef.current);
+      const secret = await fetchRef.current();
       if (mine !== generation.current) return;
       setValue(secret);
       window.clearTimeout(timer.current);
@@ -76,7 +75,7 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [itemId, hide, errorText, toast]);
+  }, [hide, errorText, toast]);
 
   const toggle = useCallback(() => {
     if (shown) hide();
@@ -84,4 +83,16 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
   }, [shown, hide, reveal]);
 
   return { value, loading, toggle };
+}
+
+/**
+ * An eye toggle for one secret of an item (`reveal_secret`), see
+ * `useRevealedValue`: hidden again after 30 s, when the item or the field
+ * changes (also a new `revision`, e.g. the item was saved), when the window
+ * loses focus or is hidden, on lock and on unmount.
+ */
+export function useRevealedSecret(itemId: string, field: SecretField, revision: number): RevealedSecret {
+  // `{ custom: 1 }` is a new object on every render: compare by value.
+  const fieldKey = JSON.stringify(field);
+  return useRevealedValue(`${itemId}\n${fieldKey}\n${revision}`, () => api.revealSecret(itemId, field));
 }

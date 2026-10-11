@@ -162,6 +162,24 @@ export const api = {
   /** Removes a tag from every item incl. trash (case-insensitive); answers the number of changed items. No event: refetch `listItems`. */
   deleteTag: (tag: string) => call<number>("delete_tag", { tag, pageVaultId }),
 
+  // Attachments (see "Attachments" in docs/ARCHITECTURE.md). The file bytes
+  // never reach the page: the backend reads the picked file and writes the
+  // saved one itself; only an image preview comes back, as a data URL.
+  /** Attaches the file at `path` (from `pickAttachmentFile`) to the item; answers the item's new entry. */
+  addAttachment: (itemId: string, path: string) =>
+    call<ItemListEntry>("add_attachment", { itemId, path, pageVaultId }),
+  /** Writes the decrypted file to `path` (from `pickSaveFile`); `showExport` reveals it afterwards. */
+  saveAttachment: (attachmentId: string, path: string) =>
+    call<null>("save_attachment", { attachmentId, path, pageVaultId }),
+  /** Deletes an attachment; answers the item's new entry. */
+  removeAttachment: (attachmentId: string) => call<ItemListEntry>("remove_attachment", { attachmentId, pageVaultId }),
+  /**
+   * A `data:image/…` URL of an image attachment (PNG, JPEG, GIF, WebP up to
+   * 8 MiB; anything else → `unsupported:attachment_preview`). Treat it like a
+   * revealed secret: component state only, see `useRevealedAttachment`.
+   */
+  revealAttachment: (attachmentId: string) => call<string>("reveal_attachment", { attachmentId, pageVaultId }),
+
   generatePassword: (options: GeneratorOptions, remember: boolean) =>
     call<string>("generate_password", { options, remember, pageVaultId }),
   generatorHistory: () => call<GeneratedPassword[]>("generator_history"),
@@ -331,6 +349,13 @@ export async function pickOpenFile(options: { title?: string; filters?: FileFilt
   }
   const mock = await import("./mock");
   return mock.mockPickOpenFile(options.filters);
+}
+
+/** Lets the user pick a file to attach to an item (any type). Returns null when cancelled. */
+export async function pickAttachmentFile(title: string): Promise<string | null> {
+  if (IN_TAURI) return pickOpenFile({ title });
+  const mock = await import("./mock");
+  return mock.mockPickAttachmentFile();
 }
 
 /** Lets the user choose a target file. Returns null when cancelled. */

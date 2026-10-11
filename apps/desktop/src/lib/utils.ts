@@ -237,6 +237,30 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+const BYTE_UNITS = ["B", "KB", "MB", "GB"] as const;
+
+/**
+ * A file size for display ("850 KB", "1,5 MB" in German, "1.5 MB" in English):
+ * steps of 1024 like the file manager, one decimal below 10, the locale's
+ * decimal separator (`useT().locale`).
+ */
+export function formatBytes(bytes: number, locale: string): string {
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 10 ? 0 : 1;
+  const number = new Intl.NumberFormat(locale, { minimumFractionDigits: 0, maximumFractionDigits: digits }).format(value);
+  return `${number} ${BYTE_UNITS[unit]}`;
+}
+
+/** The file name component of a path (Windows or POSIX separators); the path itself if it has none. */
+export function fileNameOf(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 export function classNames(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }

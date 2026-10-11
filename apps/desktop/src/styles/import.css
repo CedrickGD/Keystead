@@ -816,6 +816,24 @@ body:has(.modal-overlay) .toast-region {
   visibility: visible;
 }
 
+/* Attachments are part of no export (see "Attachments" in ARCHITECTURE.md). */
+.export-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.export-note svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+}
+
 .export-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -766,6 +766,114 @@
   gap: 6px;
 }
 
+/* Attachments of an item (detail pane): one row per file, an image preview
+   below its row while revealed, "Datei anhängen …" as the last row. */
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 9px 8px 9px 16px;
+}
+
+.attachment-row + .attachment-row,
+.attachment-preview + .attachment-row,
+.attachment-row + .attachment-add,
+.attachment-preview + .attachment-add,
+.attachment-empty + .attachment-add {
+  border-top: 1px solid var(--border);
+}
+
+.attachment-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--radius);
+  background: var(--bg-muted);
+  color: var(--text-2);
+}
+
+.attachment-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.attachment-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-name {
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* The revealed image: contained, never taller than the pane allows; the
+   data URL lives only in the row's state (hidden again after 30 s). */
+.attachment-preview {
+  padding: 0 16px 14px;
+}
+
+.attachment-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  animation: attachment-reveal var(--dur) var(--ease);
+}
+
+.attachment-preview.loading {
+  display: flex;
+  justify-content: center;
+  padding: 6px 16px 16px;
+  color: var(--text-3);
+}
+
+@keyframes attachment-reveal {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.attachment-empty {
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.attachment-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  background: var(--bg-muted);
+}
+
+.attachment-limits {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 /* Nothing selected: quick actions, setup steps, shortcuts */
 .start-panel {
   display: flex;

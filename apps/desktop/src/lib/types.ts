@@ -122,6 +122,25 @@ export interface PasswordHistoryListEntry {
   replacedAt: number;
 }
 
+/**
+ * A file attached to an item (see "Attachments" in docs/ARCHITECTURE.md):
+ * name, size and date only. The bytes stay in the backend – `save_attachment`
+ * writes them to a path of the user's choice, `reveal_attachment` answers a
+ * data URL of an image for the in-app preview (kept in component state like a
+ * revealed secret).
+ */
+export interface AttachmentListEntry {
+  id: string;
+  name: string;
+  /** Bytes of the original file. */
+  size: number;
+  createdAt: number;
+}
+
+/** Limits of `keystead_core::attachments` (the backend enforces them; the UI shows them). */
+export const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+export const ATTACHMENTS_PER_ITEM_MAX = 10;
+
 /** An item as the item list holds it: `VaultItem` without its secrets. */
 export interface ItemListEntry {
   id: string;
@@ -138,6 +157,8 @@ export interface ItemListEntry {
   fields: CustomFieldListEntry[];
   /** Newest first, like `VaultItem.passwordHistory`. */
   passwordHistory: PasswordHistoryListEntry[];
+  /** Oldest first. Not part of `VaultItem`: attachments act on the saved item, never through the editor. */
+  attachments: AttachmentListEntry[];
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
