@@ -48,7 +48,8 @@ WebView2 (ist auf Win 10/11 vorhanden).
   Erweiterung lädt sich nach App-Updates selbst neu. Der Besitzer hat sie seit
   beta.7 aus diesem Ordner geladen.
 
-Veröffentlicht: beta.2 … **beta.8** (beta.7: Sicherheits-Block, beta.8: Plugin smarter). Der Besitzer
+Veröffentlicht: beta.2 … **beta.9** (beta.7: Sicherheits-Block, beta.8: Plugin
+smarter, beta.9: Tags, Assistenten-Schalter, Windows-Bridge-Fixes). Der Besitzer
 testet unter Windows (Installer-Version, Brave/Chromium-Browser) und bekommt
 neue Betas per In-App-Update.
 
@@ -75,8 +76,8 @@ neue Betas per In-App-Update.
   noch getippten Text wie der Speichern-Knopf), die Suche findet Tags, ein
   neuer Eintrag im Tag-Filter startet mit dem Tag. Keystead-Export nimmt
   Tags mit, CSV/Bitwarden-JSON nicht. Die TUI zeigt sie nur an (Zeile
-  „Tags: …“ unter der Typzeile) und bewahrt sie beim Bearbeiten. Noch nicht
-  veröffentlicht (geht mit dem nächsten `[release]` raus).
+  „Tags: …“ unter der Typzeile) und bewahrt sie beim Bearbeiten.
+  Veröffentlicht mit beta.9.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -118,8 +119,8 @@ Die Arbeit läuft seit beta.8 lokal auf dem Windows-PC des Besitzers (Rust
 1.97.0 aus `rust-toolchain.toml`, MSVC aus Visual Studio Community 2026,
 Node 22). Erster vollständiger Lauf der Prüfkette unter Windows: fmt, clippy,
 `cargo test --workspace`, `npm run build`, `node --test` – grün, nachdem zwei
-Windows-Fehler in `crates/keystead-bridge` behoben wurden (noch nicht
-veröffentlicht, gehen mit dem nächsten `[release]` raus):
+Windows-Fehler in `crates/keystead-bridge` behoben wurden (veröffentlicht mit
+beta.9):
 
 1. **Verbindungs-Timeout wurde ignoriert** (`socket.rs`): Die Local-Socket-
    Schicht von `interprocess` 2.4.4 verwirft unter Windows den Wait-Modus und
@@ -151,7 +152,7 @@ dorthin wandern.
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
 3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern sind fertig
-   (siehe „Was fertig ist“; geplant als beta.9). Offen: verschlüsselte
+   (siehe „Was fertig ist“; beta.9). Offen: verschlüsselte
    Dateianhänge an Einträgen (z. B. Ausweis-Scan; die Tresordatei bekommt
    dafür Version 2 – der Leser dafür ist schon drin und bewahrt die noch
    unbekannten Felder beim Speichern), optionale Prüfung auf
@@ -163,6 +164,15 @@ dorthin wandern.
    `main` und ersetzt seine EXE/PS1 direkt – am sichersten eine letzte
    VaultX 1.1.x, die nur einen Hinweis „Keystead ist da“ mit Link zeigt.
    **Vor Merge/Tag den Besitzer fragen.**
+5. **Idee für später, Block 5 „Mobile“** (Wunsch des Besitzers vom 2026-10-10,
+   erst nach Block 4): Keystead auf dem Handy. Rahmen: nur Android (kein Mac,
+   nichts Kostenpflichtiges – also auch kein Apple-Entwicklerkonto und keine
+   Play-Store-Gebühr; APK über die GitHub-Releases), Tauri-2-Android-App mit
+   Handy-Layout zum Nachschlagen/Kopieren, Tresor-Sync über den eigenen
+   Cloud-Ordner des Nutzers (Datei ist ohnehin verschlüsselt, Revisionen
+   fangen Konflikte ab; Alternative: Sync im Heimnetz per QR-Kopplung),
+   Autofill-Dienst zuletzt. Offen: ob Sync über den eigenen Cloud-Ordner für
+   den Besitzer in Ordnung ist.
 
 ## Bekannte Grenzen / offene Punkte
 

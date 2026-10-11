@@ -43,7 +43,10 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 ### Funktionen
 
 - **Tresore** für Logins, Zahlungskarten, Identitäten und sichere Notizen – mit
-  Ordnern, Favoriten, Papierkorb, eigenen Feldern und Passwortverlauf.
+  Ordnern, Tags, Favoriten, Papierkorb, eigenen Feldern und Passwortverlauf.
+- **Tags**: freie Schlagwörter je Eintrag („Bank“, „Familie“ …), als Filter in
+  der Seitenleiste, als Chips in Detailansicht und Editor, in der Suche;
+  Umbenennen und Löschen eines Tags wirkt auf alle Einträge.
 - **Website-Icons**: Logins zeigen automatisch das Icon ihrer Website – die App
   lädt es selbst direkt von der Website (kein Icon-Dienst) und speichert es
   verschlüsselt im Tresor; abschaltbar unter Einstellungen → Allgemein.
@@ -235,7 +238,10 @@ and also available in English.
 ### Features
 
 - **Vaults** with logins, payment cards, identities and secure notes – folders,
-  favourites, trash, custom fields and password history.
+  tags, favourites, trash, custom fields and password history.
+- **Tags**: free keywords per entry ("Bank", "Family" …), as a filter in the
+  sidebar, as chips in the detail view and the editor, and in search; renaming
+  or deleting a tag applies to every entry.
 - **Website icons**: logins show their website's icon automatically – the app loads
   it itself, directly from the website (no icon service), and stores it encrypted in
   the vault; can be switched off in Settings → General.

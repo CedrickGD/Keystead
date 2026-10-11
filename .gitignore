@@ -7,3 +7,4 @@ apps/desktop/dist/
 .DS_Store
 /legacy/dist/
 .claude/settings.local.json
+.claude/launch.json
