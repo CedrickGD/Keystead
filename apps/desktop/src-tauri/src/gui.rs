@@ -96,6 +96,8 @@ pub fn run(background: bool) -> i32 {
             commands::install_update,
             crate::icons::get_icons,
             crate::icons::clear_icons,
+            crate::pwned::check_pwned_password,
+            crate::pwned::check_pwned_vault,
         ])
         .setup(move |app| {
             setup(app.handle(), background);

@@ -745,15 +745,16 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 /// would handle is not fetched at all: going around a proxy would reveal
 /// the user's own address to the websites of their accounts, and through
 /// it the proxy would resolve names this app cannot check.
-fn proxy_matcher() -> ProxyMatcher {
+pub(crate) fn proxy_matcher() -> ProxyMatcher {
     ProxyMatcher::from_system()
 }
 
 /// Proxy settings that exist but that [`proxy_matcher`] does not turn into a
 /// proxy for https sites – e.g. a PAC script, or the per-protocol form of
 /// the Windows proxy. The fetcher then fetches nothing rather than possibly
-/// going around the user's proxy.
-fn proxy_setup_unclear(matcher: &ProxyMatcher) -> bool {
+/// going around the user's proxy. The leaked-password check (`crate::pwned`)
+/// applies the same rule before its requests.
+pub(crate) fn proxy_setup_unclear(matcher: &ProxyMatcher) -> bool {
     let env_https = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
         .iter()
         .any(|name| std::env::var(name).is_ok_and(|v| !v.trim().is_empty()));
@@ -766,11 +767,11 @@ fn proxy_setup_unclear(matcher: &ProxyMatcher) -> bool {
 
 /// Proxy-related system settings beyond what [`proxy_matcher`] understands.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct SystemProxyHints {
+pub(crate) struct SystemProxyHints {
     /// A PAC / auto-config script is configured.
-    auto_config: bool,
+    pub(crate) auto_config: bool,
     /// A manual proxy is switched on.
-    manual_enabled: bool,
+    pub(crate) manual_enabled: bool,
 }
 
 #[cfg(windows)]
@@ -802,7 +803,11 @@ fn system_proxy_hints() -> SystemProxyHints {
 
 /// The decision behind [`proxy_setup_unclear`]: some proxy is configured,
 /// but the matcher would still connect directly to a public https site.
-fn proxy_unclear_from(env_https: bool, hints: &SystemProxyHints, matcher_proxies: bool) -> bool {
+pub(crate) fn proxy_unclear_from(
+    env_https: bool,
+    hints: &SystemProxyHints,
+    matcher_proxies: bool,
+) -> bool {
     if hints.auto_config {
         return true;
     }
