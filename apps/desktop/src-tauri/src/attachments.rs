@@ -17,10 +17,16 @@
 //!   record the file. `save_attachment` reads the lock epoch together with
 //!   the decrypted bytes and writes nothing if the vault was locked or
 //!   replaced in between (the pattern of `Core::copy_to_clipboard_since`).
+//! * The backend cannot tell a dialog's path from one the page made up, so
+//!   it refuses what no dialog produces (relative paths, `.`/`..`
+//!   components) and the app's own files on both sides: no source inside
+//!   the data directory (`add_attachment`, [`check_source`]), no target
+//!   inside the vaults directory or with the vault extension
+//!   (`save_attachment`, [`check_target`]).
 
 use std::fs;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use keystead_core::attachments::ATTACHMENT_MAX_BYTES;
 use keystead_core::{crypto, format, paths, Error as CoreError};
@@ -92,33 +98,67 @@ fn read_file(path: &Path) -> AppResult<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-/// True if `path` lies below `dir` (textually, or once both are resolved;
-/// the file itself may not exist yet, its folder is resolved instead).
+/// True if `path` lies below `dir`: textually, or once resolved – the path
+/// itself if it exists, otherwise its deepest existing ancestor (the dialog
+/// may name a folder that does not exist yet; `write_atomic` creates the
+/// rest below that ancestor). `canonicalize` sees through symlinks and, on
+/// Windows, case and 8.3 variants of the directory names.
 fn is_inside(path: &Path, dir: &Path) -> bool {
     if path.starts_with(dir) {
         return true;
     }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    match (fs::canonicalize(parent), fs::canonicalize(dir)) {
-        (Ok(parent), Ok(dir)) => parent.starts_with(dir),
-        _ => false,
+    let Ok(dir) = fs::canonicalize(dir) else {
+        return false;
+    };
+    let mut ancestor = Some(path);
+    while let Some(p) = ancestor.filter(|p| !p.as_os_str().is_empty()) {
+        if let Ok(real) = fs::canonicalize(p) {
+            return real.starts_with(&dir);
+        }
+        ancestor = p.parent();
     }
+    false
+}
+
+/// True for a path as the native dialogs produce it: absolute, without `.`
+/// or `..` components. A `..` behind a folder that does not exist yet is
+/// opaque to `canonicalize`, but `write_atomic`'s `create_dir_all` would
+/// make it resolve – into the vaults directory, if the page chose so.
+fn is_dialog_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
 }
 
 /// `invalid_input:attachment_target` for a save path inside the vaults
-/// directory (the app's own files, incl. the blob directories) or with the
-/// vault file extension: a saved attachment must never overwrite or pose
-/// as a vault file. `vaults_dir` is the open store's; the process's
-/// default location is checked as well.
+/// directory (the app's own files, incl. the blob directories), with the
+/// vault file extension, or not of the dialog's shape: a saved attachment
+/// must never overwrite or pose as a vault file. `vaults_dir` is the open
+/// store's; the process's default location is checked as well.
 fn check_target(path: &Path, vaults_dir: &Path) -> AppResult<()> {
     let is_vault_name = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case(VAULT_EXTENSION));
-    if is_vault_name || is_inside(path, vaults_dir) || is_inside(path, &paths::vaults_dir()) {
+    if !is_dialog_path(path)
+        || is_vault_name
+        || is_inside(path, vaults_dir)
+        || is_inside(path, &paths::vaults_dir())
+    {
         return Err(AppError::invalid("attachment_target"));
+    }
+    Ok(())
+}
+
+/// `invalid_input:attachment_source` for a file to attach inside the data
+/// directory (the open store's and the process's default one) or not of
+/// the dialog's shape: the vault files, their blobs and `settings.json`
+/// are the app's own, and attaching one would let a page copy it out
+/// again through `save_attachment` or read it through `reveal_attachment`
+/// without the master password `export_data` demands.
+fn check_source(path: &Path, data_dir: &Path) -> AppResult<()> {
+    if !is_dialog_path(path) || is_inside(path, data_dir) || is_inside(path, &paths::data_dir()) {
+        return Err(AppError::invalid("attachment_source"));
     }
     Ok(())
 }
@@ -145,9 +185,10 @@ fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 /// `add_attachment`: attaches the file at `path` (its file name becomes the
 /// attachment's name) to `item_id` and answers the item's new list entry.
-/// Errors: `locked`, `invalid_input:path_required`, `not_found` (file or
-/// item), `unsupported:attachment_too_large`, `invalid_input:item_trashed`,
-/// `invalid_input:attachments_too_many`,
+/// Errors: `locked`, `invalid_input:path_required`,
+/// `invalid_input:attachment_source` ([`check_source`]), `not_found` (file
+/// or item), `unsupported:attachment_too_large`,
+/// `invalid_input:item_trashed`, `invalid_input:attachments_too_many`,
 /// `invalid_input:attachment_name_required` / `attachment_name_too_long`,
 /// `io:…`.
 pub(crate) fn add(
@@ -157,9 +198,14 @@ pub(crate) fn add(
     path: &str,
 ) -> AppResult<ItemListEntry> {
     let path = path_arg(path)?;
-    // Fail early (before reading up to 20 MiB) if the page's vault is not
-    // open; checked again by `mutate_for_page` under the lock of the change.
-    c.state().page_vault(page_vault_id)?;
+    {
+        // Fail early (before reading up to 20 MiB) if the page's vault is
+        // not open – checked again by `mutate_for_page` under the lock of
+        // the change – and refuse the app's own files as a source.
+        let st = c.state();
+        st.page_vault(page_vault_id)?;
+        check_source(path, st.store.root())?;
+    }
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -334,7 +380,7 @@ mod tests {
     use keystead_core::KdfParams;
 
     use super::*;
-    use crate::import_flow::last_export;
+    use crate::import_flow::{export_serial, last_export};
     use crate::state::test_support::core_with_open_vault;
     use crate::wipe::Wipe as _;
 
@@ -498,6 +544,8 @@ mod tests {
 
     #[test]
     fn save_writes_the_plaintext_and_remembers_the_file() {
+        // Every successful `save` sets the process-wide "last export".
+        let _serial = export_serial();
         let dir = tempfile::tempdir().unwrap();
         let c = core_with_open_vault(dir.path(), Settings::default());
         let page = vault_id(&c);
@@ -540,6 +588,7 @@ mod tests {
 
     #[test]
     fn save_refuses_vault_paths() {
+        let _serial = export_serial();
         let dir = tempfile::tempdir().unwrap();
         let c = core_with_open_vault(dir.path(), Settings::default());
         let own = vault_id(&c);
@@ -574,6 +623,60 @@ mod tests {
         assert!(c.store().unlock(&own, "master").is_ok());
         assert!(vault_path.is_file());
 
+        // What no dialog produces: relative paths, and `..` behind a folder
+        // that does not exist yet – opaque to `canonicalize`, but
+        // `write_atomic`'s `create_dir_all` would have made it resolve,
+        // straight onto the blob.
+        let blob = attachments_dir(&c).join(format!("{id}.bin"));
+        let sealed = fs::read(&blob).unwrap();
+        let sneaky = dir
+            .path()
+            .join("nonexist")
+            .join("..")
+            .join("data")
+            .join("vaults")
+            .join(format!("{own}.keystead.attachments"))
+            .join(format!("{id}.bin"));
+        for target in [
+            sneaky,
+            PathBuf::from("relative").join("a.txt"),
+            PathBuf::from("a.txt"),
+        ] {
+            assert_eq!(
+                save(&c, page, &id, target.to_str().unwrap())
+                    .unwrap_err()
+                    .code(),
+                "invalid_input:attachment_target",
+                "{}",
+                target.display()
+            );
+        }
+        assert!(!dir.path().join("nonexist").exists());
+        assert_eq!(fs::read(&blob).unwrap(), sealed);
+        assert!(!Path::new("relative").exists() && !Path::new("a.txt").exists());
+
+        // Windows: the vaults directory spelled in another case is the same
+        // directory – `canonicalize` of the deepest existing folder says so,
+        // also below a folder that does not exist yet.
+        #[cfg(windows)]
+        for spelled in [
+            vaults.to_str().unwrap().to_lowercase(),
+            vaults.to_str().unwrap().to_uppercase(),
+        ] {
+            let spelled = PathBuf::from(spelled);
+            for target in [spelled.join("a.txt"), spelled.join("new").join("a.txt")] {
+                assert_eq!(
+                    save(&c, page, &id, target.to_str().unwrap())
+                        .unwrap_err()
+                        .code(),
+                    "invalid_input:attachment_target",
+                    "{}",
+                    target.display()
+                );
+                assert!(!target.exists(), "{}", target.display());
+            }
+        }
+
         // `.keystead.bak` or a name merely containing the word is fine.
         let ok = dir.path().join("keystead-notes.txt");
         save(&c, page, &id, ok.to_str().unwrap()).unwrap();
@@ -581,7 +684,53 @@ mod tests {
     }
 
     #[test]
+    fn add_refuses_the_apps_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let page = vault_id(&c);
+        let page = Some(page.as_str());
+        let item = note(&c, "Bank");
+        let existing = c
+            .mutate(|v| v.add_attachment(&item, "a.txt", b"a"))
+            .unwrap()
+            .id;
+        let data = c.data_dir();
+        let vault_file = c.read(|v| v.path().to_path_buf()).unwrap();
+        let blob = attachments_dir(&c).join(format!("{existing}.bin"));
+        let settings = write(&data, "settings.json", b"{}");
+        let stray = write(&data.join("vaults"), "notes.txt", b"n");
+
+        // Anything in the data directory, and a relative path (which would
+        // resolve against the process's working directory).
+        for source in [
+            vault_file,
+            blob,
+            settings,
+            stray,
+            PathBuf::from("Cargo.toml"),
+        ] {
+            assert!(source.exists(), "{}", source.display());
+            assert_eq!(
+                add(&c, page, &item, source.to_str().unwrap())
+                    .unwrap_err()
+                    .code(),
+                "invalid_input:attachment_source",
+                "{}",
+                source.display()
+            );
+        }
+        assert_eq!(c.read(|v| v.attachments_of(&item).len()).unwrap(), 1);
+        assert_eq!(fs::read_dir(attachments_dir(&c)).unwrap().count(), 1);
+
+        // Next to the data directory is fine.
+        let ok = write(dir.path(), "ok.txt", b"ok");
+        let entry = add(&c, page, &item, ok.to_str().unwrap()).unwrap();
+        assert_eq!(entry.attachments.len(), 2);
+    }
+
+    #[test]
     fn save_after_a_lock_or_vault_switch_writes_nothing() {
+        let _serial = export_serial();
         let dir = tempfile::tempdir().unwrap();
         let c = core_with_open_vault(dir.path(), Settings::default());
         let page = vault_id(&c);

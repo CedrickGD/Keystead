@@ -267,7 +267,7 @@ impl VaultStore {
     pub fn create_vault_with_params(&self, name: &str, master_password: &str, kdf: KdfParams) -> Result<UnlockedVault>;
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault>;   // Error::WrongPassword on bad pw
     pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid (re-wrapped)
-    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes file + .bak + leftover temp files + the <id>.keystead.attachments directory
+    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes the file (Err if that fails); .bak, leftover temp files and the <id>.keystead.attachments directory then best effort with a short retry (format::remove_with_retry) – the vault counts as deleted once its file is gone
     // create_vault*, unlock and unlock_with_recovery_key also run UnlockedVault::sweep_attachments (best effort) on the vault they return
     pub fn vault_path(&self, vault_id: &str) -> PathBuf;
 }
@@ -501,7 +501,8 @@ Behaviour notes:
   also prunes the attachment entries of items that no longer exist
   (`delete_item`, `empty_trash`; trashed items keep theirs) and deletes
   their blobs best effort after the write; `VaultStore::delete_vault`
-  removes the side-car directory; the Keystead, CSV and Bitwarden exports
+  removes the side-car directory best effort after the vault file (see
+  "Attachments"); the Keystead, CSV and Bitwarden exports
   carry no attachments (`export.rs` builds the exported `VaultData` with an
   empty map) and no import brings any.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
@@ -741,8 +742,8 @@ history. The bridge's own writes are not affected.
 | `delete_folder` † | `id` | `null` |
 | `rename_tag` † | `from, to` | `number` – the changed items; renames the tag on every item incl. trash in one save (case-insensitive, merges into an existing spelling, see "Tags"); `0` if no item has it; `to` empty → `invalid_input:tag_required`, > 50 chars → `tag_too_long`. No event: the UI refetches `list_items` |
 | `delete_tag` † | `tag` | `number` – the changed items; removes the tag from every item incl. trash in one save (case-insensitive); `0` if no item has it. No event, like `rename_tag` |
-| `add_attachment` † | `itemId, path` | `ItemListEntry` – attaches the file at `path` (the native open dialog's choice; its file name becomes the attachment's name) to the saved item and answers the item's new entry, see "Attachments". Errors: `invalid_input:path_required`, `not_found` (file or item), `unsupported:attachment_too_large` (from the file's metadata, before reading), `invalid_input:item_trashed` / `attachments_too_many` / `attachment_name_required` / `attachment_name_too_long`, `io:…` |
-| `save_attachment` † | `attachmentId, path` | `null` – decrypts the attachment and writes it to `path` (the native save dialog's choice) atomically; refuses a target inside the vaults directory or with the `.keystead` extension (`invalid_input:attachment_target`); `not_found`, `corrupt:…`, `io:…`; `locked` also when the vault was locked or switched between reading and writing. Changes nothing but counts as user activity; the file is remembered for `show_export` |
+| `add_attachment` † | `itemId, path` | `ItemListEntry` – attaches the file at `path` (the native open dialog's choice; its file name becomes the attachment's name) to the saved item and answers the item's new entry, see "Attachments". Errors: `invalid_input:path_required`, `invalid_input:attachment_source` (a relative path or one with `.`/`..` components, or a file inside the data directory – the app's own files are never attached), `not_found` (file or item), `unsupported:attachment_too_large` (from the file's metadata, before reading), `invalid_input:item_trashed` / `attachments_too_many` / `attachment_name_required` / `attachment_name_too_long`, `io:…` |
+| `save_attachment` † | `attachmentId, path` | `null` – decrypts the attachment and writes it to `path` (the native save dialog's choice) atomically; refuses a target inside the vaults directory (the path or its deepest existing ancestor resolved), with the `.keystead` extension, relative or with `.`/`..` components (`invalid_input:attachment_target`); `not_found`, `corrupt:…`, `io:…`; `locked` also when the vault was locked or switched between reading and writing. Changes nothing but counts as user activity; the file is remembered for `show_export` |
 | `remove_attachment` † | `attachmentId` | `ItemListEntry` – deletes the attachment (entry, then blob) and answers its item's new entry; `not_found` |
 | `reveal_attachment` | `attachmentId, pageVaultId` | `string` – a `data:image/…;base64,…` URL for the in-app preview: only PNG, JPEG, GIF and WebP recognised by their magic bytes and at most 8 MiB, anything else `unsupported:attachment_preview` (a too large file without reading it); `not_found`, `corrupt:…`. The only command that brings attachment bytes into the webview; wiped after serialization |
 | `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
@@ -951,7 +952,9 @@ item; copying never sends it there.
   item or `updatedAt` change, blur / hidden window, lock, unmount); the
   `<img>` is not draggable and has no context menu. Files pass only through
   the native dialogs: the page hands the backend paths (`add_attachment`,
-  `save_attachment`), never bytes. "Bearbeiten" loads `get_item_for_edit` into the editor's
+  `save_attachment`), never bytes, and the backend refuses the app's own
+  files as a source and the vaults directory as a target (see
+  "Attachments"). "Bearbeiten" loads `get_item_for_edit` into the editor's
   state, which is dropped after save / cancel (`save_item` answers the
   redacted entry). The password history lists dates and reveals / copies an
   entry on demand. The health report comes from `health_report`; its "no
@@ -1339,8 +1342,13 @@ are not involved (`ItemSummary` is unchanged).
   unlock, best effort – removes `*.bin` files no entry references and
   leftover `*.tmp` files, but only those whose mtime is at least 1 h old
   (`SWEEP_MIN_AGE`): another process (the TUI) may be in the middle of
-  attaching. `VaultStore::delete_vault` removes the directory with the
-  vault. Exports (Keystead, CSV, Bitwarden JSON) never contain attachments
+  attaching. `VaultStore::delete_vault` removes the directory after the
+  vault file, best effort with a short retry (`format::remove_with_retry`,
+  like the `.bak` and temp files – on Windows a scanner may still hold a
+  fresh blob open): the vault counts as deleted once its file is gone, so
+  the call succeeds and the desktop closes the vault even if the folder
+  resists and stays behind (worthless without its keys; delete it by
+  hand). Exports (Keystead, CSV, Bitwarden JSON) never contain attachments
   and imports never bring any – a full backup is the data directory (vault
   file + folder). Portable mode moves the folder with its vault file and
   refuses a target where such a folder already exists
@@ -1351,7 +1359,14 @@ are not involved (`ItemSummary` is unchanged).
   * `add_attachment(itemId, path)` † → `ItemListEntry`: the page passes the
     path the native open dialog chose (a blank one →
     `invalid_input:path_required`); the backend checks the page's vault
-    first, takes the file name component as the name
+    first, then the source – `invalid_input:attachment_source` for a path
+    no dialog produces (relative, `.`/`..` components) or a file inside
+    the data directory (the store's and `paths::data_dir()`; the path or
+    its deepest existing ancestor resolved with `canonicalize`): the vault
+    files, their blobs and `settings.json` are the app's own, and a page
+    must not be able to copy them out through `save_attachment` or read
+    them through `reveal_attachment` without the master password
+    `export_data` demands –, takes the file name component as the name
     (`attachment_name_required` without one), checks the size from the
     file's metadata **before** reading (`unsupported:attachment_too_large`;
     missing → `not_found`; a directory or other non-regular file → `io:…`),
@@ -1361,15 +1376,22 @@ are not involved (`ItemSummary` is unchanged).
     safe) and answers the item's redacted entry.
   * `save_attachment(attachmentId, path)` † → `null`: under the state lock
     it checks the page's vault and the target –
-    `invalid_input:attachment_target` for a path inside the vaults
+    `invalid_input:attachment_target` for a path no dialog produces
+    (relative, `.`/`..` components: a `..` behind a folder that does not
+    exist yet is opaque to `canonicalize`, but `write_atomic`'s
+    `create_dir_all` would make it resolve), for a path inside the vaults
     directory (the store's and `paths::vaults_dir()`, textually and with
-    the parent resolved) or with the `.keystead` extension, so a saved
+    the path or its deepest existing ancestor resolved – symlinks, case and
+    8.3 variants included) or with the `.keystead` extension, so a saved
     attachment never overwrites or poses as a vault file –, decrypts the
     bytes and reads the lock epoch; outside the lock it re-checks the epoch
     right before `write_atomic` to the dialog path (a lock or vault switch
     in between → `locked`, nothing written) and remembers the file like
     `export_data`, so `show_export` ("Im Ordner anzeigen") reveals it. No
-    plaintext temporary files, no "open with the default app".
+    plaintext temporary files, no "open with the default app". The backend
+    cannot tell a dialog's path from one the page made up (the page opens
+    the dialogs via `@tauri-apps/plugin-dialog`); these checks and
+    `check_source` are the barrier.
   * `remove_attachment(attachmentId)` † → `ItemListEntry` (`not_found` for an
     unknown id).
   * `reveal_attachment(attachmentId)` → `string`: a `data:<mime>;base64,…`

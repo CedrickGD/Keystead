@@ -66,6 +66,7 @@ export const en: Record<MessageKey, string> = {
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
+  "error.input.attachment_source": "This file cannot be attached – it belongs to Keystead itself (data folder). Pick another file.",
   "error.input.attachment_target": "The attachment cannot be saved there – not in the vault folder and not as a .keystead file. Pick another location.",
   "error.input.item_trashed": "The item is in the trash. Restore it to attach files.",
   "error.input.path_required": "Please pick a file.",

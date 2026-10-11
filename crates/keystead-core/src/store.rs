@@ -186,8 +186,14 @@ impl VaultStore {
         Ok(Self::opened(vault))
     }
 
-    /// Deletes a vault after verifying its master password (removes the
-    /// file, its `.bak` and helper files, and the attachments directory).
+    /// Deletes a vault after verifying its master password. Removing the
+    /// vault file is the deletion (an error there is returned); its `.bak`,
+    /// leftover temporary files and the attachments directory are removed
+    /// best effort afterwards with a short retry
+    /// ([`format::remove_with_retry`]: on Windows a scanner may still hold
+    /// a fresh file open). Whatever resists stays behind, worthless without
+    /// the vault, and the call still succeeds – the caller can close the
+    /// vault it just deleted.
     pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()> {
         let (path, file) = self.read_vault(vault_id)?;
         file.unwrap_key(master_password)?;
@@ -198,19 +204,11 @@ impl VaultStore {
             // temporary files of the `.bak`.
             let bak = format::sibling(&path, ".bak");
             for p in std::iter::once(bak).chain(format::stale_temp_files(&path)) {
-                match fs::remove_file(&p) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(Error::io_at(&p, e)),
-                }
+                format::remove_with_retry(|| fs::remove_file(&p));
             }
             // The blobs are useless without the keys that just went away.
             let dir = attachments::dir_for(&path);
-            match fs::remove_dir_all(&dir) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Error::io_at(&dir, e)),
-            }
+            format::remove_with_retry(|| fs::remove_dir_all(&dir));
         }
         // The lock file can only be removed once the lock is released.
         let _ = fs::remove_file(format::sibling(&path, ".lock"));

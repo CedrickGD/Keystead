@@ -336,6 +336,14 @@ pub(crate) fn last_export() -> Option<PathBuf> {
     last.as_ref().filter(|p| p.is_file()).cloned()
 }
 
+/// Tests that set or assert [`LAST_EXPORT`] (a process-wide value) hold
+/// this guard, since the test harness runs them in parallel.
+#[cfg(test)]
+pub(crate) fn export_serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Shows `file` in the file manager: Windows Explorer with the file
 /// selected, elsewhere its folder.
 fn reveal(file: &Path) -> AppResult<()> {
@@ -778,6 +786,7 @@ mod tests {
 
     #[test]
     fn show_export_only_knows_the_last_exported_file() {
+        let _serial = export_serial();
         let dir = tempfile::tempdir().unwrap();
         let file = write(dir.path(), "Privat-2026-10-09.csv", "name\n");
         remember_export(&file);

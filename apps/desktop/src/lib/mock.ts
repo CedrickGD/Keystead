@@ -914,7 +914,7 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const itemId = str(args, "itemId");
       // The backend reads the file first; the demo only has its path.
       await sleep(300);
-      mockAddAttachment(vault.info.id, vault.data.items, itemId, str(args, "path"));
+      mockAddAttachment(vault.info.id, vault.data.items, itemId, str(args, "path"), s.appInfo.dataDir);
       touch(vault);
       s.lastActivity = Date.now();
       return entryOf(vault, findItem(itemId));

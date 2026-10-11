@@ -66,6 +66,7 @@ export const de = {
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
+  "error.input.attachment_source": "Diese Datei kann nicht angehängt werden – sie gehört zu Keystead selbst (Datenordner). Wähle eine andere Datei.",
   "error.input.attachment_target": "Hier kann der Anhang nicht gespeichert werden – nicht im Tresor-Ordner und nicht als .keystead-Datei. Wähle einen anderen Ort.",
   "error.input.item_trashed": "Das Element liegt im Papierkorb. Stelle es wieder her, um Dateien anzuhängen.",
   "error.input.path_required": "Bitte wähle eine Datei aus.",

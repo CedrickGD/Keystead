@@ -504,6 +504,95 @@ fn delete_vault_removes_the_attachments_directory() {
     assert!(files(&store.vaults_dir()).is_empty());
 }
 
+/// Keeps a blob undeletable for the guard's lifetime: on Windows a handle
+/// without delete sharing (what a scanner holds), elsewhere a read-only
+/// directory.
+#[cfg(windows)]
+struct Resist {
+    _file: fs::File,
+}
+
+#[cfg(windows)]
+fn resist(_dir: &Path, blob: &Path) -> Resist {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    let _file = fs::File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(blob)
+        .unwrap();
+    Resist { _file }
+}
+
+#[cfg(unix)]
+struct Resist {
+    dir: PathBuf,
+}
+
+#[cfg(unix)]
+fn resist(dir: &Path, _blob: &Path) -> Resist {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+    Resist {
+        dir: dir.to_path_buf(),
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Resist {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// False if [`resist`] cannot bind this process (root on Unix).
+#[cfg(unix)]
+fn resist_binds(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(dir).unwrap().uid() != 0
+}
+
+#[cfg(windows)]
+fn resist_binds(_dir: &Path) -> bool {
+    true
+}
+
+#[test]
+fn delete_vault_succeeds_when_the_directory_resists() {
+    let (_dir, store) = store();
+    let mut v = create(&store);
+    let item = v.save_item(note("Delete")).unwrap();
+    let a = v.add_attachment(&item.id, "a.txt", b"aaa").unwrap();
+    let dir = v.attachments_dir();
+    let blob = blob(&v, &a.id);
+
+    // Removing the vault file is the deletion; a directory that cannot be
+    // emptied right now (a scanner holding a fresh blob) is left behind
+    // after a short retry instead of failing the call – the keys are gone,
+    // and the caller must be able to close the vault it deleted.
+    let held = resist(&dir, &blob);
+    store.delete_vault(v.id(), PW).unwrap();
+    assert!(!v.path().exists());
+    assert!(store.list_vaults().unwrap().is_empty());
+    assert!(matches!(store.unlock(v.id(), PW), Err(Error::NotFound(_))));
+    assert!(matches!(
+        store.delete_vault(v.id(), PW),
+        Err(Error::NotFound(_))
+    ));
+    let leftovers = files(&store.vaults_dir());
+    if resist_binds(&dir) {
+        assert_eq!(leftovers, [format!("{}.keystead.attachments", v.id())]);
+        assert!(blob.is_file(), "the held blob stays behind");
+    } else {
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+    drop(held);
+    // Deletable by hand once released.
+    let _ = fs::remove_dir_all(&dir);
+    assert!(!dir.exists());
+}
+
 #[test]
 fn exports_carry_nothing_and_imports_bring_none() {
     let (dir, store) = store();

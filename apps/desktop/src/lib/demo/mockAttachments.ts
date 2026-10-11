@@ -1,10 +1,11 @@
 // Attachments of the mock backend: a side store per vault like the mock
 // icons, holding name, size and date only – the demo keeps no file bytes.
 // Mirrors the rules of `keystead_core::attachments` and
-// apps/desktop/src-tauri/src/attachments.rs (limits, error codes, order), see
-// "Attachments" in docs/ARCHITECTURE.md. A "picked" file is just a path
-// string: its size is derived from the name (one sample is too large on
-// purpose), the preview of an image is a drawing made here.
+// apps/desktop/src-tauri/src/attachments.rs (limits, error codes, order, the
+// source/target path checks), see "Attachments" in docs/ARCHITECTURE.md. A
+// "picked" file is just a path string: its size is derived from the name (one
+// sample is too large on purpose), the preview of an image is a drawing made
+// here, one per name.
 
 import { ATTACHMENTS_PER_ITEM_MAX, ATTACHMENT_MAX_BYTES, type AttachmentListEntry, type VaultItem } from "../types";
 import { fileNameOf } from "../utils";
@@ -63,11 +64,13 @@ export function mockAttachmentsOf(vaultId: string, itemId: string): AttachmentLi
 
 /**
  * `add_attachment`: the checks in the backend's order – the path and the
- * "file" first (name, size), then the item (unknown, trashed, full) and the
- * name limits. Returns nothing; the caller answers the item's new entry.
+ * "file" first (shape and source, name, size), then the item (unknown,
+ * trashed, full) and the name limits. Returns nothing; the caller answers the
+ * item's new entry.
  */
-export function mockAddAttachment(vaultId: string, items: VaultItem[], itemId: string, path: string): void {
+export function mockAddAttachment(vaultId: string, items: VaultItem[], itemId: string, path: string, dataDir: string): void {
   if (!path.trim()) fail("invalid_input:path_required");
+  if (!isDialogPath(path) || isInside(path, dataDir)) fail("invalid_input:attachment_source");
   const name = fileNameOf(path).trim();
   if (!name || /[\\/]$/.test(path)) fail("invalid_input:attachment_name_required");
   const size = mockFileSize(path);
@@ -90,16 +93,30 @@ export function mockRemoveAttachment(vaultId: string, attachmentId: string): str
 }
 
 /**
- * `save_attachment`: the backend refuses a target inside the vaults folder
- * or with the vault file's extension; everything else "succeeds" (nothing is
- * written in the demo).
+ * `save_attachment`: the backend refuses a target inside the vaults folder,
+ * with the vault file's extension or not of the dialog's shape; everything
+ * else "succeeds" (nothing is written in the demo).
  */
 export function mockSaveAttachment(vaultId: string, attachmentId: string, path: string, dataDir: string): void {
   if (!path.trim()) fail("invalid_input:path_required");
   if (!storeOf(vaultId).has(attachmentId)) fail("not_found");
+  if (!isDialogPath(path) || path.toLowerCase().endsWith(".keystead") || isInside(path, `${dataDir}\\vaults`)) {
+    fail("invalid_input:attachment_target");
+  }
+}
+
+/** A path as the native dialogs produce it: absolute (drive, UNC or POSIX root), no `.`/`..` segments. */
+function isDialogPath(path: string): boolean {
+  const absolute = /^([A-Za-z]:[\\/]|\\\\|\/)/.test(path);
+  const dotSegment = path.split(/[\\/]/).some((segment) => segment === "." || segment === "..");
+  return absolute && !dotSegment;
+}
+
+/** `path` is `dir` or lies below it (compared case-insensitively, like Windows). */
+function isInside(path: string, dir: string): boolean {
+  const prefix = dir.replace(/[\\/]+$/, "").toLowerCase();
   const lower = path.toLowerCase();
-  const vaultsDir = `${dataDir}\\vaults\\`.toLowerCase();
-  if (lower.endsWith(".keystead") || lower.startsWith(vaultsDir)) fail("invalid_input:attachment_target");
+  return lower === prefix || lower.startsWith(`${prefix}\\`) || lower.startsWith(`${prefix}/`);
 }
 
 /** `reveal_attachment`: a data URL for an image (by name here, by magic bytes in the backend) up to 8 MiB. */
@@ -158,11 +175,13 @@ export function mockFileSize(path: string): number {
   return 20_480 + (hash % (3 * MIB - 20_480));
 }
 
-let cachedPreview: string | null = null;
+/** Rendered previews by attachment name – the backend answers each attachment's own bytes, the demo its own drawing. */
+const previews = new Map<string, string>();
 
-/** The one image the demo can "decrypt": a drawn ID-card-like placeholder as a PNG data URL. */
+/** The "decrypted" image of an attachment: a drawn ID-card-like placeholder with its name, as a PNG data URL. */
 function previewImage(name: string): string {
-  if (cachedPreview) return cachedPreview;
+  const cached = previews.get(name);
+  if (cached) return cached;
   const canvas = document.createElement("canvas");
   canvas.width = 640;
   canvas.height = 400;
@@ -200,6 +219,7 @@ function previewImage(name: string): string {
   ctx.fillStyle = "#6d7a94";
   ctx.font = "600 20px 'Segoe UI', Inter, system-ui, sans-serif";
   ctx.fillText(name, 72, 330);
-  cachedPreview = canvas.toDataURL("image/png");
-  return cachedPreview;
+  const url = canvas.toDataURL("image/png");
+  previews.set(name, url);
+  return url;
 }

@@ -697,6 +697,27 @@ fn rename_with_retry(from: &Path, to: &Path) -> Result<()> {
     }
 }
 
+/// Runs a removal (`remove_file`, `remove_dir_all`) best effort with the
+/// same few retries as [`rename_with_retry`]: on Windows, virus scanners
+/// and indexers briefly hold freshly written files open (sharing
+/// violation / access denied). A missing path counts as removed; whatever
+/// still fails after the last attempt stays. Used for the leftovers of a
+/// deleted vault, which counts as deleted once its file is gone.
+pub(crate) fn remove_with_retry(mut remove: impl FnMut() -> std::io::Result<()>) {
+    let mut attempt = 0u64;
+    loop {
+        match remove() {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20 * attempt));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 #[cfg(unix)]
 fn sync_dir(dir: &Path) {
     // Best effort: makes the rename durable on power loss.
@@ -1112,6 +1133,30 @@ mod tests {
         supersede_backup(&p);
         assert_eq!(fs::read(&bak).unwrap(), b"three");
         assert_eq!(dir_names(dir.path()), ["v.keystead", "v.keystead.bak"]);
+    }
+
+    #[test]
+    fn remove_with_retry_is_best_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        fs::write(&file, b"x").unwrap();
+        remove_with_retry(|| fs::remove_file(&file));
+        assert!(!file.exists());
+        // Nothing to remove: done at once, no retries.
+        let started = Instant::now();
+        remove_with_retry(|| fs::remove_file(&file));
+        remove_with_retry(|| fs::remove_dir_all(dir.path().join("none")));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // A removal that keeps failing is retried ten times, then given up.
+        let mut calls = 0;
+        remove_with_retry(|| {
+            calls += 1;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "held open",
+            ))
+        });
+        assert_eq!(calls, 11);
     }
 
     #[test]

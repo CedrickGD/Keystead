@@ -101,7 +101,22 @@ neue Betas per In-App-Update.
   „Attachments“). Noch nicht veröffentlicht (nächste Beta); in der echten
   Tauri-App mit einer echten Datei bisher nicht durchgeklickt (nur Mock) –
   vor dem `[release]` einmal `npx tauri dev`: Datei anhängen, Vorschau,
-  „Speichern unter …“ + „Im Ordner anzeigen“, Entfernen.
+  „Speichern unter …“ + „Im Ordner anzeigen“, Entfernen. Review-Fixes
+  (2026-10-11): `save_attachment` lehnt relative Pfade und `.`/`..`-Bestandteile
+  ab und löst den tiefsten existierenden Ordner auf (Symlinks, Groß-/
+  Kleinschreibung, 8.3-Namen – vorher ließ sich mit `..` hinter einem noch
+  nicht existierenden Ordner ein Blob im Tresor-Ordner überschreiben);
+  `add_attachment` lehnt Dateien aus dem Datenordner ab
+  (`invalid_input:attachment_source`), damit eine kompromittierte Seite die
+  Tresordatei nicht über Anhängen + „Speichern unter …“ ohne Master-Passwort
+  herauskopieren kann; `delete_vault` räumt `.bak`, Temp-Dateien und den
+  Anhang-Ordner nach der Tresordatei best effort mit kurzem Retry ab – der
+  Tresor gilt mit seiner Datei als gelöscht, die App schließt ihn auch, wenn
+  der Ordner (Virenscanner) noch widersteht; Mock-Vorschau je Dateiname.
+  Offen für den Besitzer: die Seite benennt weiterhin die Dialog-Pfade (so
+  entschieden); wer das weiter einengen will, öffnet die Dialoge aus Rust
+  (`tauri_plugin_dialog::DialogExt`, Befehle ohne `path`) oder verlangt für
+  „Speichern unter …“ das Master-Passwort wie beim Export.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
