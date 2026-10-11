@@ -48,8 +48,9 @@ WebView2 (ist auf Win 10/11 vorhanden).
   Erweiterung lädt sich nach App-Updates selbst neu. Der Besitzer hat sie seit
   beta.7 aus diesem Ordner geladen.
 
-Veröffentlicht: beta.2 … **beta.9** (beta.7: Sicherheits-Block, beta.8: Plugin
-smarter, beta.9: Tags, Assistenten-Schalter, Windows-Bridge-Fixes). Der Besitzer
+Veröffentlicht: beta.2 … **beta.10** (beta.7: Sicherheits-Block, beta.8: Plugin
+smarter, beta.9: Tags, Assistenten-Schalter, Windows-Bridge-Fixes, beta.10:
+Dateianhänge). Der Besitzer
 testet unter Windows (Installer-Version, Brave/Chromium-Browser) und bekommt
 neue Betas per In-App-Update.
 
@@ -98,10 +99,10 @@ neue Betas per In-App-Update.
   Sicherungshinweis unter Einstellungen → Tresor; Mock-Backend mit
   Beispieldaten („Telekom Kundencenter“). Die TUI zeigt nur „Anhänge: N“
   unter der Tags-Zeile. Vertrag in `ARCHITECTURE.md` (Abschnitt
-  „Attachments“). Noch nicht veröffentlicht (nächste Beta); in der echten
-  Tauri-App mit einer echten Datei bisher nicht durchgeklickt (nur Mock) –
-  vor dem `[release]` einmal `npx tauri dev`: Datei anhängen, Vorschau,
-  „Speichern unter …“ + „Im Ordner anzeigen“, Entfernen. Review-Fixes
+  „Attachments“). Veröffentlicht mit beta.10; in der echten Tauri-App mit
+  einer echten Datei vorher nicht durchgeklickt (nur Mock und Tests) – der
+  Besitzer prüft per In-App-Update: Datei anhängen, Vorschau, „Speichern
+  unter …“ + „Im Ordner anzeigen“, Entfernen. Review-Fixes
   (2026-10-11): `save_attachment` lehnt relative Pfade und `.`/`..`-Bestandteile
   ab und löst den tiefsten existierenden Ordner auf (Symlinks, Groß-/
   Kleinschreibung, 8.3-Namen – vorher ließ sich mit `..` hinter einem noch
@@ -192,9 +193,8 @@ wandern.
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
 3. **Block 3 „Neue Funktionen“**: Tags zusätzlich zu Ordnern (beta.9) und
-   verschlüsselte Dateianhänge an Einträgen (siehe „Was fertig ist“; kommt
-   mit der nächsten Beta, vorher einmal in der echten App durchklicken) sind
-   fertig. Offen: optionale Prüfung auf geleakte Passwörter (Have I Been
+   verschlüsselte Dateianhänge an Einträgen (beta.10, siehe „Was fertig
+   ist“) sind fertig. Offen: optionale Prüfung auf geleakte Passwörter (Have I Been
    Pwned, k-Anonymität – nur die ersten 5 Zeichen des SHA-1 gehen raus;
    standardmäßig aus oder nur auf Knopfdruck).
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
