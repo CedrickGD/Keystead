@@ -10,10 +10,13 @@
 //! with an older copy of the file (the `.bak`, a backup, a synced version)
 //! cannot decrypt the current or any later revision.
 
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
+use crate::attachments::{self, ATTACHMENTS_PER_ITEM_MAX, ATTACHMENT_MAX_BYTES};
 use crate::crypto::{self, SecretKey};
 use crate::error::{Error, Result};
 use crate::format::{self, VaultFile};
@@ -21,8 +24,8 @@ use crate::icons;
 use crate::import::{self, ConflictMode, ImportPlan, ImportReport};
 use crate::matching;
 use crate::model::{
-    now_ms, Folder, GeneratedPassword, ItemSummary, ItemType, PasswordHistoryEntry, VaultData,
-    VaultInfo, VaultItem,
+    now_ms, AttachmentEntry, AttachmentInfo, Folder, GeneratedPassword, ItemSummary, ItemType,
+    PasswordHistoryEntry, VaultData, VaultInfo, VaultItem,
 };
 use crate::util;
 
@@ -82,6 +85,7 @@ pub(crate) fn wipe_data(data: &mut VaultData) {
         g.password.zeroize();
     }
     icons::wipe_icons(&mut data.icons);
+    attachments::wipe(data);
     // Unknown fields of a later format version may hold secrets too.
     data.extra.0.values_mut().for_each(import::wipe_value);
 }
@@ -523,6 +527,133 @@ impl UnlockedVault {
         })
     }
 
+    /// `<vault path>.attachments`: the directory of the attachment blobs
+    /// (see [`crate::attachments`]). It exists once a file was attached.
+    pub fn attachments_dir(&self) -> PathBuf {
+        attachments::dir_for(&self.path)
+    }
+
+    /// The attachments of an item, oldest first (empty for an unknown item).
+    pub fn attachments_of(&self, item_id: &str) -> Vec<AttachmentInfo> {
+        attachments::of_item(&self.data, item_id)
+    }
+
+    /// The key-free description of one attachment.
+    pub fn attachment_info(&self, id: &str) -> Option<AttachmentInfo> {
+        self.data.attachments.get(id).map(|e| e.info(id))
+    }
+
+    /// Attaches a file to an item: seals `bytes` under a fresh key into
+    /// `<attachments dir>/<new id>.bin`, then records the entry in one save.
+    ///
+    /// Checked before anything is written: the item exists
+    /// (`Error::NotFound`) and is not in the trash (`invalid_input:
+    /// item_trashed`), it has fewer than [`ATTACHMENTS_PER_ITEM_MAX`]
+    /// attachments (`invalid_input:attachments_too_many`), the trimmed
+    /// `name` is 1–200 characters ([`attachments::validate_name`]) and the
+    /// file is at most [`ATTACHMENT_MAX_BYTES`]
+    /// (`unsupported:attachment_too_large`). If the save fails – on
+    /// `Error::Conflict` too – the blob is removed again and nothing
+    /// changed: `reload_if_changed()` and call again.
+    pub fn add_attachment(
+        &mut self,
+        item_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<AttachmentInfo> {
+        let item = self
+            .item(item_id)
+            .ok_or_else(|| Error::NotFound(format!("item {item_id}")))?;
+        if item.is_trashed() {
+            return Err(Error::invalid("item_trashed"));
+        }
+        if self.attachments_of(item_id).len() >= ATTACHMENTS_PER_ITEM_MAX {
+            return Err(Error::invalid("attachments_too_many"));
+        }
+        let name = attachments::validate_name(name)?;
+        let size = bytes.len() as u64;
+        if size > ATTACHMENT_MAX_BYTES {
+            return Err(Error::Unsupported("attachment_too_large".into()));
+        }
+        let id = util::new_id();
+        let key = crypto::random_key()?;
+        let blob = attachments::seal_blob(&key, &self.file.id, &id, bytes)?;
+        let path = attachments::blob_path(&self.attachments_dir(), &id);
+        format::write_atomic(&path, &blob, false)?;
+        let entry = AttachmentEntry {
+            item_id: item_id.to_owned(),
+            name,
+            size,
+            created_at: now_ms(),
+            key: crypto::b64_encode(key.as_slice()),
+        };
+        let info = entry.info(&id);
+        let result = self.mutate(|data| {
+            data.attachments.insert(id.clone(), entry);
+            Ok(())
+        });
+        if let Err(e) = result {
+            // Its key was never saved: the blob is worthless, remove it.
+            let _ = fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(info)
+    }
+
+    /// Removes an attachment: drops its entry (and with it the only key to
+    /// the blob) in one save, then deletes the blob file best effort.
+    /// `Error::NotFound` for an unknown id.
+    pub fn remove_attachment(&mut self, id: &str) -> Result<()> {
+        self.mutate(|data| {
+            let mut entry = data
+                .attachments
+                .remove(id)
+                .ok_or_else(|| Error::NotFound(format!("attachment {id}")))?;
+            attachments::wipe_entry(&mut entry);
+            Ok(())
+        })?;
+        attachments::remove_blobs(&self.attachments_dir(), &[id.to_owned()]);
+        Ok(())
+    }
+
+    /// Reads and decrypts an attachment. `Error::NotFound` for an unknown
+    /// id or a missing blob file, `Error::Corrupt` for a blob that is
+    /// tampered with, swapped or otherwise not this attachment's.
+    pub fn read_attachment(&self, id: &str) -> Result<Zeroizing<Vec<u8>>> {
+        let entry = self
+            .data
+            .attachments
+            .get(id)
+            .ok_or_else(|| Error::NotFound(format!("attachment {id}")))?;
+        let key = attachments::decode_key(entry)?;
+        let path = attachments::blob_path(&self.attachments_dir(), id);
+        let file = fs::File::open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::NotFound(format!("attachment file {}", path.display()))
+            } else {
+                Error::io_at(&path, e)
+            }
+        })?;
+        // A blob larger than any attachment can be is not ours: do not read
+        // it into memory whole.
+        let limit = ATTACHMENT_MAX_BYTES + attachments::BLOB_OVERHEAD as u64;
+        let mut blob = Zeroizing::new(Vec::new());
+        file.take(limit + 1)
+            .read_to_end(&mut blob)
+            .map_err(|e| Error::io_at(&path, e))?;
+        if blob.len() as u64 > limit {
+            return Err(Error::corrupt("attachment blob is too large"));
+        }
+        attachments::open_blob(&key, &self.file.id, id, &blob)
+    }
+
+    /// Deletes blob and temporary files in the attachments directory that
+    /// no entry references and that are at least an hour old (see
+    /// [`attachments::sweep`]). Returns how many were removed.
+    pub fn sweep_attachments(&self) -> usize {
+        attachments::sweep(&self.attachments_dir(), &self.data)
+    }
+
     /// Adds imported items and folders with fresh ids and persists once.
     ///
     /// Folder ids referenced by the items are mapped to the new ids; an
@@ -823,10 +954,15 @@ impl UnlockedVault {
             return Ok(result);
         }
         // Icons of hosts no login uses any more (deleted, trashed, address
-        // changed) leave the vault with the change.
+        // changed) leave the vault with the change, and so do the
+        // attachment entries of items that no longer exist.
         icons::prune_icons(&mut data);
+        let orphaned = attachments::prune(&mut data);
         let header = self.file.clone();
         self.write(header, data)?;
+        // Their keys are gone with this revision: the blobs are worthless.
+        // Best effort – `sweep_attachments` catches what is left behind.
+        attachments::remove_blobs(&self.attachments_dir(), &orphaned);
         Ok(result)
     }
 

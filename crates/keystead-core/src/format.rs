@@ -1,7 +1,8 @@
 //! Vault file format (see "Vault file format" in docs/ARCHITECTURE.md) and
-//! atomic file writing. This build writes version 1 and reads versions 1
-//! and 2 (see [`SUPPORTED_VERSIONS`]); header and payload keys it does not
-//! know are written back unchanged ([`UnknownFields`]).
+//! atomic file writing. This build reads versions 1 and 2 (see
+//! [`SUPPORTED_VERSIONS`]) and writes version 2 while the vault has
+//! attachments, version 1 otherwise ([`version_for`]); header and payload
+//! keys it does not know are written back unchanged ([`UnknownFields`]).
 //!
 //! Layout: a random 32-byte vault key encrypts the JSON-serialised
 //! [`VaultData`] with XChaCha20-Poly1305 (AAD binds vault id and revision).
@@ -24,17 +25,32 @@ use crate::util;
 
 /// Value of the `format` field.
 pub const FORMAT_NAME: &str = "keystead";
-/// Format version of new files.
+/// Format version of files without attachments (new vaults, exports).
 pub const FORMAT_VERSION: u32 = 1;
-/// Format versions [`VaultFile::parse`] accepts (a file keeps its version
-/// when it is written back). Version 2 is reserved for vaults with
-/// attachments – not written yet; a later build writes it only for such
-/// vaults, so builds before this reader refuse them (`unsupported:vault
-/// format version 2`) instead of dropping what they do not know. This
-/// reader does not drop it either: header keys ([`VaultFile::extra`]) and
-/// top-level payload keys ([`VaultData::extra`]) it does not know survive
+/// Format version of files whose payload has attachments
+/// ([`VaultData::attachments`] not empty): same layout as version 1, but
+/// the payload carries the attachment entries with their blob keys. Builds
+/// that only read version 1 refuse such a file (`unsupported:vault format
+/// version 2`) instead of dropping the keys on their next save.
+pub const FORMAT_VERSION_ATTACHMENTS: u32 = 2;
+/// Format versions [`VaultFile::parse`] accepts. Every write derives the
+/// version from the payload ([`version_for`]): 2 while there are
+/// attachments, back to 1 once the last one is removed, so older builds
+/// open the vault again. Header keys ([`VaultFile::extra`]) and top-level
+/// payload keys ([`VaultData::extra`]) this build does not know survive
 /// every save. Any other version → `unsupported:vault format version <n>`.
 pub const SUPPORTED_VERSIONS: RangeInclusive<u32> = 1..=2;
+
+/// The format version a file with payload `data` is written as:
+/// [`FORMAT_VERSION_ATTACHMENTS`] iff `data.attachments` is not empty,
+/// [`FORMAT_VERSION`] otherwise.
+pub fn version_for(data: &VaultData) -> u32 {
+    if data.attachments.is_empty() {
+        FORMAT_VERSION
+    } else {
+        FORMAT_VERSION_ATTACHMENTS
+    }
+}
 /// File extension of vault files (without dot).
 pub const VAULT_EXTENSION: &str = "keystead";
 /// The only supported key derivation algorithm.
@@ -445,11 +461,13 @@ impl VaultFile {
             .map_err(|e| Error::corrupt(format!("vault payload is not valid vault data: {e}")))
     }
 
-    /// Encrypts `data` as payload for the current `revision`.
+    /// Encrypts `data` as payload for the current `revision` and sets the
+    /// header `version` the payload calls for ([`version_for`]).
     pub fn encrypt_payload(&mut self, key: &SecretKey, data: &VaultData) -> Result<()> {
         let plain = Zeroizing::new(serde_json::to_vec(data)?);
         let sealed = crypto::seal(key, &plain, &self.payload_aad())?;
         self.payload = SealedBox::from_sealed(&sealed);
+        self.version = version_for(data);
         Ok(())
     }
 }
@@ -838,34 +856,47 @@ mod tests {
         ));
     }
 
-    /// Version 2 (reserved for vaults with attachments) is read like
-    /// version 1, and written back unchanged – header and payload keys this
-    /// build does not know included; version 3 is refused.
+    /// The header version follows the payload: 2 while there are
+    /// attachments, 1 otherwise; both are read, version 3 is refused, and
+    /// header and payload keys this build does not know survive a save.
     #[test]
     fn reads_version_1_and_2_only() {
         assert_eq!(SUPPORTED_VERSIONS, 1..=2);
         assert!(SUPPORTED_VERSIONS.contains(&FORMAT_VERSION));
+        assert!(SUPPORTED_VERSIONS.contains(&FORMAT_VERSION_ATTACHMENTS));
         let (mut file, key, mut data) = sample_file("pw");
-        // A version-2 payload with a field only a later build understands.
-        let attachments = serde_json::json!({ "a1": { "itemId": "a", "key": "c2VjcmV0" } });
-        data.extra
-            .0
-            .insert("attachments".into(), attachments.clone());
+        assert_eq!(file.version, 1);
+        assert_eq!(version_for(&data), 1);
+        // A payload with an attachment and a field only a later build
+        // understands.
+        data.attachments.insert(
+            "a1".into(),
+            crate::model::AttachmentEntry {
+                item_id: "a".into(),
+                name: "scan.png".into(),
+                size: 3,
+                created_at: 1,
+                key: "c2VjcmV0".into(),
+            },
+        );
+        let sync = serde_json::json!({ "s1": { "token": "dG9rZW4=" } });
+        data.extra.0.insert("sync".into(), sync.clone());
         file.encrypt_payload(&key, &data).unwrap();
+        assert_eq!(file.version, 2, "set by encrypt_payload");
         let mut v: serde_json::Value = serde_json::from_slice(&file.to_json().unwrap()).unwrap();
-        v["version"] = 2.into();
+        assert_eq!(v["version"], 2);
         v["attachmentsDir"] = "x".into();
         let parsed = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
         assert_eq!(parsed.version, 2);
         assert_eq!(parsed.extra.0["attachmentsDir"], "x");
         let mut expected = file.clone();
-        expected.version = 2;
         expected.extra.0.insert("attachmentsDir".into(), "x".into());
         assert_eq!(parsed, expected);
         let decrypted = parsed.decrypt_payload(&key).unwrap();
         assert_eq!(decrypted, data);
-        assert_eq!(decrypted.extra.0["attachments"], attachments);
-        // A save by this build (new revision, changed items) keeps both.
+        assert_eq!(decrypted.attachments["a1"].key, "c2VjcmV0");
+        assert_eq!(decrypted.extra.0["sync"], sync);
+        // A save by this build (new revision, changed items) keeps all of it.
         let mut saved = parsed.clone();
         saved.revision += 1;
         let mut changed = decrypted.clone();
@@ -876,10 +907,28 @@ mod tests {
         assert_eq!(again.extra.0["attachmentsDir"], "x");
         let payload = again.decrypt_payload(&key).unwrap();
         assert!(payload.items[0].favorite);
-        assert_eq!(payload.extra.0["attachments"], attachments);
+        assert_eq!(payload.attachments, data.attachments);
+        assert_eq!(payload.extra.0["sync"], sync);
         let raw: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&payload).unwrap()).unwrap();
-        assert_eq!(raw["attachments"], attachments, "flattened, not nested");
+        assert_eq!(raw["sync"], sync, "flattened, not nested");
+        assert_eq!(raw["attachments"]["a1"]["itemId"], "a");
+        // The last attachment gone → version 1 again, still with the
+        // unknown keys; a version-1 file with a (hand-written) attachment
+        // payload is read as well.
+        let mut back = again.clone();
+        back.revision += 1;
+        let mut without = payload.clone();
+        without.attachments.clear();
+        back.encrypt_payload(&key, &without).unwrap();
+        assert_eq!(back.version, 1);
+        let reparsed = VaultFile::parse(&back.to_json().unwrap()).unwrap();
+        assert_eq!(reparsed.version, 1);
+        assert_eq!(reparsed.extra.0["attachmentsDir"], "x");
+        assert_eq!(reparsed.decrypt_payload(&key).unwrap(), without);
+        v["version"] = 1.into();
+        let lenient = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(lenient.decrypt_payload(&key).unwrap(), data);
         for version in [0u64, 3, u64::from(u32::MAX) + 1] {
             v["version"] = version.into();
             let err = VaultFile::parse(&serde_json::to_vec(&v).unwrap()).unwrap_err();

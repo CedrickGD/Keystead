@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::attachments;
 use crate::crypto::{self, KdfParams};
 use crate::error::{Error, Result};
 use crate::format::{self, VaultFile, VAULT_EXTENSION};
@@ -118,7 +119,17 @@ impl VaultStore {
             return Err(Error::Conflict);
         }
         file.write_atomic(&path, false)?;
-        Ok(UnlockedVault::from_parts(path, file, key, master_kek, data))
+        Ok(Self::opened(UnlockedVault::from_parts(
+            path, file, key, master_kek, data,
+        )))
+    }
+
+    /// Housekeeping for a vault that was just created or unlocked: removes
+    /// attachment blobs no entry references any more (best effort, see
+    /// [`UnlockedVault::sweep_attachments`]).
+    fn opened(vault: UnlockedVault) -> UnlockedVault {
+        vault.sweep_attachments();
+        vault
     }
 
     fn read_vault(&self, vault_id: &str) -> Result<(PathBuf, VaultFile)> {
@@ -137,7 +148,9 @@ impl VaultStore {
         let master_kek = file.derive_master_kek(master_password)?;
         let key = file.unwrap_key_with_kek(&master_kek)?;
         let data = file.decrypt_payload(&key)?;
-        Ok(UnlockedVault::from_parts(path, file, key, master_kek, data))
+        Ok(Self::opened(UnlockedVault::from_parts(
+            path, file, key, master_kek, data,
+        )))
     }
 
     /// Unlocks a vault with its recovery key and sets a new master password.
@@ -170,11 +183,11 @@ impl VaultStore {
         // dropped).
         let mut vault = UnlockedVault::from_parts(path, file, key, master_kek.clone(), data);
         vault.rekey_and_save(header, new_key, master_kek)?;
-        Ok(vault)
+        Ok(Self::opened(vault))
     }
 
     /// Deletes a vault after verifying its master password (removes the
-    /// file, its `.bak` and helper files).
+    /// file, its `.bak` and helper files, and the attachments directory).
     pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()> {
         let (path, file) = self.read_vault(vault_id)?;
         file.unwrap_key(master_password)?;
@@ -190,6 +203,13 @@ impl VaultStore {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => return Err(Error::io_at(&p, e)),
                 }
+            }
+            // The blobs are useless without the keys that just went away.
+            let dir = attachments::dir_for(&path);
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Error::io_at(&dir, e)),
             }
         }
         // The lock file can only be removed once the lock is released.

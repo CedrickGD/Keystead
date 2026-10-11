@@ -21,10 +21,15 @@ pub struct VaultData {
     /// the desktop app. Kept inside the encrypted payload – the set of hosts
     /// would reveal the user's accounts. Never exported or imported.
     pub icons: BTreeMap<String, IconEntry>,
+    /// Encrypted file attachments of items by attachment id (UUID v4). The
+    /// bytes live in one blob file each next to the vault file
+    /// (see [`crate::attachments`]); the entry holds the blob's own key, so
+    /// the vault file is written as format version 2 while this map is not
+    /// empty. Missing in older payloads → empty. Never exported or imported.
+    pub attachments: BTreeMap<String, AttachmentEntry>,
     /// Top-level payload keys this build does not know (a later format
-    /// version's fields, e.g. an `attachments` map with its blob keys),
-    /// kept as they are and written back with every save so that opening
-    /// such a vault here never loses them. Not exported.
+    /// version's fields), kept as they are and written back with every save
+    /// so that opening such a vault here never loses them. Not exported.
     #[serde(flatten)]
     pub extra: UnknownFields,
 }
@@ -64,6 +69,65 @@ impl std::fmt::Debug for IconEntry {
             .field("failed_at", &self.failed_at)
             .finish()
     }
+}
+
+/// One file attachment of an item ([`VaultData::attachments`]). The file
+/// bytes are not here: they are sealed with `key` in the blob
+/// `<vault path>.attachments/<attachment id>.bin`
+/// ([`crate::attachments::seal_blob`]).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AttachmentEntry {
+    /// The item the file belongs to.
+    pub item_id: String,
+    /// File name shown to the user (trimmed, 1–200 characters).
+    pub name: String,
+    /// Plaintext size in bytes.
+    pub size: u64,
+    /// Unix ms when the file was attached.
+    pub created_at: i64,
+    /// Base64 (standard, padded) of the blob's own random 32-byte key. Each
+    /// attachment has its own key, so rotating the vault key re-encrypts no
+    /// blob, and removing this entry makes the blob unreadable.
+    pub key: String,
+}
+
+impl AttachmentEntry {
+    /// The key-free view of this entry under its id.
+    pub fn info(&self, id: &str) -> AttachmentInfo {
+        AttachmentInfo {
+            id: id.to_owned(),
+            item_id: self.item_id.clone(),
+            name: self.name.clone(),
+            size: self.size,
+            created_at: self.created_at,
+        }
+    }
+}
+
+impl std::fmt::Debug for AttachmentEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the blob key.
+        f.debug_struct("AttachmentEntry")
+            .field("item_id", &self.item_id)
+            .field("name", &self.name)
+            .field("size", &self.size)
+            .field("created_at", &self.created_at)
+            .field("key_len", &self.key.len())
+            .finish()
+    }
+}
+
+/// What the UI and the TUI see of an attachment: [`AttachmentEntry`]
+/// without the key, plus its id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    pub id: String,
+    pub item_id: String,
+    pub name: String,
+    pub size: u64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -451,24 +515,67 @@ mod tests {
     /// at the top level, and `Debug` never shows its value.
     #[test]
     fn unknown_payload_fields_round_trip() {
-        let json = r#"{"items":[],"attachments":{"a1":{"key":"c2VjcmV0"}},"future":1}"#;
+        let json = r#"{"items":[],"sync":{"s1":{"token":"c2VjcmV0"}},"future":1}"#;
         let data: VaultData = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            data.extra.0.keys().collect::<Vec<_>>(),
-            ["attachments", "future"]
-        );
+        assert_eq!(data.extra.0.keys().collect::<Vec<_>>(), ["future", "sync"]);
         let v = serde_json::to_value(&data).unwrap();
-        assert_eq!(v["attachments"]["a1"]["key"], "c2VjcmV0");
+        assert_eq!(v["sync"]["s1"]["token"], "c2VjcmV0");
         assert_eq!(v["future"], 1);
         assert!(v["extra"].is_null());
         let debug = format!("{data:?}");
         assert!(
-            debug.contains("attachments") && !debug.contains("c2VjcmV0"),
+            debug.contains("sync") && !debug.contains("c2VjcmV0"),
             "{debug}"
         );
         let plain: VaultData = serde_json::from_str(r#"{"items":[]}"#).unwrap();
         assert!(plain.extra.0.is_empty());
         assert_eq!(VaultData::default(), plain);
+    }
+
+    /// `attachments` is a typed field (not an unknown one): a payload
+    /// without it opens, one with it fills the map, and `Debug` never shows
+    /// a blob key.
+    #[test]
+    fn attachment_entries_are_typed_and_debug_has_no_key() {
+        let plain: VaultData = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(plain.attachments.is_empty());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap()["attachments"],
+            serde_json::json!({})
+        );
+        let json = r#"{"attachments":{"a1":{"itemId":"i1","name":"scan.png","size":12,"createdAt":5,"key":"c2VjcmV0"}}}"#;
+        let data: VaultData = serde_json::from_str(json).unwrap();
+        assert!(data.extra.0.is_empty());
+        let entry = &data.attachments["a1"];
+        assert_eq!(
+            (
+                entry.item_id.as_str(),
+                entry.name.as_str(),
+                entry.size,
+                entry.created_at
+            ),
+            ("i1", "scan.png", 12, 5)
+        );
+        assert_eq!(entry.key, "c2VjcmV0");
+        let v = serde_json::to_value(&data).unwrap();
+        assert_eq!(v["attachments"]["a1"]["key"], "c2VjcmV0");
+        assert_eq!(v["attachments"]["a1"]["itemId"], "i1");
+        for debug in [format!("{entry:?}"), format!("{data:?}")] {
+            assert!(debug.contains("scan.png"), "{debug}");
+            assert!(!debug.contains("c2VjcmV0"), "{debug}");
+            assert!(debug.contains("key_len: 8"), "{debug}");
+        }
+        let info = entry.info("a1");
+        assert_eq!(
+            serde_json::to_value(&info).unwrap(),
+            serde_json::json!({
+                "id": "a1",
+                "itemId": "i1",
+                "name": "scan.png",
+                "size": 12,
+                "createdAt": 5
+            })
+        );
     }
 
     #[test]

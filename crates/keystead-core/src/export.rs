@@ -60,8 +60,10 @@ pub fn export_encrypted_with_params(
         // Website icons stay in the vault: an export carries no list of
         // hosts beyond the items themselves (imports never read icons).
         icons: Default::default(),
-        // So do a later format version's fields (e.g. attachment keys): an
+        // So do the attachments (their blobs stay next to the vault and the
+        // keys never leave it) and a later format version's fields: an
         // export is a standalone version-1 file of items and folders.
+        attachments: Default::default(),
         extra: Default::default(),
     };
     let name = path

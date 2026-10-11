@@ -2,6 +2,7 @@
 //! generator, TOTP, URL matching, health report, import/export, settings and
 //! clipboard. No UI and no IPC. See docs/ARCHITECTURE.md for the contract.
 
+pub mod attachments;
 pub mod clipboard;
 pub mod crypto;
 pub mod error;
