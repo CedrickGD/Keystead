@@ -262,7 +262,11 @@ fn token_mismatch_and_revocation() {
     let (client_id, token) = paired(&f);
     let lock = json!({"id": "l", "type": "lock"});
 
-    let wrong_token = format!("{}A", &token[..42]);
+    // The last character replaced by one the token does not end with – a
+    // fixed replacement would equal the real token every 16th run (the
+    // token is random base64url; "A" is one of its possible last chars).
+    let replacement = if token.ends_with('A') { 'B' } else { 'A' };
+    let wrong_token = format!("{}{replacement}", &token[..token.len() - 1]);
     for (id, tok) in [
         (client_id.as_str(), wrong_token.as_str()),
         (client_id.as_str(), ""),
