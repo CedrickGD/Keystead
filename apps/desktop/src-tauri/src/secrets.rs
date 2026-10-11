@@ -8,8 +8,14 @@
 //! an eye toggle) and `get_item_for_edit` (the full item, for the editor).
 //! `copy_secret_field` copies a secret without sending it to the webview,
 //! and `totp_for_item` sends only the current code, never the key.
+//!
+//! An entry also lists the item's attachments ([`AttachmentListEntry`]: id,
+//! name, size, date – never the blob key, never the bytes; see
+//! `crate::attachments`).
 
-use keystead_core::model::{FieldKind, IdentityData, ItemType, LoginUri, VaultItem};
+use keystead_core::model::{
+    AttachmentInfo, FieldKind, IdentityData, ItemType, LoginUri, VaultItem,
+};
 use keystead_core::totp::{self, TotpCode};
 use keystead_core::{Error as CoreError, UnlockedVault};
 use serde::{Deserialize, Serialize, Serializer};
@@ -53,9 +59,33 @@ pub struct ItemListEntry {
     pub identity: Option<IdentityData>,
     pub fields: Vec<FieldListEntry>,
     pub password_history: Vec<HistoryListEntry>,
+    /// The item's attachments, oldest first.
+    pub attachments: Vec<AttachmentListEntry>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
+}
+
+/// An attachment as the list entry shows it: [`AttachmentInfo`] without
+/// `itemId` (the entry is the item). Never the blob key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentListEntry {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub created_at: i64,
+}
+
+impl From<AttachmentInfo> for AttachmentListEntry {
+    fn from(info: AttachmentInfo) -> Self {
+        AttachmentListEntry {
+            id: info.id,
+            name: info.name,
+            size: info.size,
+            created_at: info.created_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -117,8 +147,20 @@ pub fn masked_card_number(number: &str) -> String {
     }
 }
 
-impl From<&VaultItem> for ItemListEntry {
-    fn from(item: &VaultItem) -> Self {
+impl ItemListEntry {
+    /// `item` redacted, with the attachments it owns in `vault` (names,
+    /// sizes and dates only – never a blob key).
+    pub fn of(vault: &UnlockedVault, item: &VaultItem) -> Self {
+        let attachments = vault
+            .attachments_of(&item.id)
+            .into_iter()
+            .map(AttachmentListEntry::from)
+            .collect();
+        Self::redacted(item, attachments)
+    }
+
+    /// `item` without its secrets, with the given attachment rows.
+    fn redacted(item: &VaultItem, attachments: Vec<AttachmentListEntry>) -> Self {
         ItemListEntry {
             id: item.id.clone(),
             item_type: item.item_type,
@@ -168,6 +210,7 @@ impl From<&VaultItem> for ItemListEntry {
                     replaced_at: h.replaced_at,
                 })
                 .collect(),
+            attachments,
             created_at: item.created_at,
             updated_at: item.updated_at,
             deleted_at: item.deleted_at,
@@ -175,14 +218,18 @@ impl From<&VaultItem> for ItemListEntry {
     }
 }
 
-/// Names, usernames, websites, notes, tags and identities are no secrets in
-/// the sense of the redaction, but personal: wiped like the full items were.
+/// Names, usernames, websites, notes, tags, identities and attachment names
+/// are no secrets in the sense of the redaction, but personal: wiped like
+/// the full items were.
 impl Wipe for ItemListEntry {
     fn wipe(&mut self) {
         self.name.zeroize();
         self.notes.zeroize();
         for t in &mut self.tags {
             t.zeroize();
+        }
+        for a in &mut self.attachments {
+            a.name.zeroize();
         }
         if let Some(l) = self.login.as_mut() {
             l.username.zeroize();
@@ -229,13 +276,27 @@ impl Wipe for ItemListEntry {
 
 /// All items of the vault (incl. trash), redacted (`list_items`).
 pub fn list_entries(vault: &UnlockedVault) -> Vec<ItemListEntry> {
-    vault.items().iter().map(ItemListEntry::from).collect()
+    vault
+        .items()
+        .iter()
+        .map(|item| ItemListEntry::of(vault, item))
+        .collect()
 }
 
 /// The redacted answer to `save_item`; the saved full item is wiped.
-pub fn saved_entry(saved: VaultItem) -> ItemListEntry {
+pub fn saved_entry(vault: &UnlockedVault, saved: VaultItem) -> ItemListEntry {
     let saved = Wiped(saved);
-    ItemListEntry::from(&saved.0)
+    ItemListEntry::of(vault, &saved.0)
+}
+
+/// The redacted entry of the stored item `item_id` (`Error::NotFound` if
+/// there is none): the answer of the commands that change an item's
+/// attachments.
+pub fn item_entry(vault: &UnlockedVault, item_id: &str) -> keystead_core::Result<ItemListEntry> {
+    vault
+        .item(item_id)
+        .map(|item| ItemListEntry::of(vault, item))
+        .ok_or_else(|| CoreError::NotFound("item".to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +425,7 @@ pub fn set_favorite_for_page(
     item_id: &str,
     favorite: bool,
 ) -> AppResult<ItemListEntry> {
-    let saved = core.mutate_for_page(page_vault_id, |v| {
+    core.mutate_for_page(page_vault_id, |v| {
         // `save_item` would add an unknown id as a new item.
         let mut item = Wiped(
             v.item(item_id)
@@ -372,9 +433,9 @@ pub fn set_favorite_for_page(
                 .ok_or_else(|| CoreError::NotFound("item".to_owned()))?,
         );
         item.0.favorite = favorite;
-        v.save_item(item.0.clone())
-    })?;
-    Ok(saved_entry(saved))
+        let saved = v.save_item(item.0.clone())?;
+        Ok(saved_entry(v, saved))
+    })
 }
 
 impl Wipe for TotpCode {
@@ -549,6 +610,8 @@ mod tests {
         login.login.as_mut().unwrap().password = "hunter2-current".into();
         let login = save(c, login);
         assert_eq!(login.password_history.len(), 1);
+        c.mutate(|v| v.add_attachment(&login.id, "Kontoauszug.pdf", b"%PDF-1.4 statement"))
+            .unwrap();
 
         let mut card = VaultItem::new(ItemType::Card, "Visa");
         card.card = Some(CardData {
@@ -611,6 +674,12 @@ mod tests {
         for secret in SECRETS {
             assert!(!json.contains(secret), "{secret} in {json}");
         }
+        // The attachment's blob key stays in the vault payload.
+        let blob_key = c
+            .read(|v| v.data().attachments.values().next().unwrap().key.clone())
+            .unwrap();
+        assert_eq!(blob_key.len(), 44);
+        assert!(!json.contains(&blob_key), "blob key in {json}");
         // What the list needs is still there.
         for kept in [
             "Bank",
@@ -622,6 +691,7 @@ mod tests {
             "Alice Doe",
             "alice@example.com",
             "note text",
+            "Kontoauszug.pdf",
         ] {
             assert!(json.contains(kept), "{kept} missing in {json}");
         }
@@ -649,6 +719,7 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "attachments",
                 "card",
                 "createdAt",
                 "deletedAt",
@@ -666,6 +737,24 @@ mod tests {
                 "updatedAt",
             ]
         );
+        // Attachments: exactly id, name, size and date – no key, no item id.
+        let attachments = value["attachments"].as_array().unwrap();
+        assert_eq!(attachments.len(), 1);
+        let mut keys: Vec<&str> = attachments[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["createdAt", "id", "name", "size"]);
+        assert_eq!(attachments[0]["name"], "Kontoauszug.pdf");
+        assert_eq!(attachments[0]["size"], 18);
+        assert!(attachments[0]["createdAt"].is_i64());
+        assert!(attachments[0]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
+        assert!(entry(&entries, &ids.card).attachments.is_empty());
         assert_eq!(
             value["fields"],
             serde_json::json!([
@@ -699,17 +788,21 @@ mod tests {
         assert!(note.login.is_none() && note.card.is_none() && note.identity.is_none());
         assert!(entry(&entries, &ids.identity).identity.is_some());
         let empty = VaultItem::new(ItemType::Login, "Empty");
-        let empty = ItemListEntry::from(&empty);
-        assert!(empty.tags.is_empty());
+        let empty = c.read(|v| ItemListEntry::of(v, &empty)).unwrap();
+        assert!(empty.tags.is_empty() && empty.attachments.is_empty());
         let empty = empty.login.unwrap();
         assert!(!empty.has_password && !empty.has_totp);
 
-        // Wiping overwrites the personal strings, tags included.
+        // Wiping overwrites the personal strings, tags and attachment names
+        // included.
         let mut wiped = entry(&entries, &ids.login).clone();
         wiped.wipe();
         assert!(wiped.name.is_empty() && wiped.notes.is_empty());
         assert_eq!(wiped.tags.len(), 2);
         assert!(wiped.tags.iter().all(String::is_empty));
+        assert_eq!(wiped.attachments.len(), 1);
+        assert!(wiped.attachments[0].name.is_empty());
+        assert!(!wiped.attachments[0].id.is_empty(), "ids are no secrets");
     }
 
     #[test]
@@ -725,11 +818,32 @@ mod tests {
 
     #[test]
     fn saved_entries_are_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
         let mut item = VaultItem::new(ItemType::Login, "Bank");
         item.login.as_mut().unwrap().password = "hunter2-current".into();
-        let json = serde_json::to_string(&saved_entry(item)).unwrap();
+        let json = c
+            .read(|v| serde_json::to_string(&saved_entry(v, item)).unwrap())
+            .unwrap();
         assert!(!json.contains("hunter2"), "{json}");
         assert!(json.contains("\"hasPassword\":true"), "{json}");
+
+        // `item_entry` answers the stored item (with its attachments) or
+        // `not_found`, never a new one.
+        let saved = c
+            .mutate(|v| v.save_item(VaultItem::new(ItemType::Note, "Note")))
+            .unwrap();
+        c.mutate(|v| v.add_attachment(&saved.id, "a.txt", b"a"))
+            .unwrap();
+        let entry = c.read(|v| item_entry(v, &saved.id)).unwrap().unwrap();
+        assert_eq!(entry.id, saved.id);
+        assert_eq!(entry.attachments.len(), 1);
+        assert_eq!(entry.attachments[0].name, "a.txt");
+        let err = c
+            .read(|v| item_entry(v, "no-such-item"))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.code(), "not_found");
     }
 
     #[test]

@@ -8,6 +8,7 @@
 // Release builds use the Windows GUI subsystem (no console window).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod attachments;
 mod bridge;
 mod commands;
 mod error;

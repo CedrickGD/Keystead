@@ -278,8 +278,11 @@ pub async fn save_item(
 ) -> CmdResult<Wiped<ItemListEntry>> {
     run(&core, true, move |c| {
         let item = Wiped(parse::<VaultItem>(item, "item")?);
-        c.mutate_for_page(page_vault_id.as_deref(), |v| v.save_item(item.0.clone()))
-            .map(|saved| Wiped(secrets::saved_entry(saved)))
+        c.mutate_for_page(page_vault_id.as_deref(), |v| {
+            let saved = v.save_item(item.0.clone())?;
+            Ok(secrets::saved_entry(v, saved))
+        })
+        .map(Wiped)
     })
     .await
 }

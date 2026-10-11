@@ -13,7 +13,8 @@
 //!
 //! Lock files (`*.lock`), temporary files (`*.tmp`) and the browser
 //! extension folder (`browser-extension`, written again by the app) are not
-//! moved. The
+//! moved; the attachment blobs (`vaults/<id>.keystead.attachments/*.bin`)
+//! move with their vault. The
 //! caller runs [`preflight`] first (while the vault is still open), then
 //! makes sure no vault is open and the bridge is stopped.
 
@@ -21,6 +22,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use keystead_core::attachments::DIR_SUFFIX as ATTACHMENTS_SUFFIX;
 use keystead_core::paths;
 
 use crate::error::{AppError, AppResult};
@@ -230,17 +232,40 @@ fn enable(default: &Path, portable: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// The attachments directory `rel` belongs to: `<rel>.attachments` for a
+/// vault file, the parent for a file inside such a directory.
+fn attachments_dir_of(rel: &Path) -> Option<PathBuf> {
+    if is_vault_file(rel) {
+        return Some(with_suffix(rel, ATTACHMENTS_SUFFIX));
+    }
+    rel.parent()
+        .filter(|dir| {
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(ATTACHMENTS_SUFFIX))
+                && is_vault_file(&dir.with_extension(""))
+        })
+        .map(Path::to_path_buf)
+}
+
 /// `invalid_input:target_exists` if one of the vault files among `files`
-/// (relative paths) already exists below `default`: it is never overwritten.
+/// (relative paths), or the attachments directory of one of them, already
+/// exists below `default`: neither is ever overwritten or merged.
 fn check_no_vault_at_target(files: &[PathBuf], default: &Path) -> AppResult<()> {
-    match files
-        .iter()
-        .find(|rel| is_vault_file(rel) && default.join(rel).exists())
-    {
-        Some(rel) => {
+    let existing = files.iter().find_map(|rel| {
+        let vault = default.join(rel);
+        if is_vault_file(rel) && vault.exists() {
+            return Some(vault);
+        }
+        attachments_dir_of(rel)
+            .map(|dir| default.join(dir))
+            .filter(|dir| dir.exists())
+    });
+    match existing {
+        Some(path) => {
             log(format_args!(
                 "{} already exists; not overwriting it",
-                default.join(rel).display()
+                path.display()
             ));
             Err(AppError::invalid("target_exists"))
         }
@@ -407,6 +432,71 @@ mod tests {
             "other"
         );
         assert!(!default.join("settings.json.vxmove").exists());
+    }
+
+    #[test]
+    fn attachments_move_with_their_vault_and_block_an_occupied_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("os").join("keystead");
+        let portable = dir.path().join("usb").join("Keystead-Data");
+        fs::create_dir_all(portable.parent().unwrap()).unwrap();
+        write(&default.join("vaults/a.keystead"), "A");
+        write(&default.join("vaults/a.keystead.attachments/u1.bin"), "B1");
+        write(&default.join("vaults/a.keystead.attachments/u2.bin"), "B2");
+        write(
+            &default.join("vaults/a.keystead.attachments/.u3.bin.0123.tmp"),
+            "",
+        );
+
+        let files = collect_files(&default).unwrap();
+        assert!(files.contains(&PathBuf::from("vaults/a.keystead.attachments/u1.bin")));
+        assert!(!files
+            .iter()
+            .any(|f| f.extension().is_some_and(|e| e == "tmp")));
+        assert_eq!(
+            attachments_dir_of(Path::new("vaults/a.keystead")),
+            Some(PathBuf::from("vaults/a.keystead.attachments"))
+        );
+        assert_eq!(
+            attachments_dir_of(Path::new("vaults/a.keystead.attachments/u1.bin")),
+            Some(PathBuf::from("vaults/a.keystead.attachments"))
+        );
+        assert_eq!(attachments_dir_of(Path::new("settings.json")), None);
+        assert_eq!(
+            attachments_dir_of(Path::new("vaults/notes.attachments/x")),
+            None
+        );
+
+        enable(&default, &portable).unwrap();
+        assert_eq!(
+            fs::read_to_string(portable.join("vaults/a.keystead.attachments/u1.bin")).unwrap(),
+            "B1"
+        );
+        assert_eq!(
+            fs::read_to_string(portable.join("vaults/a.keystead.attachments/u2.bin")).unwrap(),
+            "B2"
+        );
+        assert!(!portable
+            .join("vaults/a.keystead.attachments/.u3.bin.0123.tmp")
+            .exists());
+        assert!(!default.exists(), "old data incl. the side-car dir removed");
+
+        // A leftover attachments directory at the target (even without its
+        // vault file) blocks the move back, like a vault file does.
+        fs::create_dir_all(default.join("vaults/a.keystead.attachments")).unwrap();
+        let err = preflight_paths(false, &portable, &default).unwrap_err();
+        assert_eq!(err.code(), "invalid_input:target_exists");
+        let err = disable(&portable, &default).unwrap_err();
+        assert_eq!(err.code(), "invalid_input:target_exists");
+        assert!(portable.join("vaults/a.keystead").is_file());
+        fs::remove_dir(default.join("vaults/a.keystead.attachments")).unwrap();
+
+        disable(&portable, &default).unwrap();
+        assert!(!portable.exists());
+        assert_eq!(
+            fs::read_to_string(default.join("vaults/a.keystead.attachments/u2.bin")).unwrap(),
+            "B2"
+        );
     }
 
     #[test]

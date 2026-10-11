@@ -320,18 +320,18 @@ pub async fn cancel_import(core: Shared<'_>, import_id: String) -> CmdResult<()>
 // Export: "Im Ordner anzeigen"
 // ---------------------------------------------------------------------------
 
-/// The file the last successful `export_data` wrote: `show_export` opens
-/// only its folder, never a path the page names.
+/// The file the last successful `export_data` or `save_attachment` wrote:
+/// `show_export` opens only its folder, never a path the page names.
 static LAST_EXPORT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Called by `export_data` after writing `path`.
+/// Called by `export_data` and `save_attachment` after writing `path`.
 pub fn remember_export(path: &Path) {
     let mut last = LAST_EXPORT.lock().unwrap_or_else(|p| p.into_inner());
     *last = Some(path.to_path_buf());
 }
 
 /// The last exported file if it still exists.
-fn last_export() -> Option<PathBuf> {
+pub(crate) fn last_export() -> Option<PathBuf> {
     let last = LAST_EXPORT.lock().unwrap_or_else(|p| p.into_inner());
     last.as_ref().filter(|p| p.is_file()).cloned()
 }
