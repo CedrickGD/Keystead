@@ -21,6 +21,7 @@ import type {
   LockReason,
   MasterPasswordChanged,
   PairingRequest,
+  PwnedReport,
   SecretField,
   SessionState,
   Settings,
@@ -188,6 +189,21 @@ export const api = {
   totpCode: (seed: string) => call<TotpCode>("totp_code", { seed }),
   copyText: (text: string, sensitive: boolean) => call<null>("copy_text", { text, sensitive }),
   healthReport: () => call<HealthReport>("health_report"),
+  /**
+   * Breach count of one password at Have I Been Pwned (0 = not in known
+   * breaches), only on the user's button press: the backend hashes it and
+   * only the first 5 hex characters of the SHA-1 leave the app (see "Leaked
+   * passwords"). Network errors → `io:<detail>`, a proxy setup the app
+   * cannot evaluate → `unsupported:pwned_proxy`.
+   */
+  checkPwnedPassword: (password: string) => call<number>("check_pwned_password", { password }),
+  /**
+   * Checks every distinct login password of the page's vault the same way
+   * (≤ 4 requests at a time); `locked` when another vault is open or the
+   * vault was locked / switched while the requests ran. Nothing is cached or
+   * written into the vault.
+   */
+  checkPwnedVault: () => call<PwnedReport>("check_pwned_vault", { pageVaultId }),
 
   /** Also replaces an existing recovery key: show `newRecoveryKey` once. */
   changeMasterPassword: (current: string, newPassword: string) =>

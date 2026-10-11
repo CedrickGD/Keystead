@@ -17,6 +17,7 @@ import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
 import { IconsProvider } from "./state/icons";
+import { BreachesProvider } from "./state/breaches";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
 
@@ -315,7 +316,9 @@ function AppRoot({
             {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
             {screen === "main" && vault && (
               <IconsProvider key={vault.id}>
-                <MainScreen key={vault.id} />
+                <BreachesProvider key={vault.id}>
+                  <MainScreen key={vault.id} />
+                </BreachesProvider>
               </IconsProvider>
             )}
           </div>

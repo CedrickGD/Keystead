@@ -857,6 +857,57 @@ mark {
   color: var(--level-text, var(--text-3));
 }
 
+/* "Auf Leaks prüfen" under the strength meter (item editor) and its answer. */
+.pwned-check {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-height: 20px;
+}
+
+.pwned-check .link-btn {
+  margin-left: -4px;
+}
+
+.pwned-check .link-btn:disabled {
+  color: var(--text-3);
+  text-decoration: none;
+}
+
+.pwned-check .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+.pwned-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pwned-result svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.pwned-result.danger,
+.pwned-result.error {
+  color: var(--danger-text);
+}
+
+.pwned-result.error {
+  font-weight: 500;
+}
+
+.pwned-result.ok {
+  color: var(--success-text);
+}
+
 /* ---------- TOTP ---------- */
 
 .totp {

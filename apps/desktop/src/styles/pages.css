@@ -1147,6 +1147,47 @@ code {
   background: var(--bg-hover);
 }
 
+/* Leaked passwords (Have I Been Pwned): the card before any check, the
+   spinner while it runs, the button and the "last checked" line. */
+.health-card.pending {
+  --tone: var(--text-2);
+  --tone-soft: var(--bg-muted);
+}
+
+.health-card-head > .spinner {
+  flex: none;
+  margin-top: 4px;
+  color: var(--text-3);
+}
+
+.health-card-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.health-more + .health-card-foot {
+  padding-top: 12px;
+}
+
+.health-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.health-checked-at {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.health-note {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 /* Settings */
 .settings-layout {
   display: grid;

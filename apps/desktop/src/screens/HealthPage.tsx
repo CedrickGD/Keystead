@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { CalendarClock, ChevronRight, CircleCheck, RefreshCw, Repeat, ShieldAlert, Smartphone } from "lucide-react";
+import {
+  CalendarClock,
+  ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  RefreshCw,
+  Repeat,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestion,
+  Smartphone,
+} from "lucide-react";
 import { api } from "../lib/api";
 import type { HealthReport, ItemListEntry } from "../lib/types";
-import { itemSubtitle } from "../lib/utils";
+import { itemSubtitle, localPrefs } from "../lib/utils";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { Avatar } from "../components/Avatar";
 import { iconHost } from "../lib/icons";
-import { Button } from "../components/Controls";
+import { Button, Checkbox } from "../components/Controls";
+import { Modal } from "../components/Modal";
+import { useBreaches, usePwnedErrorText } from "../state/breaches";
 
 function ScoreGauge({ score }: { score: number }) {
   const { t } = useT();
@@ -41,11 +54,14 @@ function ItemRows({
   byId,
   onOpen,
   limit,
+  sub,
 }: {
   ids: string[];
   byId: Map<string, ItemListEntry>;
   onOpen: (id: string) => void;
   limit?: number;
+  /** Replaces the usual subtitle (username / site). */
+  sub?: (item: ItemListEntry) => string;
 }) {
   const shown = limit ? ids.slice(0, limit) : ids;
   return (
@@ -59,7 +75,7 @@ function ItemRows({
               <Avatar name={item.name} type={item.type} size="sm" site={iconHost(item)} />
               <span className="health-item-text">
                 <span className="health-item-name truncate">{item.name}</span>
-                <span className="health-item-sub truncate">{itemSubtitle(item)}</span>
+                <span className="health-item-sub truncate">{sub ? sub(item) : itemSubtitle(item)}</span>
               </span>
               <ChevronRight className="health-item-chevron" />
             </button>
@@ -119,10 +135,150 @@ function HealthCard({
   );
 }
 
+// "Nicht mehr fragen" of the confirmation below: localStorage only
+// (`keystead.pwnedConfirmed`), no backend setting.
+const PWNED_CONFIRMED_KEY = "pwnedConfirmed";
+
+/** A leaked item of the last check, as the card lists it. */
+interface LeakedRow {
+  item: ItemListEntry;
+  count: number;
+}
+
+/**
+ * Before a vault-wide check: what leaves the device. "Nicht mehr fragen"
+ * skips this dialog from then on (remembered in localStorage only).
+ */
+function PwnedConfirmDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: (dontAsk: boolean) => void }) {
+  const { t } = useT();
+  const [dontAsk, setDontAsk] = useState(false);
+  return (
+    <Modal
+      title={t("pwned.confirmTitle")}
+      icon={<ShieldQuestion />}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="primary" onClick={() => onConfirm(dontAsk)} data-autofocus>
+            {t("pwned.confirmRun")}
+          </Button>
+        </>
+      }
+    >
+      <p>{t("pwned.confirmText")}</p>
+      <p>{t("pwned.confirmText2")}</p>
+      <Checkbox checked={dontAsk} onChange={setDontAsk}>
+        {t("pwned.dontAsk")}
+      </Checkbox>
+    </Modal>
+  );
+}
+
+/**
+ * "Geleakte Passwörter": the one card that needs a button press – the check
+ * sends the SHA-1 prefixes of the vault's passwords to Have I Been Pwned
+ * (`check_pwned_vault`, see "Leaked passwords" in docs/ARCHITECTURE.md), so
+ * it never runs on its own. The result lives in the breaches context (page
+ * memory); `rows` are the leaked items of the last check that are unchanged
+ * since, in the report's order (count desc).
+ */
+function PwnedCard({
+  items,
+  rows,
+  byId,
+  onOpen,
+  limit = 4,
+}: {
+  items: ItemListEntry[];
+  rows: LeakedRow[];
+  byId: Map<string, ItemListEntry>;
+  onOpen: (id: string) => void;
+  limit?: number;
+}) {
+  const { t, tp, locale, formatDateTime } = useT();
+  const { report, checking, error, check } = useBreaches();
+  const pwnedErrorText = usePwnedErrorText();
+  const [confirming, setConfirming] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const numberFmt = useMemo(() => new Intl.NumberFormat(locale), [locale]);
+
+  const start = () => {
+    if (localPrefs.get(PWNED_CONFIRMED_KEY) === "1") void check(items);
+    else setConfirming(true);
+  };
+  const confirmed = (dontAsk: boolean) => {
+    setConfirming(false);
+    if (dontAsk) localPrefs.set(PWNED_CONFIRMED_KEY, "1");
+    void check(items);
+  };
+  const countOf = new Map(rows.map((row) => [row.item.id, row.count]));
+  const foundText = (item: ItemListEntry) => {
+    const count = countOf.get(item.id) ?? 0;
+    return tp("pwned.rowFound", count, { n: numberFmt.format(count) });
+  };
+
+  const leaked = rows.length;
+  // `error` is cleared when a check starts, so it only shows between runs.
+  const failed = error !== null;
+  const known = report !== null && !failed;
+  const tone = leaked || failed ? "danger" : known ? "ok" : "pending";
+  const icon = failed ? <CircleAlert /> : leaked ? <ShieldAlert /> : known ? <CircleCheck /> : <ShieldQuestion />;
+  const description = checking
+    ? t("pwned.checking")
+    : failed
+      ? pwnedErrorText(error)
+      : !report
+        ? t("pwned.desc")
+        : report.checked === 0
+          ? t("pwned.nothingToCheck")
+          : leaked
+            ? t("pwned.leakedDesc")
+            : tp("pwned.ok", report.checked);
+
+  return (
+    <section className={`card health-card ${tone}`}>
+      <div className="health-card-head">
+        <span className="health-icon">{icon}</span>
+        <div className="health-card-title">
+          <h2>{t("pwned.title")}</h2>
+          <p role={failed ? "alert" : undefined}>{description}</p>
+        </div>
+        {checking ? <span className="spinner" aria-hidden /> : known && <span className="health-count">{leaked}</span>}
+      </div>
+      {leaked > 0 && (
+        <>
+          <ItemRows ids={rows.map((row) => row.item.id)} byId={byId} onOpen={onOpen} limit={expanded ? undefined : limit} sub={foundText} />
+          {leaked > limit && (
+            <button type="button" className="health-more" onClick={() => setExpanded((e) => !e)}>
+              {expanded ? t("health.showLess") : t("health.showAll", { count: leaked })}
+            </button>
+          )}
+        </>
+      )}
+      <div className="health-card-foot">
+        {report !== null && report.failed > 0 && !checking && <p className="health-note">{tp("pwned.failed", report.failed)}</p>}
+        <div className="health-card-actions">
+          <Button variant={report ? "secondary" : "primary"} size="sm" icon={<ShieldCheck />} loading={checking} onClick={start}>
+            {report || failed ? t("pwned.recheck") : t("pwned.check")}
+          </Button>
+          {report && !checking && (
+            <span className="health-checked-at">{t("pwned.checkedAt", { when: formatDateTime(report.checkedAt) })}</span>
+          )}
+        </div>
+      </div>
+      {confirming && <PwnedConfirmDialog onClose={() => setConfirming(false)} onConfirm={confirmed} />}
+    </section>
+  );
+}
+
 /** The report comes from the backend (`health_report`); `items` (no secrets) only name the affected items. */
 export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOpenItem: (id: string) => void }) {
   const { t, tp, errorText } = useT();
   const toast = useToast();
+  const breaches = useBreaches();
   const [report, setReport] = useState<HealthReport | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -142,6 +298,17 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
   }, [load]);
 
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  // The leaked items of the last Have I Been Pwned check that still exist
+  // outside the trash and are unchanged since (see `state/breaches.tsx`).
+  const leakedRows = useMemo(() => {
+    const rows: LeakedRow[] = [];
+    for (const { itemId } of breaches.report?.leaked ?? []) {
+      const item = byId.get(itemId);
+      const count = item ? breaches.breachCount(item) : null;
+      if (item && item.deletedAt === null && count !== null) rows.push({ item, count });
+    }
+    return rows;
+  }, [breaches.report, breaches.breachCount, byId]);
   // The report only carries a count; list the logins without a TOTP seed ourselves.
   const without2fa = useMemo(
     () =>
@@ -197,6 +364,9 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
                   : t("health.summary", { affected, total: report.totalLogins })}
             </p>
             <div className="health-summary-chips">
+              {breaches.report && (
+                <span className={`chip ${leakedRows.length ? "danger" : "success"}`}>{tp("pwned.chipLeaked", leakedRows.length)}</span>
+              )}
               <span className={`chip ${report.weak.length ? "danger" : "success"}`}>{tp("health.chipWeak", report.weak.length)}</span>
               <span className={`chip ${reusedCount ? "warning" : "success"}`}>{tp("health.chipReused", reusedCount)}</span>
               <span className={`chip ${report.old.length ? "warning" : "success"}`}>{tp("health.chipOld", report.old.length)}</span>
@@ -205,6 +375,8 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
         </section>
 
         <div className="health-grid">
+          <PwnedCard items={items} rows={leakedRows} byId={byId} onOpen={onOpenItem} />
+
           <HealthCard
             icon={<ShieldAlert />}
             tone="danger"

@@ -13,6 +13,7 @@ import {
   Paperclip,
   Pencil,
   RotateCcw,
+  ShieldAlert,
   Star,
   Tag,
   Trash2,
@@ -29,6 +30,7 @@ import { iconHost } from "../../lib/icons";
 import { Menu, MenuItem } from "../../components/Menu";
 import { TotpValue, useItemTotp } from "../../components/Totp";
 import { useRevealedAttachment } from "../../components/useRevealedAttachment";
+import { useBreaches } from "../../state/breaches";
 import { FieldRow, SecretFieldRow, Section } from "./FieldRow";
 import { TYPE_ICONS } from "./ItemList";
 
@@ -380,6 +382,30 @@ function IdentityBody({ item }: { item: ItemListEntry }) {
   );
 }
 
+/**
+ * The last Have I Been Pwned check of the security report found this login's
+ * password (see `state/breaches.tsx`; gone once the item changes).
+ * "Passwort ändern" opens the editor.
+ */
+function LeakWarning({ item, onEdit }: { item: ItemListEntry; onEdit: () => void }) {
+  const { t, tp, locale } = useT();
+  const { breachCount } = useBreaches();
+  const count = breachCount(item);
+  if (count === null) return null;
+  return (
+    <div className="callout callout-danger pwned-callout" role="note">
+      <ShieldAlert />
+      <div className="pwned-callout-text">
+        <strong>{t("pwned.itemTitle")}</strong>
+        <span>{tp("pwned.itemText", count, { n: new Intl.NumberFormat(locale).format(count) })}</span>
+      </div>
+      <Button variant="danger" size="sm" onClick={onEdit}>
+        {t("pwned.changePassword")}
+      </Button>
+    </div>
+  );
+}
+
 export interface ItemViewProps {
   item: ItemListEntry;
   folders: Folder[];
@@ -535,6 +561,7 @@ export function ItemView({
           </div>
         )}
 
+        {!trashed && item.type === "login" && <LeakWarning item={item} onEdit={onEdit} />}
         {item.type === "login" && <LoginBody item={item} />}
         {item.type === "card" && <CardBody item={item} />}
         {item.type === "identity" && <IdentityBody item={item} />}

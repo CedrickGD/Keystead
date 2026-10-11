@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { ChevronDown, Folder as FolderIcon, Plus, Settings2, Star, Tag, Trash2, WandSparkles, X } from "lucide-react";
+import { ChevronDown, Folder as FolderIcon, Plus, Settings2, ShieldAlert, ShieldCheck, Star, Tag, Trash2, WandSparkles, X } from "lucide-react";
 import type { CardData, CustomField, FieldKind, IdentityData, LoginData, UriMatch, VaultItem } from "../../lib/types";
+import { api } from "../../lib/api";
 import { CARD_BRANDS, detectCardBrand, hostOf } from "../../lib/utils";
 import { useT } from "../../i18n";
+import { usePwnedErrorText } from "../../state/breaches";
 import { Avatar } from "../../components/Avatar";
 import { iconHost } from "../../lib/icons";
 import { Button, Field, PasswordInput, Select, Switch } from "../../components/Controls";
@@ -79,6 +81,61 @@ function TextField({
 // Login
 // ---------------------------------------------------------------------------
 
+type LeakResult = { kind: "count"; count: number } | { kind: "error"; text: string };
+
+/**
+ * "Auf Leaks prüfen" under the strength meter: `check_pwned_password` with
+ * the typed password (hashed in the backend; only the SHA-1 prefix leaves
+ * the app, see "Leaked passwords" in docs/ARCHITECTURE.md). The answer
+ * belongs to the password it was asked for, so any change clears it.
+ */
+function LeakCheck({ password }: { password: string }) {
+  const { t, tp, locale } = useT();
+  const pwnedErrorText = usePwnedErrorText();
+  const [checking, setChecking] = useState(false);
+  const [last, setLast] = useState<{ password: string; result: LeakResult } | null>(null);
+  const result = last && last.password === password ? last.result : null;
+
+  const check = async () => {
+    const checked = password;
+    setChecking(true);
+    try {
+      const count = await api.checkPwnedPassword(checked);
+      setLast({ password: checked, result: { kind: "count", count } });
+    } catch (err) {
+      setLast({ password: checked, result: { kind: "error", text: pwnedErrorText(err) } });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="pwned-check">
+      <button type="button" className="link-btn" onClick={() => void check()} disabled={checking || !password}>
+        {checking ? <span className="spinner" aria-hidden /> : <ShieldCheck size={14} />}
+        {t("pwned.checkPassword")}
+      </button>
+      {result?.kind === "count" &&
+        (result.count > 0 ? (
+          <span className="pwned-result danger" role="status">
+            <ShieldAlert aria-hidden />
+            {tp("pwned.editorFound", result.count, { n: new Intl.NumberFormat(locale).format(result.count) })}
+          </span>
+        ) : (
+          <span className="pwned-result ok" role="status">
+            <ShieldCheck aria-hidden />
+            {t("pwned.editorNotFound")}
+          </span>
+        ))}
+      {result?.kind === "error" && (
+        <span className="pwned-result error" role="alert">
+          {result.text}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function PasswordField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const { t } = useT();
   const id = useId();
@@ -110,6 +167,7 @@ function PasswordField({ value, onChange }: { value: string; onChange: (value: s
         )}
       </div>
       <StrengthMeter password={value} />
+      <LeakCheck password={value} />
     </Field>
   );
 }

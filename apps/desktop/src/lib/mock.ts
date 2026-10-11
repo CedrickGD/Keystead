@@ -63,6 +63,7 @@ import {
   mockSaveAttachment,
   seedSampleAttachments,
 } from "./demo/mockAttachments";
+import { mockBreachCount, mockPwnedReport } from "./demo/pwned";
 import { parseSecretField, redactItem, storedSecret } from "./demo/redact";
 
 export { mockPickAttachmentFile } from "./demo/mockAttachments";
@@ -1083,6 +1084,27 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
 
     case "health_report":
       return healthReport(openVault().data);
+
+    // Leaked passwords (see "Leaked passwords" in docs/ARCHITECTURE.md): the
+    // real app asks Have I Been Pwned (~150 ms per request); the demo answers
+    // from a table after about a second. Both count as user activity.
+    case "check_pwned_password": {
+      s.lastActivity = Date.now();
+      const password = str(args, "password");
+      await sleep(900);
+      return mockBreachCount(password);
+    }
+
+    case "check_pwned_vault": {
+      s.lastActivity = Date.now();
+      // Like the backend: the candidates are taken first, the requests run
+      // without the lock, and a vault locked or switched meanwhile discards
+      // the result (`locked`).
+      const report = mockPwnedReport(pageVault(args).data);
+      await sleep(1_000);
+      pageVault(args);
+      return report;
+    }
 
     case "change_master_password": {
       const vault = openVault();

@@ -766,6 +766,23 @@
   gap: 6px;
 }
 
+/* A leaked password (see "Leaked passwords"): the warning above the item's sections. */
+.pwned-callout {
+  align-items: center;
+}
+
+.pwned-callout-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pwned-callout .btn {
+  flex: none;
+}
+
 /* Attachments of an item (detail pane): one row per file, an image preview
    below its row while revealed, "Datei anhängen …" as the last row. */
 .attachment-row {

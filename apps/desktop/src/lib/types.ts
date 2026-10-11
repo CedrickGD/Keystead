@@ -306,6 +306,29 @@ export interface HealthReport {
   score: number;
 }
 
+/** One row of `PwnedReport.leaked`. */
+export interface LeakedItem {
+  itemId: string;
+  /** How many known data breaches hold the item's password. */
+  count: number;
+}
+
+/**
+ * Result of `check_pwned_vault` (see "Leaked passwords" in
+ * docs/ARCHITECTURE.md): only on the user's button press, never stored –
+ * the UI keeps it in page memory (`state/breaches.tsx`).
+ */
+export interface PwnedReport {
+  /** When the check ran (Unix ms). */
+  checkedAt: number;
+  /** Distinct passwords of the non-trashed logins the check covered (empty ones skipped). */
+  checked: number;
+  /** Items whose password appears in known breaches, by count desc then item id; an item at most once. */
+  leaked: LeakedItem[];
+  /** Distinct passwords whose request failed after others had succeeded: not known either way. */
+  failed: number;
+}
+
 /** An item of an import file that is not added as a new item, and the vault item it matches (never a password). */
 export interface ImportMatch {
   incomingName: string;
