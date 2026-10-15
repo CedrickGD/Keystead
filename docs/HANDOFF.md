@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-11)
+# Übergabe – Stand Keystead (2026-10-15)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -9,8 +9,8 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 | | |
 |---|---|
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
-| Entwicklungs-Branch | `claude/quirky-archimedes-i4qa3j` – **hier liegt die gesamte Keystead-2-Arbeit** |
-| `main` | noch VaultX 1.x (PowerShell). `version.yml` dort steuert das Auto-Update der alten 1.x-Installationen. Noch nicht gemergt. |
+| `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
+| Entwicklung | Feature-Branches (`claude/…`), Merge per PR mit Merge-Commit nach `main`. Der alte Branch `claude/quirky-archimedes-i4qa3j` ist gemergt und kann gelöscht werden. |
 | Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, README) |
 | GitHub-Secret | `TAURI_SIGNING_PRIVATE_KEY` im Keystead-Repo ist gesetzt (Inhalt von `keys/keystead/tauri-updater.key`) |
 
@@ -18,7 +18,6 @@ Lokal starten:
 ```sh
 git clone https://github.com/CedrickGD/Keystead
 cd Keystead
-git checkout claude/quirky-archimedes-i4qa3j
 cd apps/desktop && npm ci && npx tauri dev
 ```
 Voraussetzungen unter Windows: Rust (rustup, Version kommt aus
@@ -29,7 +28,8 @@ WebView2 (ist auf Win 10/11 vorhanden).
 
 - Commit auf dem Branch mit **`[release]`** in der Commit-Nachricht → GitHub Actions
   (`.github/workflows/build.yml`) baut auf `windows-latest`, versioniert als
-  `2.0.0-beta.<Run-Nummer>`, signiert das Setup und veröffentlicht eine
+  `<version aus tauri.conf.json>-beta.<Run-Nummer>` (seit v2.0.0 also
+  `2.0.1-beta.…`), signiert das Setup und veröffentlicht eine
   **Pre-Release** (portable ZIP, Setup, Erweiterungs-ZIP, `.sig`, `latest.json`).
   Außerdem wird `latest.json` im festen Pre-Release `updater-beta` ersetzt –
   daraus holen installierte Apps ihre Updates (Beta-Kanal).
@@ -37,22 +37,24 @@ WebView2 (ist auf Win 10/11 vorhanden).
 - Stabile Version: Tag `vX.Y.Z` → Release als „Latest“. Danach `version` in
   `apps/desktop/src-tauri/tauri.conf.json` hochzählen (sonst sortieren spätere
   Betas darunter; CI warnt).
-- Betas sind Pre-Releases → das alte VaultX-1.x-Auto-Update (folgt „Latest“)
-  springt nicht darauf.
+- Betas sind Pre-Releases (nie „Latest“); der Stabil-Kanal – seit 2.0.0 der
+  Standard für neue Installationen – sieht sie nicht. Bestehende
+  Installationen behalten ihren gespeicherten Kanal.
 - Prüfen eines Releases: `latest.json` von
   `https://github.com/CedrickGD/Keystead/releases/download/updater-beta/latest.json`
   laden; Signatur gegen `keys/keystead/tauri-updater.key.pub` prüfen (minisign,
   Ed25519 über BLAKE2b-512 der Datei).
 - Die App legt die Browser-Erweiterung selbst nach
-  `%LOCALAPPDATA%\Keystead\browser-extension` (Version `2.0.0.<Run>`) und die
+  `%LOCALAPPDATA%\Keystead\browser-extension` (Version `<x.y.z>.<Run>`) und die
   Erweiterung lädt sich nach App-Updates selbst neu. Der Besitzer hat sie seit
   beta.7 aus diesem Ordner geladen.
 
 Veröffentlicht: beta.2 … **beta.11** (beta.7: Sicherheits-Block, beta.8: Plugin
 smarter, beta.9: Tags, Assistenten-Schalter, Windows-Bridge-Fixes, beta.10:
-Dateianhänge, beta.11: Prüfung auf geleakte Passwörter). Der Besitzer
-testet unter Windows (Installer-Version, Brave/Chromium-Browser) und bekommt
-neue Betas per In-App-Update.
+Dateianhänge, beta.11: Prüfung auf geleakte Passwörter) und **v2.0.0** als
+stabiles Release (2026-10-15, „Latest“). Der Besitzer testet unter Windows
+(Installer-Version, Brave/Chromium-Browser) und bekommt neue Versionen per
+In-App-Update (sein Kanal: wie in den Einstellungen gespeichert).
 
 ## Was fertig ist
 
@@ -246,12 +248,13 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
    Prüfung auf geleakte Passwörter (beta.11). Offen nur noch: die
    Leak-Prüfung einmal in der echten App durchklicken (siehe „Was fertig
    ist“).
-4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
-   der vielen WIP-Commits), `v2.0.0` als Latest veröffentlichen, VaultX-1.x-
-   Nutzern den Umstieg anbieten. Achtung: Das 1.x-Updater liest `version.yml` auf
-   `main` und ersetzt seine EXE/PS1 direkt – am sichersten eine letzte
-   VaultX 1.1.x, die nur einen Hinweis „Keystead ist da“ mit Link zeigt.
-   **Vor Merge/Tag den Besitzer fragen.**
+4. **Block 4 „Stabile 2.0“ ist erledigt** (2026-10-15, Entscheidungen des
+   Besitzers): PR #12 als Merge-Commit mit voller Historie nach `main`, Tag
+   `v2.0.0` → stabiles Release („Latest“, auch auf dem Beta-Kanal), VaultX 1.x
+   komplett entfernt (kein Hinweis-Release für 1.x-Nutzer; deren Updater
+   findet keine `version.yml` mehr und meldet still kein Update, der Umstieg
+   läuft über den Import), Standard-Update-Kanal „stabil“, danach `version`
+   in `tauri.conf.json` auf 2.0.1.
 5. **Idee für später, Block 5 „Mobile“** (Wunsch des Besitzers vom 2026-10-10,
    erst nach Block 4): Keystead auf dem Handy. Rahmen: nur Android (kein Mac,
    nichts Kostenpflichtiges – also auch kein Apple-Entwicklerkonto und keine
@@ -264,8 +267,9 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 
 ## Bekannte Grenzen / offene Punkte
 
-- EXE ist nicht code-signiert → SmartScreen-Warnung. Lösung später z. B. über
-  Azure Trusted Signing (kostenpflichtig, Konto des Besitzers nötig).
+- EXE ist nicht code-signiert → SmartScreen-Warnung. Der Besitzer will nichts
+  Kostenpflichtiges; eine kostenlose Option für Open-Source-Projekte wäre
+  SignPath Foundation (Antrag durch den Besitzer nötig).
 - Windows-spezifischer Code wurde in der Cloud nur per Cross-Clippy geprüft.
   Seit 2026-10-10 läuft die komplette Prüfkette (fmt, clippy, alle Tests, npm,
   node) auch lokal auf dem Windows-PC des Besitzers – dabei kamen zwei reine

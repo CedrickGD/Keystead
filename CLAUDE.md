@@ -38,10 +38,14 @@ clippy lints break CI otherwise).
 - The GitHub repo is **public**. Never commit private keys, tokens or vault files.
   Signing keys live in the private repo `CedrickGD/keys` (folder `keystead/`); CI
   uses the secret `TAURI_SIGNING_PRIVATE_KEY`.
-- Work on the feature branch, not `main`, unless the owner says otherwise.
+- `main` holds the released state (2.0.0 and later). Work on a feature branch
+  and merge it via pull request with a merge commit; the owner decides when to
+  merge and when to tag.
 - Commit message markers: `[release]` publishes a signed beta pre-release
-  (`v2.0.0-beta.<run>`) that installed apps receive via in-app update;
-  `[skip ci]` for work-in-progress pushes. Tags `vX.Y.Z` publish stable releases.
+  (`v<version in tauri.conf.json>-beta.<run>`, e.g. `v2.0.1-beta.12`) that
+  installed apps on the beta channel receive via in-app update; `[skip ci]` for
+  work-in-progress pushes. Tags `vX.Y.Z` publish stable releases; right after a
+  tag, bump `version` in `apps/desktop/src-tauri/tauri.conf.json`.
 - The extension ID `imfndemblnaalppnmdplagajjielnaok` is fixed by the `key` in
   `extension/chrome/manifest.json` – never change that key.
 - Security posture to preserve: secrets never reach the webview except on explicit
