@@ -662,6 +662,8 @@ export const en: Record<MessageKey, string> = {
   "pwned.rowFound_other": "found in {n} data breaches",
   "pwned.failed_one": "{n} password couldn't be checked – try again later.",
   "pwned.failed_other": "{n} passwords couldn't be checked – try again later.",
+  "pwned.stale_one": "{n} leaked item has been changed or deleted since the check – check again.",
+  "pwned.stale_other": "{n} leaked items have been changed or deleted since the check – check again.",
   "pwned.checkedAt": "Last checked: {when}",
   "pwned.chipLeaked_one": "{n} leaked",
   "pwned.chipLeaked_other": "{n} leaked",

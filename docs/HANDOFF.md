@@ -121,15 +121,23 @@ neue Betas per In-App-Update.
 - Prüfung auf geleakte Passwörter (Block 3, D5/D6; Have I Been Pwned,
   k-Anonymität): nur auf Knopfdruck, kein Setting, nichts läuft automatisch.
   Core `crates/keystead-core/src/pwned.rs` (SHA-1 in Präfix 5 / Suffix 35,
+  Hasher-Zustand und Digest werden genullt – `sha1` mit Feature `zeroize`;
   `Debug` zeigt nur den Präfix; Antwort-Parser mit Vergleich in konstanter
-  Zeit über alle Zeilen; Kandidaten je unterschiedlichem Passwort der nicht
-  gelöschten Logins; ohne Netzwerk). Desktop `src-tauri/src/pwned.rs`: ein
-  `reqwest::Client` wie beim Updater (User-Agent `Keystead/<version>`,
-  `Add-Padding: true`, `Accept: text/plain`, 10 s, 512-KiB-Deckel, keine
+  Zeit über alle Zeilen, `Option<u64>`: `None`, wenn keine einzige Zeile
+  `SUFFIX:COUNT` ist, also gar keine Range-Antwort vorliegt; Kandidaten je
+  unterschiedlichem Passwort der nicht gelöschten Logins; ohne Netzwerk).
+  Desktop `src-tauri/src/pwned.rs`: je Kommando ein neuer `reqwest::Client`
+  wie beim Updater – reqwest liest den System-Proxy beim Bauen des Clients,
+  ein gecachter Client würde also eine später ein- oder ausgeschaltete
+  Proxy-Einstellung ignorieren, während die Proxy-Prüfung sie frisch liest
+  (User-Agent `Keystead/<version>`, `Add-Padding: true`, `Accept:
+  text/plain`, 10 s, 512-KiB-Deckel auch ohne `Content-Length`, keine
   Redirects, keine Cookies, kein Referer), System-Proxy mit „fail closed“
   bei PAC/unklarer Konfiguration (`unsupported:pwned_proxy`, geprüft vor der
   ersten Anfrage über `icons::proxy_setup_unclear`), Nicht-2xx →
-  `io:HTTP <n>` ohne Retry, Netzfehler → `io:<detail>` ohne URL;
+  `io:HTTP <n>` ohne Retry, Netzfehler → `io:<detail>` ohne URL, ein 2xx
+  ohne Trefferliste (Sperrseite, leerer Body) → `io:not a range answer`
+  statt „nicht geleakt“;
   `check_pwned_password(password)` → Zähler und `check_pwned_vault(pageVaultId)`
   → `PwnedReport { checkedAt, checked, leaked: [{ itemId, count }], failed }`
   (Kandidaten + Lock-Epoche unter dem State-Lock, dann höchstens 4 parallele
@@ -138,8 +146,13 @@ neue Betas per In-App-Update.
   ersten Antwort bricht ab, einer danach zählt nur `failed` hoch; nach dem
   Lauf wird die Epoche erneut geprüft). UI: erste Karte „Geleakte Passwörter“
   im Sicherheitsbericht (Zustände nicht geprüft / prüfend / Ergebnis mit
-  Zeilen nach Treffern sortiert / sauber / Fehler; Chip „{n} geleakt“;
-  „Erneut prüfen“, „Zuletzt geprüft“, Hinweis bei `failed` > 0),
+  Zeilen nach Treffern sortiert / sauber / teilweise geprüft (gelb, wenn
+  `failed` > 0 und kein Treffer; „{n} geprüft“ zählt nur beantwortete) /
+  Fehler; Urteil, Zähler und Chip „{n} geleakt“ folgen dem Report – ein seit
+  der Prüfung geänderter, markierter oder gelöschter Treffer verschwindet
+  aus der Liste, die Karte bleibt rot mit Hinweis „… seit der Prüfung
+  geändert oder gelöscht – prüfe erneut“; „Erneut prüfen“, „Zuletzt
+  geprüft“, Hinweis bei `failed` > 0),
   Bestätigungsdialog vor jedem tresorweiten Lauf mit „Nicht mehr fragen“
   nur in `localStorage` (`keystead.pwnedConfirmed`), roter Callout mit
   „Passwort ändern“ in der Detailansicht, Link „Auf Leaks prüfen“ unter dem
@@ -153,8 +166,12 @@ neue Betas per In-App-Update.
   „Leaked-password check“ in `ARCHITECTURE.md`. Geprüft: Core- und
   Desktop-Tests gegen einen lokalen Server (der einzige Live-Test ist
   `#[ignore]`), einmal lokal live gegen api.pwnedpasswords.com („password“:
-  52.372.427 Treffer), Mock-Ablauf im Browser durchgeklickt. Noch nicht
-  veröffentlicht und in der echten Tauri-App noch nicht ausprobiert.
+  52.372.427 Treffer), Mock-Ablauf im Browser durchgeklickt. Review-Befunde
+  (Proxy-Snapshot im gecachten Client, SHA-1-Zustand ungenullt, 2xx ohne
+  Liste als „sauber“, grüne Karte trotz `failed` bzw. nach Änderung eines
+  Treffers, Deckel-Test nur über `Content-Length`, Einleitungssatz in
+  `ARCHITECTURE.md`) am 2026-10-15 behoben. Noch nicht veröffentlicht und in
+  der echten Tauri-App noch nicht ausprobiert.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.

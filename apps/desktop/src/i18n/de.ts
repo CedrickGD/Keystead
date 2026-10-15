@@ -679,6 +679,8 @@ export const de = {
   "pwned.rowFound_other": "in {n} Datenlecks gefunden",
   "pwned.failed_one": "{n} Passwort konnte nicht geprüft werden – prüfe später noch einmal.",
   "pwned.failed_other": "{n} Passwörter konnten nicht geprüft werden – prüfe später noch einmal.",
+  "pwned.stale_one": "{n} geleakter Eintrag wurde seit der Prüfung geändert oder gelöscht – prüfe erneut.",
+  "pwned.stale_other": "{n} geleakte Einträge wurden seit der Prüfung geändert oder gelöscht – prüfe erneut.",
   "pwned.checkedAt": "Zuletzt geprüft: {when}",
   "pwned.chipLeaked_one": "{n} geleakt",
   "pwned.chipLeaked_other": "{n} geleakt",

@@ -10,25 +10,31 @@
 //! cookies) – and maps the breach counts back to items. Nothing is cached or
 //! written into the vault; logs carry counts only, never prefixes.
 //!
-//! * **Client**: [`REQUEST_TIMEOUT`], no redirects, no referrer, no cookie
-//!   store (Cloudflare sets one), user agent `Keystead/<version>` like the
-//!   updater, `Add-Padding: true` (every answer then has ~800–1000 lines, so
-//!   its size says nothing about the prefix), answer capped at [`MAX_BYTES`].
+//! * **Client**: built per command like `update::probe_client` (reqwest
+//!   reads the system proxy when the client is built, so a cached client
+//!   would keep the proxy settings of its first use), [`REQUEST_TIMEOUT`],
+//!   no redirects, no referrer, no cookie store (Cloudflare sets one), user
+//!   agent `Keystead/<version>` like the updater, `Add-Padding: true` (every
+//!   answer then has ~800–1000 lines, so its size says nothing about the
+//!   prefix), answer capped at [`MAX_BYTES`].
 //! * **Proxy**: the client uses the system proxy. A proxy configuration it
 //!   cannot evaluate (PAC script, per-protocol Windows proxy, …) fails closed
 //!   with `unsupported:pwned_proxy` before any request – Keystead never goes
 //!   around a proxy (the icon fetcher's rule, `icons::proxy_setup_unclear`).
+//!   Client and rule read the settings at the start of the same command.
 //! * **Errors**: a non-2xx answer is `io:HTTP <status>` (no retry, also for
-//!   429), a network error `io:<detail>`. The vault check sends one request
-//!   per distinct prefix, at most [`CONCURRENCY`] at a time, and stops at
-//!   the first HTTP error, on a lock or vault switch (`locked`) and on app
-//!   exit. A network error before any answer ends the run too (probably
-//!   offline); one after an answer only leaves its passwords unchecked
-//!   (`PwnedReport.failed`).
+//!   429), a network error `io:<detail>`; a 2xx answer without a single
+//!   `SUFFIX:COUNT` line (a block page, an empty body) is no answer and
+//!   counts as the network error `io:not a range answer` – never as "not
+//!   leaked". The vault check sends one request per distinct prefix, at
+//!   most [`CONCURRENCY`] at a time, and stops at the first HTTP error, on
+//!   a lock or vault switch (`locked`) and on app exit. A network error
+//!   before any answer ends the run too (probably offline); one after an
+//!   answer only leaves its passwords unchecked (`PwnedReport.failed`).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use keystead_core::model::now_ms;
@@ -58,6 +64,8 @@ const CANCEL_POLL: Duration = Duration::from_millis(100);
 /// Like the updater's user agent (the service answers without one too).
 const USER_AGENT: &str = concat!("Keystead/", env!("CARGO_PKG_VERSION"));
 const TOO_LARGE: &str = "answer larger than 512 KiB";
+/// A 2xx answer without a single `SUFFIX:COUNT` line.
+const NOT_AN_ANSWER: &str = "not a range answer";
 
 /// Result of `check_pwned_vault`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,8 +78,8 @@ pub struct PwnedReport {
     pub checked: usize,
     /// Every item whose password appears in known breaches, with the count.
     pub leaked: Vec<LeakedItem>,
-    /// Distinct passwords whose request failed after others had succeeded:
-    /// not known either way (the UI notes it).
+    /// Distinct passwords whose request failed (or got no listing) after
+    /// others had succeeded: not known either way (the UI notes it).
     pub failed: usize,
 }
 
@@ -120,7 +128,7 @@ pub(crate) async fn check_password(password: &str, service: &Service) -> AppResu
         .range(&hash.prefix)
         .await
         .map_err(RangeError::into_app)?;
-    Ok(pwned_count(&body, &hash))
+    pwned_count(&body, &hash).ok_or_else(|| AppError::io(NOT_AN_ANSWER))
 }
 
 /// The work of [`check_pwned_vault`]: (1) under the state lock, the distinct
@@ -196,11 +204,11 @@ type Stop = dyn Fn() -> bool + Send + Sync;
 
 /// Step 2 of the vault check: one request per distinct prefix (passwords
 /// sharing a prefix share the answer), at most [`CONCURRENCY`] at a time.
-/// Returns every candidate's breach count, `None` where its request failed.
-/// Stops at the first HTTP error (`io:HTTP <status>`), once `cancelled`
-/// (`locked`) and at a network error before any answer (`io:<detail>`); the
-/// open requests are dropped then. A network error after an answer only
-/// leaves its candidates unchecked.
+/// Returns every candidate's breach count, `None` where its request failed
+/// or brought no listing. Stops at the first HTTP error (`io:HTTP
+/// <status>`), once `cancelled` (`locked`) and at a network error before any
+/// answer (`io:<detail>`); the open requests are dropped then. A network
+/// error after an answer only leaves its candidates unchecked.
 async fn fetch_counts(
     service: &Service,
     candidates: &[BreachCandidate],
@@ -250,10 +258,13 @@ async fn fetch_counts(
                 }
                 Err(other) => return Err(other),
             };
-            Ok(hashes
+            // No listing in the body: nothing is known about these
+            // passwords (a network error, never count 0).
+            hashes
                 .iter()
-                .map(|(index, hash)| (*index, pwned_count(&body, hash)))
-                .collect())
+                .map(|(index, hash)| Some((*index, pwned_count(&body, hash)?)))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| RangeError::Network(NOT_AN_ANSWER.into()))
         });
     }
 
@@ -350,11 +361,14 @@ pub(crate) struct Service {
 }
 
 impl Service {
-    /// The production service: the shared client, the real API, the system
-    /// proxy rule.
+    /// The production service: a fresh client (system proxy as set right
+    /// now – see the module docs), the real API, the system proxy rule.
     pub fn new() -> AppResult<Self> {
+        let client = client_builder()
+            .build()
+            .map_err(|e| AppError::io(format!("client: {e}")))?;
         Ok(Service {
-            client: client()?,
+            client,
             base: RANGE_URL.to_owned(),
             proxy_unclear: system_proxy_unclear,
         })
@@ -433,7 +447,11 @@ fn system_proxy_unclear() -> bool {
     icons::proxy_setup_unclear(&icons::proxy_matcher())
 }
 
-/// The request shape shared by the production and the test client.
+/// The request shape shared by the production and the test client. Built
+/// per command: reqwest takes the system proxy settings when the client is
+/// built (`ClientBuilder::build` → `ProxyMatcher::system`), and the rule in
+/// [`system_proxy_unclear`] reads them at the same time, so the proxy the
+/// request uses is the one the rule saw.
 fn client_builder() -> reqwest::ClientBuilder {
     // `rustls-no-provider` (shared with the updater and the icon fetcher):
     // install ring as the process default before the first client is built.
@@ -448,15 +466,6 @@ fn client_builder() -> reqwest::ClientBuilder {
         .connect_timeout(REQUEST_TIMEOUT)
         .referer(false)
         .redirect(reqwest::redirect::Policy::none())
-}
-
-/// The production client (system proxy), built once.
-fn client() -> AppResult<reqwest::Client> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| client_builder().build().map_err(|e| e.to_string()))
-        .clone()
-        .map_err(|e| AppError::io(format!("client: {e}")))
 }
 
 #[cfg(test)]
@@ -498,6 +507,8 @@ mod tests {
         headers: Vec<(&'static str, String)>,
         body: String,
         delay: Duration,
+        /// Send `Content-Length` (false: the body ends with the connection).
+        content_length: bool,
     }
 
     fn reply(status: u16, body: &str) -> Reply {
@@ -506,11 +517,19 @@ mod tests {
             headers: Vec::new(),
             body: body.to_owned(),
             delay: Duration::ZERO,
+            content_length: true,
         }
     }
 
     fn after(delay: Duration, reply: Reply) -> Reply {
         Reply { delay, ..reply }
+    }
+
+    fn without_length(reply: Reply) -> Reply {
+        Reply {
+            content_length: false,
+            ..reply
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -583,11 +602,10 @@ mod tests {
                     if r.status == DROP {
                         return;
                     }
-                    let mut head = format!(
-                        "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-                        r.status,
-                        r.body.len()
-                    );
+                    let mut head = format!("HTTP/1.1 {} X\r\nConnection: close\r\n", r.status);
+                    if r.content_length {
+                        head.push_str(&format!("Content-Length: {}\r\n", r.body.len()));
+                    }
                     for (k, v) in &r.headers {
                         head.push_str(&format!("{k}: {v}\r\n"));
                     }
@@ -733,13 +751,89 @@ mod tests {
             .code();
         assert!(code.starts_with("io:"), "{code}");
 
-        // An answer larger than the cap is refused (also with a wrong length).
+        // An answer larger than the cap is refused: by its `Content-Length`
+        // before a byte is read, and while reading when the length is not
+        // announced (the body then ends with the connection).
         let huge = "A".repeat(MAX_BYTES + 1);
-        let server = serve(move |_| reply(200, &huge));
-        let code = block_on(check_password("password", &Service::local(&server.origin)))
+        let too_large = format!("io:{TOO_LARGE}");
+        let announced = {
+            let huge = huge.clone();
+            serve(move |_| reply(200, &huge))
+        };
+        let code = block_on(check_password(
+            "password",
+            &Service::local(&announced.origin),
+        ))
+        .unwrap_err()
+        .code();
+        assert_eq!(code, too_large);
+        let unannounced = serve(move |_| without_length(reply(200, &huge)));
+        let code = block_on(check_password(
+            "password",
+            &Service::local(&unannounced.origin),
+        ))
+        .unwrap_err()
+        .code();
+        assert_eq!(code, too_large);
+        // The unannounced length as such is fine.
+        let padded = serve(|_| without_length(reply(200, PADDING)));
+        assert_eq!(
+            block_on(check_password("password", &Service::local(&padded.origin))).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn an_answer_without_a_listing_is_no_answer() {
+        // A 2xx whose body is not a range listing (a block page, an empty
+        // body): nothing is known – never "not leaked".
+        let blocked = serve(|_| reply(200, "<html><body>Access denied</body></html>"));
+        let code = block_on(check_password("password", &Service::local(&blocked.origin)))
             .unwrap_err()
             .code();
-        assert_eq!(code, format!("io:{TOO_LARGE}"));
+        assert_eq!(code, format!("io:{NOT_AN_ANSWER}"));
+        let empty = serve(|_| reply(200, ""));
+        let code = block_on(check_password("password", &Service::local(&empty.origin)))
+            .unwrap_err()
+            .code();
+        assert_eq!(code, format!("io:{NOT_AN_ANSWER}"));
+
+        // In a vault check such a body counts like a network error: before
+        // any answer the run fails …
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        let id = core.read(|v| v.id().to_owned()).unwrap();
+        let ok = save(&core, login("answered"));
+        let unknown = save(&core, login("blocked"));
+        let code = block_on(check_vault(
+            &core,
+            Some(&id),
+            &Service::local(&blocked.origin),
+        ))
+        .unwrap_err()
+        .code();
+        assert_eq!(code, format!("io:{NOT_AN_ANSWER}"));
+
+        // … after one it leaves its password unchecked, with no count.
+        let server = serve(|path| {
+            if path == path_of("answered") {
+                reply(200, &listing("answered", 3))
+            } else {
+                after(
+                    Duration::from_millis(300),
+                    reply(200, "<html><body>Access denied</body></html>"),
+                )
+            }
+        });
+        let report = block_on(check_vault(
+            &core,
+            Some(&id),
+            &Service::local(&server.origin),
+        ))
+        .unwrap();
+        assert_eq!((report.checked, report.failed), (2, 1));
+        assert_eq!(leaked(&report), vec![(ok.as_str(), 3)]);
+        assert!(!report.leaked.iter().any(|l| l.item_id == unknown));
     }
 
     #[test]

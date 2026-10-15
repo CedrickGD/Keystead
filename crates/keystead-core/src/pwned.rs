@@ -39,9 +39,15 @@ impl std::fmt::Debug for PwnedHash {
     }
 }
 
-/// Hashes a password for the range API.
+/// Hashes a password for the range API. The hasher's state (its block
+/// buffer holds the password bytes) and the digest are zeroized before the
+/// function returns (`sha1`'s `zeroize` feature); the hasher is finalized
+/// in place rather than moved so that happens where it was written. Copies
+/// the compiler makes on the stack are best effort.
 pub fn pwned_hash(password: &str) -> PwnedHash {
-    let mut digest = Sha1::digest(password.as_bytes());
+    let mut hasher = Sha1::new();
+    hasher.update(password.as_bytes());
+    let mut digest = hasher.finalize_reset();
     let hex = Zeroizing::new(HEXUPPER.encode(&digest));
     digest[..].zeroize();
     PwnedHash {
@@ -51,14 +57,18 @@ pub fn pwned_hash(password: &str) -> PwnedHash {
 }
 
 /// Number of breaches the password behind `hash` appeared in according to
-/// a range API response `body` (lines `SUFFIX:COUNT`, CRLF or LF). 0 when
-/// the suffix is not listed – or listed as a padding line with count 0.
-/// Suffixes are compared case-insensitively and in constant time; every
-/// line is visited so the position of a match does not show in the timing.
-/// Malformed lines are ignored.
-pub fn pwned_count(body: &str, hash: &PwnedHash) -> u64 {
+/// a range API response `body` (lines `SUFFIX:COUNT`, CRLF or LF). `Some(0)`
+/// when the suffix is not listed – or listed as a padding line with count
+/// 0. `None` when the body holds no well-formed line at all: it is not a
+/// range answer then (an HTML block page, an empty body – a genuine answer
+/// has hundreds of lines), so nothing is known. Suffixes are compared
+/// case-insensitively and in constant time; every line is visited so the
+/// position of a match does not show in the timing. Malformed lines are
+/// ignored.
+pub fn pwned_count(body: &str, hash: &PwnedHash) -> Option<u64> {
     let wanted = hash.suffix.as_bytes();
     let mut found = 0u64;
+    let mut listed = false;
     for line in body.lines() {
         let Some((suffix, count)) = line.trim().split_once(':') else {
             continue;
@@ -70,11 +80,12 @@ pub fn pwned_count(body: &str, hash: &PwnedHash) -> u64 {
         let Ok(count) = count.trim().parse::<u64>() else {
             continue;
         };
+        listed = true;
         let upper = suffix.to_ascii_uppercase();
         let matched = upper.as_bytes().ct_eq(wanted);
         found = u64::conditional_select(&found, &count, matched);
     }
-    found
+    listed.then_some(found)
 }
 
 /// One distinct password of the vault and the logins using it.
@@ -181,11 +192,11 @@ mod tests {
         let crlf = format!(
             "0018A45C4D1DEF81644B54AB7F969B88D65:1\r\n{SUFFIX}:3861493\r\n00D4F6E8FA6EECAD2A3AA415EEC418D38EC:2\r\n"
         );
-        assert_eq!(pwned_count(&crlf, &hash), 3_861_493);
+        assert_eq!(pwned_count(&crlf, &hash), Some(3_861_493));
         let lf = crlf.replace("\r\n", "\n");
-        assert_eq!(pwned_count(&lf, &hash), 3_861_493);
+        assert_eq!(pwned_count(&lf, &hash), Some(3_861_493));
         // Without a trailing line break and as the only line.
-        assert_eq!(pwned_count(&format!("{SUFFIX}:7"), &hash), 7);
+        assert_eq!(pwned_count(&format!("{SUFFIX}:7"), &hash), Some(7));
     }
 
     #[test]
@@ -195,24 +206,23 @@ mod tests {
             "0018a45c4d1def81644b54ab7f969b88d65:1\n{}:42\n",
             SUFFIX.to_ascii_lowercase()
         );
-        assert_eq!(pwned_count(&lower, &hash), 42);
+        assert_eq!(pwned_count(&lower, &hash), Some(42));
     }
 
     #[test]
     fn count_zero_when_missing_or_padded() {
         let hash = pwned_hash("password");
-        assert_eq!(pwned_count("", &hash), 0);
         assert_eq!(
             pwned_count("0018A45C4D1DEF81644B54AB7F969B88D65:1\r\n", &hash),
-            0
+            Some(0)
         );
         // Padding lines carry a count of 0.
         let padded = format!("0018A45C4D1DEF81644B54AB7F969B88D65:0\r\n{SUFFIX}:0\r\n");
-        assert_eq!(pwned_count(&padded, &hash), 0);
+        assert_eq!(pwned_count(&padded, &hash), Some(0));
         // A different password's suffix under the same body is not found.
         assert_eq!(
             pwned_count(&format!("{SUFFIX}:5\r\n"), &pwned_hash("Password")),
-            0
+            Some(0)
         );
     }
 
@@ -237,8 +247,30 @@ mod tests {
         ];
         let body = lines.join("\r\n");
         // Only the well-formed (whitespace-trimmed) line counts.
-        assert_eq!(pwned_count(&body, &hash), 12);
-        assert_eq!(pwned_count("\u{fffd}\u{fffd}:3\n", &hash), 0);
+        assert_eq!(pwned_count(&body, &hash), Some(12));
+    }
+
+    #[test]
+    fn a_body_without_a_well_formed_line_is_no_answer() {
+        let hash = pwned_hash("password");
+        // Not a listing at all (a block page, nothing): unknown, never 0.
+        for body in [
+            "",
+            "\r\n\r\n",
+            "<html>oops</html>",
+            "\u{fffd}\u{fffd}:3\n",
+            "not a line\r\nstill not\r\n",
+        ] {
+            assert_eq!(pwned_count(body, &hash), None, "{body:?}");
+        }
+        // One well-formed line – even a padding one – makes it an answer.
+        assert_eq!(
+            pwned_count(
+                "<html>oops</html>\r\n0018A45C4D1DEF81644B54AB7F969B88D65:0\r\n",
+                &hash
+            ),
+            Some(0)
+        );
     }
 
     #[test]

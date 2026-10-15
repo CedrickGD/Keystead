@@ -183,7 +183,10 @@ function PwnedConfirmDialog({ onClose, onConfirm }: { onClose: () => void; onCon
  * (`check_pwned_vault`, see "Leaked-password check" in docs/ARCHITECTURE.md), so
  * it never runs on its own. The result lives in the breaches context (page
  * memory); `rows` are the leaked items of the last check that are unchanged
- * since, in the report's order (count desc).
+ * since, in the report's order (count desc). The verdict (tone, count, text)
+ * follows the report itself: a leaked item that was edited, starred or
+ * trashed since the check leaves `rows`, but the card stays red and asks for
+ * a re-check instead of turning green on a report that found a leak.
  */
 function PwnedCard({
   items,
@@ -220,12 +223,18 @@ function PwnedCard({
     return tp("pwned.rowFound", count, { n: numberFmt.format(count) });
   };
 
-  const leaked = rows.length;
+  // Items the report found leaked; `stale` of them are no longer listed
+  // (changed, trashed or gone since the check).
+  const leaked = report?.leaked.length ?? 0;
+  const stale = leaked - rows.length;
+  // Distinct passwords: without an answer / with one.
+  const unchecked = report?.failed ?? 0;
+  const answered = report ? report.checked - report.failed : 0;
   // `error` is cleared when a check starts, so it only shows between runs.
   const failed = error !== null;
   const known = report !== null && !failed;
-  const tone = leaked || failed ? "danger" : known ? "ok" : "pending";
-  const icon = failed ? <CircleAlert /> : leaked ? <ShieldAlert /> : known ? <CircleCheck /> : <ShieldQuestion />;
+  const tone = failed || leaked ? "danger" : unchecked ? "warning" : known ? "ok" : "pending";
+  const icon = failed ? <CircleAlert /> : leaked ? <ShieldAlert /> : unchecked ? <CircleAlert /> : known ? <CircleCheck /> : <ShieldQuestion />;
   const description = checking
     ? t("pwned.checking")
     : failed
@@ -235,8 +244,16 @@ function PwnedCard({
         : report.checked === 0
           ? t("pwned.nothingToCheck")
           : leaked
-            ? t("pwned.leakedDesc")
-            : tp("pwned.ok", report.checked);
+            ? rows.length
+              ? t("pwned.leakedDesc")
+              : tp("pwned.stale", stale)
+            : answered
+              ? tp("pwned.ok", answered)
+              : tp("pwned.failed", unchecked);
+  // Below the rows; a note that already is the description is not repeated.
+  const notes = [stale ? tp("pwned.stale", stale) : null, unchecked ? tp("pwned.failed", unchecked) : null].filter(
+    (note): note is string => note !== null && note !== description,
+  );
 
   return (
     <section className={`card health-card ${tone}`}>
@@ -248,18 +265,23 @@ function PwnedCard({
         </div>
         {checking ? <span className="spinner" aria-hidden /> : known && <span className="health-count">{leaked}</span>}
       </div>
-      {leaked > 0 && (
+      {rows.length > 0 && (
         <>
           <ItemRows ids={rows.map((row) => row.item.id)} byId={byId} onOpen={onOpen} limit={expanded ? undefined : limit} sub={foundText} />
-          {leaked > limit && (
+          {rows.length > limit && (
             <button type="button" className="health-more" onClick={() => setExpanded((e) => !e)}>
-              {expanded ? t("health.showLess") : t("health.showAll", { count: leaked })}
+              {expanded ? t("health.showLess") : t("health.showAll", { count: rows.length })}
             </button>
           )}
         </>
       )}
       <div className="health-card-foot">
-        {report !== null && report.failed > 0 && !checking && <p className="health-note">{tp("pwned.failed", report.failed)}</p>}
+        {!checking &&
+          notes.map((note) => (
+            <p key={note} className="health-note">
+              {note}
+            </p>
+          ))}
         <div className="health-card-actions">
           <Button variant={report ? "secondary" : "primary"} size="sm" icon={<ShieldCheck />} loading={checking} onClick={start}>
             {report || failed ? t("pwned.recheck") : t("pwned.check")}
@@ -365,7 +387,9 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
             </p>
             <div className="health-summary-chips">
               {breaches.report && (
-                <span className={`chip ${leakedRows.length ? "danger" : "success"}`}>{tp("pwned.chipLeaked", leakedRows.length)}</span>
+                <span className={`chip ${breaches.report.leaked.length ? "danger" : breaches.report.failed ? "warning" : "success"}`}>
+                  {tp("pwned.chipLeaked", breaches.report.leaked.length)}
+                </span>
               )}
               <span className={`chip ${report.weak.length ? "danger" : "success"}`}>{tp("health.chipWeak", report.weak.length)}</span>
               <span className={`chip ${reusedCount ? "warning" : "success"}`}>{tp("health.chipReused", reusedCount)}</span>

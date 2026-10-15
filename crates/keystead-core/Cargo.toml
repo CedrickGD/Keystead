@@ -21,7 +21,7 @@ url = "2.5.8"
 zxcvbn = "3.1.1"
 csv = "1.4.0"
 pbkdf2 = "0.13.0"
-sha1 = "0.11.0"
+sha1 = { version = "0.11.0", features = ["zeroize"] }
 sha2 = "0.11.0"
 hmac = "0.13.0"
 aes = "0.9.3"
