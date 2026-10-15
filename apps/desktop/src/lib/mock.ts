@@ -207,6 +207,7 @@ function initState(): MockState {
       lastVaultId: empty ? null : "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d",
       websiteIcons: true,
       updateCheck: true,
+      // The app's default is "stable"; the mock starts on "beta" so the fake update flows (?update=…) show.
       updateChannel: "beta",
     },
     appInfo: {

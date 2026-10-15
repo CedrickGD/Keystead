@@ -41,7 +41,6 @@ an interface here, change every side.
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
-| `legacy/` | The old PowerShell VaultX 1.x, kept for reference. |
 | `docs/` | This file + user docs. |
 
 ## Executable modes (`apps/desktop/src-tauri/src/main.rs`)
@@ -701,7 +700,7 @@ interface Settings {
   websiteIcons: boolean;                     // load missing website icons in the background, directly from the websites; default true.
                                              // false = no icon requests (stored icons stay visible). The old `showIcons` (never in the UI) is ignored.
   updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
-  updateChannel: "beta" | "stable";          // default "beta" (betas + stable releases); "stable" = stable releases only
+  updateChannel: "beta" | "stable";          // default "stable" (stable releases only); "beta" = betas + stable releases
 }
 ```
 Loading is lenient: missing fields (settings files of older versions) and
@@ -839,7 +838,8 @@ any vault (first-run screen), `?lang=en` starts in English, `?update=available`
 announces a fake update (2.0.0-beta.4 → 2.0.0-beta.5) 1 s after start,
 `?update=portable` the same for a portable copy, `?update=none` lets the manual
 check find nothing (default: only the manual check finds the fake update; the
-stable channel has no release), `&updateSpeed=slow` keeps the download progress
+stable channel has no release – the mock starts on the beta channel so these
+flows show, while the app's default is `stable`), `&updateSpeed=slow` keeps the download progress
 on screen (a normal install "restarts" by reloading with the new version), and
 `window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
 `simulateExternalChange()`, `simulateUnlockRequest()`,
@@ -1835,8 +1835,8 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   asset name. The portable ZIP and the extension ZIP stay.
 * **release** (tags `v*`, or pushes whose commit message contains
   `[release]`): versions with a `-suffix` are published as **pre-release**
-  with `make_latest: false` (VaultX 1.x follows GitHub's "latest" release and
-  must never see a beta); a tag without suffix (`v2.0.0`) becomes a normal
+  with `make_latest: false` (so the stable channel – GitHub's "latest"
+  release – never sees a beta); a tag without suffix (`v2.0.0`) becomes a normal
   release marked latest. All assets incl. `.sig` and `latest.json` are
   uploaded. Then the beta channel: the pre-release `updater-beta` (created if
   missing, kept pre-release and not latest, title "Keystead Updater

@@ -415,7 +415,7 @@ export interface Settings {
   websiteIcons: boolean;
   /** Look for app updates in the background (at start and every 6 h). Default true. */
   updateCheck: boolean;
-  /** "beta" = test versions and stable releases (default during the beta phase), "stable" = stable releases only. */
+  /** "stable" = stable releases only (default), "beta" = test versions and stable releases. The mock starts on "beta" so the update demos work. */
   updateChannel: UpdateChannel;
 }
 

@@ -4,7 +4,8 @@ Generated independently of the Rust code with a small Python script
 (`hashlib.pbkdf2_hmac("sha1")`, `hmac`, and AES-256-CBC/PKCS#7 from the
 `cryptography` package) that reproduces `Save-Vault`,
 `Get-KeyPairFromPassword` and `Invoke-RecoveryOptions` from
-`legacy/VaultX.ps1`, including Windows PowerShell 5.1 quirks (UTF-8 BOM and
+VaultX 1.x's `VaultX.ps1` (the old PowerShell version, no longer in this
+repository), including Windows PowerShell 5.1 quirks (UTF-8 BOM and
 CRLF in the file, `ConvertTo-Json` spacing and `'`-style escapes).
 
 | File | Password(s) | What it covers |

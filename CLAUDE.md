@@ -20,8 +20,6 @@ updater, release flow). Keep both in sync with every interface change.
 - `apps/desktop/src` – React/TS UI (German-first i18n `src/i18n/de.ts`/`en.ts`,
   mock backend `src/lib/mock.ts` for `npm run dev` in a browser, password `demo`).
 - `extension/chrome` – MV3 extension, plain JS, no build step.
-- `legacy/` – old PowerShell VaultX 1.x (reference only). `version.yml` on `main`
-  still drives the 1.x auto-updater – don't break it.
 
 ## Commands
 ```sh

@@ -137,8 +137,8 @@ Update, prüft seine **Signatur** (nur von den Keystead-Entwicklern signierte Up
 werden installiert), sperrt den Tresor und startet Keystead neu – **Später** blendet
 den Hinweis bis zum nächsten Start aus.
 
-- **Update-Kanal:** „Beta-Versionen“ (Standard während der Testphase, enthält auch
-  stabile Versionen) oder „Nur stabile Versionen“.
+- **Update-Kanal:** „Nur stabile Versionen“ (Standard) oder „Beta-Versionen“
+  (enthält auch stabile Versionen).
 - Die **portable ZIP-Version** aktualisiert sich nicht selbst; sie meldet neue
   Versionen mit einem Link zum Download.
 - Bei der Prüfung wird nur eine Versionsdatei (`latest.json`) von GitHub abgerufen –
@@ -245,8 +245,7 @@ ersten Start über **„Von VaultX umsteigen“** oder später unter
 **Einstellungen → Import & Export → Importieren**. Keystead findet sie automatisch unter
 `%LOCALAPPDATA%\VaultX` (`accounts.json` + `vault_*.json`); entsperrt wird mit dem
 alten Master- oder Wiederherstellungspasswort. Die frühere Zwei-Faktor-Sperre des
-Tresors wird nicht übernommen. VaultX 1.x selbst liegt zum Nachschlagen im Ordner
-[`legacy/`](legacy/).
+Tresors wird nicht übernommen.
 
 Aus dem Quellcode bauen: siehe [Build from source](#build-from-source).
 
@@ -354,8 +353,8 @@ Keystead looks for a new version at start and every 6 hours (switch it off under
 updates signed with the Keystead release key are installed), locks the vault and
 restarts. **Later** hides the banner until the next start.
 
-- **Update channel:** beta versions (default during the beta phase, includes stable
-  releases) or stable versions only.
+- **Update channel:** stable versions only (default) or beta versions (includes
+  stable releases).
 - The **portable ZIP version** does not update itself; it announces new versions with
   a download link.
 - The check only fetches a version file (`latest.json`) from GitHub – no vault data,
@@ -524,8 +523,7 @@ Vaults of **VaultX 1.x** (the old PowerShell version) can be imported on first s
 **Settings → Import & export → Import**.
 Keystead finds them in `%LOCALAPPDATA%\VaultX` (`accounts.json` + `vault_*.json`)
 and decrypts them with the old master or recovery password; the old vault-unlock
-two-factor secret is not imported. The VaultX 1.x source stays in [`legacy/`](legacy/);
-`version.yml` is only read by its auto-updater.
+two-factor secret is not imported.
 
 ## License
 

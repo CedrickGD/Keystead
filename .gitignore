@@ -5,6 +5,5 @@ node_modules/
 apps/desktop/dist/
 *.pem
 .DS_Store
-/legacy/dist/
 .claude/settings.local.json
 .claude/launch.json

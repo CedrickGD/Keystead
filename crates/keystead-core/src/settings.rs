@@ -53,11 +53,10 @@ impl Default for Language {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannel {
-    /// Test versions (pre-releases) and stable releases – the default
-    /// during the beta phase.
-    #[default]
+    /// Test versions (pre-releases) and stable releases.
     Beta,
-    /// Stable releases only.
+    /// Stable releases only – the default since 2.0.0.
+    #[default]
     Stable,
 }
 
@@ -104,7 +103,7 @@ impl Default for Settings {
             last_vault_id: None,
             website_icons: true,
             update_check: true,
-            update_channel: UpdateChannel::Beta,
+            update_channel: UpdateChannel::Stable,
         }
     }
 }
@@ -224,7 +223,7 @@ mod tests {
         assert_eq!(s.last_vault_id, None);
         assert!(s.website_icons);
         assert!(s.update_check);
-        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        assert_eq!(s.update_channel, UpdateChannel::Stable);
     }
 
     #[test]
@@ -242,7 +241,7 @@ mod tests {
         assert_eq!(s.last_vault_id.as_deref(), Some("v-1"));
         assert!(s.website_icons);
         assert!(s.update_check);
-        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        assert_eq!(s.update_channel, UpdateChannel::Stable);
         // The strict deserializer (Tauri `save_settings` argument) as well.
         let strict: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(strict, s);
@@ -268,7 +267,7 @@ mod tests {
         assert_eq!(s.update_channel, UpdateChannel::Stable);
         let s = Settings::from_json_lenient(r#"{"updateCheck":"no","updateChannel":"nightly"}"#);
         assert!(s.update_check);
-        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        assert_eq!(s.update_channel, UpdateChannel::Stable);
         assert!(serde_json::from_str::<Settings>(r#"{"updateChannel":"nightly"}"#).is_err());
     }
 
@@ -298,7 +297,7 @@ mod tests {
         assert_eq!(v["websiteIcons"], true);
         assert!(v.get("showIcons").is_none());
         assert_eq!(v["updateCheck"], true);
-        assert_eq!(v["updateChannel"], "beta");
+        assert_eq!(v["updateChannel"], "stable");
         assert_eq!(v.as_object().unwrap().len(), 12);
     }
 

@@ -805,7 +805,7 @@ pub fn legacy_scan() -> Vec<LegacyVaultInfo> {
 // ---------------------------------------------------------------------------
 
 /// Column aliases of the generic / legacy VaultX importer
-/// (from `Convert-CsvRowToEntry` in legacy/VaultX.ps1, plus TOTP, folder and
+/// (from `Convert-CsvRowToEntry` of the old VaultX 1.x PowerShell script, plus TOTP, folder and
 /// favorite columns used by other managers).
 const ALIAS_TITLE: &[&str] = &["name", "title", "site", "site_name", "label"];
 const ALIAS_URL: &[&str] = &[
