@@ -171,9 +171,8 @@ In-App-Update (sein Kanal: wie in den Einstellungen gespeichert).
   (Proxy-Snapshot im gecachten Client, SHA-1-Zustand ungenullt, 2xx ohne
   Liste als „sauber“, grüne Karte trotz `failed` bzw. nach Änderung eines
   Treffers, Deckel-Test nur über `Content-Length`, Einleitungssatz in
-  `ARCHITECTURE.md`) am 2026-10-15 behoben. Veröffentlicht mit beta.11; in
-  der echten Tauri-App vom Besitzer noch durchzuklicken (Bestätigungsdialog,
-  Karte, Callout im Element, Knopf im Editor, Fehlertext ohne Netz).
+  `ARCHITECTURE.md`) am 2026-10-15 behoben. Veröffentlicht mit beta.11 und
+  vom Besitzer am 2026-10-15 in der echten App geprüft – funktioniert.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -245,9 +244,8 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 3. **Block 3 „Neue Funktionen“** ist abgeschlossen und veröffentlicht: Tags
    zusätzlich zu Ordnern (beta.9), verschlüsselte Dateianhänge an Einträgen
    (beta.10, vom Besitzer am 2026-10-15 in der echten App geprüft) und die
-   Prüfung auf geleakte Passwörter (beta.11). Offen nur noch: die
-   Leak-Prüfung einmal in der echten App durchklicken (siehe „Was fertig
-   ist“).
+   Prüfung auf geleakte Passwörter (beta.11). Alles vom Besitzer in der
+   echten App geprüft; nichts mehr offen.
 4. **Block 4 „Stabile 2.0“ ist erledigt** (2026-10-15, Entscheidungen des
    Besitzers): PR #12 als Merge-Commit mit voller Historie nach `main`, Tag
    `v2.0.0` → stabiles Release („Latest“, auch auf dem Beta-Kanal), VaultX 1.x
