@@ -1,0 +1,650 @@
+//! Plain data model stored (encrypted) inside a vault file.
+//!
+//! This file is the shared contract between the core, the desktop backend,
+//! the frontend (`apps/desktop/src/lib/types.ts` mirrors it 1:1) and the
+//! terminal UI. All JSON uses camelCase keys. Timestamps are Unix epoch
+//! milliseconds (UTC).
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Everything inside the encrypted payload of a vault.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VaultData {
+    pub items: Vec<VaultItem>,
+    pub folders: Vec<Folder>,
+    /// Last generated passwords (newest first, max 50). Only kept locally.
+    pub generator_history: Vec<GeneratedPassword>,
+    /// Website icons by host (see [`crate::icons::icon_host`]), fetched by
+    /// the desktop app. Kept inside the encrypted payload – the set of hosts
+    /// would reveal the user's accounts. Never exported or imported.
+    pub icons: BTreeMap<String, IconEntry>,
+    /// Encrypted file attachments of items by attachment id (UUID v4). The
+    /// bytes live in one blob file each next to the vault file
+    /// (see [`crate::attachments`]); the entry holds the blob's own key, so
+    /// the vault file is written as format version 2 while this map is not
+    /// empty. Missing in older payloads → empty. Never exported or imported.
+    pub attachments: BTreeMap<String, AttachmentEntry>,
+    /// Top-level payload keys this build does not know (a later format
+    /// version's fields), kept as they are and written back with every save
+    /// so that opening such a vault here never loses them. Not exported.
+    #[serde(flatten)]
+    pub extra: UnknownFields,
+}
+
+/// JSON keys of a vault file or payload that this build does not know,
+/// round-tripped unchanged (see [`VaultData::extra`]). `Debug` prints only
+/// the key names – the values may be a later version's secrets.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UnknownFields(pub BTreeMap<String, serde_json::Value>);
+
+impl std::fmt::Debug for UnknownFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
+/// A website icon stored in the vault ([`VaultData::icons`]).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IconEntry {
+    /// Base64 (standard, padded) of a 64×64 PNG; `None` if no fetch has
+    /// succeeded yet. A failed refresh keeps the previous icon.
+    pub png: Option<String>,
+    /// Unix ms of the last fetch attempt (successful or not).
+    pub fetched_at: i64,
+    /// Unix ms of the last failed attempt; `None` after a success.
+    pub failed_at: Option<i64>,
+}
+
+impl std::fmt::Debug for IconEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never dump the image data.
+        f.debug_struct("IconEntry")
+            .field("png_len", &self.png.as_ref().map(String::len))
+            .field("fetched_at", &self.fetched_at)
+            .field("failed_at", &self.failed_at)
+            .finish()
+    }
+}
+
+/// One file attachment of an item ([`VaultData::attachments`]). The file
+/// bytes are not here: they are sealed with `key` in the blob
+/// `<vault path>.attachments/<attachment id>.bin`
+/// ([`crate::attachments::seal_blob`]).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AttachmentEntry {
+    /// The item the file belongs to.
+    pub item_id: String,
+    /// File name shown to the user (trimmed, 1–200 characters).
+    pub name: String,
+    /// Plaintext size in bytes.
+    pub size: u64,
+    /// Unix ms when the file was attached.
+    pub created_at: i64,
+    /// Base64 (standard, padded) of the blob's own random 32-byte key. Each
+    /// attachment has its own key, so rotating the vault key re-encrypts no
+    /// blob, and removing this entry makes the blob unreadable.
+    pub key: String,
+}
+
+impl AttachmentEntry {
+    /// The key-free view of this entry under its id.
+    pub fn info(&self, id: &str) -> AttachmentInfo {
+        AttachmentInfo {
+            id: id.to_owned(),
+            item_id: self.item_id.clone(),
+            name: self.name.clone(),
+            size: self.size,
+            created_at: self.created_at,
+        }
+    }
+}
+
+impl std::fmt::Debug for AttachmentEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the blob key.
+        f.debug_struct("AttachmentEntry")
+            .field("item_id", &self.item_id)
+            .field("name", &self.name)
+            .field("size", &self.size)
+            .field("created_at", &self.created_at)
+            .field("key_len", &self.key.len())
+            .finish()
+    }
+}
+
+/// What the UI and the TUI see of an attachment: [`AttachmentEntry`]
+/// without the key, plus its id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    pub id: String,
+    pub item_id: String,
+    pub name: String,
+    pub size: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemType {
+    #[default]
+    Login,
+    Card,
+    Identity,
+    Note,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VaultItem {
+    /// UUID v4. Empty string on a *new* item sent from the UI; the core assigns it.
+    pub id: String,
+    #[serde(rename = "type")]
+    pub item_type: ItemType,
+    pub name: String,
+    pub folder_id: Option<String>,
+    pub favorite: bool,
+    /// Free user tags ("Bank", "Familie"), normalised by the core on every
+    /// save (see `vault::normalize_tags`): trimmed, non-empty, unique
+    /// (case-insensitive, the first spelling wins), in the user's order, at
+    /// most `vault::TAGS_MAX` of at most `vault::TAG_MAX_CHARS` characters
+    /// each. Missing in older payloads → empty.
+    pub tags: Vec<String>,
+    pub notes: String,
+    /// Present (Some) iff `item_type == Login`.
+    pub login: Option<LoginData>,
+    /// Present (Some) iff `item_type == Card`.
+    pub card: Option<CardData>,
+    /// Present (Some) iff `item_type == Identity`.
+    pub identity: Option<IdentityData>,
+    pub fields: Vec<CustomField>,
+    /// Previous passwords of a login, newest first, max 10. Maintained by the core.
+    pub password_history: Vec<PasswordHistoryEntry>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Set when the item is in the trash ("Papierkorb").
+    pub deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LoginData {
+    pub username: String,
+    pub password: String,
+    pub uris: Vec<LoginUri>,
+    /// TOTP seed: either a bare base32 secret or a full `otpauth://totp/...` URI.
+    /// Empty string = no TOTP.
+    pub totp: String,
+    /// Unix ms of the last password change (None if never changed after creation).
+    pub password_revised_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LoginUri {
+    pub uri: String,
+    #[serde(rename = "match")]
+    pub match_type: UriMatch,
+}
+
+/// How a stored URI is compared with the page URL for autofill suggestions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UriMatch {
+    /// Same registrable domain (example.com matches login.example.com). Default.
+    #[default]
+    Domain,
+    /// Same host (and port, if given).
+    Host,
+    /// Page URL starts with the stored URI.
+    StartsWith,
+    /// Page URL equals the stored URI.
+    Exact,
+    /// Never suggest for autofill.
+    Never,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CardData {
+    pub cardholder_name: String,
+    /// Free text, e.g. "Visa", "Mastercard". The UI may auto-detect it from the number.
+    pub brand: String,
+    pub number: String,
+    /// "01".."12" or empty.
+    pub exp_month: String,
+    /// Four digits or empty.
+    pub exp_year: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IdentityData {
+    pub title: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub phone: String,
+    pub company: String,
+    pub address1: String,
+    pub address2: String,
+    pub postal_code: String,
+    pub city: String,
+    pub state: String,
+    pub country: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomField {
+    pub name: String,
+    pub value: String,
+    pub kind: FieldKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKind {
+    #[default]
+    Text,
+    /// Masked like a password in the UI.
+    Hidden,
+    /// value is "true" / "false".
+    Boolean,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PasswordHistoryEntry {
+    pub password: String,
+    /// When this password stopped being the current one.
+    pub replaced_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Folder {
+    /// UUID v4. Empty on a new folder; the core assigns it.
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GeneratedPassword {
+    pub password: String,
+    pub created_at: i64,
+}
+
+/// Public, non-secret description of a vault file on disk (readable while locked).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultInfo {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub has_recovery_key: bool,
+}
+
+/// Lightweight item view without secrets (used by search lists, the browser
+/// extension and the TUI list). `Debug` prints only the icon's length.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSummary {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub item_type: ItemType,
+    pub name: String,
+    /// Login username, card "•••• 1234", identity full name, empty for notes.
+    pub subtitle: String,
+    /// First URI of a login (empty otherwise).
+    pub uri: String,
+    pub favorite: bool,
+    pub has_totp: bool,
+    pub folder_id: Option<String>,
+    /// Website icon as a `data:image/png;base64,…` URL. Only filled in by
+    /// the desktop app's browser bridge for a few rows (omitted otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+impl std::fmt::Debug for ItemSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never dump the icon's image data.
+        f.debug_struct("ItemSummary")
+            .field("id", &self.id)
+            .field("item_type", &self.item_type)
+            .field("name", &self.name)
+            .field("subtitle", &self.subtitle)
+            .field("uri", &self.uri)
+            .field("favorite", &self.favorite)
+            .field("has_totp", &self.has_totp)
+            .field("folder_id", &self.folder_id)
+            .field("icon_len", &self.icon.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+/// Current time in Unix epoch milliseconds.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Helper methods (no change to the serialised shape above).
+// ---------------------------------------------------------------------------
+
+impl VaultItem {
+    /// An empty item of the given type with the matching type-specific part.
+    pub fn new(item_type: ItemType, name: impl Into<String>) -> Self {
+        let mut item = VaultItem {
+            item_type,
+            name: name.into(),
+            ..Default::default()
+        };
+        item.normalize();
+        item
+    }
+
+    /// True if the item is in the trash.
+    pub fn is_trashed(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
+    /// Makes `login`/`card`/`identity` match `item_type` (Some for the
+    /// matching one, None for the others) and drops the password history of
+    /// non-login items.
+    pub fn normalize(&mut self) {
+        match self.item_type {
+            ItemType::Login => {
+                self.login.get_or_insert_with(LoginData::default);
+                self.card = None;
+                self.identity = None;
+            }
+            ItemType::Card => {
+                self.card.get_or_insert_with(CardData::default);
+                self.login = None;
+                self.identity = None;
+            }
+            ItemType::Identity => {
+                self.identity.get_or_insert_with(IdentityData::default);
+                self.login = None;
+                self.card = None;
+            }
+            ItemType::Note => {
+                self.login = None;
+                self.card = None;
+                self.identity = None;
+            }
+        }
+        if self.item_type != ItemType::Login {
+            self.password_history.clear();
+        }
+    }
+
+    /// Login username (empty for other types).
+    pub fn username(&self) -> &str {
+        self.login.as_ref().map_or("", |l| l.username.as_str())
+    }
+
+    /// Login password (empty for other types).
+    pub fn password(&self) -> &str {
+        self.login.as_ref().map_or("", |l| l.password.as_str())
+    }
+
+    /// Secret-free summary for lists.
+    pub fn summary(&self) -> ItemSummary {
+        let (subtitle, uri, has_totp) = match self.item_type {
+            ItemType::Login => {
+                let login = self.login.as_ref();
+                (
+                    login.map(|l| l.username.clone()).unwrap_or_default(),
+                    login
+                        .and_then(|l| l.uris.first())
+                        .map(|u| u.uri.clone())
+                        .unwrap_or_default(),
+                    login.is_some_and(|l| !l.totp.trim().is_empty()),
+                )
+            }
+            ItemType::Card => (
+                self.card.as_ref().map(card_subtitle).unwrap_or_default(),
+                String::new(),
+                false,
+            ),
+            ItemType::Identity => (
+                self.identity
+                    .as_ref()
+                    .map(identity_subtitle)
+                    .unwrap_or_default(),
+                String::new(),
+                false,
+            ),
+            ItemType::Note => (String::new(), String::new(), false),
+        };
+        ItemSummary {
+            id: self.id.clone(),
+            item_type: self.item_type,
+            name: self.name.clone(),
+            subtitle,
+            uri,
+            favorite: self.favorite,
+            has_totp,
+            folder_id: self.folder_id.clone(),
+            icon: None,
+        }
+    }
+}
+
+fn card_subtitle(card: &CardData) -> String {
+    let digits: Vec<char> = card.number.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() >= 4 {
+        let last4: String = digits[digits.len() - 4..].iter().collect();
+        format!("•••• {last4}")
+    } else {
+        card.brand.trim().to_owned()
+    }
+}
+
+fn identity_subtitle(id: &IdentityData) -> String {
+    let full = format!("{} {}", id.first_name.trim(), id.last_name.trim());
+    let full = full.trim();
+    if full.is_empty() {
+        id.email.trim().to_owned()
+    } else {
+        full.to_owned()
+    }
+}
+
+impl From<&VaultItem> for ItemSummary {
+    fn from(item: &VaultItem) -> Self {
+        item.summary()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_json_shape() {
+        let mut item = VaultItem::new(ItemType::Login, "GitHub");
+        item.id = "x".into();
+        item.tags = vec!["Arbeit".into(), "Code".into()];
+        let v = serde_json::to_value(&item).unwrap();
+        assert_eq!(v["type"], "login");
+        assert_eq!(v["folderId"], serde_json::Value::Null);
+        assert_eq!(v["login"]["passwordRevisedAt"], serde_json::Value::Null);
+        assert_eq!(v["card"], serde_json::Value::Null);
+        assert_eq!(v["deletedAt"], serde_json::Value::Null);
+        assert!(v["passwordHistory"].is_array());
+        assert_eq!(v["tags"], serde_json::json!(["Arbeit", "Code"]));
+        assert_eq!(
+            serde_json::to_value(VaultItem::new(ItemType::Note, "n")).unwrap()["tags"],
+            serde_json::json!([])
+        );
+        let uri = LoginUri {
+            uri: "https://a".into(),
+            match_type: UriMatch::StartsWith,
+        };
+        assert_eq!(serde_json::to_value(&uri).unwrap()["match"], "startsWith");
+        // Partial JSON from the UI fills in defaults.
+        let parsed: VaultItem = serde_json::from_str(r#"{"type":"note","name":"n"}"#).unwrap();
+        assert_eq!(parsed.item_type, ItemType::Note);
+        assert!(parsed.login.is_none());
+        // Payloads written before tags existed have none.
+        assert!(parsed.tags.is_empty());
+        let tagged: VaultItem =
+            serde_json::from_str(r#"{"type":"note","name":"n","tags":["a","b"]}"#).unwrap();
+        assert_eq!(tagged.tags, ["a", "b"]);
+    }
+
+    /// A payload key of a later format version survives parse → serialise
+    /// at the top level, and `Debug` never shows its value.
+    #[test]
+    fn unknown_payload_fields_round_trip() {
+        let json = r#"{"items":[],"sync":{"s1":{"token":"c2VjcmV0"}},"future":1}"#;
+        let data: VaultData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.extra.0.keys().collect::<Vec<_>>(), ["future", "sync"]);
+        let v = serde_json::to_value(&data).unwrap();
+        assert_eq!(v["sync"]["s1"]["token"], "c2VjcmV0");
+        assert_eq!(v["future"], 1);
+        assert!(v["extra"].is_null());
+        let debug = format!("{data:?}");
+        assert!(
+            debug.contains("sync") && !debug.contains("c2VjcmV0"),
+            "{debug}"
+        );
+        let plain: VaultData = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(plain.extra.0.is_empty());
+        assert_eq!(VaultData::default(), plain);
+    }
+
+    /// `attachments` is a typed field (not an unknown one): a payload
+    /// without it opens, one with it fills the map, and `Debug` never shows
+    /// a blob key.
+    #[test]
+    fn attachment_entries_are_typed_and_debug_has_no_key() {
+        let plain: VaultData = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(plain.attachments.is_empty());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap()["attachments"],
+            serde_json::json!({})
+        );
+        let json = r#"{"attachments":{"a1":{"itemId":"i1","name":"scan.png","size":12,"createdAt":5,"key":"c2VjcmV0"}}}"#;
+        let data: VaultData = serde_json::from_str(json).unwrap();
+        assert!(data.extra.0.is_empty());
+        let entry = &data.attachments["a1"];
+        assert_eq!(
+            (
+                entry.item_id.as_str(),
+                entry.name.as_str(),
+                entry.size,
+                entry.created_at
+            ),
+            ("i1", "scan.png", 12, 5)
+        );
+        assert_eq!(entry.key, "c2VjcmV0");
+        let v = serde_json::to_value(&data).unwrap();
+        assert_eq!(v["attachments"]["a1"]["key"], "c2VjcmV0");
+        assert_eq!(v["attachments"]["a1"]["itemId"], "i1");
+        for debug in [format!("{entry:?}"), format!("{data:?}")] {
+            assert!(debug.contains("scan.png"), "{debug}");
+            assert!(!debug.contains("c2VjcmV0"), "{debug}");
+            assert!(debug.contains("key_len: 8"), "{debug}");
+        }
+        let info = entry.info("a1");
+        assert_eq!(
+            serde_json::to_value(&info).unwrap(),
+            serde_json::json!({
+                "id": "a1",
+                "itemId": "i1",
+                "name": "scan.png",
+                "size": 12,
+                "createdAt": 5
+            })
+        );
+    }
+
+    #[test]
+    fn normalize_matches_type() {
+        let mut item = VaultItem::new(ItemType::Login, "x");
+        item.password_history.push(PasswordHistoryEntry::default());
+        item.item_type = ItemType::Card;
+        item.normalize();
+        assert!(item.login.is_none() && item.card.is_some() && item.identity.is_none());
+        assert!(item.password_history.is_empty());
+        item.item_type = ItemType::Note;
+        item.normalize();
+        assert!(item.login.is_none() && item.card.is_none() && item.identity.is_none());
+        item.item_type = ItemType::Identity;
+        item.normalize();
+        assert!(item.identity.is_some());
+    }
+
+    #[test]
+    fn summaries() {
+        let mut login = VaultItem::new(ItemType::Login, "Mail");
+        if let Some(l) = login.login.as_mut() {
+            l.username = "me@example.com".into();
+            l.uris.push(LoginUri {
+                uri: "https://mail.example.com".into(),
+                match_type: UriMatch::Domain,
+            });
+            l.totp = "JBSWY3DPEHPK3PXP".into();
+        }
+        let s = login.summary();
+        assert_eq!(s.subtitle, "me@example.com");
+        assert_eq!(s.uri, "https://mail.example.com");
+        assert!(s.has_totp);
+
+        let mut card = VaultItem::new(ItemType::Card, "Visa");
+        if let Some(c) = card.card.as_mut() {
+            c.number = "4111 1111 1111 1234".into();
+        }
+        assert_eq!(card.summary().subtitle, "•••• 1234");
+        if let Some(c) = card.card.as_mut() {
+            c.number = "12".into();
+            c.brand = "Visa".into();
+        }
+        assert_eq!(card.summary().subtitle, "Visa");
+
+        let mut ident = VaultItem::new(ItemType::Identity, "Me");
+        if let Some(i) = ident.identity.as_mut() {
+            i.first_name = "Max".into();
+            i.last_name = "Muster".into();
+        }
+        assert_eq!(ident.summary().subtitle, "Max Muster");
+        assert_eq!(VaultItem::new(ItemType::Note, "n").summary().subtitle, "");
+    }
+
+    #[test]
+    fn debug_output_never_contains_icon_data() {
+        let blob = format!("data:image/png;base64,{}", "iVBORw0KGgo".repeat(40));
+        let mut summary = VaultItem::new(ItemType::Login, "GitHub").summary();
+        summary.icon = Some(blob.clone());
+        let debug = format!("{summary:?}");
+        assert!(!debug.contains("iVBORw0KGgo"), "{debug}");
+        assert!(debug.contains("GitHub"));
+        assert!(debug.contains(&format!("icon_len: Some({})", blob.len())));
+
+        let entry = IconEntry {
+            png: Some("iVBORw0KGgo".repeat(40)),
+            fetched_at: 1,
+            failed_at: None,
+        };
+        assert!(!format!("{entry:?}").contains("iVBORw0KGgo"));
+    }
+}

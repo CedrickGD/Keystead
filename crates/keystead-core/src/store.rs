@@ -1,0 +1,217 @@
+//! The set of vault files in `<data_dir>/vaults`.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::attachments;
+use crate::crypto::{self, KdfParams};
+use crate::error::{Error, Result};
+use crate::format::{self, VaultFile, VAULT_EXTENSION};
+use crate::model::{VaultData, VaultInfo};
+use crate::paths;
+use crate::util;
+use crate::vault::{validate_name, UnlockedVault};
+
+/// Access to the vault files below a data directory.
+#[derive(Debug, Clone)]
+pub struct VaultStore {
+    root: PathBuf,
+}
+
+/// Vault ids become file names: only allow a conservative character set.
+fn check_vault_id(id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::NotFound(format!("vault {id}")))
+    }
+}
+
+impl VaultStore {
+    /// Store in [`paths::data_dir`].
+    pub fn open_default() -> Result<Self> {
+        let store = VaultStore::new(paths::data_dir());
+        let dir = store.vaults_dir();
+        fs::create_dir_all(&dir).map_err(|e| Error::io_at(&dir, e))?;
+        Ok(store)
+    }
+
+    /// Store rooted at an arbitrary data directory (tests, portable mode).
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        VaultStore { root: root.into() }
+    }
+
+    /// The data directory.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `<root>/vaults`.
+    pub fn vaults_dir(&self) -> PathBuf {
+        self.root.join("vaults")
+    }
+
+    /// `<root>/vaults/<vault-id>.keystead`.
+    pub fn vault_path(&self, vault_id: &str) -> PathBuf {
+        self.vaults_dir()
+            .join(format!("{vault_id}.{VAULT_EXTENSION}"))
+    }
+
+    /// All readable vaults, sorted by name (case-insensitive). Files that
+    /// cannot be parsed, or whose file name does not match their id, are
+    /// skipped.
+    pub fn list_vaults(&self) -> Result<Vec<VaultInfo>> {
+        let dir = self.vaults_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(Error::io_at(&dir, e)),
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some(VAULT_EXTENSION) || !path.is_file()
+            {
+                continue;
+            }
+            let Ok(file) = VaultFile::read(&path) else {
+                continue;
+            };
+            if path.file_stem().and_then(|s| s.to_str()) != Some(file.id.as_str()) {
+                continue;
+            }
+            out.push(file.info(&path));
+        }
+        out.sort_by_cached_key(|v| (v.name.to_lowercase(), v.id.clone()));
+        Ok(out)
+    }
+
+    /// Creates a new vault with the default (strong) KDF parameters.
+    pub fn create_vault(&self, name: &str, master_password: &str) -> Result<UnlockedVault> {
+        self.create_vault_with_params(name, master_password, KdfParams::default())
+    }
+
+    /// Creates a new vault with explicit KDF parameters.
+    pub fn create_vault_with_params(
+        &self,
+        name: &str,
+        master_password: &str,
+        kdf: KdfParams,
+    ) -> Result<UnlockedVault> {
+        let name = validate_name(name, "name")?;
+        if master_password.is_empty() {
+            return Err(Error::invalid("password_empty"));
+        }
+        kdf.validate()?;
+        let id = util::new_id();
+        let key = crypto::random_key()?;
+        let data = VaultData::default();
+        let (file, master_kek) =
+            VaultFile::create_with_kek(&id, &name, master_password, kdf, &key, &data)?;
+        let path = self.vault_path(&id);
+        if path.exists() {
+            // A UUID v4 collision is practically impossible; never overwrite.
+            return Err(Error::Conflict);
+        }
+        file.write_atomic(&path, false)?;
+        Ok(Self::opened(UnlockedVault::from_parts(
+            path, file, key, master_kek, data,
+        )))
+    }
+
+    /// Housekeeping for a vault that was just created or unlocked: removes
+    /// attachment blobs no entry references any more (best effort, see
+    /// [`UnlockedVault::sweep_attachments`]).
+    fn opened(vault: UnlockedVault) -> UnlockedVault {
+        vault.sweep_attachments();
+        vault
+    }
+
+    fn read_vault(&self, vault_id: &str) -> Result<(PathBuf, VaultFile)> {
+        check_vault_id(vault_id)?;
+        let path = self.vault_path(vault_id);
+        let file = VaultFile::read(&path)?;
+        if file.id != vault_id {
+            return Err(Error::corrupt("vault id does not match file name"));
+        }
+        Ok((path, file))
+    }
+
+    /// Unlocks a vault. `Error::WrongPassword` on a bad password.
+    pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault> {
+        let (path, file) = self.read_vault(vault_id)?;
+        let master_kek = file.derive_master_kek(master_password)?;
+        let key = file.unwrap_key_with_kek(&master_kek)?;
+        let data = file.decrypt_payload(&key)?;
+        Ok(Self::opened(UnlockedVault::from_parts(
+            path, file, key, master_kek, data,
+        )))
+    }
+
+    /// Unlocks a vault with its recovery key and sets a new master password.
+    /// The vault key is rotated, so the old master password does not open
+    /// the vault any more, not even together with an older copy of the file.
+    /// The recovery key stays valid: the code is known here, so its recovery
+    /// box (same salt) wraps the new key (unlike
+    /// [`UnlockedVault::change_master_password`], which does not know the
+    /// code and issues a new recovery key).
+    pub fn unlock_with_recovery_key(
+        &self,
+        vault_id: &str,
+        recovery_key: &str,
+        new_master_password: &str,
+    ) -> Result<UnlockedVault> {
+        if new_master_password.is_empty() {
+            return Err(Error::invalid("password_empty"));
+        }
+        let (path, file) = self.read_vault(vault_id)?;
+        let recovery_kek = file.derive_recovery_kek(recovery_key)?;
+        let key = file.unwrap_recovery_with_kek(&recovery_kek)?;
+        let data = file.decrypt_payload(&key)?;
+        let new_key = crypto::random_key()?;
+        let mut header = file.clone();
+        let master_kek =
+            header.set_master_password_kek(&new_key, new_master_password, file.kdf_params())?;
+        header.wrap_recovery_with_kek(&recovery_kek, &new_key)?;
+        // Only an intermediate state: `rekey_and_save` installs the new key
+        // together with the header the KEK belongs to (on error the vault is
+        // dropped).
+        let mut vault = UnlockedVault::from_parts(path, file, key, master_kek.clone(), data);
+        vault.rekey_and_save(header, new_key, master_kek)?;
+        Ok(Self::opened(vault))
+    }
+
+    /// Deletes a vault after verifying its master password. Removing the
+    /// vault file is the deletion (an error there is returned); its `.bak`,
+    /// leftover temporary files and the attachments directory are removed
+    /// best effort afterwards with a short retry
+    /// ([`format::remove_with_retry`]: on Windows a scanner may still hold
+    /// a fresh file open). Whatever resists stays behind, worthless without
+    /// the vault, and the call still succeeds – the caller can close the
+    /// vault it just deleted.
+    pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()> {
+        let (path, file) = self.read_vault(vault_id)?;
+        file.unwrap_key(master_password)?;
+        {
+            let _lock = format::lock_vault_file(&path)?;
+            fs::remove_file(&path).map_err(|e| Error::io_at(&path, e))?;
+            // The temp-file prefix `.<id>.keystead.` also covers the
+            // temporary files of the `.bak`.
+            let bak = format::sibling(&path, ".bak");
+            for p in std::iter::once(bak).chain(format::stale_temp_files(&path)) {
+                format::remove_with_retry(|| fs::remove_file(&p));
+            }
+            // The blobs are useless without the keys that just went away.
+            let dir = attachments::dir_for(&path);
+            format::remove_with_retry(|| fs::remove_dir_all(&dir));
+        }
+        // The lock file can only be removed once the lock is released.
+        let _ = fs::remove_file(format::sibling(&path, ".lock"));
+        Ok(())
+    }
+}

@@ -1,0 +1,76 @@
+[package]
+name = "keystead-desktop"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+description = "Keystead desktop app"
+
+[[bin]]
+name = "Keystead"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+keystead-core = { path = "../../../crates/keystead-core" }
+keystead-bridge = { path = "../../../crates/keystead-bridge" }
+keystead-tui = { path = "../../../crates/keystead-tui" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+# In-app updates: signed (minisign) NSIS setup / AppImage from GitHub
+# releases, see "In-app updates" in docs/ARCHITECTURE.md. No `zip` feature:
+# the update is the signed setup.exe itself, not an archive.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
+tauri-plugin-process = "2"
+# To learn the HTTP status of `latest.json` when the updater reports "no
+# release" (it drops the status), and for the website-icon fetcher
+# (`src/icons.rs`, no proxy, own DNS check): same versions and features as the
+# plugin's, so nothing extra is compiled. `rustls-no-provider` → ring is
+# installed as the process default first (as the plugin does).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# The icon fetcher reads the system/environment proxy settings with the same
+# matcher reqwest uses (`system-proxy` above) – to skip sites a proxy would
+# handle instead of going around it. Already compiled for reqwest.
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+http = "1"
+# Website icons: decoders for what sites serve as favicons (no SVG); resized
+# to 64×64 and stored as PNG. `png` is already compiled for Tauri.
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp"] }
+# The icon fetcher's DNS lookup, parallel downloads and per-site deadline
+# (tokio is Tauri's runtime; listed for the features used directly).
+tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver = "1"
+time = { version = "0.3", features = ["formatting"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Opens websites and the data folder with the system handler (ShellExecuteW
+# on Windows: no `cmd /c start` quoting pitfalls, no console flash).
+open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
+raw-window-handle = "0.6.2"
+# Wipes secrets in values handed to the UI and a copied secret kept for
+# clear-on-lock.
+zeroize = "1.9.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Probe for the AppIndicator library before creating the tray icon.
+libloading = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+# Reads the installer's uninstall entry (installed vs. portable copy).
+winreg = "0.56.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

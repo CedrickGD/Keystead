@@ -1,0 +1,365 @@
+//! Shared test helpers: an in-memory `VaultBackend`.
+#![allow(dead_code)] // not every test binary uses every helper
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+use keystead_bridge::server::{handle_frame, BridgeHandler};
+use keystead_bridge::{
+    BridgeError, ExtensionInfo, LoginSecret, PairingRequest, Response, VaultBackend, VaultSummary,
+};
+use keystead_core::generator::{self, GeneratorOptions};
+use keystead_core::matching;
+use keystead_core::model::{ItemSummary, ItemType, LoginUri, UriMatch, VaultItem};
+use keystead_core::totp::{self, TotpCode};
+use serde_json::Value;
+
+pub const PASSWORD: &str = "correct horse battery staple";
+pub const VAULT_NAME: &str = "Privat";
+pub const VAULT_ID: &str = "vault-privat";
+/// A second vault (lowercase name: sorts before "Privat" case-insensitively).
+pub const WORK_VAULT_NAME: &str = "arbeit";
+pub const WORK_VAULT_ID: &str = "vault-arbeit";
+pub const WORK_PASSWORD: &str = "work work work";
+pub const TOTP_SEED: &str = "JBSWY3DPEHPK3PXP";
+pub const GITHUB_ID: &str = "item-github";
+pub const EXAMPLE_ID: &str = "item-example";
+pub const NOTE_ID: &str = "item-note";
+pub const EXTENSION_VERSION: &str = "2.0.0.7";
+pub const EXTENSION_DIR: &str = "/data/keystead/browser-extension";
+
+/// In-memory backend with two vaults ("Privat" – the last used one – and
+/// "arbeit") sharing three items; records calls.
+pub struct FakeBackend {
+    /// Id of the unlocked vault.
+    unlocked: Mutex<Option<&'static str>>,
+    /// The vault unlocked last (`lastVaultId`).
+    pub last_vault: Mutex<Option<&'static str>>,
+    /// `vaultId` of every `unlock` call that reached the backend.
+    pub unlock_targets: Mutex<Vec<Option<String>>>,
+    items: Mutex<Vec<VaultItem>>,
+    pairings: Mutex<VecDeque<PairingRequest>>,
+    pairing_cv: Condvar,
+    /// Request ids passed to `pairing_closed`.
+    pub closed_pairings: Mutex<Vec<String>>,
+    pub unlock_calls: AtomicUsize,
+    pub activity: AtomicUsize,
+    pub focus_calls: AtomicUsize,
+    pub lock_calls: AtomicUsize,
+    /// Texts passed to `copy_secret` (instead of the real clipboard).
+    pub copied: Mutex<Vec<String>>,
+    /// The generator history of the open vault (newest last).
+    pub generated: Mutex<Vec<String>>,
+}
+
+fn login(id: &str, name: &str, username: &str, password: &str, uri: &str, totp: &str) -> VaultItem {
+    let mut item = VaultItem::new(ItemType::Login, name);
+    item.id = id.to_owned();
+    if let Some(l) = item.login.as_mut() {
+        l.username = username.to_owned();
+        l.password = password.to_owned();
+        l.uris.push(LoginUri {
+            uri: uri.to_owned(),
+            match_type: UriMatch::Domain,
+        });
+        l.totp = totp.to_owned();
+    }
+    item
+}
+
+impl FakeBackend {
+    pub fn new() -> FakeBackend {
+        let mut note = VaultItem::new(ItemType::Note, "Notiz");
+        note.id = NOTE_ID.to_owned();
+        FakeBackend {
+            unlocked: Mutex::new(None),
+            last_vault: Mutex::new(Some(VAULT_ID)),
+            unlock_targets: Mutex::new(Vec::new()),
+            items: Mutex::new(vec![
+                login(
+                    GITHUB_ID,
+                    "GitHub",
+                    "octocat",
+                    "gh-secret",
+                    "https://github.com",
+                    TOTP_SEED,
+                ),
+                login(
+                    EXAMPLE_ID,
+                    "Example",
+                    "me@example.com",
+                    "ex-secret",
+                    "https://example.com/login",
+                    "",
+                ),
+                note,
+            ]),
+            pairings: Mutex::new(VecDeque::new()),
+            pairing_cv: Condvar::new(),
+            closed_pairings: Mutex::new(Vec::new()),
+            unlock_calls: AtomicUsize::new(0),
+            activity: AtomicUsize::new(0),
+            focus_calls: AtomicUsize::new(0),
+            lock_calls: AtomicUsize::new(0),
+            copied: Mutex::new(Vec::new()),
+            generated: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Opens "Privat" (`true`) or locks (`false`).
+    pub fn set_unlocked(&self, unlocked: bool) {
+        *self.unlocked.lock().unwrap() = unlocked.then_some(VAULT_ID);
+    }
+
+    /// Id of the unlocked vault.
+    pub fn unlocked_id(&self) -> Option<&'static str> {
+        *self.unlocked.lock().unwrap()
+    }
+
+    /// (id, name, password) of the vaults.
+    const VAULTS: [(&'static str, &'static str, &'static str); 2] = [
+        (VAULT_ID, VAULT_NAME, PASSWORD),
+        (WORK_VAULT_ID, WORK_VAULT_NAME, WORK_PASSWORD),
+    ];
+
+    fn summary(id: &str) -> Option<VaultSummary> {
+        Self::VAULTS
+            .iter()
+            .find(|(vid, _, _)| *vid == id)
+            .map(|(id, name, _)| VaultSummary {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+            })
+    }
+
+    /// Waits for the next `request_pairing` call.
+    pub fn next_pairing(&self, timeout: Duration) -> Option<PairingRequest> {
+        let deadline = Instant::now() + timeout;
+        let mut queue = self.pairings.lock().unwrap();
+        loop {
+            if let Some(req) = queue.pop_front() {
+                return Some(req);
+            }
+            let left = deadline.checked_duration_since(Instant::now())?;
+            queue = self.pairing_cv.wait_timeout(queue, left).unwrap().0;
+        }
+    }
+
+    fn find_login(&self, item_id: &str) -> Result<VaultItem, BridgeError> {
+        self.items
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|i| i.id == item_id && i.item_type == ItemType::Login)
+            .cloned()
+            .ok_or(BridgeError::NotFound)
+    }
+}
+
+impl VaultBackend for FakeBackend {
+    fn app_version(&self) -> String {
+        "2.0.0-test".to_owned()
+    }
+
+    fn extension_info(&self) -> Option<ExtensionInfo> {
+        Some(ExtensionInfo {
+            version: EXTENSION_VERSION.to_owned(),
+            dir: EXTENSION_DIR.to_owned(),
+        })
+    }
+
+    fn unlocked_vault(&self) -> Option<VaultSummary> {
+        self.unlocked_id().and_then(Self::summary)
+    }
+
+    fn list_vaults(&self) -> Result<(Vec<VaultSummary>, Option<String>), BridgeError> {
+        let vaults = Self::VAULTS
+            .iter()
+            .filter_map(|(id, _, _)| Self::summary(id))
+            .collect();
+        let last = self.last_vault.lock().unwrap().map(str::to_owned);
+        Ok((vaults, last))
+    }
+
+    fn unlock(&self, vault_id: Option<&str>, password: &str) -> Result<VaultSummary, BridgeError> {
+        self.unlock_calls.fetch_add(1, Ordering::SeqCst);
+        self.unlock_targets
+            .lock()
+            .unwrap()
+            .push(vault_id.map(str::to_owned));
+        let wanted = match vault_id {
+            Some(id) => id.to_owned(),
+            None => self
+                .last_vault
+                .lock()
+                .unwrap()
+                .ok_or(BridgeError::NotFound)?
+                .to_owned(),
+        };
+        let &(id, name, expected) = Self::VAULTS
+            .iter()
+            .find(|(id, _, _)| *id == wanted)
+            .ok_or(BridgeError::NotFound)?;
+        if password != expected {
+            // A failed unlock leaves the open vault (if any) open.
+            return Err(BridgeError::WrongPassword);
+        }
+        *self.unlocked.lock().unwrap() = Some(id);
+        *self.last_vault.lock().unwrap() = Some(id);
+        Ok(VaultSummary {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
+    }
+
+    fn lock(&self) {
+        self.lock_calls.fetch_add(1, Ordering::SeqCst);
+        *self.unlocked.lock().unwrap() = None;
+    }
+
+    fn focus_app(&self) {
+        self.focus_calls.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn request_pairing(&self, request_id: &str, client_name: &str, code: &str) {
+        self.pairings.lock().unwrap().push_back(PairingRequest {
+            request_id: request_id.to_owned(),
+            client_name: client_name.to_owned(),
+            code: code.to_owned(),
+        });
+        self.pairing_cv.notify_all();
+    }
+
+    fn pairing_closed(&self, request_id: &str) {
+        self.closed_pairings
+            .lock()
+            .unwrap()
+            .push(request_id.to_owned());
+    }
+
+    fn logins_for_url(&self, url: &str) -> Result<Vec<ItemSummary>, BridgeError> {
+        Ok(self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| {
+                i.login
+                    .as_ref()
+                    .is_some_and(|l| l.uris.iter().any(|u| matching::uri_matches(u, url)))
+            })
+            .map(VaultItem::summary)
+            .collect())
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError> {
+        if query == "many" {
+            return Ok((0..60)
+                .map(|i| {
+                    let mut item = VaultItem::new(ItemType::Note, format!("Note {i}"));
+                    item.id = format!("many-{i}");
+                    item.summary()
+                })
+                .collect());
+        }
+        let q = query.to_lowercase();
+        Ok(self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.name.to_lowercase().contains(&q))
+            .map(VaultItem::summary)
+            .collect())
+    }
+
+    fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError> {
+        let item = self.find_login(item_id)?;
+        let login = item.login.clone().unwrap_or_default();
+        let totp = if login.totp.is_empty() {
+            None
+        } else {
+            Some(totp::totp_now(&login.totp)?)
+        };
+        Ok(LoginSecret {
+            id: item.id,
+            name: item.name,
+            username: login.username,
+            password: login.password,
+            totp,
+            uris: login.uris.into_iter().map(|u| u.uri).collect(),
+        })
+    }
+
+    fn get_totp(&self, item_id: &str) -> Result<TotpCode, BridgeError> {
+        let item = self.find_login(item_id)?;
+        let seed = item.login.map(|l| l.totp).unwrap_or_default();
+        if seed.is_empty() {
+            return Err(BridgeError::NotFound);
+        }
+        Ok(totp::totp_now(&seed)?)
+    }
+
+    fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> {
+        let password = generator::generate(&options)?;
+        if self.unlocked_id().is_some() {
+            self.generated.lock().unwrap().push(password.clone());
+        }
+        Ok(password)
+    }
+
+    // `preview_password`: the trait's default (the core generator, nothing stored).
+
+    fn remember_generated(&self, password: &str) -> Result<(), BridgeError> {
+        self.generated.lock().unwrap().push(password.to_owned());
+        Ok(())
+    }
+
+    fn save_login(
+        &self,
+        name: &str,
+        url: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<String, BridgeError> {
+        let mut items = self.items.lock().unwrap();
+        let id = format!("new-{}", items.len());
+        items.push(login(&id, name, username, password, url, ""));
+        Ok(id)
+    }
+
+    fn update_password(&self, item_id: &str, password: &str) -> Result<String, BridgeError> {
+        let mut items = self.items.lock().unwrap();
+        let item = items
+            .iter_mut()
+            .find(|i| i.id == item_id && i.item_type == ItemType::Login)
+            .ok_or(BridgeError::NotFound)?;
+        if let Some(l) = item.login.as_mut() {
+            l.password = password.to_owned();
+        }
+        Ok(item.id.clone())
+    }
+
+    fn copy_secret(&self, text: &str) -> Result<(), BridgeError> {
+        self.copied.lock().unwrap().push(text.to_owned());
+        Ok(())
+    }
+
+    fn on_activity(&self) {
+        self.activity.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Sends a raw JSON request through the frame parser and the handler.
+pub fn call(handler: &dyn BridgeHandler, request: Value) -> Response {
+    handle_frame(handler, &serde_json::to_vec(&request).unwrap())
+}
+
+/// Adds `clientId`/`token` to a JSON request.
+pub fn with_creds(mut request: Value, client_id: &str, token: &str) -> Value {
+    request["clientId"] = Value::String(client_id.to_owned());
+    request["token"] = Value::String(token.to_owned());
+    request
+}

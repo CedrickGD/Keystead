@@ -1,0 +1,74 @@
+Keystead – Schnellstart
+=======================
+
+Keystead ist ein lokaler Passwort-Manager. Alle Daten bleiben verschlüsselt auf
+diesem Rechner – es gibt keinen Server und keine Cloud.
+(Keystead = Key + Homestead: deine Schlüssel bleiben zu Hause.)
+Ins Internet geht Keystead nur für die Update-Prüfung, das (abschaltbare) Laden
+der Website-Icons und – ausschließlich auf Knopfdruck im Sicherheitsbericht oder
+im Editor – die Prüfung auf geleakte Passwörter, bei der nur die ersten
+5 Zeichen eines Prüfwerts (SHA-1) an Have I Been Pwned gehen, nie ein Passwort.
+
+1. Starten
+----------
+Keystead.exe doppelklicken. Beim ersten Start einen Tresor anlegen und ein
+starkes Master-Passwort wählen. Danach am besten gleich einen
+Wiederherstellungsschlüssel erstellen und sicher aufbewahren – ohne ihn ist ein
+vergessenes Master-Passwort NICHT wiederherstellbar.
+
+Windows-SmartScreen-Hinweis: Die EXE ist nicht signiert. Falls „Der Computer
+wurde durch Windows geschützt“ erscheint: „Weitere Informationen“ →
+„Trotzdem ausführen“.
+
+Alte VaultX-1.x-Tresore: beim ersten Start „Von VaultX umsteigen“ wählen oder
+später unter Einstellungen → Import & Export → Importieren.
+
+Speicherort der Daten: %LOCALAPPDATA%\Keystead
+Dateianhänge liegen verschlüsselt im Ordner neben der Tresordatei; eine
+vollständige Sicherung ist der ganze Datenordner (Exporte enthalten keine
+Anhänge).
+Portabler Modus (Daten neben der EXE): Einstellungen → Erweitert → Portabler
+Modus, oder einfach einen Ordner "Keystead-Data" neben Keystead.exe anlegen.
+
+2. Browser-Erweiterung (Chrome, Edge, Brave)
+--------------------------------------------
+a) In Keystead: Einstellungen → Browser-Integration → beim Browser „Aktivieren“.
+b) Im Browser chrome://extensions (bzw. edge://extensions) öffnen,
+   „Entwicklermodus“ einschalten, „Entpackte Erweiterung laden“ und den Ordner
+   wählen, den Keystead unter Einstellungen → Browser-Integration anzeigt
+   (Knöpfe „Ordner öffnen“ und „Pfad kopieren“). Das ist der Ordner
+   "browser-extension" im Datenordner, normalerweise
+   %LOCALAPPDATA%\Keystead\browser-extension
+   (im portablen Modus: Keystead-Data\browser-extension neben Keystead.exe).
+   Erwartete Erweiterungs-ID: imfndemblnaalppnmdplagajjielnaok
+c) Auf das Keystead-Symbol in der Browserleiste klicken →
+   „Mit Keystead verbinden“ → den angezeigten Code in der App bestätigen.
+
+Keystead legt die Erweiterung bei jedem Start in diesen Ordner und hält sie dort
+aktuell – nach einem Update der App lädt sich die Erweiterung selbst neu. Den
+Ordner deshalb nicht löschen. Der Ordner "browser-extension" in diesem ZIP ist
+nur eine Kopie: Wer die Erweiterung von dort lädt, bekommt nach einem Update im
+Popup den Hinweis „Neue Plugin-Version verfügbar“ mit dem richtigen Ordner und
+lädt sie einmal von dort.
+Wenn du Keystead.exe verschiebst, einfach einmal Keystead starten; die
+Registrierung wird automatisch aktualisiert.
+
+Updates
+-------
+Keystead sucht beim Start und alle 6 Stunden nach neuen Versionen
+(Einstellungen → Über Keystead: „Nach Updates suchen“, „Automatisch nach Updates
+suchen“, Update-Kanal „Beta-Versionen“ oder „Nur stabile Versionen“).
+- Mit dem Installer (Keystead-…-windows-setup.exe) installiert: oben erscheint
+  „Keystead … ist verfügbar“ → „Jetzt aktualisieren“. Das Update ist signiert
+  und wird vor der Installation geprüft; der Tresor wird gesperrt und Keystead
+  startet neu.
+- Diese ZIP-Version (portabel) aktualisiert sich nicht selbst: „Herunterladen“
+  öffnet die Release-Seite; die neue ZIP einfach über die alte entpacken
+  (der Ordner Keystead-Data bleibt erhalten).
+Bei der Prüfung wird nur eine Versionsdatei von GitHub abgerufen – keine
+Tresordaten.
+
+3. Terminal-Version
+-------------------
+In der App: Einstellungen → Erweitert → „Terminal öffnen“.
+Oder in einer Konsole: keystead-cli.exe  (Hilfe: keystead-cli.exe --help)
