@@ -48,9 +48,9 @@ WebView2 (ist auf Win 10/11 vorhanden).
   Erweiterung lädt sich nach App-Updates selbst neu. Der Besitzer hat sie seit
   beta.7 aus diesem Ordner geladen.
 
-Veröffentlicht: beta.2 … **beta.10** (beta.7: Sicherheits-Block, beta.8: Plugin
+Veröffentlicht: beta.2 … **beta.11** (beta.7: Sicherheits-Block, beta.8: Plugin
 smarter, beta.9: Tags, Assistenten-Schalter, Windows-Bridge-Fixes, beta.10:
-Dateianhänge). Der Besitzer
+Dateianhänge, beta.11: Prüfung auf geleakte Passwörter). Der Besitzer
 testet unter Windows (Installer-Version, Brave/Chromium-Browser) und bekommt
 neue Betas per In-App-Update.
 
@@ -99,10 +99,9 @@ neue Betas per In-App-Update.
   Sicherungshinweis unter Einstellungen → Tresor; Mock-Backend mit
   Beispieldaten („Telekom Kundencenter“). Die TUI zeigt nur „Anhänge: N“
   unter der Tags-Zeile. Vertrag in `ARCHITECTURE.md` (Abschnitt
-  „Attachments“). Veröffentlicht mit beta.10; in der echten Tauri-App mit
-  einer echten Datei vorher nicht durchgeklickt (nur Mock und Tests) – der
-  Besitzer prüft per In-App-Update: Datei anhängen, Vorschau, „Speichern
-  unter …“ + „Im Ordner anzeigen“, Entfernen. Review-Fixes
+  „Attachments“). Veröffentlicht mit beta.10 und vom Besitzer am 2026-10-15
+  in der echten App mit einer echten Datei geprüft (anhängen, Vorschau,
+  „Speichern unter …“, Entfernen – funktioniert). Review-Fixes
   (2026-10-11): `save_attachment` lehnt relative Pfade und `.`/`..`-Bestandteile
   ab und löst den tiefsten existierenden Ordner auf (Symlinks, Groß-/
   Kleinschreibung, 8.3-Namen – vorher ließ sich mit `..` hinter einem noch
@@ -170,8 +169,9 @@ neue Betas per In-App-Update.
   (Proxy-Snapshot im gecachten Client, SHA-1-Zustand ungenullt, 2xx ohne
   Liste als „sauber“, grüne Karte trotz `failed` bzw. nach Änderung eines
   Treffers, Deckel-Test nur über `Content-Length`, Einleitungssatz in
-  `ARCHITECTURE.md`) am 2026-10-15 behoben. Noch nicht veröffentlicht und in
-  der echten Tauri-App noch nicht ausprobiert.
+  `ARCHITECTURE.md`) am 2026-10-15 behoben. Veröffentlicht mit beta.11; in
+  der echten Tauri-App vom Besitzer noch durchzuklicken (Bestätigungsdialog,
+  Karte, Callout im Element, Knopf im Editor, Fehlertext ohne Netz).
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -232,32 +232,20 @@ beta.9):
    offene Verbindungen unter Windows jetzt sofort (`DisconnectNamedPipe` über
    ein Handle-Duplikat) und wartet bis zu 2 s auf ihr Ende.
 
-Außerdem liegt in `docs/BLOCK3-DESIGN.md` der zusammengeführte Entwurf für
-Block 3 (Anhänge, HIBP, Tags, Assistent) mit den Entscheidungen D1–D8. Tags
-und die Assistenten-Zeile sind umgesetzt und in `ARCHITECTURE.md`
-festgehalten (mit D1: der Tresordatei-Leser akzeptiert schon Version 1 und
-2, geschrieben wird weiter 1, und unbekannte Felder in Kopf und Payload –
-später die Anhang-Schlüssel – überleben jedes Speichern
-(`model::UnknownFields`); D2–D6: Anhänge, siehe „Was fertig ist“ und den
-Abschnitt „Attachments“ in `ARCHITECTURE.md`; D7: Umbenennen/Löschen über
-die Sidebar; D8: Schalter im Assistenten, Standard an; D5/D6: HIBP nur auf
-Knopfdruck ohne Setting, durch den System-Proxy mit „fail closed“ bei PAC –
-umgesetzt, siehe „Was fertig ist“ und den Abschnitt „Leaked-password check“
-in `ARCHITECTURE.md`). Damit steht alles aus Block 3 in `ARCHITECTURE.md`;
-`BLOCK3-DESIGN.md` enthält nur noch die Begründungen und kann gekürzt oder
-entfernt werden.
+Die Entscheidungen des Besitzers zu Block 3 (D1–D8: Dateiversion, Limits,
+Vorschau, Exporte, Auslösen und Netzwerkregel der Leak-Prüfung, Tag-Verwaltung,
+Assistent) stehen als Protokoll in `docs/BLOCK3-DESIGN.md`; die Verträge dazu
+in `ARCHITECTURE.md` (Abschnitte „Attachments“ und „Leaked-password check“,
+Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 
 ## Nächste Schritte (vom Besitzer so priorisiert)
 
-3. **Block 3 „Neue Funktionen“** ist umgesetzt: Tags zusätzlich zu Ordnern
-   (beta.9), verschlüsselte Dateianhänge an Einträgen (beta.10) und die
-   Prüfung auf geleakte Passwörter (Have I Been Pwned, k-Anonymität, nur auf
-   Knopfdruck; auf dem Branch, siehe „Was fertig ist“). Wirklich offen: ein
-   `[release]`-Commit für die Leak-Prüfung (beta.11; die erste Zeile deutsch,
-   sie wird der „Was ist neu?“-Text), danach vom Besitzer in der echten App
-   durchklicken (Bestätigungsdialog, Karte, Callout im Element, Knopf im
-   Editor, Fehlertext ohne Netz), und `docs/BLOCK3-DESIGN.md` kürzen oder
-   entfernen.
+3. **Block 3 „Neue Funktionen“** ist abgeschlossen und veröffentlicht: Tags
+   zusätzlich zu Ordnern (beta.9), verschlüsselte Dateianhänge an Einträgen
+   (beta.10, vom Besitzer am 2026-10-15 in der echten App geprüft) und die
+   Prüfung auf geleakte Passwörter (beta.11). Offen nur noch: die
+   Leak-Prüfung einmal in der echten App durchklicken (siehe „Was fertig
+   ist“).
 4. **Block 4 „Stabile 2.0“**: Branch sauber nach `main` bringen (PR, ggf. Squash
    der vielen WIP-Commits), `v2.0.0` als Latest veröffentlichen, VaultX-1.x-
    Nutzern den Umstieg anbieten. Achtung: Das 1.x-Updater liest `version.yml` auf
