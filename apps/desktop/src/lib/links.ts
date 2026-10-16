@@ -2,6 +2,9 @@
 
 const REPO_URL = "https://github.com/CedrickGD/Keystead";
 
+/** The releases page: every setup, portable ZIP and extension ZIP, for manual downloads. */
+export const RELEASES_URL = `${REPO_URL}/releases`;
+
 /** Versions CI builds and publishes (`2.0.0`, `2.0.0-beta.57`, `2.1.0-rc.1`). */
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/;
 

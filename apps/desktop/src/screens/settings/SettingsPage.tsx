@@ -27,7 +27,8 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { IS_MOCK, api } from "../../lib/api";
+import { IS_MOCK, api, openExternal } from "../../lib/api";
+import { RELEASES_URL } from "../../lib/links";
 import type {
   BrowserInfo,
   BrowserStatus,
@@ -759,6 +760,7 @@ function AboutSection() {
   const { info, settings, updateSettings } = useApp();
   const update = useUpdate();
   const updateErrorText = useUpdateErrorText();
+  const copy = useCopy();
   const channelId = useId();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -827,6 +829,27 @@ function AboutSection() {
           ]}
           className="setting-select"
         />
+      </SettingRow>
+      <SettingRow
+        title={t("update.manualTitle")}
+        description={
+          <>
+            {t("update.manualDesc")} <code className="path selectable">{RELEASES_URL}</code>
+          </>
+        }
+      >
+        <div className="setting-actions">
+          <Button variant="secondary" icon={<ExternalLink />} onClick={() => openExternal(RELEASES_URL)}>
+            {t("update.openReleases")}
+          </Button>
+          <Button
+            variant="ghost"
+            icon={<Copy />}
+            onClick={() => void copy(RELEASES_URL, { label: t("update.releasesLink"), sensitive: false })}
+          >
+            {t("common.copy")}
+          </Button>
+        </div>
       </SettingRow>
     </SettingsSection>
   );
