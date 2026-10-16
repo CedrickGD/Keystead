@@ -2,31 +2,52 @@
 //! docs/ARCHITECTURE.md. Every command is `async` and runs its work on the
 //! blocking thread pool (key derivation, file I/O), never on the main
 //! thread. Errors are stable codes (see [`AppError::code`]).
+//!
+//! `#[cfg(desktop)]`: the command is not registered on the phone (read-only
+//! in this stage, or the feature is desktop-only) and therefore not
+//! compiled there; `gui.rs` holds the registration list.
 
+#[cfg(desktop)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(desktop)]
 use keystead_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_ID};
+#[cfg(desktop)]
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::health::{self, HealthReport, Strength};
+#[cfg(desktop)]
 use keystead_core::import::{self, ImportReport, LegacyVaultInfo};
-use keystead_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
+use keystead_core::model::{Folder, VaultInfo};
+#[cfg(desktop)]
+use keystead_core::model::{GeneratedPassword, VaultItem};
+use keystead_core::paths;
 use keystead_core::settings::Settings;
+#[cfg(desktop)]
 use keystead_core::totp::{self, TotpCode};
-use keystead_core::{export, paths, Error as CoreError, VaultStore};
+#[cfg(desktop)]
+use keystead_core::{export, Error as CoreError, VaultStore};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, State};
+#[cfg(desktop)]
+use tauri::AppHandle;
+use tauri::State;
 
+#[cfg(desktop)]
 use crate::bridge;
 use crate::error::{AppError, AppResult};
+#[cfg(desktop)]
 use crate::extension;
 use crate::platform;
+#[cfg(desktop)]
 use crate::portable;
 use crate::secrets::{self, ItemListEntry};
-use crate::state::{log, Core, LockReason};
+#[cfg(desktop)]
+use crate::state::log;
+use crate::state::{Core, LockReason};
+#[cfg(desktop)]
 use crate::update::{self, UpdateInfo};
 use crate::wipe::Wiped;
 
@@ -63,6 +84,7 @@ pub(crate) fn parse<T: DeserializeOwned>(value: Value, what: &str) -> AppResult<
     serde_json::from_value(value).map_err(|_| AppError::invalid(what))
 }
 
+#[cfg(desktop)]
 fn exe() -> AppResult<std::path::PathBuf> {
     bridge::current_exe().ok_or_else(|| AppError::io("current_exe"))
 }
@@ -78,7 +100,12 @@ pub struct AppInfo {
     data_dir: String,
     portable: bool,
     platform: &'static str,
-    extension_id: &'static str,
+    /// The browser extension's id (`null` on the phone: no browser
+    /// integration there).
+    extension_id: Option<&'static str>,
+    /// The vault cannot be changed from this app (the phone in this stage):
+    /// only the read commands exist, the UI hides every editing control.
+    read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +115,7 @@ pub struct SessionState {
     vault: Option<VaultInfo>,
 }
 
+#[cfg(desktop)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserStatus {
@@ -109,10 +137,15 @@ fn app_info_of(core: &Core) -> AppInfo {
         data_dir: core.data_dir().display().to_string(),
         portable: paths::is_portable(),
         platform: platform::platform_name(),
-        extension_id: EXTENSION_ID,
+        #[cfg(desktop)]
+        extension_id: Some(EXTENSION_ID),
+        #[cfg(mobile)]
+        extension_id: None,
+        read_only: cfg!(mobile),
     }
 }
 
+#[cfg(desktop)]
 fn browser_status_of(core: &Core) -> AppResult<BrowserStatus> {
     let server_running = bridge::is_running(core);
     Ok(BrowserStatus {
@@ -127,6 +160,7 @@ fn browser_status_of(core: &Core) -> AppResult<BrowserStatus> {
     })
 }
 
+#[cfg(desktop)]
 fn parse_browsers(ids: &[String]) -> AppResult<Vec<BrowserId>> {
     ids.iter()
         .map(|id| {
@@ -160,6 +194,7 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
             std::thread::spawn(move || {
                 std::thread::sleep(BOOT_RESEND_DELAY);
                 // A pairing request may have arrived before the page listened.
+                #[cfg(desktop)]
                 for request in bridge::pending_pairings(&c) {
                     c.emit_pairing_request(request);
                 }
@@ -183,6 +218,7 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn create_vault(
     core: Shared<'_>,
@@ -207,6 +243,7 @@ pub async fn unlock_vault(
     run(&core, true, move |c| c.unlock(&vault_id, &master_password)).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn unlock_with_recovery(
     core: Shared<'_>,
@@ -270,6 +307,7 @@ pub async fn list_folders(core: Shared<'_>) -> CmdResult<Vec<Folder>> {
 // browser extension switched vaults, the page has not reloaded yet) answers
 // `locked` – see `Core::mutate_for_page`.
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn save_item(
     core: Shared<'_>,
@@ -287,6 +325,7 @@ pub async fn save_item(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn trash_item(
     core: Shared<'_>,
@@ -299,6 +338,7 @@ pub async fn trash_item(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn restore_item(
     core: Shared<'_>,
@@ -311,6 +351,7 @@ pub async fn restore_item(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_item(
     core: Shared<'_>,
@@ -323,6 +364,7 @@ pub async fn delete_item(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn empty_trash(core: Shared<'_>, page_vault_id: Option<String>) -> CmdResult<usize> {
     run(&core, true, move |c| {
@@ -331,6 +373,7 @@ pub async fn empty_trash(core: Shared<'_>, page_vault_id: Option<String>) -> Cmd
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn save_folder(
     core: Shared<'_>,
@@ -344,6 +387,7 @@ pub async fn save_folder(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_folder(
     core: Shared<'_>,
@@ -359,6 +403,7 @@ pub async fn delete_folder(
 /// `rename_tag(from, to, pageVaultId)` † → the number of changed items.
 /// One save over every item incl. trash (see "Tags" in docs/ARCHITECTURE.md);
 /// no event, the UI refetches `list_items`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn rename_tag(
     core: Shared<'_>,
@@ -374,6 +419,7 @@ pub async fn rename_tag(
 
 /// `delete_tag(tag, pageVaultId)` † → the number of changed items, like
 /// [`rename_tag`].
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_tag(
     core: Shared<'_>,
@@ -388,11 +434,13 @@ pub async fn delete_tag(
 
 /// The work of [`rename_tag`]: the core's validation of `to`
 /// (`invalid_input:tag_required` / `tag_too_long`) passes through.
+#[cfg(desktop)]
 fn rename_tag_on(c: &Core, page_vault_id: Option<&str>, from: &str, to: &str) -> AppResult<usize> {
     c.mutate_for_page(page_vault_id, |v| v.rename_tag(from, to))
 }
 
 /// The work of [`delete_tag`].
+#[cfg(desktop)]
 fn delete_tag_on(c: &Core, page_vault_id: Option<&str>, tag: &str) -> AppResult<usize> {
     c.mutate_for_page(page_vault_id, |v| v.delete_tag(tag))
 }
@@ -401,6 +449,7 @@ fn delete_tag_on(c: &Core, page_vault_id: Option<&str>, tag: &str) -> AppResult<
 // Generator, strength, TOTP, clipboard, health
 // ---------------------------------------------------------------------------
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn generate_password(
     core: Shared<'_>,
@@ -425,6 +474,7 @@ pub async fn generate_password(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn generator_history(core: Shared<'_>) -> CmdResult<Wiped<Vec<GeneratedPassword>>> {
     run(&core, true, |c| {
@@ -433,6 +483,7 @@ pub async fn generator_history(core: Shared<'_>) -> CmdResult<Wiped<Vec<Generate
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn clear_generator_history(
     core: Shared<'_>,
@@ -449,6 +500,7 @@ pub async fn password_strength(core: Shared<'_>, password: String) -> CmdResult<
     run(&core, true, move |_| Ok(health::strength(&password, &[]))).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn totp_code(core: Shared<'_>, seed: String) -> CmdResult<TotpCode> {
     // Polled by the UI every period: not an activity.
@@ -476,18 +528,21 @@ pub async fn health_report(core: Shared<'_>) -> CmdResult<HealthReport> {
 /// Result of `change_master_password`: the recovery key that replaced the
 /// vault's old one (`null` without recovery key), shown once by the UI.
 /// Wiped once Tauri has serialized it.
+#[cfg(desktop)]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MasterPasswordChanged {
     new_recovery_key: Option<String>,
 }
 
+#[cfg(desktop)]
 impl Drop for MasterPasswordChanged {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.new_recovery_key);
     }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn change_master_password(
     core: Shared<'_>,
@@ -505,6 +560,7 @@ pub async fn change_master_password(
 
 /// The work of [`change_master_password`] (rotates the vault key and
 /// replaces an existing recovery key, see "Key rotation").
+#[cfg(desktop)]
 fn change_master_password_on(
     c: &Core,
     page_vault_id: Option<&str>,
@@ -517,6 +573,7 @@ fn change_master_password_on(
     .map(|new_recovery_key| MasterPasswordChanged { new_recovery_key })
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn create_recovery_key(
     core: Shared<'_>,
@@ -528,6 +585,7 @@ pub async fn create_recovery_key(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn remove_recovery_key(core: Shared<'_>, page_vault_id: Option<String>) -> CmdResult<()> {
     run(&core, true, move |c| {
@@ -536,6 +594,7 @@ pub async fn remove_recovery_key(core: Shared<'_>, page_vault_id: Option<String>
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn rename_vault(
     core: Shared<'_>,
@@ -552,6 +611,7 @@ pub async fn rename_vault(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_vault(
     core: Shared<'_>,
@@ -586,11 +646,13 @@ pub async fn delete_vault(
 // Import & export
 // ---------------------------------------------------------------------------
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn legacy_scan(core: Shared<'_>) -> CmdResult<Vec<LegacyVaultInfo>> {
     run(&core, false, |_| Ok(import::legacy_scan())).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn import_data(
     core: Shared<'_>,
@@ -612,6 +674,7 @@ pub async fn import_data(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn export_data(
     core: Shared<'_>,
@@ -656,8 +719,9 @@ pub async fn save_settings(core: Shared<'_>, settings: Value) -> CmdResult<Setti
     .await
 }
 
-/// Persists new settings and applies their side effects (tray labels,
-/// close-to-tray, bridge on/off).
+/// Persists new settings and applies their side effects (desktop: update
+/// checks, tray labels, close-to-tray, bridge on/off; the phone has none of
+/// these, its background-lock setting is read by the monitor).
 fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
     let settings = settings.normalized();
     let old = {
@@ -665,26 +729,30 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
         settings.save()?;
         std::mem::replace(&mut st.settings, settings.clone())
     };
-    if settings.update_channel != old.update_channel || (settings.update_check && !old.update_check)
-    {
-        core.wake_update_checker();
-    }
     if settings.website_icons != old.website_icons {
         core.icons().setting_changed(settings.website_icons);
     }
-    core.set_minimize_to_tray(settings.minimize_to_tray);
-    if old.language != settings.language {
-        core.with_tray(|tray| tray.set_language(settings.language));
-    }
-    if old.browser_integration != settings.browser_integration {
-        if settings.browser_integration {
-            if let Err(e) = bridge::start(core) {
-                // Reported through `browser_status().serverRunning`.
-                log(format_args!("browser bridge not started: {}", e.code()));
+    #[cfg(desktop)]
+    {
+        if settings.update_channel != old.update_channel
+            || (settings.update_check && !old.update_check)
+        {
+            core.wake_update_checker();
+        }
+        core.set_minimize_to_tray(settings.minimize_to_tray);
+        if old.language != settings.language {
+            core.with_tray(|tray| tray.set_language(settings.language));
+        }
+        if old.browser_integration != settings.browser_integration {
+            if settings.browser_integration {
+                if let Err(e) = bridge::start(core) {
+                    // Reported through `browser_status().serverRunning`.
+                    log(format_args!("browser bridge not started: {}", e.code()));
+                }
+                bridge::reregister_if_needed();
+            } else {
+                bridge::stop(core);
             }
-            bridge::reregister_if_needed();
-        } else {
-            bridge::stop(core);
         }
     }
     Ok(settings)
@@ -694,12 +762,14 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
 // Browser integration
 // ---------------------------------------------------------------------------
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_status(core: Shared<'_>) -> CmdResult<BrowserStatus> {
     // Polled by the settings page: not an activity.
     run(&core, false, |c| browser_status_of(c)).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn register_browsers(
     core: Shared<'_>,
@@ -713,6 +783,7 @@ pub async fn register_browsers(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn unregister_browsers(
     core: Shared<'_>,
@@ -726,6 +797,7 @@ pub async fn unregister_browsers(
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn revoke_client(core: Shared<'_>, client_id: String) -> CmdResult<BrowserStatus> {
     run(&core, true, move |c| {
@@ -735,6 +807,7 @@ pub async fn revoke_client(core: Shared<'_>, client_id: String) -> CmdResult<Bro
     .await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn respond_pairing(core: Shared<'_>, request_id: String, approve: bool) -> CmdResult<()> {
     run(&core, true, move |c| {
@@ -754,11 +827,13 @@ pub async fn respond_pairing(core: Shared<'_>, request_id: String, approve: bool
 // System
 // ---------------------------------------------------------------------------
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn open_terminal(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |_| platform::open_terminal(&exe()?)).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn open_data_dir(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |c| platform::open_folder(&c.data_dir())).await
@@ -766,6 +841,7 @@ pub async fn open_data_dir(core: Shared<'_>) -> CmdResult<()> {
 
 /// Opens the folder the app keeps the browser extension in (writes it
 /// first if it is missing).
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn open_extension_dir(core: Shared<'_>) -> CmdResult<()> {
     run(&core, true, |c| {
@@ -780,6 +856,7 @@ pub async fn open_extension_dir(core: Shared<'_>) -> CmdResult<()> {
 // ---------------------------------------------------------------------------
 
 /// Checks the configured update channel now ("Nach Updates suchen").
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn check_update(app: AppHandle, core: Shared<'_>) -> CmdResult<UpdateInfo> {
     let core = Arc::clone(core.inner());
@@ -789,6 +866,7 @@ pub async fn check_update(app: AppHandle, core: Shared<'_>) -> CmdResult<UpdateI
 
 /// The update the last check found (a page that reloaded shows its banner
 /// again), without a network request.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn pending_update(core: Shared<'_>) -> CmdResult<Option<UpdateInfo>> {
     run(&core, false, |c| Ok(c.pending_update())).await
@@ -796,6 +874,7 @@ pub async fn pending_update(core: Shared<'_>) -> CmdResult<Option<UpdateInfo>> {
 
 /// Downloads, verifies and installs the update, then restarts (see
 /// `update::install`).
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn install_update(app: AppHandle, core: Shared<'_>) -> CmdResult<()> {
     let core = Arc::clone(core.inner());
@@ -806,6 +885,7 @@ pub async fn install_update(app: AppHandle, core: Shared<'_>) -> CmdResult<()> {
 /// Moves the data between the OS data directory and `Keystead-Data` next to
 /// the exe. The open vault is locked first (its file moves); the UI then
 /// asks for the master password again.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn set_portable_mode(core: Shared<'_>, enabled: bool) -> CmdResult<AppInfo> {
     run(&core, true, move |c| {
@@ -821,6 +901,7 @@ pub async fn set_portable_mode(core: Shared<'_>, enabled: bool) -> CmdResult<App
 /// closed for the move, `vault://locked {manual}` is emitted – whether the
 /// move then succeeds or not – so the UI never keeps showing the items of a
 /// vault that is no longer open.
+#[cfg(desktop)]
 fn switch_portable_mode(
     c: &Arc<Core>,
     enabled: bool,

@@ -3,13 +3,46 @@ use std::path::{Path, PathBuf};
 fn main() {
     embed_browser_extension();
     tauri_build::build();
+    expose_windows_resource_to_tests();
+}
+
+/// Windows: `tauri_build` compiles the app's resource file (icon, version
+/// info and the application manifest) into `$OUT_DIR/resource.lib` and links
+/// it into the binaries only. The library's unit-test executable needs the
+/// manifest too: it declares Common Controls v6, which the dialog plugin's
+/// `TaskDialogIndirect` import is resolved against – without it the test
+/// executable does not even start (`STATUS_ENTRYPOINT_NOT_FOUND`). Cargo
+/// has no link-arg instruction for a library's unit tests (and one for all
+/// targets would hand the binaries the resource twice: duplicate resource),
+/// so `lib.rs` links it itself under `cfg(test)`; this makes it findable.
+fn expose_windows_resource_to_tests() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    assert!(
+        out_dir.join("resource.lib").is_file(),
+        "tauri-build did not compile the Windows resource file"
+    );
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
 }
 
 /// Embeds the browser extension (`extension/chrome`) into the binary: writes
 /// `$OUT_DIR/extension_files.rs`, a slice of `(relative path, bytes)` pairs
 /// (`include_bytes!`, so file edits are tracked by rustc as well). The app
 /// writes it to `<data_dir>/browser-extension` (see `src/extension.rs`).
+///
+/// The phone (Android, iOS) has no browser integration: its build gets an
+/// empty table (and `src/extension.rs` is not compiled there at all).
 fn embed_browser_extension() {
+    let out =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("extension_files.rs");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "android" || target_os == "ios" {
+        std::fs::write(&out, "&[]\n").expect("write extension_files.rs");
+        return;
+    }
+
     let manifest_dir =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let source = manifest_dir
@@ -39,8 +72,6 @@ fn embed_browser_extension() {
         ));
     }
     code.push_str("]\n");
-    let out =
-        PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("extension_files.rs");
     std::fs::write(&out, code).expect("write extension_files.rs");
 }
 

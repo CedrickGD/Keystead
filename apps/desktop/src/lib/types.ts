@@ -231,8 +231,11 @@ export interface AppInfo {
   version: string;
   dataDir: string;
   portable: boolean;
-  platform: "windows" | "linux" | "macos";
-  extensionId: string;
+  platform: "windows" | "linux" | "macos" | "android" | "ios";
+  /** The browser extension's id; `null` on the phone (no browser integration there). */
+  extensionId: string | null;
+  /** The vault cannot be changed from this app (the phone): the UI hides every editing control. */
+  readOnly: boolean;
 }
 
 export interface SessionState {

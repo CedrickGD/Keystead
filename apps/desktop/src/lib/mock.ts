@@ -218,6 +218,7 @@ function initState(): MockState {
       portable: false,
       platform: "windows",
       extensionId: EXTENSION_ID,
+      readOnly: false,
     },
     browsers: [
       { id: "chrome", name: "Google Chrome", detected: true, registered: true },

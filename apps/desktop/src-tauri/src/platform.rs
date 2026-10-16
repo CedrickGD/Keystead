@@ -1,21 +1,31 @@
-//! Operating-system specific helpers: console for terminal mode, opening
-//! folders/websites, spawning a terminal, tray availability and (Windows)
-//! session lock notifications.
+//! Operating-system specific helpers: the platform name and opening
+//! websites (desktop: the system browser; phone: the opener plugin), and –
+//! desktop only – the console for terminal mode, opening folders, spawning
+//! a terminal, tray availability and (Windows) session lock notifications.
 
+#[cfg(desktop)]
 use std::path::Path;
+#[cfg(desktop)]
 use std::process::{Child, Command};
 
+#[cfg(desktop)]
 use crate::error::{AppError, AppResult};
 use crate::state::log;
 
 /// The `platform` value of `AppInfo`.
 pub fn platform_name() -> &'static str {
-    if cfg!(windows) {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
+    platform_name_for(std::env::consts::OS)
+}
+
+/// [`platform_name`] for a `std::env::consts::OS` value: the five names the
+/// UI knows; anything else (the BSDs, …) counts as `linux`.
+pub fn platform_name_for(os: &str) -> &'static str {
+    match os {
+        "windows" => "windows",
+        "macos" => "macos",
+        "android" => "android",
+        "ios" => "ios",
+        _ => "linux",
     }
 }
 
@@ -30,6 +40,7 @@ pub fn platform_name() -> &'static str {
 /// console is closed or the process is ended by Ctrl+C, logoff or shutdown
 /// (the TUI's timed clear runs in-process and would never fire). Other
 /// platforms: nothing to do.
+#[cfg(desktop)]
 pub fn prepare_cli_console() {
     #[cfg(windows)]
     {
@@ -43,6 +54,7 @@ pub fn prepare_cli_console() {
 /// `install_update` refuses while one runs (its unsaved input and a copied
 /// secret would be lost resp. stay on the clipboard). Always false elsewhere
 /// (an AppImage update does not end running copies).
+#[cfg(desktop)]
 pub fn terminal_ui_running() -> bool {
     #[cfg(windows)]
     {
@@ -63,9 +75,10 @@ pub fn is_web_url(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
 }
 
-/// Opens an http(s) URL in the default browser. Other schemes are refused
-/// (logged).
-pub fn open_url(url: &tauri::Url) {
+/// Opens an http(s) URL in the default browser (desktop: the system
+/// handler; phone: `tauri-plugin-opener`, which the Rust side alone may
+/// call). Other schemes are refused (logged).
+pub fn open_url(app: &tauri::AppHandle, url: &tauri::Url) {
     if !is_web_url(url) {
         log(format_args!(
             "refusing to open a non-web URL (scheme {})",
@@ -73,12 +86,25 @@ pub fn open_url(url: &tauri::Url) {
         ));
         return;
     }
-    if let Err(e) = open::that_detached(url.as_str()) {
+    #[cfg(desktop)]
+    let opened = {
+        let _ = app;
+        open::that_detached(url.as_str()).map_err(|e| e.to_string())
+    };
+    #[cfg(mobile)]
+    let opened = {
+        use tauri_plugin_opener::OpenerExt as _;
+        app.opener()
+            .open_url(url.as_str(), None::<&str>)
+            .map_err(|e| e.to_string())
+    };
+    if let Err(e) = opened {
         log(format_args!("could not open the browser: {e}"));
     }
 }
 
 /// Opens a folder in the file manager (Explorer, xdg-open, Finder).
+#[cfg(desktop)]
 pub fn open_folder(path: &Path) -> AppResult<()> {
     std::fs::create_dir_all(path).map_err(|e| AppError::io(format!("{}: {e}", path.display())))?;
     open::that_detached(path).map_err(|e| AppError::io(format!("{}: {e}", path.display())))
@@ -86,6 +112,7 @@ pub fn open_folder(path: &Path) -> AppResult<()> {
 
 /// Reaps a spawned child in the background so it does not linger as a
 /// zombie process (Unix) and its handle is released (Windows).
+#[cfg(desktop)]
 fn detach(mut child: Child) {
     let _ = std::thread::Builder::new()
         .name("keystead-child".into())
@@ -95,6 +122,7 @@ fn detach(mut child: Child) {
 }
 
 /// Starts `<exe> --cli` (the terminal UI) in a new terminal window.
+#[cfg(desktop)]
 pub fn open_terminal(exe: &Path) -> AppResult<()> {
     #[cfg(windows)]
     {
@@ -148,7 +176,7 @@ pub fn open_terminal(exe: &Path) -> AppResult<()> {
 }
 
 /// Terminal emulators to try, with the arguments that precede the command.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(desktop, unix, not(target_os = "macos")))]
 fn linux_terminals() -> Vec<(String, Vec<&'static str>)> {
     let mut list = Vec::new();
     if let Some(term) = std::env::var_os("TERMINAL").filter(|t| !t.is_empty()) {
@@ -179,6 +207,7 @@ fn linux_terminals() -> Vec<(String, Vec<&'static str>)> {
 /// Whether a tray icon can be created. On Linux the tray needs the
 /// (Ayatana) AppIndicator library at runtime; without it the tray crate
 /// would abort the process.
+#[cfg(desktop)]
 pub fn tray_supported() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -202,6 +231,7 @@ pub fn tray_supported() -> bool {
 /// Windows: reports session locks and suspend to the monitor thread via
 /// `core.signal_monitor`. Elsewhere a no-op (the monitor detects suspend
 /// by clock jumps).
+#[cfg(desktop)]
 pub fn watch_session_events(
     window: &tauri::WebviewWindow,
     core: &std::sync::Arc<crate::state::Core>,
@@ -397,5 +427,23 @@ mod windows {
         }
         // SAFETY: forwards the unchanged message to the next procedure.
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_names() {
+        assert_eq!(platform_name_for("windows"), "windows");
+        assert_eq!(platform_name_for("macos"), "macos");
+        assert_eq!(platform_name_for("linux"), "linux");
+        assert_eq!(platform_name_for("android"), "android");
+        assert_eq!(platform_name_for("ios"), "ios");
+        // Anything else counts as Linux (the UI knows five names).
+        assert_eq!(platform_name_for("freebsd"), "linux");
+        assert_eq!(platform_name_for(""), "linux");
+        assert_eq!(platform_name(), platform_name_for(std::env::consts::OS));
     }
 }

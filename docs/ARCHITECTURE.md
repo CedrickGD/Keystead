@@ -36,14 +36,45 @@ an interface here, change every side.
 | `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report, the offline half of the leaked-password check (hashing, answer parsing). No UI, no IPC, no networking. |
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
-| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
+| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `docs/` | This file + user docs. |
 
-## Executable modes (`apps/desktop/src-tauri/src/main.rs`)
+## Executable modes (`apps/desktop/src-tauri/src/main.rs`, `lib.rs`)
+
+The app crate is one library plus one binary (`Cargo.toml`: `[lib] name =
+"keystead_lib"`, `crate-type = ["staticlib", "cdylib", "rlib"]`, and `[[bin]]
+Keystead`). The library holds the whole app; `#[cfg(desktop)]` /
+`#[cfg(mobile)]` (the aliases `tauri_build` sets from the target OS) mark
+what only one side has. Desktop-only: the browser bridge and extension, the
+terminal UI, tray, single instance, in-app updates, portable mode, the
+website-icon fetcher (`icons/fetch.rs`), the leaked-password check, the
+file-dialog based attachment, import and export commands, Windows session
+lock detection and the suspend (clock-jump) detection. Phone-only
+(`src/mobile.rs`, Android and iOS): the data directory override, the
+clipboard backend on `tauri-plugin-clipboard-manager` and links through
+`tauri-plugin-opener` – both plugins are called from Rust only, the webview
+gets no permission for them. Dependencies follow the same split
+(`[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.
+dependencies]` and its mobile counterpart; the `tauri` crate's `tray-icon`
+feature exists only on the desktop). `build.rs` embeds the browser extension
+on the desktop only (the phone gets an empty table). Windows detail: the
+library's unit-test executable links the app's resource file (icon, version
+info, manifest with the Common Controls v6 dependency the dialog plugin's
+imports need) itself – `#[link]` under `cfg(test)` in `lib.rs`, the search
+path comes from `build.rs` – because `tauri_build` hands it to the binaries
+only and Cargo has no instruction for a library's unit tests.
+
+* **Desktop** – the binary (below) ends in `keystead_lib::run_desktop(background)`.
+* **Phone** – the Android/iOS shell loads the library and calls
+  `keystead_lib::run()` (`#[tauri::mobile_entry_point]`), which builds the
+  same Tauri app without the desktop-only plugins, services and commands;
+  the binary has no role there (`fn main() {}`). The phone is **read-only**
+  in this stage: only the read commands are registered, see "Desktop
+  backend ↔ frontend".
 
 One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
 
@@ -459,7 +490,7 @@ impl Settings { pub fn load() -> Settings; pub fn load_from(&Path) -> Settings; 
 // clipboard – the policy lives here, the platform access behind a trait
 pub trait ClipboardBackend { fn write_text(&self, text: &str, sensitive: bool) -> Result<()>; fn read_text(&self) -> Result<Option<String>>; fn clear(&self) -> Result<()>;
                              fn clear_if_equals(&self, expected: &str) -> Result<bool> /* default: read_text == expected → clear; a backend that cannot read (Android ≥ 10 in the background) overrides it and clears unconditionally */ }
-pub fn install_backend(Box<dyn ClipboardBackend + Send + Sync>) -> bool; // once per process (false = one is already in place); desktop: the arboard backend is installed lazily on first use (one long-lived handle, Windows retry while the clipboard is occupied);
+pub fn install_backend(Box<dyn ClipboardBackend + Send + Sync>) -> bool; // once per process (false = one is already in place); phone: the app installs `mobile::PluginClipboard` (tauri-plugin-clipboard-manager) first thing in its setup – `write_secret` for sensitive text, never reads, `clear_if_equals` clears unconditionally; desktop: the arboard backend is installed lazily on first use (one long-lived handle, Windows retry while the clipboard is occupied);
                                                                           // Android/iOS (arboard is not compiled there): no default – the app installs its own at start-up, without one every function below fails with Error::Unsupported("clipboard")
 pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // write_text(sensitive = true): excluded from clipboard history where supported; Windows: CanIncludeInClipboardHistory=0 and CanUploadToCloudClipboard=0 (no Cloud Clipboard sync);
                                                                              // remembered as the pending secret; with a delay a thread calls clear_if_equals(secret) after it, unless something newer was copied through this module (generation counter)
@@ -754,7 +785,7 @@ history. The bridge's own writes are not affected.
 
 | Command | Args | Returns |
 |---|---|---|
-| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos", extensionId }` |
+| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean }` – `extensionId` is `null` on the phone (no browser integration there); `readOnly` = the vault cannot be changed from this app (the phone in this stage): the UI hides every editing control |
 | `list_vaults` | – | `VaultInfo[]` |
 | `session_state` | – | `SessionState { unlocked: boolean, vault: VaultInfo \| null }` |
 | `create_vault` | `name, masterPassword` | `VaultInfo` (and unlocks it) |
@@ -817,6 +848,8 @@ history. The bridge's own writes are not affected.
 | `check_update` | – | `UpdateInfo` – checks the configured channel now; network/HTTP errors → `io:<detail>` |
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
+
+**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`. (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
 `PairedClient { id, name, createdAt, lastSeenAt }`,
@@ -1204,13 +1237,15 @@ vault without recovery key is dropped silently.
   Windows Recall see it black or not at all; before Windows 10 2004 it is
   shown black; macOS `NSWindowSharingNone`; no effect on Linux).
 
-## Website icons (`keystead_core::icons`, `src-tauri/src/icons.rs`)
+## Website icons (`keystead_core::icons`, `src-tauri/src/icons.rs`, `icons/fetch.rs`)
 
 Logins show their website's icon. The desktop app loads missing icons
 itself, **directly from the websites** (no icon service, no proxy), in the
 background, and keeps them **inside the encrypted vault** – loose files would
 reveal which sites the user has accounts with. `Settings.websiteIcons`
-(default on) switches the loading off; stored icons are still shown.
+(default on) switches the loading off; stored icons are still shown. The
+loader (`icons/fetch.rs`) is desktop-only; the phone (no network) only
+shows the icons stored in the vault (`get_icons`).
 
 * **Model** (`VaultData.icons`, `#[serde(default)]` – older vaults open
   unchanged): `{ [host]: IconEntry { png: string|null /* base64, 64×64 PNG */,

@@ -17,27 +17,45 @@
 //!
 //! Only installed copies update themselves (`canInstall`): the portable
 //! build gets a link to the release page instead.
+//!
+//! The phone has no in-app updates (no network in this stage): only the
+//! release facts (`REPO_URL`, the endpoints, `release_url`, `UpdateInfo`,
+//! `version_label`) are compiled there – for the About page and a later
+//! update hint –, everything that talks to the plugin is `#[cfg(desktop)]`.
+#![cfg_attr(mobile, allow(dead_code))]
 
+#[cfg(desktop)]
 use std::sync::mpsc::{self, RecvTimeoutError};
+#[cfg(desktop)]
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 use keystead_core::settings::UpdateChannel;
+#[cfg(desktop)]
 use semver::Version;
 use serde::Serialize;
+#[cfg(desktop)]
 use tauri::{AppHandle, Manager as _, Url};
+#[cfg(desktop)]
 use tauri_plugin_updater::{Error as UpdaterError, RemoteRelease, Update, Updater, UpdaterExt};
 
+#[cfg(desktop)]
 use crate::error::{AppError, AppResult};
+#[cfg(desktop)]
 use crate::platform;
+#[cfg(desktop)]
 use crate::state::{log, Core, LockReason};
 
 /// `update://available` – payload `UpdateInfo`, once per newly found version.
+#[cfg(desktop)]
 pub const EVENT_AVAILABLE: &str = "update://available";
 /// `update://progress` – payload `{ downloaded, total }` (bytes).
+#[cfg(desktop)]
 pub const EVENT_PROGRESS: &str = "update://progress";
 /// `update://ready` – payload `{ version }`: downloaded and verified, the
 /// app installs it and restarts.
+#[cfg(desktop)]
 pub const EVENT_READY: &str = "update://ready";
 
 /// The repository the releases come from.
@@ -54,12 +72,16 @@ pub const STABLE_ENDPOINT: &str =
     "https://github.com/CedrickGD/Keystead/releases/latest/download/latest.json";
 
 /// First background check after start.
+#[cfg(desktop)]
 pub const FIRST_CHECK_DELAY: Duration = Duration::from_secs(15);
 /// Background check interval.
+#[cfg(desktop)]
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Timeout of the `latest.json` request (not of the download).
+#[cfg(desktop)]
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// `update://progress` is sent at most this often.
+#[cfg(desktop)]
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The `latest.json` URL of a channel.
@@ -106,6 +128,7 @@ pub struct UpdateInfo {
     pub release_url: String,
 }
 
+#[cfg(desktop)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProgressPayload {
@@ -113,6 +136,7 @@ struct ProgressPayload {
     total: Option<u64>,
 }
 
+#[cfg(desktop)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReadyPayload {
@@ -120,6 +144,7 @@ struct ReadyPayload {
 }
 
 /// The release `latest.json` announced (independent of the platform).
+#[cfg(desktop)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseFacts {
     pub version: Version,
@@ -127,6 +152,7 @@ pub struct ReleaseFacts {
     pub date: Option<String>,
 }
 
+#[cfg(desktop)]
 impl ReleaseFacts {
     fn of(release: &RemoteRelease) -> Self {
         ReleaseFacts {
@@ -142,6 +168,7 @@ impl ReleaseFacts {
 
 /// Builds the [`UpdateInfo`] for the running version `current`, the release
 /// the channel announces (if any) and whether this copy could install it.
+#[cfg(desktop)]
 pub fn info_from(
     current: &Version,
     release: Option<&ReleaseFacts>,
@@ -161,6 +188,7 @@ pub fn info_from(
 }
 
 /// What remains of a failed `latest.json` check.
+#[cfg(desktop)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum CheckFailure {
     /// The channel has no `latest.json` (yet, HTTP 404/410): nothing to
@@ -176,6 +204,7 @@ pub enum CheckFailure {
 /// Classifies an updater error. `ReleaseNotFound` is only a candidate for
 /// [`CheckFailure::NoRelease`]: the plugin also reports it for a 403 or 5xx
 /// answer, see [`missing_release_cause`].
+#[cfg(desktop)]
 pub fn classify(error: &UpdaterError) -> CheckFailure {
     match error {
         UpdaterError::ReleaseNotFound => CheckFailure::NoRelease,
@@ -194,6 +223,7 @@ pub fn classify(error: &UpdaterError) -> CheckFailure {
 /// Only 404/410 mean "nothing to offer": the channel has no `latest.json`
 /// (yet), e.g. the stable channel while GitHub's "latest" release is still a
 /// VaultX 1.x one. A success now means the earlier answer was a passing error.
+#[cfg(desktop)]
 pub fn missing_release_cause(status: reqwest::StatusCode) -> CheckFailure {
     use reqwest::StatusCode;
     if status == StatusCode::NOT_FOUND || status == StatusCode::GONE {
@@ -207,6 +237,7 @@ pub fn missing_release_cause(status: reqwest::StatusCode) -> CheckFailure {
 
 /// The HTTP client for [`missing_release`]: like the plugin's (system proxy,
 /// redirects followed, timeout).
+#[cfg(desktop)]
 fn probe_client() -> Result<reqwest::Client, String> {
     // `rustls-no-provider`: building a client without a process-wide crypto
     // provider panics. The plugin's check installs ring the same way.
@@ -223,6 +254,7 @@ fn probe_client() -> Result<reqwest::Client, String> {
 /// Requests `url` once more after the plugin reported `ReleaseNotFound` and
 /// classifies the answer ([`missing_release_cause`]); a network error is
 /// [`CheckFailure::Other`].
+#[cfg(desktop)]
 pub async fn missing_release(client: &reqwest::Client, url: &str) -> CheckFailure {
     let response = client
         .get(url)
@@ -242,6 +274,7 @@ pub async fn missing_release(client: &reqwest::Client, url: &str) -> CheckFailur
 /// Normalises a Windows directory for comparison: no surrounding quotes or
 /// whitespace, no `\\?\` prefix, backslashes, no trailing separator,
 /// lowercase (NTFS paths are case-insensitive).
+#[cfg(desktop)]
 #[cfg_attr(not(windows), allow(dead_code))]
 fn normalize_windows_dir(dir: &str) -> String {
     let dir = dir.trim().trim_matches('"').trim();
@@ -254,6 +287,7 @@ fn normalize_windows_dir(dir: &str) -> String {
 /// or in a directory an uninstall entry of the installer names
 /// (`InstallLocation`). Everything else is a portable copy, which must not
 /// run the installer (it would install a second copy elsewhere).
+#[cfg(desktop)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_installed_copy(exe_dir: &str, per_user_install_dir: &str, registered: &[String]) -> bool {
     let exe_dir = normalize_windows_dir(exe_dir);
@@ -295,6 +329,7 @@ fn registered_install_dirs() -> Vec<String> {
 /// Whether this copy can install updates itself: Windows – an installed
 /// copy (see [`is_installed_copy`]); Linux – an AppImage; macOS – never
 /// (no builds are published).
+#[cfg(desktop)]
 pub fn can_install(app: &AppHandle) -> bool {
     static CAN_INSTALL: OnceLock<bool> = OnceLock::new();
     *CAN_INSTALL.get_or_init(|| {
@@ -330,6 +365,7 @@ pub fn can_install(app: &AppHandle) -> bool {
 // Checking
 // ---------------------------------------------------------------------------
 
+#[cfg(desktop)]
 fn build_updater(
     app: &AppHandle,
     channel: UpdateChannel,
@@ -368,6 +404,7 @@ fn build_updater(
 /// update (only when `info.can_install`). No `latest.json` (404/410) → not
 /// available; any other HTTP error, a network error or an unreadable
 /// manifest → `io:<detail>`.
+#[cfg(desktop)]
 pub async fn check(
     app: &AppHandle,
     channel: UpdateChannel,
@@ -408,6 +445,7 @@ pub async fn check(
 
 /// `check_update`: checks the configured channel now and remembers the
 /// result (a found update is not announced again by the background check).
+#[cfg(desktop)]
 pub async fn check_now(app: &AppHandle, core: &Arc<Core>) -> AppResult<UpdateInfo> {
     let channel = core.state().settings.update_channel;
     let (info, _) = check(app, channel).await?;
@@ -420,6 +458,7 @@ pub async fn check_now(app: &AppHandle, core: &Arc<Core>) -> AppResult<UpdateInf
 /// (setting turned on, channel changed), while `updateCheck` is on. A newly
 /// found version is announced with `update://available`; errors are only
 /// logged.
+#[cfg(desktop)]
 pub fn spawn_background_checks(app: AppHandle, core: &Arc<Core>) {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     core.set_update_wake(wake_tx);
@@ -478,6 +517,7 @@ pub fn spawn_background_checks(app: AppHandle, core: &Arc<Core>) {
 /// copied secret and installs it. On Windows the plugin then starts the
 /// setup and ends this process (the setup restarts the app); elsewhere the
 /// app restarts. Only returns on failure (or once the restart is under way).
+#[cfg(desktop)]
 pub async fn install(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
     if !core.begin_update_install() {
         return Err(AppError::invalid("update_in_progress"));
@@ -489,6 +529,7 @@ pub async fn install(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
     result
 }
 
+#[cfg(desktop)]
 async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
     if !can_install(app) {
         return Err(AppError::unsupported("update_portable"));
@@ -559,6 +600,7 @@ async fn install_inner(app: &AppHandle, core: &Arc<Core>) -> AppResult<()> {
 
 /// `invalid_input:update_tui_running` while a terminal UI runs (Windows;
 /// see [`platform::terminal_ui_running`]).
+#[cfg(desktop)]
 fn refuse_while_terminal_ui_runs() -> AppResult<()> {
     if platform::terminal_ui_running() {
         return Err(AppError::invalid("update_tui_running"));

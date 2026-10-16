@@ -284,6 +284,7 @@ pub fn list_entries(vault: &UnlockedVault) -> Vec<ItemListEntry> {
 }
 
 /// The redacted answer to `save_item`; the saved full item is wiped.
+#[cfg(desktop)]
 pub fn saved_entry(vault: &UnlockedVault, saved: VaultItem) -> ItemListEntry {
     let saved = Wiped(saved);
     ItemListEntry::of(vault, &saved.0)
@@ -292,6 +293,7 @@ pub fn saved_entry(vault: &UnlockedVault, saved: VaultItem) -> ItemListEntry {
 /// The redacted entry of the stored item `item_id` (`Error::NotFound` if
 /// there is none): the answer of the commands that change an item's
 /// attachments.
+#[cfg(desktop)]
 pub fn item_entry(vault: &UnlockedVault, item_id: &str) -> keystead_core::Result<ItemListEntry> {
     vault
         .item(item_id)
@@ -408,6 +410,7 @@ pub fn item_totp(core: &Core, page_vault_id: Option<&str>, item_id: &str) -> App
 }
 
 /// `get_item_for_edit`: the full item, for the editor.
+#[cfg(desktop)]
 pub fn item_for_edit(
     core: &Core,
     page_vault_id: Option<&str>,
@@ -419,6 +422,7 @@ pub fn item_for_edit(
 
 /// `set_favorite`: (un)marks an item as favourite without the UI sending
 /// the full item back.
+#[cfg(desktop)]
 pub fn set_favorite_for_page(
     core: &Core,
     page_vault_id: Option<&str>,
@@ -501,6 +505,7 @@ pub async fn totp_for_item(
 }
 
 /// `get_item_for_edit(itemId, pageVaultId)` → the full `VaultItem`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn get_item_for_edit(
     core: Shared<'_>,
@@ -514,6 +519,7 @@ pub async fn get_item_for_edit(
 }
 
 /// `set_favorite(itemId, favorite, pageVaultId)` † → `ItemListEntry`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn set_favorite(
     core: Shared<'_>,

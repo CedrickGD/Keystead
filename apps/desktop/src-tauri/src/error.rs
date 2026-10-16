@@ -2,6 +2,7 @@
 //! the string is a stable error code (see "Desktop backend ↔ frontend" in
 //! docs/ARCHITECTURE.md); [`AppError::code`] produces it.
 
+#[cfg(desktop)]
 use keystead_bridge::BridgeError;
 
 /// Error of a backend operation.
@@ -11,7 +12,8 @@ pub enum AppError {
     Locked,
     /// Error from `keystead-core` (already has a stable code).
     Core(keystead_core::Error),
-    /// Error of the bridge infrastructure.
+    /// Error of the bridge infrastructure (desktop only).
+    #[cfg(desktop)]
     Bridge(keystead_bridge::Error),
     /// A ready-made code, e.g. `invalid_input:lock_first`.
     Code(String),
@@ -40,6 +42,7 @@ impl AppError {
         match self {
             AppError::Locked => "locked".to_owned(),
             AppError::Core(e) => e.code(),
+            #[cfg(desktop)]
             AppError::Bridge(e) => e.code(),
             AppError::Code(c) => c.clone(),
         }
@@ -60,6 +63,7 @@ impl From<keystead_core::Error> for AppError {
     }
 }
 
+#[cfg(desktop)]
 impl From<keystead_bridge::Error> for AppError {
     fn from(e: keystead_bridge::Error) -> Self {
         AppError::Bridge(e)
@@ -80,6 +84,7 @@ impl From<AppError> for String {
 }
 
 /// Maps backend errors to bridge protocol codes.
+#[cfg(desktop)]
 impl From<AppError> for BridgeError {
     fn from(e: AppError) -> Self {
         match e {

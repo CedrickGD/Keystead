@@ -1,5 +1,11 @@
-//! GUI mode: Tauri setup, main window, tray, single instance, background
-//! services and shutdown.
+//! GUI mode: Tauri setup, main window, background services and shutdown –
+//! on the desktop also tray, single instance, browser bridge, extension
+//! deployment, update checks and the website-icon fetcher.
+//!
+//! One builder for both: `#[cfg(desktop)]` marks the plugins, commands and
+//! services the phone does without; the phone registers only the read
+//! commands (it is read-only in this stage, see `AppInfo.readOnly` and
+//! "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -9,118 +15,17 @@ use keystead_core::{paths, VaultStore};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
-use crate::state::{log, show_main_window, Core, MAIN_WINDOW};
-use crate::{
-    bridge, commands, extension, import_flow, monitor, platform, tray, update, BACKGROUND_ARG,
-};
+#[cfg(desktop)]
+use crate::state::show_main_window;
+use crate::state::{log, Core, MAIN_WINDOW};
+#[cfg(desktop)]
+use crate::{bridge, extension, import_flow, tray, update, BACKGROUND_ARG};
+use crate::{commands, monitor, platform};
 
 /// Runs the desktop app; returns the process exit code.
+#[cfg(desktop)]
 pub fn run(background: bool) -> i32 {
-    let app = tauri::Builder::default()
-        // Must be the first plugin: a second instance exits right here.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // A second `--background` launch (from the native host) must
-            // not pop up the window; a normal launch brings it to front.
-            if !argv.iter().skip(1).any(|a| a == BACKGROUND_ARG) {
-                show_main_window(app);
-            }
-        }))
-        .plugin(tauri_plugin_dialog::init())
-        // The UI never calls these plugins directly (no permission granted):
-        // `check_update` / `install_update` below drive the updater. Its
-        // Windows exit hook (`on_before_exit`) is set where the updater is
-        // built, `update::build_updater`.
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![
-            commands::app_info,
-            commands::list_vaults,
-            commands::session_state,
-            commands::create_vault,
-            commands::unlock_vault,
-            commands::unlock_with_recovery,
-            commands::lock_vault,
-            commands::touch_activity,
-            commands::list_items,
-            commands::list_folders,
-            commands::save_item,
-            crate::secrets::reveal_secret,
-            crate::secrets::copy_secret_field,
-            crate::secrets::totp_for_item,
-            crate::secrets::get_item_for_edit,
-            crate::secrets::set_favorite,
-            crate::attachments::add_attachment,
-            crate::attachments::save_attachment,
-            crate::attachments::remove_attachment,
-            crate::attachments::reveal_attachment,
-            commands::trash_item,
-            commands::restore_item,
-            commands::delete_item,
-            commands::empty_trash,
-            commands::save_folder,
-            commands::delete_folder,
-            commands::rename_tag,
-            commands::delete_tag,
-            commands::generate_password,
-            commands::generator_history,
-            commands::clear_generator_history,
-            commands::password_strength,
-            commands::totp_code,
-            commands::copy_text,
-            commands::health_report,
-            commands::change_master_password,
-            commands::create_recovery_key,
-            commands::remove_recovery_key,
-            commands::rename_vault,
-            commands::delete_vault,
-            commands::legacy_scan,
-            commands::import_data,
-            import_flow::analyze_import,
-            import_flow::commit_import,
-            import_flow::cancel_import,
-            import_flow::show_export,
-            commands::export_data,
-            commands::get_settings,
-            commands::save_settings,
-            commands::browser_status,
-            commands::register_browsers,
-            commands::unregister_browsers,
-            commands::revoke_client,
-            commands::respond_pairing,
-            commands::open_terminal,
-            commands::open_data_dir,
-            commands::open_extension_dir,
-            commands::set_portable_mode,
-            commands::check_update,
-            commands::pending_update,
-            commands::install_update,
-            crate::icons::get_icons,
-            crate::icons::clear_icons,
-            crate::pwned::check_pwned_password,
-            crate::pwned::check_pwned_vault,
-        ])
-        .setup(move |app| {
-            setup(app.handle(), background);
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            if window.label() != MAIN_WINDOW {
-                return;
-            }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let Some(core) = window.app_handle().try_state::<Arc<Core>>() else {
-                    return;
-                };
-                // Without a tray icon a hidden window could not be reopened.
-                if core.minimize_to_tray() && core.tray_available() {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
-        })
-        .build(tauri::generate_context!());
-
-    let app = match app {
+    let app = match build_app(background) {
         Ok(app) => app,
         Err(e) => {
             log(format_args!("could not start the app: {e}"));
@@ -136,9 +41,207 @@ pub fn run(background: bool) -> i32 {
     })
 }
 
+/// Runs the phone app. On Android the process ends with the activity, so
+/// `RunEvent::Exit` (and `Core::shutdown`) practically never runs there:
+/// nothing security-relevant may depend on it (the lock on leaving the app
+/// is the monitor's job).
+#[cfg(mobile)]
+pub fn run_mobile() {
+    match build_app(false) {
+        Ok(app) => app.run(|app, event| {
+            if let RunEvent::Exit = event {
+                if let Some(core) = app.try_state::<Arc<Core>>() {
+                    core.shutdown();
+                }
+            }
+        }),
+        Err(e) => log(format_args!("could not start the app: {e}")),
+    }
+}
+
+/// The Tauri app with plugins, commands and the setup hook; `background`:
+/// start hidden (desktop only).
+fn build_app(background: bool) -> tauri::Result<tauri::App> {
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder
+        // Must be the first plugin: a second instance exits right here.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // A second `--background` launch (from the native host) must
+            // not pop up the window; a normal launch brings it to front.
+            if !argv.iter().skip(1).any(|a| a == BACKGROUND_ARG) {
+                show_main_window(app);
+            }
+        }))
+        // The UI never calls these plugins directly (no permission granted):
+        // `check_update` / `install_update` below drive the updater. Its
+        // Windows exit hook (`on_before_exit`) is set where the updater is
+        // built, `update::build_updater`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+    #[cfg(mobile)]
+    let builder = builder
+        // Called from Rust only (`mobile::PluginClipboard`, `platform::open_url`);
+        // the webview gets no permission for them either.
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init());
+    builder
+        .plugin(tauri_plugin_dialog::init())
+        // `#[cfg(desktop)]`: not registered on the phone (read-only, or the
+        // feature is desktop-only). The unit test below keeps this list and
+        // the table in docs/ARCHITECTURE.md in step.
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::list_vaults,
+            commands::session_state,
+            #[cfg(desktop)]
+            commands::create_vault,
+            commands::unlock_vault,
+            #[cfg(desktop)]
+            commands::unlock_with_recovery,
+            commands::lock_vault,
+            commands::touch_activity,
+            commands::list_items,
+            commands::list_folders,
+            #[cfg(desktop)]
+            commands::save_item,
+            crate::secrets::reveal_secret,
+            crate::secrets::copy_secret_field,
+            crate::secrets::totp_for_item,
+            #[cfg(desktop)]
+            crate::secrets::get_item_for_edit,
+            #[cfg(desktop)]
+            crate::secrets::set_favorite,
+            #[cfg(desktop)]
+            crate::attachments::add_attachment,
+            #[cfg(desktop)]
+            crate::attachments::save_attachment,
+            #[cfg(desktop)]
+            crate::attachments::remove_attachment,
+            #[cfg(desktop)]
+            crate::attachments::reveal_attachment,
+            #[cfg(desktop)]
+            commands::trash_item,
+            #[cfg(desktop)]
+            commands::restore_item,
+            #[cfg(desktop)]
+            commands::delete_item,
+            #[cfg(desktop)]
+            commands::empty_trash,
+            #[cfg(desktop)]
+            commands::save_folder,
+            #[cfg(desktop)]
+            commands::delete_folder,
+            #[cfg(desktop)]
+            commands::rename_tag,
+            #[cfg(desktop)]
+            commands::delete_tag,
+            #[cfg(desktop)]
+            commands::generate_password,
+            #[cfg(desktop)]
+            commands::generator_history,
+            #[cfg(desktop)]
+            commands::clear_generator_history,
+            commands::password_strength,
+            #[cfg(desktop)]
+            commands::totp_code,
+            commands::copy_text,
+            commands::health_report,
+            #[cfg(desktop)]
+            commands::change_master_password,
+            #[cfg(desktop)]
+            commands::create_recovery_key,
+            #[cfg(desktop)]
+            commands::remove_recovery_key,
+            #[cfg(desktop)]
+            commands::rename_vault,
+            #[cfg(desktop)]
+            commands::delete_vault,
+            #[cfg(desktop)]
+            commands::legacy_scan,
+            #[cfg(desktop)]
+            commands::import_data,
+            #[cfg(desktop)]
+            import_flow::analyze_import,
+            #[cfg(desktop)]
+            import_flow::commit_import,
+            #[cfg(desktop)]
+            import_flow::cancel_import,
+            #[cfg(desktop)]
+            import_flow::show_export,
+            #[cfg(desktop)]
+            commands::export_data,
+            commands::get_settings,
+            commands::save_settings,
+            #[cfg(desktop)]
+            commands::browser_status,
+            #[cfg(desktop)]
+            commands::register_browsers,
+            #[cfg(desktop)]
+            commands::unregister_browsers,
+            #[cfg(desktop)]
+            commands::revoke_client,
+            #[cfg(desktop)]
+            commands::respond_pairing,
+            #[cfg(desktop)]
+            commands::open_terminal,
+            #[cfg(desktop)]
+            commands::open_data_dir,
+            #[cfg(desktop)]
+            commands::open_extension_dir,
+            #[cfg(desktop)]
+            commands::set_portable_mode,
+            #[cfg(desktop)]
+            commands::check_update,
+            #[cfg(desktop)]
+            commands::pending_update,
+            #[cfg(desktop)]
+            commands::install_update,
+            crate::icons::get_icons,
+            #[cfg(desktop)]
+            crate::icons::clear_icons,
+            #[cfg(desktop)]
+            crate::pwned::check_pwned_password,
+            #[cfg(desktop)]
+            crate::pwned::check_pwned_vault,
+        ])
+        .setup(move |app| {
+            setup(app.handle(), background);
+            Ok(())
+        })
+        .on_window_event(on_window_event)
+        .build(tauri::generate_context!())
+}
+
+/// Desktop: closing the window hides it when "minimize to tray" is on.
+/// Phone: nothing yet (the lifecycle stage adds `Suspended`/`Resumed`).
+fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if window.label() != MAIN_WINDOW {
+        return;
+    }
+    #[cfg(desktop)]
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        let Some(core) = window.app_handle().try_state::<Arc<Core>>() else {
+            return;
+        };
+        // Without a tray icon a hidden window could not be reopened.
+        if core.minimize_to_tray() && core.tray_available() {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    }
+    #[cfg(mobile)]
+    let _ = event;
+}
+
 /// Creates the state, window, tray and background services. Errors are
 /// logged; only a missing main window is fatal.
 fn setup(app: &AppHandle, background: bool) {
+    // The phone's data directory and clipboard backend: before the
+    // settings or the store are touched.
+    #[cfg(mobile)]
+    crate::mobile::prepare(app);
+
     let settings = Settings::load();
     let store = VaultStore::open_default().unwrap_or_else(|e| {
         log(format_args!("data directory not usable: {}", e.code()));
@@ -156,42 +259,53 @@ fn setup(app: &AppHandle, background: bool) {
         }
     };
 
+    #[cfg(desktop)]
     core.set_tray(tray::create(app, settings.language));
 
     let (signals_tx, signals_rx) = mpsc::channel();
     core.set_monitor(signals_tx);
+    #[cfg(desktop)]
     platform::watch_session_events(&window, &core);
     monitor::spawn(Arc::downgrade(&core), signals_rx);
 
-    bridge::start_if_enabled(&core);
-    if background && !bridge::is_running(&core) {
-        // Only the native host starts the app with --background, to reach
-        // the bridge. Without a running bridge (browser integration off, or
-        // the endpoint is served elsewhere) the host cannot use this
-        // instance, and a hidden window would just linger unnoticed.
-        log("started in the background, but the browser bridge is not running: exiting");
-        app.exit(0);
-        return;
-    }
-    if settings.browser_integration {
-        // Registry/file work off the main thread.
+    #[cfg(desktop)]
+    {
+        bridge::start_if_enabled(&core);
+        if background && !bridge::is_running(&core) {
+            // Only the native host starts the app with --background, to reach
+            // the bridge. Without a running bridge (browser integration off, or
+            // the endpoint is served elsewhere) the host cannot use this
+            // instance, and a hidden window would just linger unnoticed.
+            log("started in the background, but the browser bridge is not running: exiting");
+            app.exit(0);
+            return;
+        }
+        if settings.browser_integration {
+            // Registry/file work off the main thread.
+            let _ = std::thread::Builder::new()
+                .name("keystead-register".into())
+                .spawn(bridge::reregister_if_needed);
+        }
+        // The browser extension the app delivers: (re)write its folder when the
+        // embedded version differs (file work off the main thread).
+        let data_dir = core.data_dir();
         let _ = std::thread::Builder::new()
-            .name("keystead-register".into())
-            .spawn(bridge::reregister_if_needed);
+            .name("keystead-extension".into())
+            .spawn(move || extension::deploy_logged(&data_dir));
+        update::spawn_background_checks(app.clone(), &core);
+        // Website icons: fetched in the background while a vault is open.
+        crate::icons::spawn_scheduler(&core);
     }
-    // The browser extension the app delivers: (re)write its folder when the
-    // embedded version differs (file work off the main thread).
-    let data_dir = core.data_dir();
-    let _ = std::thread::Builder::new()
-        .name("keystead-extension".into())
-        .spawn(move || extension::deploy_logged(&data_dir));
-    update::spawn_background_checks(app.clone(), &core);
-    // Website icons: fetched in the background while a vault is open.
-    crate::icons::spawn_scheduler(&core);
 
     // Start hidden for `--background` (native host) and "start in tray" –
     // the latter only if there is a tray icon to bring the window back.
+    #[cfg(desktop)]
     let hidden = background || (settings.start_in_tray && core.tray_available());
+    #[cfg(mobile)]
+    let hidden = {
+        let _ = background;
+        false
+    };
     if !hidden {
         let _ = window.show();
         let _ = window.set_focus();
@@ -234,10 +348,13 @@ fn build_main_window(app: &AppHandle, core: &Arc<Core>) -> tauri::Result<Webview
         None
     };
     let page_core = Arc::downgrade(core);
+    let navigation_app = app.clone();
+    let new_window_app = app.clone();
     WebviewWindowBuilder::from_config(app, &config)?
         // Revealed passwords, card numbers and the recovery key must not end
         // up in screenshots, recordings, screen sharing or Windows Recall
-        // (`WDA_EXCLUDEFROMCAPTURE`; also set in tauri.conf.json).
+        // (`WDA_EXCLUDEFROMCAPTURE`; also set in tauri.conf.json). A no-op
+        // on Android, where the activity sets `FLAG_SECURE` instead.
         .content_protected(true)
         // Links and `window.open` go to the system browser, never into a
         // webview; the app itself never navigates away from its UI.
@@ -245,11 +362,11 @@ fn build_main_window(app: &AppHandle, core: &Arc<Core>) -> tauri::Result<Webview
             if is_app_url(url, dev_url.as_ref()) {
                 return true;
             }
-            platform::open_url(url);
+            platform::open_url(&navigation_app, url);
             false
         })
-        .on_new_window(|url, _features| {
-            platform::open_url(&url);
+        .on_new_window(move |url, _features| {
+            platform::open_url(&new_window_app, &url);
             NewWindowResponse::Deny
         })
         .on_page_load(move |_window, payload| {
@@ -266,6 +383,8 @@ fn build_main_window(app: &AppHandle, core: &Arc<Core>) -> tauri::Result<Webview
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -308,9 +427,10 @@ mod tests {
     }
 
     #[test]
-    fn the_webview_cannot_call_the_updater_or_process_plugins() {
+    fn the_webview_cannot_call_the_rust_only_plugins() {
         // The UI only uses the app's own commands (check_update,
-        // install_update); the plugins' JS APIs stay unreachable.
+        // install_update, copy_text, …); the plugins' JS APIs stay
+        // unreachable – also the phone's clipboard and opener plugins.
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         for permission in capability["permissions"].as_array().unwrap() {
@@ -318,10 +438,9 @@ mod tests {
                 .as_str()
                 .or_else(|| permission["identifier"].as_str())
                 .unwrap();
-            assert!(
-                !id.starts_with("updater:") && !id.starts_with("process:"),
-                "{id}"
-            );
+            for plugin in ["updater:", "process:", "clipboard-manager:", "opener:"] {
+                assert!(!id.starts_with(plugin), "{id}");
+            }
         }
     }
 
@@ -337,5 +456,98 @@ mod tests {
         assert!(!is_app_url(&u("https://example.com/"), Some(&dev)));
         assert!(!is_app_url(&u("file:///etc/passwd"), None));
         assert!(!is_app_url(&u("javascript:alert(1)"), None));
+    }
+
+    /// The entries of this file's `generate_handler!` list as
+    /// (command name, desktop only).
+    fn handler_entries() -> Vec<(String, bool)> {
+        let source = include_str!("gui.rs");
+        let start = source.find("generate_handler![").unwrap() + "generate_handler![".len();
+        let body = &source[start..];
+        let body = &body[..body.find("])").unwrap()];
+        let mut entries = Vec::new();
+        let mut desktop_only = false;
+        for line in body.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            if line == "#[cfg(desktop)]" {
+                desktop_only = true;
+                continue;
+            }
+            assert!(!line.starts_with('#'), "unexpected attribute: {line}");
+            let path = line.trim_end_matches(',');
+            let name = path.rsplit("::").next().unwrap().to_owned();
+            entries.push((name, desktop_only));
+            desktop_only = false;
+        }
+        entries
+    }
+
+    /// The backticked command names in the first cell of every row of the
+    /// command table in docs/ARCHITECTURE.md, and the ones its "On the
+    /// phone" paragraph lists.
+    fn documented_commands() -> (BTreeSet<String>, BTreeSet<String>) {
+        let docs = include_str!("../../../../docs/ARCHITECTURE.md");
+        let section = docs
+            .split("## Desktop backend ↔ frontend (Tauri commands)")
+            .nth(1)
+            .unwrap();
+        let section = &section[..section.find("**Events**").unwrap()];
+        let names = |text: &str| -> BTreeSet<String> {
+            text.split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|t| !t.is_empty() && t.bytes().all(|b| b == b'_' || b.is_ascii_lowercase()))
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut table = BTreeSet::new();
+        let mut phone = BTreeSet::new();
+        for line in section.lines() {
+            if line.starts_with("| `") {
+                let first_cell = line.trim_start_matches('|').split('|').next().unwrap();
+                table.extend(names(first_cell));
+            } else if line.starts_with("**On the phone**") {
+                phone = names(line);
+            }
+        }
+        (table, phone)
+    }
+
+    #[test]
+    fn the_handler_lists_match_the_architecture_table() {
+        let entries = handler_entries();
+        let registered: BTreeSet<String> = entries.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(registered.len(), entries.len(), "duplicate entries");
+        let (table, phone_documented) = documented_commands();
+        // Every documented command is registered on the desktop, and the
+        // desktop registers nothing undocumented.
+        assert_eq!(registered, table);
+        // The phone registers exactly the documented read-only subset.
+        let phone: BTreeSet<String> = entries
+            .iter()
+            .filter(|(_, desktop_only)| !desktop_only)
+            .map(|(n, _)| n.clone())
+            .collect();
+        assert!(!phone.is_empty());
+        assert_eq!(phone, phone_documented);
+        // Nothing that writes the vault, opens a dialog path or needs the
+        // network is on the phone.
+        for name in [
+            "save_item",
+            "set_favorite",
+            "create_vault",
+            "unlock_with_recovery",
+            "delete_vault",
+            "import_data",
+            "export_data",
+            "add_attachment",
+            "check_update",
+            "check_pwned_vault",
+            "browser_status",
+        ] {
+            assert!(!phone.contains(name), "{name} must stay desktop-only");
+        }
     }
 }

@@ -18,6 +18,7 @@ use keystead_core::settings::Settings;
 use keystead_core::KdfParams;
 
 use super::*;
+use crate::icons::*;
 use crate::state::test_support::core_with_open_vault;
 
 // ---------------------------------------------------------------------------

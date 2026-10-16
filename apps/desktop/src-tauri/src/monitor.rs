@@ -1,8 +1,8 @@
 //! Background thread: auto-lock after inactivity, lock when the computer is
 //! locked or goes to sleep, and pick up vault changes made by other
-//! processes (TUI, second device on a USB stick).
+//! processes (TUI, second device on a USB stick, a synced vault file).
 //!
-//! System lock detection:
+//! System lock detection (desktop):
 //! * Windows: real session notifications (`WM_WTSSESSION_CHANGE` with
 //!   `WTS_SESSION_LOCK`, and `WM_POWERBROADCAST`/`PBT_APMSUSPEND`) arrive
 //!   via [`MonitorSignal::SystemLock`] (see `platform::watch_session_events`).
@@ -10,10 +10,16 @@
 //!   than [`SLEEP_JUMP`] between two ticks means the computer was suspended
 //!   or hibernated – the vault is locked with reason `system`. A plain
 //!   screen lock without suspend is not detected there.
+//!
+//! The phone has neither: a phone sleeps all the time, so a clock jump
+//! means nothing there. Its lock on leaving the app (`Settings.
+//! lockInBackgroundSeconds`) is the lifecycle stage's job.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Weak;
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(desktop)]
+use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
 use crate::state::{log, Core, LockReason};
 
@@ -24,6 +30,7 @@ const AUTO_LOCK_INTERVAL: Duration = Duration::from_secs(5);
 /// How often the vault file is checked for external changes.
 const RELOAD_INTERVAL: Duration = Duration::from_secs(2);
 /// A gap this large between two ticks means the computer was asleep.
+#[cfg(desktop)]
 const SLEEP_JUMP: Duration = Duration::from_secs(120);
 
 /// Messages to the monitor thread.
@@ -45,6 +52,7 @@ pub fn spawn(core: Weak<Core>, signals: Receiver<MonitorSignal>) {
 }
 
 fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
+    #[cfg(desktop)]
     let mut last_tick = (Instant::now(), SystemTime::now());
     let mut last_auto_lock_check = Instant::now();
     let mut last_reload_check = Instant::now();
@@ -76,18 +84,22 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
             lock_for_system(&core);
         }
 
-        // Suspend/hibernate detection via clock jumps.
-        let now = (Instant::now(), SystemTime::now());
-        let slept = slept_between(last_tick, now);
-        last_tick = now;
-        if slept {
-            lock_for_system(&core);
+        // Suspend/hibernate detection via clock jumps (desktop).
+        #[cfg(desktop)]
+        {
+            let now = (Instant::now(), SystemTime::now());
+            let slept = slept_between(last_tick, now);
+            last_tick = now;
+            if slept {
+                lock_for_system(&core);
+            }
         }
 
         if last_auto_lock_check.elapsed() >= AUTO_LOCK_INTERVAL {
             last_auto_lock_check = Instant::now();
             check_auto_lock(&core);
             // An analysed import nobody committed: drop its secrets.
+            #[cfg(desktop)]
             core.import_slot().expire(Instant::now());
         }
 
@@ -101,6 +113,7 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
 /// True if the gap between two ticks (monotonic or wall clock – Linux's
 /// monotonic clock stops during suspend) shows that the computer slept. A
 /// wall clock set backwards is ignored.
+#[cfg(desktop)]
 fn slept_between(previous: (Instant, SystemTime), now: (Instant, SystemTime)) -> bool {
     let monotonic = now.0.saturating_duration_since(previous.0);
     let wall = now.1.duration_since(previous.1).unwrap_or_default();

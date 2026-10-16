@@ -3,4 +3,5 @@
 [toolchain]
 channel = "1.97.0"
 components = ["clippy", "rustfmt"]
-targets = ["x86_64-pc-windows-msvc"]
+# The Android targets of the phone app (emulator = x86_64, devices = aarch64).
+targets = ["x86_64-pc-windows-msvc", "aarch64-linux-android", "x86_64-linux-android"]

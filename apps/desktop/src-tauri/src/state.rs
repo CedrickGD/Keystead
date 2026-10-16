@@ -12,18 +12,24 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(desktop)]
 use keystead_bridge::{Dispatcher, ServerHandle};
 use keystead_core::model::VaultInfo;
 use keystead_core::settings::Settings;
 use keystead_core::{clipboard, Error as CoreError, UnlockedVault, VaultStore};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 use zeroize::Zeroizing;
 
 use crate::error::{AppError, AppResult};
+#[cfg(desktop)]
 use crate::import_flow::ImportSlot;
 use crate::monitor::MonitorSignal;
+#[cfg(desktop)]
 use crate::tray::TrayMenu;
+#[cfg(desktop)]
 use crate::update::UpdateInfo;
 
 /// `vault://locked` – payload `{ reason }`.
@@ -33,12 +39,15 @@ pub const EVENT_CHANGED: &str = "vault://changed";
 /// `vault://unlocked` – payload `VaultInfo` (unlocked outside the UI).
 pub const EVENT_UNLOCKED: &str = "vault://unlocked";
 /// `bridge://pairing-request` – payload `{ requestId, clientName, code }`.
+#[cfg(desktop)]
 pub const EVENT_PAIRING_REQUEST: &str = "bridge://pairing-request";
 /// `bridge://pairing-closed` – payload `{ requestId }`: a pairing request
 /// ended without the user's decision (cancelled in the browser, replaced by a
 /// newer one, timed out); its dialog can be closed.
+#[cfg(desktop)]
 pub const EVENT_PAIRING_CLOSED: &str = "bridge://pairing-closed";
 /// `bridge://unlock-request` – payload `{}`.
+#[cfg(desktop)]
 pub const EVENT_UNLOCK_REQUEST: &str = "bridge://unlock-request";
 
 /// Label of the main window.
@@ -61,6 +70,7 @@ struct LockedPayload {
 #[derive(Debug, Clone, Serialize)]
 struct EmptyPayload {}
 
+#[cfg(desktop)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PairingClosedPayload {
@@ -84,7 +94,9 @@ pub struct AppState {
     /// Wall-clock time of the last activity: unlike `Instant` on Linux it
     /// keeps running while the computer sleeps.
     pub last_activity_wall: SystemTime,
+    #[cfg(desktop)]
     pub bridge: Option<ServerHandle>,
+    #[cfg(desktop)]
     pub dispatcher: Option<Arc<Dispatcher>>,
 }
 
@@ -108,6 +120,9 @@ impl AppState {
         self.vault.as_ref().ok_or(AppError::Locked)
     }
 
+    // The phone is read-only in this stage: nothing there mutates the vault
+    // yet, so the writers below are unused on mobile.
+    #[cfg_attr(mobile, allow(dead_code))]
     pub fn vault_mut(&mut self) -> AppResult<&mut UnlockedVault> {
         self.vault.as_mut().ok_or(AppError::Locked)
     }
@@ -121,6 +136,7 @@ impl AppState {
             .ok_or(AppError::Locked)
     }
 
+    #[cfg_attr(mobile, allow(dead_code))]
     fn page_vault_mut(&mut self, page_vault_id: Option<&str>) -> AppResult<&mut UnlockedVault> {
         self.vault
             .as_mut()
@@ -163,6 +179,7 @@ enum Frontend {
 }
 
 /// What the update checks found (see `crate::update`).
+#[cfg(desktop)]
 #[derive(Default)]
 struct UpdateMemory {
     /// The newest update found on the current channel (`pending_update`,
@@ -182,8 +199,10 @@ pub struct Core {
     state: Mutex<AppState>,
     /// Mirror of `settings.minimize_to_tray` for the main thread (window
     /// close handling must not wait for the state lock).
+    #[cfg(desktop)]
     minimize_to_tray: AtomicBool,
     /// A tray icon exists (otherwise hiding the window would strand the app).
+    #[cfg(desktop)]
     tray_available: AtomicBool,
     /// The app is shutting down.
     exiting: AtomicBool,
@@ -191,6 +210,7 @@ pub struct Core {
     /// pairing requests the fresh page could not have received.
     page_loaded: AtomicBool,
     /// Tray menu entries (labels follow the language setting).
+    #[cfg(desktop)]
     tray: Mutex<Option<TrayMenu>>,
     /// Wakes the monitor thread (e.g. the Windows session was locked).
     monitor: Mutex<Option<Sender<MonitorSignal>>>,
@@ -199,18 +219,23 @@ pub struct Core {
     /// cleared here on lock and quit (if the clipboard still holds it).
     untimed_secret: Mutex<Option<Zeroizing<String>>>,
     /// Results of the update checks.
+    #[cfg(desktop)]
     updates: Mutex<UpdateMemory>,
     /// `install_update` is running.
+    #[cfg(desktop)]
     update_installing: AtomicBool,
     /// The vault was closed for an update installation
     /// (`lock_for_update`): no vault may be opened until the process ends,
-    /// or the installation failed (`resume_after_failed_update`).
+    /// or the installation failed (`resume_after_failed_update`). Never set
+    /// on the phone (no in-app updates there).
     update_locked: AtomicBool,
     /// Wakes the background update check (settings changed).
+    #[cfg(desktop)]
     update_wake: Mutex<Option<Sender<()>>>,
     /// The analysed import waiting for the user's decision (holds the
     /// file's secrets; dropped when its vault closes, see `import_flow`).
     /// Lock order: `state` before `import_slot`.
+    #[cfg(desktop)]
     import_slot: Mutex<ImportSlot>,
     /// Website icon fetcher: told when a vault opens, closes or changes
     /// (see `crate::icons`). Never locked together with `state`.
@@ -243,6 +268,7 @@ impl Core {
         store: VaultStore,
         settings: Settings,
     ) -> Arc<Core> {
+        #[cfg(desktop)]
         let minimize_to_tray = settings.minimize_to_tray;
         Arc::new(Core {
             frontend,
@@ -253,20 +279,29 @@ impl Core {
                 settings,
                 last_activity: Instant::now(),
                 last_activity_wall: SystemTime::now(),
+                #[cfg(desktop)]
                 bridge: None,
+                #[cfg(desktop)]
                 dispatcher: None,
             }),
+            #[cfg(desktop)]
             minimize_to_tray: AtomicBool::new(minimize_to_tray),
+            #[cfg(desktop)]
             tray_available: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
             page_loaded: AtomicBool::new(false),
+            #[cfg(desktop)]
             tray: Mutex::new(None),
             monitor: Mutex::new(None),
             untimed_secret: Mutex::new(None),
+            #[cfg(desktop)]
             updates: Mutex::new(UpdateMemory::default()),
+            #[cfg(desktop)]
             update_installing: AtomicBool::new(false),
             update_locked: AtomicBool::new(false),
+            #[cfg(desktop)]
             update_wake: Mutex::new(None),
+            #[cfg(desktop)]
             import_slot: Mutex::new(ImportSlot::default()),
             icons: crate::icons::IconTracker::default(),
             lock_epoch: AtomicU64::new(0),
@@ -290,6 +325,7 @@ impl Core {
 
     /// The waiting import plan (`import_flow`). May be locked while the
     /// state is held, never the other way round.
+    #[cfg(desktop)]
     pub fn import_slot(&self) -> MutexGuard<'_, ImportSlot> {
         lock_mutex(&self.import_slot)
     }
@@ -298,24 +334,29 @@ impl Core {
     // Flags
     // -----------------------------------------------------------------
 
+    #[cfg(desktop)]
     pub fn minimize_to_tray(&self) -> bool {
         self.minimize_to_tray.load(Ordering::SeqCst)
     }
 
+    #[cfg(desktop)]
     pub fn set_minimize_to_tray(&self, value: bool) {
         self.minimize_to_tray.store(value, Ordering::SeqCst);
     }
 
+    #[cfg(desktop)]
     pub fn tray_available(&self) -> bool {
         self.tray_available.load(Ordering::SeqCst)
     }
 
+    #[cfg(desktop)]
     pub fn set_tray(&self, menu: Option<TrayMenu>) {
         self.tray_available.store(menu.is_some(), Ordering::SeqCst);
         *lock_mutex(&self.tray) = menu;
     }
 
     /// Runs `f` with the tray menu (if any). Do not hold the state lock.
+    #[cfg(desktop)]
     pub fn with_tray(&self, f: impl FnOnce(&TrayMenu)) {
         let tray = lock_mutex(&self.tray);
         if let Some(menu) = tray.as_ref() {
@@ -379,14 +420,17 @@ impl Core {
         self.emit(EVENT_UNLOCKED, info.clone());
     }
 
+    #[cfg(desktop)]
     pub fn emit_unlock_request(&self) {
         self.emit(EVENT_UNLOCK_REQUEST, EmptyPayload {});
     }
 
+    #[cfg(desktop)]
     pub fn emit_pairing_request<S: Serialize + Clone>(&self, request: S) {
         self.emit(EVENT_PAIRING_REQUEST, request);
     }
 
+    #[cfg(desktop)]
     pub fn emit_pairing_closed(&self, request_id: &str) {
         self.emit(
             EVENT_PAIRING_CLOSED,
@@ -397,6 +441,7 @@ impl Core {
     }
 
     /// Shows, restores and focuses the main window.
+    #[cfg(desktop)]
     pub fn show_main_window(&self) {
         match &self.frontend {
             Frontend::App(app) => show_main_window(app),
@@ -446,6 +491,7 @@ impl Core {
     /// given. No-op for `None`. Returns whether a vault was closed.
     pub fn finish_lock(&self, vault: Option<UnlockedVault>, reason: Option<LockReason>) -> bool {
         let was_open = vault.is_some();
+        #[cfg(desktop)]
         if let Some(closed) = &vault {
             // An import analysed for this vault must not outlive it.
             self.import_slot().drop_for_vault(closed.id());
@@ -602,6 +648,8 @@ impl Core {
     /// Runs a mutating operation on the unlocked vault. On
     /// `Error::Conflict` (another process saved the file) the vault is
     /// reloaded and `f` retried once; the UI then gets `vault://changed`.
+    /// (Unused on the read-only phone of this stage.)
+    #[cfg_attr(mobile, allow(dead_code))]
     pub fn mutate<T>(
         &self,
         f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
@@ -616,6 +664,7 @@ impl Core {
     /// and an edit meant for the old vault (an item saved under an id the
     /// new vault does not know becomes a new item) must not land in the new
     /// one. Checked under the same state lock as the operation itself.
+    #[cfg_attr(mobile, allow(dead_code))]
     pub fn mutate_for_page<T>(
         &self,
         page_vault_id: Option<&str>,
@@ -624,6 +673,7 @@ impl Core {
         self.mutate_with(|st| st.page_vault_mut(page_vault_id), f)
     }
 
+    #[cfg_attr(mobile, allow(dead_code))]
     fn mutate_with<T>(
         &self,
         select: impl FnOnce(&mut AppState) -> AppResult<&mut UnlockedVault>,
@@ -658,6 +708,7 @@ impl Core {
     /// progress) and a copied secret still in the clipboard is cleared.
     /// Idempotent (it runs again right before the setup starts). Returns
     /// whether a vault was open.
+    #[cfg(desktop)]
     pub fn lock_for_update(&self) -> bool {
         self.update_locked.store(true, Ordering::SeqCst);
         crate::bridge::stop(self);
@@ -671,6 +722,7 @@ impl Core {
     /// The installation failed after [`Core::lock_for_update`]: vaults can
     /// be opened again, and the bridge runs again if browser integration is
     /// on.
+    #[cfg(desktop)]
     pub fn resume_after_failed_update(self: &Arc<Self>) {
         self.update_locked.store(false, Ordering::SeqCst);
         if !self.is_exiting() {
@@ -684,6 +736,7 @@ impl Core {
 
     /// Records the result of an update check. Returns true if it found a
     /// version not announced before (→ `update://available`).
+    #[cfg(desktop)]
     pub fn remember_update(&self, info: &UpdateInfo) -> bool {
         let mut memory = lock_mutex(&self.updates);
         if !info.available {
@@ -697,10 +750,12 @@ impl Core {
     }
 
     /// The update the last check found, if any.
+    #[cfg(desktop)]
     pub fn pending_update(&self) -> Option<UpdateInfo> {
         lock_mutex(&self.updates).pending.clone()
     }
 
+    #[cfg(desktop)]
     pub fn set_update_wake(&self, sender: Sender<()>) {
         *lock_mutex(&self.update_wake) = Some(sender);
     }
@@ -708,6 +763,7 @@ impl Core {
     /// Lets the background update check run now (setting turned on,
     /// channel changed). The result of the old channel is dropped, and what
     /// it finds is announced again (the UI forgot it with the old channel).
+    #[cfg(desktop)]
     pub fn wake_update_checker(&self) {
         {
             let mut memory = lock_mutex(&self.updates);
@@ -720,14 +776,17 @@ impl Core {
     }
 
     /// Marks an update installation as started; false if one is running.
+    #[cfg(desktop)]
     pub fn begin_update_install(&self) -> bool {
         !self.update_installing.swap(true, Ordering::SeqCst)
     }
 
+    #[cfg(desktop)]
     pub fn end_update_install(&self) {
         self.update_installing.store(false, Ordering::SeqCst);
     }
 
+    #[cfg(desktop)]
     pub fn update_installing(&self) -> bool {
         self.update_installing.load(Ordering::SeqCst)
     }
@@ -739,6 +798,7 @@ impl Core {
         if self.exiting.swap(true, Ordering::SeqCst) {
             return;
         }
+        #[cfg(desktop)]
         crate::bridge::stop(self);
         if !self.lock(None) {
             // Copied while no vault was open (or the vault was locked
@@ -746,12 +806,16 @@ impl Core {
             self.clear_copied_secret();
         }
         *lock_mutex(&self.monitor) = None;
-        *lock_mutex(&self.update_wake) = None;
+        #[cfg(desktop)]
+        {
+            *lock_mutex(&self.update_wake) = None;
+        }
         self.icons.stop();
     }
 }
 
 /// Shows, restores and focuses the main window.
+#[cfg(desktop)]
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.unminimize();

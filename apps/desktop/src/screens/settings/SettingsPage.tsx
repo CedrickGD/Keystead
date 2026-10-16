@@ -372,7 +372,7 @@ function BrowserSection() {
 
   const detected = status?.browsers.filter((b) => b.detected) ?? [];
   const missing = status?.browsers.filter((b) => !b.detected) ?? [];
-  const extensionId = status?.extensionId || info.extensionId;
+  const extensionId = status?.extensionId || info.extensionId || "";
   const running = status?.serverRunning ?? false;
   const anyRegistered = detected.some((b) => b.registered);
   const clients = status?.clients ?? [];
