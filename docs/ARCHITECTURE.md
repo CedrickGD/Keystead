@@ -1750,7 +1750,10 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   version for the window's lifetime, `sessionStorage`) and "Was ist neu?"
   (the notes); progress bar; "Keystead wird neu gestartet …". Settings → Über
   Keystead: installed version, "Nach Updates suchen" with the result,
-  "Automatisch nach Updates suchen", "Update-Kanal".
+  "Automatisch nach Updates suchen", "Update-Kanal", and "Manuell
+  herunterladen": the releases page (`links.ts` `RELEASES_URL`) as a button
+  that opens it in the system browser plus a copy button for the link – for
+  networks that block Keystead's own update check but not the browser.
 
 ## Browser extension deployment (`src-tauri/build.rs`, `src-tauri/src/extension.rs`)
 

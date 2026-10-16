@@ -139,6 +139,10 @@ den Hinweis bis zum nächsten Start aus.
 
 - **Update-Kanal:** „Nur stabile Versionen“ (Standard) oder „Beta-Versionen“
   (enthält auch stabile Versionen).
+- **Manuell herunterladen:** Unter Einstellungen → Über Keystead öffnet
+  „Releases auf GitHub öffnen“ die Release-Seite im Browser (daneben „Kopieren“
+  für den Link), falls die Update-Prüfung nicht durchkommt, etwa weil GitHub für
+  die App blockiert ist.
 - Die **portable ZIP-Version** aktualisiert sich nicht selbst; sie meldet neue
   Versionen mit einem Link zum Download.
 - Bei der Prüfung wird nur eine Versionsdatei (`latest.json`) von GitHub abgerufen –
@@ -355,6 +359,10 @@ restarts. **Later** hides the banner until the next start.
 
 - **Update channel:** stable versions only (default) or beta versions (includes
   stable releases).
+- **Download manually:** Settings → About Keystead has "Open releases on GitHub",
+  which opens the releases page in the browser (plus a copy button for the link),
+  for when the update check cannot get through, e.g. because GitHub is blocked
+  for the app.
 - The **portable ZIP version** does not update itself; it announces new versions with
   a download link.
 - The check only fetches a version file (`latest.json`) from GitHub – no vault data,

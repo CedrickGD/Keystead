@@ -871,6 +871,10 @@ export const de = {
   "update.channelDesc": "Beta-Versionen bringen neue Funktionen früher, stabile Versionen erscheinen seltener.",
   "update.channelBeta": "Beta-Versionen",
   "update.channelStable": "Nur stabile Versionen",
+  "update.manualTitle": "Manuell herunterladen",
+  "update.manualDesc": "Falls die Update-Prüfung nicht durchkommt (zum Beispiel, weil die Verbindung zu GitHub für Keystead blockiert ist): Setup, portable ZIP und Browser-Erweiterung liegen auf der Release-Seite.",
+  "update.openReleases": "Releases auf GitHub öffnen",
+  "update.releasesLink": "Release-Link",
 };
 
 export type MessageKey = keyof typeof de;
