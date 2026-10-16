@@ -1,13 +1,24 @@
-//! System clipboard access shared by the desktop app and the TUI.
+//! System clipboard shared by the desktop app, the TUI and the mobile app.
 //!
-//! One long-lived [`arboard::Clipboard`] is kept for the whole process: on
-//! Linux/X11 the copying process has to serve the clipboard content, so it
-//! would vanish as soon as the `Clipboard` is dropped. Secrets are kept out
-//! of clipboard history and sync (Windows: excluded from the local
-//! clipboard history *and* from Cloud Clipboard sync to the user's other
-//! devices; Linux: KDE password-manager hint; macOS: concealed type) and
-//! can be cleared automatically after a delay – but only if the clipboard
-//! still holds the copied secret.
+//! This module owns the *policy*: secrets are copied "sensitive" (kept out
+//! of clipboard history and sync where the platform supports it), the last
+//! copied secret is remembered until it is cleared, a timed clear only runs
+//! if the clipboard still holds that secret and nothing newer was copied
+//! through this module, and lock/quit clear it via
+//! [`clear_pending_secret`]. The platform access itself is behind the
+//! [`ClipboardBackend`] trait:
+//!
+//! * Desktop (Windows, Linux, macOS): the [`arboard`] backend is installed
+//!   lazily on first use. One long-lived handle is kept for the whole
+//!   process – on Linux/X11 the copying process has to serve the clipboard
+//!   content, so it would vanish as soon as the handle is dropped. Secrets
+//!   are excluded from history (Windows: from the local clipboard history
+//!   *and* from Cloud Clipboard sync to the user's other devices; Linux: KDE
+//!   password-manager hint; macOS: concealed type).
+//! * Android/iOS: no default. The app installs its backend (the Tauri
+//!   clipboard plugin) with [`install_backend`] before the first copy;
+//!   without one every function fails with `Error::Unsupported("clipboard")`
+//!   (UI code `unsupported:clipboard`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -17,20 +28,47 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-#[cfg(windows)]
-use arboard::SetExtWindows as _;
+/// Platform access used by this module. Implementations are called from
+/// several threads (the timed clear runs on its own thread), so they keep
+/// their own locking.
+pub trait ClipboardBackend {
+    /// Puts `text` on the clipboard. `sensitive`: keep it out of the
+    /// clipboard history and cross-device sync where the platform supports
+    /// it (ignored where it does not).
+    fn write_text(&self, text: &str, sensitive: bool) -> Result<()>;
 
-#[cfg(target_os = "macos")]
-use arboard::SetExtApple as _;
+    /// The current clipboard text; `None` if the clipboard is empty or
+    /// holds something other than text. A backend that cannot read the
+    /// clipboard (Android ≥ 10 refuses reads from the background) returns
+    /// `Ok(None)` and overrides [`Self::clear_if_equals`].
+    fn read_text(&self) -> Result<Option<String>>;
 
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-))]
-use arboard::SetExtLinux as _;
+    /// Empties the clipboard unconditionally.
+    fn clear(&self) -> Result<()>;
 
-/// Process-wide clipboard handle (created lazily).
-static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
+    /// Clears the clipboard if it still holds `expected`; true if cleared.
+    /// The default compares [`Self::read_text`]. A backend that cannot read
+    /// overrides this and clears unconditionally: the module only calls it
+    /// for a secret it copied itself, so at worst something the user copied
+    /// in the meantime is lost – better than a secret that stays.
+    fn clear_if_equals(&self, expected: &str) -> Result<bool> {
+        let Some(current) = self.read_text()? else {
+            // Empty or non-text content: nothing of ours to clear.
+            return Ok(false);
+        };
+        let current = Zeroizing::new(current);
+        if current.as_str() == expected {
+            self.clear()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// The backend of this process (installed explicitly, or the arboard
+/// default on desktop).
+static BACKEND: OnceLock<Box<dyn ClipboardBackend + Send + Sync>> = OnceLock::new();
 /// Incremented on every copy; a pending clear only runs if no newer copy
 /// happened in between.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -42,100 +80,48 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn map_err(e: arboard::Error) -> Error {
-    match e {
-        arboard::Error::ClipboardNotSupported => {
-            Error::Unsupported("clipboard not available".into())
-        }
-        other => Error::Io(std::io::Error::other(format!("clipboard: {other}"))),
-    }
+/// Installs the clipboard backend of this process. Only the first call
+/// counts: a second call returns false and keeps the backend already in
+/// place – on desktop that includes the arboard default once any function
+/// of this module ran, so the app installs its backend at start-up.
+pub fn install_backend(backend: Box<dyn ClipboardBackend + Send + Sync>) -> bool {
+    BACKEND.set(backend).is_ok()
 }
 
-/// Runs `f` with the shared clipboard, retrying briefly while another
-/// application holds the (Windows) clipboard open.
-fn with_clipboard<R>(
-    mut f: impl FnMut(&mut arboard::Clipboard) -> std::result::Result<R, arboard::Error>,
-) -> Result<R> {
-    let mut guard = lock(CLIPBOARD.get_or_init(|| Mutex::new(None)));
-    let mut attempt = 0u64;
-    loop {
-        if guard.is_none() {
-            *guard = Some(arboard::Clipboard::new().map_err(map_err)?);
-        }
-        let Some(cb) = guard.as_mut() else {
-            return Err(Error::Unsupported("clipboard not available".into()));
-        };
-        match f(cb) {
-            Ok(r) => return Ok(r),
-            Err(arboard::Error::ClipboardOccupied) if attempt < 5 => {
-                attempt += 1;
-                std::thread::sleep(Duration::from_millis(30 * attempt));
-            }
-            Err(e @ arboard::Error::Unknown { .. }) => {
-                // E.g. the display connection broke: reconnect next time.
-                *guard = None;
-                return Err(map_err(e));
-            }
-            Err(e) => return Err(map_err(e)),
-        }
+fn backend() -> Result<&'static (dyn ClipboardBackend + Send + Sync)> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        Ok(BACKEND
+            .get_or_init(|| Box::new(arboard_backend::ArboardBackend::default()))
+            .as_ref())
     }
-}
-
-fn set_text(text: &str, sensitive: bool) -> Result<()> {
-    with_clipboard(|cb| {
-        let set = cb.set();
-        // Windows: `CanIncludeInClipboardHistory` = 0 only keeps the item
-        // out of the local clipboard history (Win+V); Cloud Clipboard sync
-        // ("Sync across your devices") additionally needs
-        // `CanUploadToCloudClipboard` = 0. arboard advises against combining
-        // these with `exclude_from_monitoring`.
-        #[cfg(windows)]
-        let set = if sensitive {
-            set.exclude_from_history().exclude_from_cloud()
-        } else {
-            set
-        };
-        #[cfg(any(
-            target_os = "macos",
-            all(
-                unix,
-                not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-            )
-        ))]
-        let set = if sensitive {
-            set.exclude_from_history()
-        } else {
-            set
-        };
-        #[cfg(not(any(
-            windows,
-            target_os = "macos",
-            all(
-                unix,
-                not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-            )
-        )))]
-        let _ = sensitive;
-        set.text(text.to_owned())
-    })
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        BACKEND
+            .get()
+            .map(|b| b.as_ref())
+            .ok_or_else(|| Error::Unsupported("clipboard".into()))
+    }
 }
 
 /// Copies non-secret text (no history exclusion, no automatic clearing).
+/// A secret still waiting for its timed clear is forgotten: the user
+/// replaced it on purpose.
 pub fn copy_text(text: &str) -> Result<()> {
-    set_text(text, false)?;
+    backend()?.write_text(text, false)?;
     GENERATION.fetch_add(1, Ordering::SeqCst);
     *lock(&PENDING) = None;
     Ok(())
 }
 
-/// Copies a secret, excluded from clipboard history (on Windows also from
-/// Cloud Clipboard sync, see the module docs). With `clear_after`
-/// (non-zero), a background thread clears the clipboard after the delay if
-/// it still contains `text` and nothing else was copied through this module
-/// in the meantime. Without a delay the secret stays until
+/// Copies a secret, excluded from clipboard history where the platform
+/// supports it (see the module docs). With `clear_after` (non-zero), a
+/// background thread clears the clipboard after the delay if it still
+/// contains `text` and nothing else was copied through this module in the
+/// meantime. Without a delay the secret stays until
 /// [`clear_pending_secret`] runs (lock, quit).
 pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()> {
-    set_text(text, true)?;
+    backend()?.write_text(text, true)?;
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // Always remember the secret so lock/quit can clear it via
     // clear_pending_secret(), even when no timed clear is configured.
@@ -173,31 +159,152 @@ pub fn clear_pending_secret() -> Result<bool> {
     }
 }
 
-/// Clears the clipboard if its text equals `expected`. Returns true if cleared.
+/// Clears the clipboard if its text equals `expected` (a backend that cannot
+/// read clears unconditionally, see [`ClipboardBackend::clear_if_equals`]).
+/// Returns true if cleared.
 pub fn clear_if_equals(expected: &str) -> Result<bool> {
-    with_clipboard(|cb| {
-        let current = match cb.get_text() {
-            Ok(t) => Zeroizing::new(t),
-            // Empty or non-text content: nothing of ours to clear.
-            Err(arboard::Error::ContentNotAvailable) => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        if current.as_str() == expected {
-            cb.clear()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    })
+    backend()?.clear_if_equals(expected)
 }
 
-/// Reads the clipboard text (`None` if empty or not text).
+/// Reads the clipboard text (`None` if empty, not text, or the backend
+/// cannot read).
 pub fn read_text() -> Result<Option<String>> {
-    with_clipboard(|cb| match cb.get_text() {
-        Ok(t) => Ok(Some(t)),
-        Err(arboard::Error::ContentNotAvailable) => Ok(None),
-        Err(e) => Err(e),
-    })
+    backend()?.read_text()
+}
+
+/// The desktop backend on top of [`arboard`].
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod arboard_backend {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use zeroize::Zeroizing;
+
+    use super::{lock, ClipboardBackend};
+    use crate::error::{Error, Result};
+
+    #[cfg(windows)]
+    use arboard::SetExtWindows as _;
+
+    #[cfg(target_os = "macos")]
+    use arboard::SetExtApple as _;
+
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "emscripten"))))]
+    use arboard::SetExtLinux as _;
+
+    /// One long-lived clipboard handle, created lazily and re-created after
+    /// a broken connection.
+    #[derive(Default)]
+    pub(super) struct ArboardBackend {
+        handle: Mutex<Option<arboard::Clipboard>>,
+    }
+
+    fn map_err(e: arboard::Error) -> Error {
+        match e {
+            arboard::Error::ClipboardNotSupported => {
+                Error::Unsupported("clipboard not available".into())
+            }
+            other => Error::Io(std::io::Error::other(format!("clipboard: {other}"))),
+        }
+    }
+
+    impl ArboardBackend {
+        /// Runs `f` with the shared clipboard, retrying briefly while another
+        /// application holds the (Windows) clipboard open.
+        fn with_clipboard<R>(
+            &self,
+            mut f: impl FnMut(&mut arboard::Clipboard) -> std::result::Result<R, arboard::Error>,
+        ) -> Result<R> {
+            let mut guard = lock(&self.handle);
+            let mut attempt = 0u64;
+            loop {
+                if guard.is_none() {
+                    *guard = Some(arboard::Clipboard::new().map_err(map_err)?);
+                }
+                let Some(cb) = guard.as_mut() else {
+                    return Err(Error::Unsupported("clipboard not available".into()));
+                };
+                match f(cb) {
+                    Ok(r) => return Ok(r),
+                    Err(arboard::Error::ClipboardOccupied) if attempt < 5 => {
+                        attempt += 1;
+                        std::thread::sleep(Duration::from_millis(30 * attempt));
+                    }
+                    Err(e @ arboard::Error::Unknown { .. }) => {
+                        // E.g. the display connection broke: reconnect next time.
+                        *guard = None;
+                        return Err(map_err(e));
+                    }
+                    Err(e) => return Err(map_err(e)),
+                }
+            }
+        }
+    }
+
+    impl ClipboardBackend for ArboardBackend {
+        fn write_text(&self, text: &str, sensitive: bool) -> Result<()> {
+            self.with_clipboard(|cb| {
+                let set = cb.set();
+                // Windows: `CanIncludeInClipboardHistory` = 0 only keeps the
+                // item out of the local clipboard history (Win+V); Cloud
+                // Clipboard sync ("Sync across your devices") additionally
+                // needs `CanUploadToCloudClipboard` = 0. arboard advises
+                // against combining these with `exclude_from_monitoring`.
+                #[cfg(windows)]
+                let set = if sensitive {
+                    set.exclude_from_history().exclude_from_cloud()
+                } else {
+                    set
+                };
+                #[cfg(any(
+                    target_os = "macos",
+                    all(unix, not(any(target_os = "macos", target_os = "emscripten")))
+                ))]
+                let set = if sensitive {
+                    set.exclude_from_history()
+                } else {
+                    set
+                };
+                #[cfg(not(any(
+                    windows,
+                    target_os = "macos",
+                    all(unix, not(any(target_os = "macos", target_os = "emscripten")))
+                )))]
+                let _ = sensitive;
+                set.text(text.to_owned())
+            })
+        }
+
+        fn read_text(&self) -> Result<Option<String>> {
+            self.with_clipboard(|cb| match cb.get_text() {
+                Ok(t) => Ok(Some(t)),
+                Err(arboard::Error::ContentNotAvailable) => Ok(None),
+                Err(e) => Err(e),
+            })
+        }
+
+        fn clear(&self) -> Result<()> {
+            self.with_clipboard(|cb| cb.clear())
+        }
+
+        fn clear_if_equals(&self, expected: &str) -> Result<bool> {
+            // Read and clear under one lock so nothing slips in between.
+            self.with_clipboard(|cb| {
+                let current = match cb.get_text() {
+                    Ok(t) => Zeroizing::new(t),
+                    // Empty or non-text content: nothing of ours to clear.
+                    Err(arboard::Error::ContentNotAvailable) => return Ok(false),
+                    Err(e) => return Err(e),
+                };
+                if current.as_str() == expected {
+                    cb.clear()?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +313,8 @@ mod tests {
 
     // These need a real clipboard (a display server on Linux). Run with
     // `xvfb-run cargo test -p keystead-core -- --ignored clipboard`.
+    // The policy (generation, timer, clear on lock) is covered without a
+    // clipboard by tests/clipboard_backend.rs with a mock backend.
 
     #[test]
     #[ignore = "needs a display/clipboard"]

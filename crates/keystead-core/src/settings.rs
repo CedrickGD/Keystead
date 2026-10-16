@@ -63,6 +63,9 @@ pub enum UpdateChannel {
 /// Upper bounds applied when loading/saving.
 const MAX_AUTO_LOCK_MINUTES: u32 = 7 * 24 * 60;
 const MAX_CLIPBOARD_CLEAR_SECONDS: u32 = 24 * 60 * 60;
+const MAX_LOCK_IN_BACKGROUND_SECONDS: u32 = 24 * 60 * 60;
+/// Default of [`Settings::lock_in_background_seconds`].
+pub const DEFAULT_LOCK_IN_BACKGROUND_SECONDS: u32 = 60;
 
 /// App settings, serialised with camelCase keys (mirrors `Settings` in
 /// `apps/desktop/src/lib/types.ts`).
@@ -87,6 +90,13 @@ pub struct Settings {
     /// Look for app updates in the background (at start and every 6 h).
     pub update_check: bool,
     pub update_channel: UpdateChannel,
+    /// Mobile: lock the open vault this many seconds after the app went to
+    /// the background (`None` = never, 0 = immediately; default 60).
+    /// The desktop app ignores it.
+    pub lock_in_background_seconds: Option<u32>,
+    /// Mobile: unlock with the device's biometrics (opt-in, default false).
+    /// The desktop app ignores it.
+    pub device_unlock: bool,
 }
 
 impl Default for Settings {
@@ -104,6 +114,8 @@ impl Default for Settings {
             website_icons: true,
             update_check: true,
             update_channel: UpdateChannel::Stable,
+            lock_in_background_seconds: Some(DEFAULT_LOCK_IN_BACKGROUND_SECONDS),
+            device_unlock: false,
         }
     }
 }
@@ -163,6 +175,13 @@ impl Settings {
         take(&obj, "websiteIcons", &mut s.website_icons);
         take(&obj, "updateCheck", &mut s.update_check);
         take(&obj, "updateChannel", &mut s.update_channel);
+        // `null` is a value here ("never"), not a missing key.
+        take(
+            &obj,
+            "lockInBackgroundSeconds",
+            &mut s.lock_in_background_seconds,
+        );
+        take(&obj, "deviceUnlock", &mut s.device_unlock);
         s.normalized()
     }
 
@@ -173,6 +192,9 @@ impl Settings {
         self.clipboard_clear_seconds = self
             .clipboard_clear_seconds
             .min(MAX_CLIPBOARD_CLEAR_SECONDS);
+        self.lock_in_background_seconds = self
+            .lock_in_background_seconds
+            .map(|s| s.min(MAX_LOCK_IN_BACKGROUND_SECONDS));
         if self
             .last_vault_id
             .as_deref()
@@ -224,6 +246,8 @@ mod tests {
         assert!(s.website_icons);
         assert!(s.update_check);
         assert_eq!(s.update_channel, UpdateChannel::Stable);
+        assert_eq!(s.lock_in_background_seconds, Some(60));
+        assert!(!s.device_unlock);
     }
 
     #[test]
@@ -242,9 +266,57 @@ mod tests {
         assert!(s.website_icons);
         assert!(s.update_check);
         assert_eq!(s.update_channel, UpdateChannel::Stable);
+        assert_eq!(s.lock_in_background_seconds, Some(60));
+        assert!(!s.device_unlock);
         // The strict deserializer (Tauri `save_settings` argument) as well.
         let strict: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(strict, s);
+    }
+
+    #[test]
+    fn mobile_fields_parse_and_fall_back() {
+        // null = never, 0 = immediately, missing = default.
+        let s =
+            Settings::from_json_lenient(r#"{"lockInBackgroundSeconds":null,"deviceUnlock":true}"#);
+        assert_eq!(s.lock_in_background_seconds, None);
+        assert!(s.device_unlock);
+        let s = Settings::from_json_lenient(r#"{"lockInBackgroundSeconds":0}"#);
+        assert_eq!(s.lock_in_background_seconds, Some(0));
+        let s = Settings::from_json_lenient(r#"{"lockInBackgroundSeconds":300}"#);
+        assert_eq!(s.lock_in_background_seconds, Some(300));
+        let s = Settings::from_json_lenient("{}");
+        assert_eq!(s.lock_in_background_seconds, Some(60));
+        assert!(!s.device_unlock);
+        // Invalid values keep the defaults; too large is clamped to a day.
+        let s = Settings::from_json_lenient(
+            r#"{"lockInBackgroundSeconds":"soon","deviceUnlock":"yes"}"#,
+        );
+        assert_eq!(s.lock_in_background_seconds, Some(60));
+        assert!(!s.device_unlock);
+        let s = Settings::from_json_lenient(r#"{"lockInBackgroundSeconds":-1}"#);
+        assert_eq!(s.lock_in_background_seconds, Some(60));
+        let s = Settings::from_json_lenient(r#"{"lockInBackgroundSeconds":999999999}"#);
+        assert_eq!(s.lock_in_background_seconds, Some(24 * 60 * 60));
+        // The strict deserializer: null and missing both work.
+        let strict: Settings = serde_json::from_str(r#"{"lockInBackgroundSeconds":null}"#).unwrap();
+        assert_eq!(strict.lock_in_background_seconds, None);
+        let strict: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(strict.lock_in_background_seconds, Some(60));
+        assert!(serde_json::from_str::<Settings>(r#"{"deviceUnlock":"yes"}"#).is_err());
+        // null survives a save (it is a value, not an omitted key).
+        let json = serde_json::to_value(strict.normalized()).unwrap();
+        assert_eq!(json["lockInBackgroundSeconds"], 60);
+        let never = Settings {
+            lock_in_background_seconds: None,
+            ..Settings::default()
+        };
+        let json = serde_json::to_value(&never).unwrap();
+        assert!(json["lockInBackgroundSeconds"].is_null());
+        assert!(json.get("lockInBackgroundSeconds").is_some());
+        assert_eq!(
+            Settings::from_json_lenient(&json.to_string()).lock_in_background_seconds,
+            None
+        );
     }
 
     #[test]
@@ -298,7 +370,9 @@ mod tests {
         assert!(v.get("showIcons").is_none());
         assert_eq!(v["updateCheck"], true);
         assert_eq!(v["updateChannel"], "stable");
-        assert_eq!(v.as_object().unwrap().len(), 12);
+        assert_eq!(v["lockInBackgroundSeconds"], 60);
+        assert_eq!(v["deviceUnlock"], false);
+        assert_eq!(v.as_object().unwrap().len(), 14);
     }
 
     #[test]
@@ -334,6 +408,8 @@ mod tests {
             website_icons: false,
             update_check: false,
             update_channel: UpdateChannel::Stable,
+            lock_in_background_seconds: None,
+            device_unlock: true,
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

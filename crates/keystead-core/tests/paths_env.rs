@@ -1,9 +1,11 @@
 //! Environment-variable dependent behaviour of `paths`, `settings`,
-//! `VaultStore::open_default` and `legacy_scan`. Everything runs in a single
-//! test so no other thread observes the temporary environment changes.
+//! `VaultStore::open_default` and `legacy_scan`, plus the process-wide data
+//! directory override. Everything runs in a single test so no other thread
+//! observes the temporary environment changes (and the override, once set,
+//! holds for the rest of the process).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use keystead_core::import::legacy_scan;
 use keystead_core::paths::{
@@ -82,4 +84,32 @@ fn environment_overrides() {
         assert_eq!(legacy_dir(), None);
         assert!(legacy_scan().is_empty());
     }
+
+    // --- set_data_dir_override: wins over everything, set once ------------
+    // Must stay the last step: the override cannot be undone.
+    let app_dir = dir.path().join("app-private");
+    assert_eq!(paths::data_dir_override(), None);
+    assert!(
+        !paths::set_data_dir_override(PathBuf::new()),
+        "empty: ignored"
+    );
+    assert_eq!(paths::data_dir_override(), None);
+    std::env::set_var(DATA_DIR_ENV, &data);
+    assert!(paths::set_data_dir_override(app_dir.clone()));
+    assert_eq!(paths::data_dir_override(), Some(app_dir.as_path()));
+    assert_eq!(data_dir(), app_dir, "override beats $KEYSTEAD_DATA_DIR");
+    assert_eq!(vaults_dir(), app_dir.join("vaults"));
+    assert_eq!(settings_path(), app_dir.join("settings.json"));
+    assert!(!is_portable());
+    // A second call changes nothing.
+    assert!(!paths::set_data_dir_override(dir.path().join("other")));
+    assert_eq!(data_dir(), app_dir);
+    std::env::remove_var(DATA_DIR_ENV);
+    assert_eq!(data_dir(), app_dir, "override beats the OS default");
+    // The store and the settings follow it.
+    let store = VaultStore::open_default().unwrap();
+    assert_eq!(store.root(), app_dir.as_path());
+    assert!(app_dir.join("vaults").is_dir());
+    settings::save(&Settings::default()).unwrap();
+    assert!(app_dir.join("settings.json").is_file());
 }

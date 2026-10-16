@@ -104,11 +104,18 @@ returned code: `0` success, `1` error, `2` invalid usage.
 ## Data locations (`keystead_core::paths`)
 
 * `data_dir()`:
-  1. `$KEYSTEAD_DATA_DIR` if set.
-  2. **Portable mode**: a folder named `Keystead-Data` next to the running
+  1. The process-wide override set with `paths::set_data_dir_override(PathBuf)`
+     – the mobile app sets its private app folder (Tauri
+     `app_local_data_dir()`) as the first thing at start-up, since a phone
+     has neither an environment nor a usable OS default. Only the first call
+     counts (a second call, or an empty path, returns `false` and changes
+     nothing); `paths::data_dir_override()` reads it back. `is_portable()`
+     is `false` while an override is set. Desktop builds never set it.
+  2. `$KEYSTEAD_DATA_DIR` if set.
+  3. **Portable mode**: a folder named `Keystead-Data` next to the running
      executable, if it exists (the user creates it, or Settings → "Portabler
      Modus" creates it and moves the vaults).
-  3. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead`,
+  4. Otherwise the OS local data dir: Windows `%LOCALAPPDATA%\Keystead`,
      Linux `~/.local/share/keystead`, macOS `~/Library/Application Support/Keystead`.
 * Vault files: `<data_dir>/vaults/<vault-id>.keystead` (+ `<vault-id>.keystead.bak`
   = previous good version, written before each save – except when the master
@@ -243,7 +250,7 @@ pub mod error;    // pub enum Error { Io, Json, WrongPassword, Corrupt(String), 
 pub mod model;    // see crates/keystead-core/src/model.rs (the data contract); VaultItem.tags = free user tags, normalised and limited by the core (see "Tags")
 pub mod crypto;   // KdfParams, derive_key, seal/open (XChaCha20-Poly1305), random bytes
 pub mod format;   // VaultFile (serde of the JSON above), read/write atomic
-pub mod paths;    // data_dir(), vaults_dir(), settings_path(), legacy_dir(), is_portable()
+pub mod paths;    // data_dir(), vaults_dir(), settings_path(), legacy_dir(), is_portable(), set_data_dir_override()/data_dir_override() (mobile)
 pub mod store;    // VaultStore
 pub mod vault;    // UnlockedVault
 pub mod generator;// GeneratorOptions, generate()
@@ -256,7 +263,8 @@ pub mod attachments; // encrypted file attachments: limits, blob seal/open (KSAT
 pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/generic), Bitwarden JSON, Keystead export; format detection, duplicate/conflict check
 pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
-pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>) using arboard (shared by app & TUI)
+pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>), copy_text, clear_pending_secret on a pluggable ClipboardBackend (arboard on desktop, the app's own on mobile; shared by app, TUI & mobile)
+pub mod sync;     // VaultHeader + header_of(bytes): id/name/revision of a .keystead file without the password (file import, cloud-folder sync)
 ```
 
 ### `store::VaultStore`
@@ -270,6 +278,7 @@ impl VaultStore {
     pub fn create_vault_with_params(&self, name: &str, master_password: &str, kdf: KdfParams) -> Result<UnlockedVault>;
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> Result<UnlockedVault>;   // Error::WrongPassword on bad pw
     pub fn unlock_with_recovery_key(&self, vault_id: &str, recovery_key: &str, new_master_password: &str) -> Result<UnlockedVault>; // sets the new master pw, rotates the vault key, recovery key stays valid (re-wrapped)
+    pub fn unlock_with_master_kek(&self, vault_id: &str, master_kek: &SecretKey) -> Result<UnlockedVault>; // opens the header's wrapped key with an earlier session's master KEK (UnlockedVault::master_kek), no Argon2; Error::WrongPassword if the master password changed since (the caller discards the stored KEK) – the mobile app's device unlock (biometric key wrap), see "Block 5"
     pub fn delete_vault(&self, vault_id: &str, master_password: &str) -> Result<()>;      // verifies pw first, removes the file (Err if that fails); .bak, leftover temp files and the <id>.keystead.attachments directory then best effort with a short retry (format::remove_with_retry) – the vault counts as deleted once its file is gone
     // create_vault*, unlock and unlock_with_recovery_key also run UnlockedVault::sweep_attachments (best effort) on the vault they return
     pub fn vault_path(&self, vault_id: &str) -> PathBuf;
@@ -329,6 +338,8 @@ impl UnlockedVault {
     pub fn reload_if_changed(&mut self) -> Result<bool>;       // re-reads file if the revision on disk is newer (opens it with the in-memory master KEK, so a recovery-key rotation elsewhere is followed);
                                                                // older revision → Error::Rollback; master password changed elsewhere → Error::KeyChanged (unlock again); state unchanged on error
     pub fn path(&self) -> &Path;
+    pub fn master_kek(&self) -> SecretKey;                    // copy of this session's master key-encryption key (opens the current header's wrapped_key): what device unlock stores wrapped in the platform keystore for VaultStore::unlock_with_master_kek;
+                                                               // invalid after any master-password change (fresh salt; also change elsewhere → reload_if_changed = KeyChanged), unchanged by recovery-key changes; never reaches the UI layer
 }
 ```
 
@@ -445,10 +456,19 @@ pub fn export::export_encrypted_with_params(data, path, password, kdf: KdfParams
 // settings
 impl Settings { pub fn load() -> Settings; pub fn load_from(&Path) -> Settings; pub fn save(&self) -> Result<()>;
                 pub fn save_to(&self, &Path) -> Result<()> }   // + free fns settings::load(), settings::save(&Settings)
-// clipboard
-pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // excluded from clipboard history; Windows: CanIncludeInClipboardHistory=0 and CanUploadToCloudClipboard=0 (no Cloud Clipboard sync)
-pub fn copy_text(text: &str) -> Result<()>;            // non-secret, no auto-clear
-pub fn clear_pending_secret() -> Result<bool>;         // e.g. on lock: clears now if our secret is still there
+// clipboard – the policy lives here, the platform access behind a trait
+pub trait ClipboardBackend { fn write_text(&self, text: &str, sensitive: bool) -> Result<()>; fn read_text(&self) -> Result<Option<String>>; fn clear(&self) -> Result<()>;
+                             fn clear_if_equals(&self, expected: &str) -> Result<bool> /* default: read_text == expected → clear; a backend that cannot read (Android ≥ 10 in the background) overrides it and clears unconditionally */ }
+pub fn install_backend(Box<dyn ClipboardBackend + Send + Sync>) -> bool; // once per process (false = one is already in place); desktop: the arboard backend is installed lazily on first use (one long-lived handle, Windows retry while the clipboard is occupied);
+                                                                          // Android/iOS (arboard is not compiled there): no default – the app installs its own at start-up, without one every function below fails with Error::Unsupported("clipboard")
+pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // write_text(sensitive = true): excluded from clipboard history where supported; Windows: CanIncludeInClipboardHistory=0 and CanUploadToCloudClipboard=0 (no Cloud Clipboard sync);
+                                                                             // remembered as the pending secret; with a delay a thread calls clear_if_equals(secret) after it, unless something newer was copied through this module (generation counter)
+pub fn copy_text(text: &str) -> Result<()>;            // non-secret, no auto-clear; forgets a pending secret
+pub fn clear_pending_secret() -> Result<bool>;         // e.g. on lock/quit: clear_if_equals(pending secret) now; false if nothing is pending
+pub fn clear_if_equals(expected: &str) -> Result<bool>; pub fn read_text() -> Result<Option<String>>; // the backend's, see above
+// sync (vault files as bytes, no password needed)
+pub struct VaultHeader { pub id: String, pub name: String, pub revision: u64, pub updated_at: i64, pub version: u32 } // camelCase
+pub fn header_of(bytes: &[u8]) -> Result<VaultHeader>; // VaultFile::parse without touching the keys: damaged/truncated Keystead file → Corrupt; another kind of file (foreign export, legacy VaultX, random bytes) or an unknown format version → Unsupported
 // totp
 pub fn parse(seed: &str) -> Result<TotpParams>;        // secret, algorithm, digits, period, issuer, account
 // health
@@ -701,10 +721,14 @@ interface Settings {
                                              // false = no icon requests (stored icons stay visible). The old `showIcons` (never in the UI) is ignored.
   updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
   updateChannel: "beta" | "stable";          // default "stable" (stable releases only); "beta" = betas + stable releases
+  lockInBackgroundSeconds: number | null;    // mobile: lock the open vault this many seconds after the app went to the background; null = never, 0 = immediately; default 60, clamped to 24 h. The desktop ignores it
+  deviceUnlock: boolean;                     // mobile: unlock with the device's biometrics (opt-in); default false. The desktop ignores it
 }
 ```
 Loading is lenient: missing fields (settings files of older versions) and
-invalid values get their defaults; unknown keys are ignored.
+invalid values get their defaults; unknown keys are ignored. `null` is a
+value of `lockInBackgroundSeconds` ("never"), not a missing key: it is
+written as `null` and read back as `null`.
 
 ## Desktop backend ↔ frontend (Tauri commands)
 

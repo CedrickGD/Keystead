@@ -929,6 +929,17 @@ impl UnlockedVault {
         &self.path
     }
 
+    /// A copy of this session's master key-encryption key: what the mobile
+    /// app's device unlock (biometrics) stores wrapped in the platform
+    /// keystore, so [`crate::VaultStore::unlock_with_master_kek`] can open
+    /// the vault again without the password. It opens the current header's
+    /// `wrapped_key`; a master-password change – here or elsewhere – makes
+    /// it worthless (fresh salt), a recovery-key change does not. Must
+    /// never reach the UI layer.
+    pub fn master_kek(&self) -> SecretKey {
+        self.master_kek.clone()
+    }
+
     /// Applies `f` to a copy of the data, persists it and commits it to
     /// memory only on success.
     fn mutate<R>(&mut self, f: impl FnOnce(&mut VaultData) -> Result<R>) -> Result<R> {

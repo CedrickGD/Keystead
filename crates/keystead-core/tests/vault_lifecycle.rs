@@ -1295,3 +1295,135 @@ fn default_kdf_params_round_trip() {
     ));
     eprintln!("default params: {:?}", started.elapsed());
 }
+
+// --- master KEK (device unlock groundwork) ---------------------------------
+
+fn random_kek() -> SecretKey {
+    keystead_core::crypto::random_key().unwrap()
+}
+
+#[test]
+fn master_kek_unlocks_without_the_password() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let kek = v.master_kek();
+    assert_eq!(kek.len(), 32);
+    let id = v.id().to_owned();
+    drop(v);
+
+    let u = store.unlock_with_master_kek(&id, &kek).unwrap();
+    assert_eq!(u.items().len(), 1);
+    assert_eq!(u.items()[0].login.as_ref().unwrap().password, "secret-a");
+    // The session is a full one: it saves, and its own KEK is the same.
+    let mut u = u;
+    u.save_item(login("B", "b", "secret-b", "")).unwrap();
+    assert_eq!(u.master_kek(), kek);
+    assert_eq!(store.unlock(&id, PW).unwrap().items().len(), 2);
+    assert_eq!(store.unlock(&id, PW).unwrap().master_kek(), kek);
+
+    // A wrong KEK is a wrong password; an unknown vault stays not found.
+    assert!(matches!(
+        store.unlock_with_master_kek(&id, &random_kek()),
+        Err(Error::WrongPassword)
+    ));
+    assert!(matches!(
+        store.unlock_with_master_kek("no-such-vault", &kek),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn master_kek_survives_recovery_key_changes_but_not_password_changes() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let kek = v.master_kek();
+    let id = v.id().to_owned();
+
+    // Recovery-key operations rotate the vault key but keep the master KEK.
+    v.create_recovery_key().unwrap();
+    assert_eq!(v.master_kek(), kek);
+    assert_eq!(
+        store
+            .unlock_with_master_kek(&id, &kek)
+            .unwrap()
+            .items()
+            .len(),
+        1
+    );
+    v.remove_recovery_key().unwrap();
+    assert_eq!(v.master_kek(), kek);
+    assert_eq!(
+        store
+            .unlock_with_master_kek(&id, &kek)
+            .unwrap()
+            .items()
+            .len(),
+        1
+    );
+    v.create_recovery_key().unwrap();
+    assert!(store.unlock_with_master_kek(&id, &kek).is_ok());
+
+    // A master-password change (fresh salt) invalidates the old KEK ...
+    // (and, as documented, issues a new recovery code).
+    let code = v.change_master_password(PW, "new-pw").unwrap().unwrap();
+    let kek2 = v.master_kek();
+    assert_ne!(kek2, kek);
+    assert!(matches!(
+        store.unlock_with_master_kek(&id, &kek),
+        Err(Error::WrongPassword)
+    ));
+    // ... and the new one is what the new password derives.
+    assert_eq!(
+        store
+            .unlock_with_master_kek(&id, &kek2)
+            .unwrap()
+            .items()
+            .len(),
+        1
+    );
+    assert_eq!(store.unlock(&id, "new-pw").unwrap().master_kek(), kek2);
+    drop(v);
+
+    // A recovery-key unlock sets another master password: both old KEKs
+    // are worthless, the session it returns carries the current one.
+    let r = store
+        .unlock_with_recovery_key(&id, &code, "after-recovery")
+        .unwrap();
+    let kek3 = r.master_kek();
+    assert_ne!(kek3, kek2);
+    for old in [&kek, &kek2] {
+        assert!(matches!(
+            store.unlock_with_master_kek(&id, old),
+            Err(Error::WrongPassword)
+        ));
+    }
+    assert_eq!(
+        store
+            .unlock_with_master_kek(&id, &kek3)
+            .unwrap()
+            .items()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.unlock(&id, "after-recovery").unwrap().master_kek(),
+        kek3
+    );
+
+    // A KEK session follows a rotation by another session like a password
+    // session does, and is told when the password changed elsewhere.
+    let mut k = store.unlock_with_master_kek(&id, &kek3).unwrap();
+    let mut other = store.unlock(&id, "after-recovery").unwrap();
+    other.remove_recovery_key().unwrap();
+    assert!(k.reload_if_changed().unwrap());
+    other
+        .change_master_password("after-recovery", "final")
+        .unwrap();
+    assert!(matches!(k.reload_if_changed(), Err(Error::KeyChanged)));
+    assert!(matches!(
+        store.unlock_with_master_kek(&id, &kek3),
+        Err(Error::WrongPassword)
+    ));
+}

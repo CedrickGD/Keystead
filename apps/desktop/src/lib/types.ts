@@ -417,6 +417,10 @@ export interface Settings {
   updateCheck: boolean;
   /** "stable" = stable releases only (default), "beta" = test versions and stable releases. The mock starts on "beta" so the update demos work. */
   updateChannel: UpdateChannel;
+  /** Mobile: lock the open vault this many seconds after the app went to the background. null = never, 0 = immediately; default 60. The desktop ignores it. */
+  lockInBackgroundSeconds: number | null;
+  /** Mobile: unlock with the device's biometrics (opt-in). Default false. The desktop ignores it. */
+  deviceUnlock: boolean;
 }
 
 export type UpdateChannel = "beta" | "stable";

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::attachments;
-use crate::crypto::{self, KdfParams};
+use crate::crypto::{self, KdfParams, SecretKey};
 use crate::error::{Error, Result};
 use crate::format::{self, VaultFile, VAULT_EXTENSION};
 use crate::model::{VaultData, VaultInfo};
@@ -150,6 +150,29 @@ impl VaultStore {
         let data = file.decrypt_payload(&key)?;
         Ok(Self::opened(UnlockedVault::from_parts(
             path, file, key, master_kek, data,
+        )))
+    }
+
+    /// Unlocks a vault with an already derived master key-encryption key
+    /// ([`UnlockedVault::master_kek`] of an earlier session, e.g. released
+    /// by the mobile app's biometric prompt) – no Argon2 step.
+    /// `Error::WrongPassword` if the KEK does not open the current header
+    /// (the master password was changed since; the caller discards the
+    /// stored KEK and asks for the password).
+    pub fn unlock_with_master_kek(
+        &self,
+        vault_id: &str,
+        master_kek: &SecretKey,
+    ) -> Result<UnlockedVault> {
+        let (path, file) = self.read_vault(vault_id)?;
+        let key = file.unwrap_key_with_kek(master_kek)?;
+        let data = file.decrypt_payload(&key)?;
+        Ok(Self::opened(UnlockedVault::from_parts(
+            path,
+            file,
+            key,
+            master_kek.clone(),
+            data,
         )))
     }
 

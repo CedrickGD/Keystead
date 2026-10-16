@@ -209,6 +209,8 @@ function initState(): MockState {
       updateCheck: true,
       // The app's default is "stable"; the mock starts on "beta" so the fake update flows (?update=…) show.
       updateChannel: "beta",
+      lockInBackgroundSeconds: 60,
+      deviceUnlock: false,
     },
     appInfo: {
       version: installedMockVersion(),
@@ -681,6 +683,10 @@ function validateSettings(input: unknown): Settings {
   if (!Number.isInteger(s.clipboardClearSeconds) || s.clipboardClearSeconds < 0) fail("invalid_input:clipboardClearSeconds");
   if (typeof s.updateCheck !== "boolean") fail("invalid_input:settings");
   if (!["beta", "stable"].includes(s.updateChannel)) fail("invalid_input:settings");
+  if (s.lockInBackgroundSeconds !== null && (!Number.isInteger(s.lockInBackgroundSeconds) || s.lockInBackgroundSeconds < 0)) {
+    fail("invalid_input:lockInBackgroundSeconds");
+  }
+  if (typeof s.deviceUnlock !== "boolean") fail("invalid_input:settings");
   return clone(s);
 }
 
