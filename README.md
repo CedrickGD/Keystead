@@ -103,6 +103,46 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 Voraussetzung: Windows 10 oder 11 (die benötigte WebView2-Laufzeit ist dort in aller
 Regel schon installiert).
 
+### Android-App (Vorschau)
+
+Jedes Release enthält auch die Android-App – vorerst als **Vorschau zum
+Nachschlagen**: Sie öffnet Tresore, zeigt und kopiert Benutzernamen,
+Passwörter und 2FA-Codes und zeigt den Sicherheitsbericht, ändert aber noch
+nichts.
+
+1. Auf dem Handy unter [Releases](../../releases) `Keystead-<version>-android.apk`
+   herunterladen (Android 10 oder neuer, 64-Bit-ARM – praktisch jedes Handy ab 2019).
+2. Die Datei öffnen. Beim ersten Mal fragt Android, ob der Browser bzw. die
+   Dateien-App unbekannte Apps installieren darf – in den angezeigten
+   Einstellungen zulassen und zurück zur Installation. Google Play Protect kann
+   zusätzlich warnen, weil die App nicht aus dem Play Store kommt.
+3. Echtheit prüfen (freiwillig, am PC mit den Android-Build-Tools):
+   `apksigner verify --print-certs Keystead-<version>-android.apk` muss als
+   SHA-256 des Zertifikats genau diesen Wert zeigen (apksigner schreibt ihn
+   klein und ohne Doppelpunkte):
+   ```text
+   B7:3D:75:D6:F7:F4:60:5B:0B:4A:7A:3A:8E:00:6E:E8:E3:D0:81:F1:C3:37:85:BC:79:98:A8:8F:02:1F:3C:AA
+   ```
+   Jede echte Keystead-APK trägt dieses Zertifikat, und Android installiert ein
+   Update nur, wenn es mit demselben Zertifikat signiert ist.
+4. **Updates:** die neuere APK herunterladen und über die vorhandene
+   installieren – deine Daten bleiben. Die App meldet neue Versionen noch nicht
+   selbst.
+
+Was schon geht: Tresor entsperren, Einträge suchen und ansehen, Passwörter
+aufdecken und kopieren (die Zwischenablage wird wie am PC wieder geleert),
+2FA-Codes, Sicherheitsbericht, automatische Sperre. Verlässt du die App, sperrt
+sie sich nach 1 Minute (einstellbar: sofort, 1 min, 5 min, nie). Sie hat
+keinerlei Internetzugriff, verhindert Screenshots und wird von Android nicht
+in die Cloud gesichert.
+
+Was noch fehlt: **einen Tresor vom PC aufs Handy bringen** – das kommt mit der
+nächsten Stufe (Tresordatei auswählen, später über deinen eigenen
+Cloud-Ordner); bis dahin ist die App nur eine Vorschau. Außerdem Bearbeiten,
+ein eigenes Handy-Layout (die Oberfläche ist noch die vom PC), Entsperren per
+Fingerabdruck und Ausfüllen in anderen Apps. Beim Deinstallieren löscht
+Android die Daten der App – auch die Tresore auf dem Handy.
+
 ### Browser-Erweiterung einrichten
 
 1. In Keystead: **Einstellungen → Browser-Integration** → beim Browser auf
@@ -167,6 +207,7 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
+| Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
 Stand), `vaults\<id>.keystead.attachments\` (die verschlüsselten Dateianhänge dieses
@@ -322,6 +363,44 @@ and also available in English.
 
 Requires Windows 10 or 11 (the WebView2 runtime they need is normally already installed).
 
+### Android app (preview)
+
+Every release also carries the Android app – for now a **read-only
+preview**: it opens vaults, shows and copies usernames, passwords and 2FA
+codes and shows the security report, but changes nothing yet.
+
+1. On the phone, download `Keystead-<version>-android.apk` from
+   [Releases](../../releases) (Android 10 or later, 64-bit ARM – practically
+   every phone since 2019).
+2. Open the file. The first time, Android asks whether the browser or the
+   Files app may install unknown apps – allow it in the settings it shows and
+   go back to the installation. Google Play Protect may warn as well, because
+   the app does not come from the Play Store.
+3. Check it is genuine (optional, on the PC with the Android build tools):
+   `apksigner verify --print-certs Keystead-<version>-android.apk` must show
+   exactly this certificate SHA-256 (apksigner prints it in lower case without
+   colons):
+   ```text
+   B7:3D:75:D6:F7:F4:60:5B:0B:4A:7A:3A:8E:00:6E:E8:E3:D0:81:F1:C3:37:85:BC:79:98:A8:8F:02:1F:3C:AA
+   ```
+   Every genuine Keystead APK carries this certificate, and Android installs
+   an update only if it is signed with the same one.
+4. **Updates:** download the newer APK and install it over the old one – your
+   data stays. The app does not announce new versions itself yet.
+
+What works: unlock a vault, search and view items, reveal and copy passwords
+(the clipboard is cleared again as on the PC), 2FA codes, the security
+report, auto-lock. When you leave the app it locks after 1 minute (adjustable:
+immediately, 1 min, 5 min, never). It has no internet access at all, blocks
+screenshots and is not backed up to the cloud by Android.
+
+Not yet: **getting a vault from the PC onto the phone** – that comes with the
+next stage (pick the vault file, later through your own cloud folder); until
+then the app is only a preview. Also missing: editing, a phone layout (the UI
+is still the desktop one), fingerprint unlock and filling in other apps.
+Uninstalling the app makes Android delete its data – including the vaults on
+the phone.
+
 ### Browser extension setup
 
 1. In Keystead: **Einstellungen → Browser-Integration** (Settings → Browser
@@ -385,6 +464,7 @@ the shell history may see it).
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
+| Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
 previous version), `vaults/<id>.keystead.attachments/` (that vault's encrypted file
@@ -473,10 +553,21 @@ cd ../..
 
 # Terminal version (keystead-cli / keystead-cli.exe)
 cargo build --release -p keystead-tui
+
+# Android app (APK): needs JDK 17, the Android SDK and NDK 28.2.13676358
+# (JAVA_HOME, ANDROID_HOME and NDK_HOME set) and the Android Rust targets
+# listed in rust-toolchain.toml
+cd apps/desktop
+npx tauri android build --apk --debug --target x86_64   # for the emulator
+npx tauri android build --apk --target aarch64          # for phones
 ```
 
-Binaries end up in `target/release/`. The browser extension (`extension/chrome`)
-needs no build step.
+Binaries end up in `target/release/`, APKs in
+`apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/`. Without
+the release keystore (`gen/android/keystore.properties`, never committed) an APK
+is signed with your local debug key: it installs, but cannot update the
+released app (uninstall that first – this deletes the app's data). The browser
+extension (`extension/chrome`) needs no build step.
 
 Development:
 
@@ -494,8 +585,10 @@ node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
 
 Releases: CI (`.github/workflows/build.yml`) versions every build
 (`2.0.0-beta.<run>`, or the tag `v<version>`), signs the setup for the in-app updater
-with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (only builds that publish
-get the secret) and publishes pre-releases
+with the repository secret `TAURI_SIGNING_PRIVATE_KEY`, builds the Android APK
+(signed with the release keystore from the secrets `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`, versionCode = run number;
+only builds that publish get the secrets) and publishes pre-releases
 for commits with `[release]` (stable releases for tags without suffix); see
 "Releases & in-app updates" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 **After tagging a stable `vX.Y.Z`, set `version` in
@@ -510,11 +603,10 @@ offered by the updater; CI warns, and refuses to publish such a beta.
 | `crates/keystead-core` | Crypto, vault file format, storage, generator, TOTP, import/export, URL matching, security report |
 | `crates/keystead-bridge` | Browser bridge: protocol, native messaging host, local socket server, host registration |
 | `crates/keystead-tui` | Terminal UI and the `keystead-cli` binary |
-| `apps/desktop` | Desktop app: React + TypeScript UI (`src/`) and Tauri 2 backend (`src-tauri/`) |
+| `apps/desktop` | Desktop and Android app: React + TypeScript UI (`src/`) and Tauri 2 backend (`src-tauri/`; the Android project in `src-tauri/gen/android`) |
 | `extension/chrome` | Manifest V3 browser extension (plain JavaScript) |
 | `assets` | Logo and icons |
 | `docs` | Architecture & contracts, German quick start, screenshots |
-| `legacy` | The old PowerShell VaultX 1.x, kept for reference |
 
 ### Legacy VaultX vaults
 

@@ -2,7 +2,7 @@
 <!-- The phone app is offline by design (docs/BLOCK5-DESIGN.md, E6): no
      INTERNET permission here. `tauri android dev` loads the UI from the
      Vite dev server, so only src/debug/AndroidManifest.xml adds it. A unit
-     test in src/gui.rs guards this file (see "Executable modes" in
+     test in src/gui.rs guards this file (see "Mobile (Android)" in
      docs/ARCHITECTURE.md). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 

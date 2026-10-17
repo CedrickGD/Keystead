@@ -15,8 +15,8 @@ val tauriProperties = Properties().apply {
 }
 
 // Release signing: `gen/android/keystore.properties` (gitignored, never
-// committed; CI writes it from the secrets – see "Releases & in-app
-// updates" in docs/ARCHITECTURE.md) with `storeFile` (absolute, or
+// committed; CI writes it from the secrets – see "Build, CI and signing"
+// under "Mobile (Android)" in docs/ARCHITECTURE.md) with `storeFile` (absolute, or
 // relative to gen/android), `password` (keystore, and the key unless
 // `keyPassword` is set) and `keyAlias`. Without the file a release build
 // is signed with the debug key, so local release builds still install –

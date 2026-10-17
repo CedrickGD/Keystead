@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-15)
+# Übergabe – Stand Keystead (2026-10-17)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -11,8 +11,8 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
 | `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
 | Entwicklung | Feature-Branches (`claude/…`), Merge per PR mit Merge-Commit nach `main`. Der alte Branch `claude/quirky-archimedes-i4qa3j` ist gemergt und kann gelöscht werden. |
-| Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, README) |
-| GitHub-Secret | `TAURI_SIGNING_PRIVATE_KEY` im Keystead-Repo ist gesetzt (Inhalt von `keys/keystead/tauri-updater.key`) |
+| Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, Android-Keystore `keystead-android-release.jks` mit Passwortdatei, README) |
+| GitHub-Secrets | `TAURI_SIGNING_PRIVATE_KEY` (Inhalt von `keys/keystead/tauri-updater.key`); für die APK `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (= `keystead`) – alle im Keystead-Repo gesetzt (die Android-Secrets am 2026-10-16) |
 
 Lokal starten:
 ```sh
@@ -33,6 +33,12 @@ WebView2 (ist auf Win 10/11 vorhanden).
   **Pre-Release** (portable ZIP, Setup, Erweiterungs-ZIP, `.sig`, `latest.json`).
   Außerdem wird `latest.json` im festen Pre-Release `updater-beta` ersetzt –
   daraus holen installierte Apps ihre Updates (Beta-Kanal).
+- Ab dem nächsten veröffentlichten Build hängt an jedem Release zusätzlich
+  `Keystead-<version>-android.apk` (Job `android`, mit dem Release-Keystore
+  signiert; CI bricht ab, wenn das Zertifikat nicht
+  `B7:3D:75:…:3C:AA` ist). `versionCode` = Run-Nummer – deshalb
+  `.github/workflows/build.yml` **nie umbenennen**. Die Android-App
+  aktualisiert sich nicht selbst; neue APK über die alte installieren.
 - **`[skip ci]`** für Zwischenstände (kein Build, keine Discord-Meldung).
 - Stabile Version: Tag `vX.Y.Z` → Release als „Latest“. Danach `version` in
   `apps/desktop/src-tauri/tauri.conf.json` hochzählen (sonst sortieren spätere
@@ -253,22 +259,17 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
    findet keine `version.yml` mehr und meldet still kein Update, der Umstieg
    läuft über den Import), Standard-Update-Kanal „stabil“, danach `version`
    in `tauri.conf.json` auf 2.0.1.
-5. **Idee für später, Block 5 „Mobile“** (Wunsch des Besitzers vom 2026-10-10,
-   erst nach Block 4): Keystead auf dem Handy. Rahmen: nur Android (kein Mac,
-   nichts Kostenpflichtiges – also auch kein Apple-Entwicklerkonto und keine
-   Play-Store-Gebühr; APK über die GitHub-Releases), Tauri-2-Android-App mit
-   Handy-Layout zum Nachschlagen/Kopieren, Tresor-Sync über den eigenen
-   Cloud-Ordner des Nutzers (Datei ist ohnehin verschlüsselt, Revisionen
-   fangen Konflikte ab; Alternative: Sync im Heimnetz per QR-Kopplung),
-   Autofill-Dienst zuletzt. Offen: ob Sync über den eigenen Cloud-Ordner für
-   den Besitzer in Ordnung ist.
+5. **Block 5 „Mobile“** (Wunsch des Besitzers vom 2026-10-10, Entscheidungen
+   vom 2026-10-16 in `BLOCK5-DESIGN.md`): Android-App, Stand und nächste
+   Schritte im nächsten Abschnitt.
 
 ## In Arbeit: Block 5 „Mobile“ (Branch `claude/mobile-android`)
 
 Entwurf und Entscheidungen des Besitzers: [`BLOCK5-DESIGN.md`](BLOCK5-DESIGN.md)
 (Paketname `io.github.cedrickgd.keystead`, minSdk 29, Stufe 1 ohne Netz und
-nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
-(alles als `WIP: mobile 1a – … [skip ci]` committet, nicht gepusht):
+nur lesend, Sperre im Hintergrund, `allowBackup=false`). **Stufe 1a ist
+fertig** (fünf Commits `WIP: mobile 1a – … [skip ci]`, nicht gepusht; der
+Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile (Android)“):
 
 1. **Core** (Commit `80ff650`): Clipboard-Backend-Trait (arboard nur auf dem
    Desktop), `paths::set_data_dir_override`, Settings-Felder für das Handy.
@@ -295,7 +296,7 @@ nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
    zeigt den Willkommensbildschirm (noch Desktop-Layout, Englisch nach
    Systemsprache); `adb screencap` liefert wegen `FLAG_SECURE` schwarz,
    `adb emu screenrecord screenshot <Ordner>` zeigt das Bild.
-4. **Lebenszyklus** (dieser Stand): `WindowEvent::Suspended`/`Resumed`
+4. **Lebenszyklus** (`11b6cb4`): `WindowEvent::Suspended`/`Resumed`
    (`onPause`/`onResume`) → `MonitorSignal::Background`/`Foreground`;
    Sperre nach `lockInBackgroundSeconds` (Standard 60 s, 0 = sofort,
    null = nie) mit Grund `background` (Toast „Tresor gesperrt, weil
@@ -325,20 +326,150 @@ nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
    Toast „Vault locked because Keystead was in the background“ (Englisch
    nach Systemsprache) sichtbar. Desktop-Kette grün, APK baut.
 
-Offen (nächste Stufen laut Design): Handy-Layout der UI (inkl. Listener auf
-`keystead:back`, Ausblenden von „Beim Sperren des Computers sperren“ und
-der Desktop-Abschnitte), `import_vault_file`, CI-Job `android` mit Keystore
-aus den Secrets und `versionCode` = Run-Nummer, Biometrie (1b), Doku
-(README, CLAUDE.md-Regeln). Bekannte Grenze der Zwischenablage auf dem
-Handy: wird der Prozess eingefroren (nach ~1 min im Hintergrund) oder vom
-System beendet, läuft der Clear-Timer nicht – ein Geheimnis mit langem
-Timer bleibt bis zur Rückkehr, zum nächsten Kopieren oder bis Android es
-selbst verwirft (ab Android 13 nach einer Stunde); der Standard (30 s) ist
-nicht betroffen (Härtung: Kotlin-`AlarmManager`-Receiver). Die Tests des
-App-Crates kompilieren für Android noch nicht (`cargo clippy --target
-aarch64-linux-android --all-targets` scheitert an Desktop-Tests in
-`update.rs`, `commands.rs`, `secrets.rs`, `state.rs`, `error.rs`); ohne
-`--all-targets` ist Clippy für Android grün – für den CI-Job beachten.
+5. **CI + Doku** (dieser Stand): neuer Job `android` in
+   `.github/workflows/build.yml` (ubuntu-latest, bei jedem Push und PR wie
+   `windows`): dieselbe Version wie der Windows-Job (`release-version.mjs
+   --write`, neu `android_version_code` = Run-Nummer →
+   `bundle.android.versionCode` in `tauri.android.conf.json`; Tests:
+   monoton, 1 … 2,1 Mrd., Fehler bei 0/NaN/Bruch), Temurin 17
+   (`actions/setup-java` v5.7.0, SHA-gepinnt), Android-SDK des Runners plus
+   NDK 28.2.13676358, Plattform `android-37.0` und Build-Tools 36.0.0 per
+   `sdkmanager`, falls das Image sie nicht hat, Rust 1.97.0 mit beiden
+   Android-Targets, `rust-cache` (Key `android`), Frontend, `cargo clippy -p
+   keystead-core -p keystead-desktop --target aarch64-linux-android -- -D
+   warnings`, Keystore nur bei der Publish-Bedingung (`android-apk.mjs
+   keystore`: Secrets nur aus der Umgebung, Keystore nach `$RUNNER_TEMP`,
+   `keystore.properties` mit `java.util.Properties`-Escaping, beides 0600
+   und nach dem Build gelöscht; fehlt ein Secret, bricht der Build ab),
+   `npx tauri android build --apk --target aarch64 --ci`, dann die Prüfungen
+   `android-apk.mjs verify` (apksigner – bei Publish genau das Zertifikat
+   `B7:3D:…:3C:AA` –, `zipalign -c -P 16 -v 4`, `aapt2 dump badging`: Paket,
+   versionName/versionCode, minSdk 29, kein `INTERNET`, nicht debuggable,
+   `arm64-v8a`; APK-SHA-256 und Zertifikat in der Job-Zusammenfassung) und
+   das Artefakt `Keystead-<version>-android`. Release-Job: braucht jetzt auch
+   `android`, lädt die APK, vergleicht die Versionen beider Builds und
+   nennt die APK samt Fingerabdruck in den Release-Notes.
+   `discord-notify.yml` verlinkt das Windows-Setup statt des ersten Assets
+   (das wäre alphabetisch jetzt die APK) und die APK in einer eigenen
+   Zeile. Ein Node-Test hält Fingerabdruck (Workflow, README de/en,
+   ARCHITECTURE), Paketname und minSdk über alle Dateien gleich. Doku:
+   ARCHITECTURE neuer Abschnitt „Mobile (Android)“ (der bisherige Teil
+   „Android project“ ist dorthin umgezogen) plus Releases, Settings,
+   Datenorte, Updates, Repository-Layout; README de/en Abschnitt
+   „Android-App (Vorschau)“, Datenorte, Build from source, Project layout
+   (veraltete `legacy`-Zeile entfernt); CLAUDE.md (Layout, Befehle, Regel
+   „`build.yml` nie umbenennen“).
+   **Lokal geprüft:** den CI-Ablauf nachgestellt – `release-version.mjs
+   --write` mit Run 4242, `gen/android` ohne alle gitignorierten Dateien (wie
+   ein frischer Checkout), `npx tauri android build --apk --target aarch64
+   --ci` → grün in 16 min, `app-universal-release.apk` 11 MB (R8, ohne
+   Debug-Symbole); `android-apk.mjs verify` darauf: versionCode 4242 und
+   versionName 2.0.1-beta.4242 (das CLI liest `versionCode` aus
+   `tauri.android.conf.json`), minSdk 29, targetSdk 37, nur `arm64-v8a`,
+   16-KB-Ausrichtung in Ordnung, keine `INTERNET`-Berechtigung, nicht
+   debuggable; mit dem lokalen Debug-Schlüssel signiert → ohne `--signer`
+   grün, mit dem Release-Fingerabdruck wie gewollt abgelehnt. Das Escaping
+   von `keystore.properties` ist mit Javas `Properties.load` gegengeprüft
+   (Leerzeichen vorn, Backslash am Ende, `=`, `:`, `#`, Umlaute, Emoji).
+   Der Publish-Weg mit einem **Wegwerf-Keystore** (PKCS12, Passwort mit
+   Leerzeichen, Backslash und `=`, nicht der echte Schlüssel): `android-apk.mjs
+   keystore` aus den Umgebungsvariablen → `gen/android/keystore.properties` →
+   Gradle signiert die Release-APK damit → `verify --signer <Wegwerf-Fingerabdruck>`
+   grün, dieselbe APK gegen `B7:3D:…` abgelehnt; Wegwerf-Keystore und
+   `keystore.properties` danach gelöscht. Ein fehlendes Secret bricht mit
+   klarer Meldung ab.
+   **Nicht im Emulator geprüft:** der Emulator hing diesmal beim Start an
+   einem Dialog, der die Einwilligung zu einem Absturzbericht (von einem
+   früheren Emulator-Absturz) verlangt – ob die mit R8 gebaute Release-APK
+   startet, ist deshalb offen (Punkt 2 der Checkliste); die Debug-APK für
+   x86_64 baut weiter grün.
+   **Nicht lokal prüfbar:** der echte CI-Lauf (Runner-Image, Laufzeit,
+   Gradle-Cache, Paketnamen im `sdkmanager` des Images) und die Signatur
+   mit den echten Secrets – das zeigt der erste Push ohne `[skip ci]` bzw.
+   der erste `[release]`-Commit.
+
+### Emulator-Checkliste für den Besitzer
+
+Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
+in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
+`adb` liegt in `$ANDROID_HOME/platform-tools`.
+
+1. Emulator starten: `"$ANDROID_HOME/emulator/emulator.exe" -avd MB_S26
+   -no-snapshot-load` – der Kaltstart dauert hier mehrere Minuten; fertig,
+   wenn `adb shell getprop sys.boot_completed` `1` liefert. Fragt der
+   Emulator nach einem Absturzbericht, erst den Dialog beantworten – vorher
+   bootet er nicht weiter.
+2. APK wählen: die selbst gebaute Debug-APK (`npx tauri android build
+   --apk --debug --target x86_64`, Pfad
+   `apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`)
+   oder – für den echten Release-Weg – `Keystead-<version>-android.apk`
+   aus dem Release bzw. dem CI-Artefakt (arm64 – ob das x86_64-Image ARM-Apps übersetzt, zeigt
+   `adb shell getprop ro.product.cpu.abilist`: steht dort `arm64-v8a`,
+   läuft sie; das ist auch der Test, ob der R8-optimierte Release-Build
+   startet).
+3. Bei einem Wechsel zwischen lokal gebauter, CI- und Release-APK erst
+   deinstallieren (andere Signatur; lokale Builds haben außerdem den
+   höheren versionCode 2000001): `adb uninstall io.github.cedrickgd.keystead`
+   – das löscht die Daten der App im Emulator.
+4. Installieren: `adb push <apk> /data/local/tmp/keystead.apk` und
+   `adb shell pm install -r /data/local/tmp/keystead.apk` (`adb install`
+   scheiterte hier mit leerer Meldung).
+5. Tresor hineinlegen, bis `import_vault_file` kommt – geht nur mit der
+   Debug-APK (`run-as` verlangt eine debuggable App); nimm einen
+   **Test-Tresor**, nicht deinen echten: `adb push <id>.keystead
+   /data/local/tmp/` und `adb shell run-as io.github.cedrickgd.keystead sh
+   -c 'mkdir -p vaults && cp /data/local/tmp/<id>.keystead vaults/'`, danach
+   die Datei in `/data/local/tmp` löschen. Mit der Release-APK lässt sich
+   bisher nur der Start prüfen.
+6. Durchklicken: Start → Willkommen/Entsperren → Liste und Suche →
+   Passwort aufdecken (nach 30 s wieder verborgen) → kopieren (die
+   Zwischenablage des PCs spiegelt die des Emulators; nach 30 s leer) →
+   2FA-Code → Sicherheitsbericht → Einstellungen → „Sperren im
+   Hintergrund“ (Sofort / 1 min / 5 min / Nie).
+7. Home-Taste: nach 1 Minute ist der Tresor gesperrt (Toast beim
+   Zurückkehren); die Zurück-Geste schickt die App in den Hintergrund, statt
+   sie zu schließen; die Vorschau in „Zuletzt verwendet“ und ein Screenshot
+   (`adb exec-out screencap -p > shot.png`) sind schwarz (`FLAG_SECURE`).
+   Ein Bild für Fehlerberichte: `adb emu screenrecord screenshot <Ordner>`.
+8. Logs: `adb logcat -s RustStdoutStderr:* Tauri:*` – erwartet sind nur
+   Chromium-Zeilen des WebView, keine Panik.
+
+Erwartete Grenzen in dieser Stufe: Desktop-Layout auf dem Handy, Knöpfe für
+Bearbeiten/Neu/Import sind noch sichtbar, laufen aber ins Leere (das Handy
+kennt diese Befehle nicht).
+
+### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
+
+1. **Rest von Stufe 1**: Handy-Layout der UI (`data-layout="phone"`,
+   Liste/Detail gestapelt, Seitenleiste als Schublade, große Tippflächen,
+   Listener auf `keystead:back`, alle Bearbeiten-Knöpfe hinter `readOnly`,
+   Desktop-Abschnitte und „Beim Sperren des Computers sperren“ ausblenden)
+   und `import_vault_file` (Tresordatei per System-Auswahl einmalig in den
+   App-Ordner kopieren, `sync::header_of` prüft sie) – erst dann ist die
+   App ohne `adb` benutzbar.
+2. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
+   KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5).
+3. **Stufe 2a**: Einweg-Sync PC → Handy über den eigenen Cloud-Ordner
+   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“, E7; am Handy
+   Storage Access Framework mit dauerhafter Freigabe) plus Update-Hinweis
+   über ein kleines Kotlin-Plugin (E6).
+4. Danach **Autofill** (E11), dann **2b** Bearbeiten am Handy +
+   Zwei-Wege-Sync mit Konfliktdialog.
+5. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
+   Signatur, nur Screenshots).
+
+Bekannte Grenzen: Zwischenablage auf dem Handy – wird der Prozess
+eingefroren (nach ~1 min im Hintergrund) oder vom System beendet, läuft
+der Clear-Timer nicht; ein Geheimnis mit langem Timer bleibt bis zur
+Rückkehr, zum nächsten Kopieren oder bis Android es selbst verwirft (ab
+Android 13 nach einer Stunde); der Standard (30 s) ist nicht betroffen
+(Härtung: Kotlin-`AlarmManager`-Receiver). Die Tests des App-Crates
+kompilieren für Android nicht (`--all-targets` scheitert an Desktop-Tests
+in `update.rs`, `commands.rs`, `secrets.rs`, `state.rs`, `error.rs`) –
+der CI-Job lintet deshalb ohne `--all-targets`. Jede nicht
+veröffentlichende CI-APK ist mit dem Debug-Schlüssel des Runners signiert,
+der von Lauf zu Lauf wechseln kann: zwischen zwei solchen APKs ggf.
+deinstallieren.
 
 ## Bekannte Grenzen / offene Punkte
 

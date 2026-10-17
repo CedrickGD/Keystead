@@ -18,11 +18,14 @@ updater, release flow). Keep both in sync with every interface change.
 - `apps/desktop/src-tauri` – Tauri backend (library `keystead_lib` + `Keystead.exe`):
   commands, updater, extension deployment, import flow, icon fetcher, tray,
   auto-lock; `src/mobile.rs` + `tauri.android.conf.json` + `gen/android`
-  (committed Android project, hardened – see "Android project" in
-  ARCHITECTURE) for the phone (Block 5, `docs/BLOCK5-DESIGN.md`).
+  (committed Android project, hardened) for the phone (Block 5,
+  `docs/BLOCK5-DESIGN.md`; contract: "Mobile (Android)" in ARCHITECTURE).
 - `apps/desktop/src` – React/TS UI (German-first i18n `src/i18n/de.ts`/`en.ts`,
   mock backend `src/lib/mock.ts` for `npm run dev` in a browser, password `demo`).
 - `extension/chrome` – MV3 extension, plain JS, no build step.
+- `.github/workflows/build.yml` – CI: tests, Windows build, Android build
+  (signed APK on publishing builds, gates in `.github/scripts/android-apk.mjs`),
+  releases; `.github/scripts/release-version.mjs` versions every build.
 
 ## Commands
 ```sh
@@ -33,7 +36,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 (cd apps/desktop && npm run build)
 node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
-cd apps/desktop && npx tauri android build --apk --debug --target x86_64   # emulator APK (JAVA_HOME=JDK 17, ANDROID_HOME, NDK_HOME set)
+# Android (JAVA_HOME = JDK 17, ANDROID_HOME, NDK_HOME = NDK 28.2.13676358 set):
+cd apps/desktop && npx tauri android build --apk --debug --target x86_64   # emulator APK
+cd apps/desktop && npx tauri android build --apk --target aarch64          # phone APK (release; debug key without keystore.properties)
+cd apps/desktop && npx tauri android dev                                   # dev loop on a running emulator (not tried yet)
+cargo clippy -p keystead-core -p keystead-desktop --target aarch64-linux-android -- -D warnings   # lints cfg(mobile); needs CC_/AR_/CARGO_TARGET_*_LINKER of the NDK
 ```
 Toolchain is pinned in `rust-toolchain.toml` (1.97.0) – bump deliberately (newer
 clippy lints break CI otherwise).
@@ -46,8 +53,9 @@ clippy lints break CI otherwise).
   and merge it via pull request with a merge commit; the owner decides when to
   merge and when to tag.
 - Commit message markers: `[release]` publishes a signed beta pre-release
-  (`v<version in tauri.conf.json>-beta.<run>`, e.g. `v2.0.1-beta.12`) that
-  installed apps on the beta channel receive via in-app update; `[skip ci]` for
+  (`v<version in tauri.conf.json>-beta.<run>`, e.g. `v2.0.1-beta.12`; Windows
+  setup + ZIPs + release-signed Android APK) that installed desktop apps on
+  the beta channel receive via in-app update; `[skip ci]` for
   work-in-progress pushes. Tags `vX.Y.Z` publish stable releases; right after a
   tag, bump `version` in `apps/desktop/src-tauri/tauri.conf.json`.
 - The extension ID `imfndemblnaalppnmdplagajjielnaok` is fixed by the `key` in
@@ -55,8 +63,13 @@ clippy lints break CI otherwise).
 - Android: never change the identifier `io.github.cedrickgd.keystead`
   (`tauri.android.conf.json`); `gen/android` is committed (do not re-run
   `tauri android init` over it); the signing keystore and
-  `gen/android/keystore.properties` never enter the repo; the main manifest
-  stays without `INTERNET` (debug manifest only).
+  `gen/android/keystore.properties` never enter the repo (keystore in
+  `CedrickGD/keys/keystead/`, CI secrets `ANDROID_KEYSTORE_BASE64`,
+  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`; certificate SHA-256 in
+  `build.yml`/README); the main manifest stays without `INTERNET` (debug
+  manifest only). **Never rename `.github/workflows/build.yml`**: its run
+  number is the APK `versionCode`, a renamed workflow counts from 1 again and
+  installed apps refuse every later APK.
 - Security posture to preserve: secrets never reach the webview except on explicit
   reveal/edit; page commands carry `pageVaultId`; extension UI in closed shadow
   roots with isTrusted + visibility/dwell checks; fills only into frames whose own

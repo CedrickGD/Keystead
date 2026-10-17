@@ -5,8 +5,8 @@
 //
 // Environment (set by GitHub Actions): GITHUB_REF, GITHUB_REF_NAME,
 // GITHUB_RUN_NUMBER; KEYSTEAD_PUBLISH=true (set by the workflow) when the
-// build publishes a release; outputs `version` and `extension_version` go to
-// $GITHUB_OUTPUT when set.
+// build publishes a release; outputs `version`, `extension_version` and
+// `android_version_code` go to $GITHUB_OUTPUT when set.
 //
 // * Tag `v<semver>` (e.g. v2.0.0, v2.0.1-rc.1): exactly that version.
 // * Any other build: `<version in tauri.conf.json>-beta.<run number>`, e.g.
@@ -16,9 +16,17 @@
 //   `<major>.<minor>.<patch>.<run number>`, also for tags – run numbers only
 //   grow, so a stable release still counts as newer than the betas before it
 //   and installed extensions reload into it.
+// * Android `versionCode` (an integer the package installer compares; an
+//   update needs a higher one, 1 … 2 100 000 000): the run number, for the
+//   same reason. Tauri's default (major·10⁶ + minor·10³ + patch) would give
+//   every beta of a version and its stable release the same code. The
+//   `versionName` is the version itself (Tauri takes it from
+//   tauri.conf.json).
 //
 // --write sets `version` in apps/desktop/src-tauri/tauri.conf.json (app,
-// NSIS installer, updater) and extension/chrome/manifest.json.
+// NSIS installer, updater, Android versionName), extension/chrome/manifest.json
+// and `bundle.android.versionCode` in apps/desktop/src-tauri/tauri.android.conf.json
+// (merged into tauri.conf.json by the Tauri CLI for Android builds).
 //
 // --check-tags (branch builds only) lists the repository's `v*` tags
 // (`git ls-remote --tags origin`). After a release `vX.Y.Z`, tauri.conf.json
@@ -33,7 +41,11 @@ import { pathToFileURL } from "node:url";
 import { compareSemver, parseSemver } from "./semver.mjs";
 
 const TAURI_CONF = "apps/desktop/src-tauri/tauri.conf.json";
+const ANDROID_CONF = "apps/desktop/src-tauri/tauri.android.conf.json";
 const EXT_MANIFEST = "extension/chrome/manifest.json";
+
+/** Android's (Google Play's) upper bound of a versionCode; Tauri checks it too. */
+export const ANDROID_MAX_VERSION_CODE = 2_100_000_000;
 
 /** The app version of a build. */
 export function appVersion({ ref = "", refName = "", runNumber, baseVersion }) {
@@ -57,6 +69,23 @@ export function extensionVersion(version, runNumber) {
   if (!Number.isInteger(run) || run < 0 || run > 65535) throw new Error(`run number ${runNumber} out of range`);
   for (const n of [v.major, v.minor, v.patch]) if (n > 65535) throw new Error(`version ${version} too large`);
   return `${v.major}.${v.minor}.${v.patch}.${run}`;
+}
+
+/**
+ * The Android versionCode of a build: its run number. Run numbers only grow
+ * (a re-run keeps its number), so every build – beta or stable – is an
+ * update for the ones before it. Note: the counter belongs to the workflow
+ * file; renaming .github/workflows/build.yml would start it at 1 again and
+ * installed apps would refuse every later APK (INSTALL_FAILED_VERSION_DOWNGRADE).
+ */
+export function androidVersionCode(runNumber) {
+  const text = typeof runNumber === "number" || typeof runNumber === "string" ? String(runNumber).trim() : "";
+  if (!/^[1-9]\d*$/.test(text)) throw new Error(`invalid run number ${runNumber} for the Android versionCode`);
+  const code = Number(text);
+  if (!Number.isSafeInteger(code) || code > ANDROID_MAX_VERSION_CODE) {
+    throw new Error(`run number ${runNumber} exceeds the Android versionCode limit ${ANDROID_MAX_VERSION_CODE}`);
+  }
+  return code;
 }
 
 /**
@@ -111,11 +140,19 @@ function remoteTags(root) {
   }
 }
 
-/** Sets the top-level "version" of a JSON file, keeping the rest. */
-function setJsonVersion(file, version) {
+/** Rewrites a JSON file after `change(json)`, keeping everything else. */
+function updateJson(file, change) {
   const json = JSON.parse(fs.readFileSync(file, "utf8"));
-  json.version = version;
+  change(json);
   fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
+}
+
+/** Sets `bundle.android.versionCode` of a Tauri config object (other keys stay). */
+export function setAndroidVersionCode(config, versionCode) {
+  config.bundle ??= {};
+  config.bundle.android ??= {};
+  config.bundle.android.versionCode = androidVersionCode(versionCode);
+  return config;
 }
 
 function main(argv) {
@@ -131,6 +168,7 @@ function main(argv) {
     baseVersion: conf.version,
   });
   const extVersion = extensionVersion(version, runNumber);
+  const versionCode = androidVersionCode(runNumber);
   const tagBuild = (process.env.GITHUB_REF ?? "").startsWith("refs/tags/v");
   if (argv.includes("--check-tags") && !tagBuild) {
     const tags = remoteTags(root);
@@ -139,13 +177,18 @@ function main(argv) {
     if (problem) console.log(`::warning::${problem.message}`);
   }
   if (write) {
-    setJsonVersion(path.join(root, TAURI_CONF), version);
-    setJsonVersion(path.join(root, EXT_MANIFEST), extVersion);
+    updateJson(path.join(root, TAURI_CONF), (json) => {
+      json.version = version;
+    });
+    updateJson(path.join(root, EXT_MANIFEST), (json) => {
+      json.version = extVersion;
+    });
+    updateJson(path.join(root, ANDROID_CONF), (json) => setAndroidVersionCode(json, versionCode));
   }
-  console.log(`version=${version}`);
-  console.log(`extension_version=${extVersion}`);
+  const outputs = `version=${version}\nextension_version=${extVersion}\nandroid_version_code=${versionCode}\n`;
+  process.stdout.write(outputs);
   if (process.env.GITHUB_OUTPUT) {
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nextension_version=${extVersion}\n`);
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, outputs);
   }
 }
 

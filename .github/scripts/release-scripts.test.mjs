@@ -2,7 +2,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { compareSemver, parseSemver } from "./semver.mjs";
-import { appVersion, checkAgainstReleases, extensionVersion, newerReleasedVersion } from "./release-version.mjs";
+import {
+  ANDROID_MAX_VERSION_CODE,
+  androidVersionCode,
+  appVersion,
+  checkAgainstReleases,
+  extensionVersion,
+  newerReleasedVersion,
+  setAndroidVersionCode,
+} from "./release-version.mjs";
 import { latestManifest, releaseNotes, rfc3339 } from "./latest-json.mjs";
 
 test("semver order matches the updater", () => {
@@ -69,6 +77,45 @@ test("extension versions are dotted integers and keep growing", () => {
     return 0;
   };
   assert.equal(chromeCompare(extensionVersion("2.0.0-beta.57", 57), extensionVersion("2.0.0", 60)), -1);
+});
+
+test("Android versionCodes are the run number and keep growing", () => {
+  assert.equal(androidVersionCode(57), 57);
+  assert.equal(androidVersionCode("58"), 58);
+  assert.equal(androidVersionCode(" 59 "), 59);
+  assert.equal(androidVersionCode(1), 1);
+  assert.equal(androidVersionCode(ANDROID_MAX_VERSION_CODE), 2_100_000_000);
+  // Monotonic in the run number, whatever the version: a stable release
+  // (tag, later run) is an update for the betas before it, and the next
+  // beta of the following version for that release.
+  const builds = [
+    { ref: "refs/heads/main", refName: "main", runNumber: 57, baseVersion: "2.0.1" },
+    { ref: "refs/heads/main", refName: "main", runNumber: 58, baseVersion: "2.0.1" },
+    { ref: "refs/tags/v2.0.1", refName: "v2.0.1", runNumber: 60, baseVersion: "2.0.1" },
+    { ref: "refs/heads/main", refName: "main", runNumber: 61, baseVersion: "2.0.2" },
+  ];
+  const codes = builds.map((b) => androidVersionCode(b.runNumber));
+  for (let i = 0; i + 1 < codes.length; i += 1) {
+    assert.ok(codes[i] < codes[i + 1], `${appVersion(builds[i])} (${codes[i]}) < ${appVersion(builds[i + 1])} (${codes[i + 1]})`);
+  }
+  // Tauri's default (major*1e6 + minor*1e3 + patch) would be 2000001 for all three 2.0.1 builds.
+  for (const bad of [0, "0", -1, "-3", 1.5, "1.5", "1e3", "", " ", "abc", Number.NaN, Infinity, undefined, null, ANDROID_MAX_VERSION_CODE + 1, "99999999999999999999"]) {
+    assert.throws(() => androidVersionCode(bad), undefined, String(bad));
+  }
+});
+
+test("the Android versionCode is written into the Android config only", () => {
+  const android = {
+    identifier: "io.github.cedrickgd.keystead",
+    app: { windows: [{ label: "main" }] },
+    bundle: { android: { minSdkVersion: 29 } },
+  };
+  assert.deepEqual(setAndroidVersionCode(structuredClone(android), "57"), {
+    ...android,
+    bundle: { android: { minSdkVersion: 29, versionCode: 57 } },
+  });
+  assert.deepEqual(setAndroidVersionCode({}, 3), { bundle: { android: { versionCode: 3 } } });
+  assert.throws(() => setAndroidVersionCode({}, 0));
 });
 
 test("latest.json has the updater's static format", () => {

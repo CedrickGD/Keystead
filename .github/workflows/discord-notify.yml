@@ -63,13 +63,20 @@ jobs:
               };
             } else if (eventName === 'release') {
               const release = context.payload.release;
-              const firstAsset = (release.assets || [])[0];
-              const downloadUrl = firstAsset?.browser_download_url || release.html_url;
+              // Link the Windows setup, not just the first asset (by name
+              // that would be the Android APK); the APK gets its own line.
+              const assets = release.assets || [];
+              const setup = assets.find((asset) => asset.name.endsWith('-windows-setup.exe'));
+              const apk = assets.find((asset) => asset.name.endsWith('-android.apk'));
+              const downloadUrl = setup?.browser_download_url || release.html_url;
               const descriptionLines = [
                 `\`${release.tag_name}\` is now available.`,
                 '',
                 `[Download from GitHub](${downloadUrl})`
               ];
+              if (apk) {
+                descriptionLines.push(`[Android APK](${apk.browser_download_url})`);
+              }
 
               embed = {
                 author: {

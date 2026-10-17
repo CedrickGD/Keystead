@@ -11,6 +11,8 @@ icons"), and – only when the user presses the button, never on its own – to
 check passwords against Have I Been Pwned, where just the first 5 hex
 characters of a password's SHA-1 leave the device (see "Leaked-password
 check").
+The Android app (read-only in its first stage, see "Mobile (Android)") has
+no network permission at all.
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -37,10 +39,10 @@ an interface here, change every side.
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). `src-tauri/tauri.android.conf.json` = the Android overrides of `tauri.conf.json` (merged by Tauri). |
-| `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening – see "Android project" under "Executable modes". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
+| `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening – see "Mobile (Android)". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
-| `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
+| `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, Android build (APK signing and gates: `android-apk.mjs`), versioning, updater signing/manifest, releases (see "Releases & in-app updates", "Mobile (Android)"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `docs/` | This file + user docs. |
 
@@ -75,99 +77,9 @@ only and Cargo has no instruction for a library's unit tests.
   same Tauri app without the desktop-only plugins, services and commands;
   the binary has no role there (`fn main() {}`). The phone is **read-only**
   in this stage: only the read commands are registered, see "Desktop
-  backend ↔ frontend".
-
-**Android project** (`src-tauri/gen/android`, generated once by `npx tauri
-android init` with CLI 2.12 – Gradle 9.6.1, AGP 9.3.1, Kotlin 2.2.10,
-compileSdk/targetSdk 37 – and committed). `tauri.android.conf.json` is
-merged into `tauri.conf.json` for Android builds: identifier
-`io.github.cedrickgd.keystead` (the desktop keeps `com.keystead.desktop`),
-`bundle.android.minSdkVersion` 29 (Android 10), and the main window as a
-plain phone window (`label`, `title`, `create: false` – `setup` builds it
-itself, like on the desktop, for the navigation and new-window hooks); the
-CSP and everything else are inherited unchanged. Hardening on top of the
-template, guarded by unit tests in `gui.rs` (`include_str!` of the
-committed files):
-* `AndroidManifest.xml`: **no permission at all** – in particular no
-  `INTERNET` (the phone is offline by design; website icons, the leaked-
-  password check and update checks do not exist there). Only
-  `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
-  dev` loads the UI from the Vite dev server on the PC. `allowBackup=
-  "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
-  excludes every domain for cloud backup and device-to-device transfer),
-  `windowSoftInputMode="adjustResize"`, WebView Safe Browsing off
-  (`android.webkit.WebView.EnableSafeBrowsing` = false), no `debuggable`.
-* `MainActivity.kt`: `FLAG_SECURE` on the window (no screenshots,
-  recordings or recents thumbnails – Tauri's `contentProtected` is a no-op
-  on Android); in `onWebViewCreate` `allowFileAccess`/`allowContentAccess`/
-  geolocation/Safe Browsing off (the UI is served from `tauri.localhost`
-  only). **Back gesture**: the activity dispatches the DOM event
-  `keystead:back` (cancelable) on `window`; a listener that calls
-  `preventDefault()` has consumed it (close a dialog, leave the detail
-  view), otherwise the activity calls `moveTaskToBack(true)` – the app goes
-  to the background without finishing, so an open vault stays open until
-  the background lock applies. (Tauri's own back handling is off:
-  `TauriActivity.handleBackNavigation = false`.)
-* `app/build.gradle.kts`: release signing from `gen/android/keystore.
-  properties` (gitignored; keys `storeFile`, `password`, `keyAlias`,
-  optional `keyPassword`; CI writes it from the secrets) – without the file
-  a release build is signed with the debug key so it still installs
-  locally, but such an APK can never update a release-signed app.
-* **Lifecycle**: `WindowEvent::Suspended`/`Resumed` (tauri's mapping of the
-  activity's `onPause`/`onResume`; the first `onResume` is swallowed by
-  tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`,
-  tells the clipboard backend it is in the background and starts the
-  monitor's background clock (`MonitorSignal::Background`); `Resumed` ends
-  both (`MonitorSignal::Foreground`) – see "Background lock" under
-  "Auto-lock, locking". `RunEvent::Exit`/`Core::shutdown` practically never
-  run on Android (the process is killed, not quit): nothing
-  security-relevant depends on them. tao ignores the first `onResume` of
-  every activity: an activity the system recreates (rare with the
-  manifest's `configChanges`) comes back without `Resumed`, so the
-  background clock keeps running and the lock fires – the safe side.
-  iOS (not built yet): tauri maps `Suspended` to
-  `applicationWillResignActive` but `Resumed` to
-  `applicationWillEnterForeground`, which is asymmetric (a Control Center
-  pull-down resigns without a matching resume) – to revisit before an iOS
-  release.
-* **Clipboard** (`mobile::PluginClipboard`, installed before anything
-  else in `setup`): sensitive text goes through the plugin's `write_secret`
-  (`EXTRA_IS_SENSITIVE`: Android 13+ shows no preview); the backend never
-  reads (Android ≥ 10 refuses reads without focus), so clearing "our"
-  secret is unconditional. From the background – the normal case, the timer
-  fires while the user pastes in the other app – the plugin's `clear` would
-  do nothing (it calls `clearPrimaryClip()` only after `hasPrimaryClip()`,
-  which is false without focus), so the backend first overwrites the clip
-  with an empty text (writes are allowed without focus) and clears
-  afterwards; in the foreground the plain clear (both verified in the
-  emulator: a timed clear from the background empties the clipboard).
-  Known limits: Android freezes the process of an app that stays in the
-  background (cached-apps freezer; emulator API 36: frozen after about
-  60–70 s away, not within the first ~45 s) – the clear timer and the
-  monitor then only run again when the app returns, and a process the
-  system kills takes its clear timer with it; a secret whose timer is
-  that long then stays until the next copy, the return to the app, or
-  Android's own clipboard expiry (Android 13+: after an hour). The default
-  of 30 s is not affected. A Kotlin `AlarmManager` receiver would be the
-  hardening (it thaws the process).
-* Capabilities are split by platform (`platforms` in the capability file):
-  `capabilities/default.json` (windows, linux, macOS) and
-  `capabilities/mobile.json` (android, iOS – `core:default` and
-  `core:event:default` only). Neither grants the clipboard-manager or
-  opener plugin to the webview.
-* Builds: `npx tauri android build --apk --debug --target x86_64` for the
-  emulator, `--target aarch64` for phones; the APK lands in
-  `gen/android/app/build/outputs/apk/universal/<debug|release>/
-  app-universal-<debug|release>.apk` (the "universal" flavour holds just
-  the ABIs that were built). The debug APK has `INTERNET` from the debug
-  manifest, is debuggable, keeps the Rust debug symbols (~200 MB) and is
-  signed with the debug key. The environment needs `JAVA_HOME` (JDK 17),
-  `ANDROID_HOME` and `NDK_HOME`; the CLI rewrites `tauri = { version = "2",
-  features = [] }` in `Cargo.toml` on every run (kept in that form).
-  `versionCode` is Tauri's default `major*1e6 + minor*1e3 + patch` until
-  the CI stage sets it (see docs/BLOCK5-DESIGN.md "Versionierung").
-  Note: `tauri` itself pulls `reqwest` into the Android build (its dev-
-  server proxy); the app never uses it there.
+  backend ↔ frontend". Everything Android-specific – the committed Android
+  project, its hardening, lifecycle, clipboard, build, CI and signing – is
+  in "Mobile (Android)".
 
 One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
 
@@ -225,12 +137,245 @@ returned code: `0` success, `1` error, `2` invalid usage.
   scripts – `$KEYSTEAD_MASTER_PASSWORD`.
 * Language from `Settings.language` (German default, English for `en`).
 
+## Mobile (Android)
+
+Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
+**Stage 1a – the state described here – is a read-only, offline Android
+app**: the same Rust crate and the same React UI as the desktop, built by CI
+as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 / API 29 and
+later) that every release carries. It opens the vaults in its own app
+folder – lists, searches, reveals and copies, shows TOTP codes and the
+security report – and locks when it stays in the background. Not yet: a way
+to bring a vault onto the phone (next stage: a `.keystead` file picked in
+the system file picker, later a copy in the user's own cloud folder,
+`docs/BLOCK5-DESIGN.md` "Stufe 2"), the phone layout of the UI (it still
+shows the desktop layout) and fingerprint unlock (stage 1b). There is no
+Keystead server, and the app has no network permission at all.
+
+* **Entry point and gates**: the Android shell (`MainActivity`, a
+  `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
+  (`#[tauri::mobile_entry_point]`) – see "Executable modes" for the crate
+  layout and the `cfg(desktop)`/`cfg(mobile)` split. Rust code is gated on
+  `mobile`/`desktop` (so an iOS build compiles the same paths), only
+  Android APIs on `target_os = "android"`; the Kotlin side lives in
+  `gen/android` (below).
+* **Data location**: `mobile::prepare`, the first thing in `setup`, sets
+  `paths::set_data_dir_override(app_local_data_dir())` – on Android the
+  app's private internal storage `/data/user/0/io.github.cedrickgd.keystead/`
+  (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
+  and `settings.json`; nothing of the bridge (`bridge-clients.json`), no
+  `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
+  "Data locations"). Other apps cannot read the folder, Android's cloud
+  backup and device-to-device transfer skip it (manifest below), and
+  **uninstalling the app deletes it** – in this stage the phone only ever
+  holds copies of vaults made elsewhere.
+* **Commands**: only the read commands are registered ("**On the phone**"
+  under "Desktop backend ↔ frontend"); every other command is unknown to
+  the phone's invoke handler. `app_info` answers `platform: "android"`,
+  `readOnly: true`, `extensionId: null`, `portable: false`; the UI is to
+  hide every editing control on `readOnly` (part of the phone layout).
+* **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
+  (default 60, `0` = at once, `null` = never; Settings → "Sperren im
+  Hintergrund": Sofort / 1 min / 5 min / Nie, a row shown only on
+  `android`/`ios`) and `deviceUnlock` (fingerprint unlock, stage 1b – not
+  used yet). `autoLockMinutes` and `clipboardClearSeconds` work as on the
+  desktop; the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
+  `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
+  `updateChannel`) are kept in the file but do nothing on the phone.
+* **Lifecycle, background lock, clipboard**: see the Android project
+  below and "Background lock (phone)" under "Desktop backend behaviour
+  details".
+
+**Android project** (`src-tauri/gen/android`, generated once by `npx tauri
+android init` with CLI 2.12 – Gradle 9.6.1, AGP 9.3.1, Kotlin 2.2.10,
+compileSdk/targetSdk 37 – and committed; never re-run `init` over it).
+`tauri.android.conf.json` is merged into `tauri.conf.json` for Android
+builds: identifier `io.github.cedrickgd.keystead` (never changes – a new
+one would be a different app; the desktop keeps `com.keystead.desktop`),
+`bundle.android.minSdkVersion` 29 (Android 10), and the main window as a
+plain phone window (`label`, `title`, `create: false` – `setup` builds it
+itself, like on the desktop, for the navigation and new-window hooks); the
+CSP and everything else are inherited unchanged. CI adds
+`bundle.android.versionCode` (below). Hardening on top of the template,
+guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
+* `AndroidManifest.xml`: **no permission at all** – in particular no
+  `INTERNET` (the phone is offline by design; website icons, the leaked-
+  password check and update checks do not exist there). Only
+  `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
+  dev` loads the UI from the Vite dev server on the PC. `allowBackup=
+  "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
+  excludes every domain for cloud backup and device-to-device transfer),
+  `windowSoftInputMode="adjustResize"`, WebView Safe Browsing off
+  (`android.webkit.WebView.EnableSafeBrowsing` = false), no `debuggable`.
+* `MainActivity.kt`: `FLAG_SECURE` on the window (no screenshots,
+  recordings or recents thumbnails – Tauri's `contentProtected` is a no-op
+  on Android); in `onWebViewCreate` `allowFileAccess`/`allowContentAccess`/
+  geolocation/Safe Browsing off (the UI is served from `tauri.localhost`
+  only). **Back gesture**: the activity dispatches the DOM event
+  `keystead:back` (cancelable) on `window`; a listener that calls
+  `preventDefault()` has consumed it (close a dialog, leave the detail
+  view), otherwise the activity calls `moveTaskToBack(true)` – the app goes
+  to the background without finishing, so an open vault stays open until
+  the background lock applies. (Tauri's own back handling is off:
+  `TauriActivity.handleBackNavigation = false`.)
+* `app/build.gradle.kts`: release signing from `gen/android/keystore.
+  properties` (gitignored; keys `storeFile`, `password`, `keyAlias`,
+  optional `keyPassword`; CI writes it from the secrets) – without the file
+  a release build is signed with the debug key so it still installs
+  locally, but such an APK can never update a release-signed app.
+* **Lifecycle**: `WindowEvent::Suspended`/`Resumed` (tauri's mapping of the
+  activity's `onPause`/`onResume`; the first `onResume` is swallowed by
+  tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`,
+  tells the clipboard backend it is in the background and starts the
+  monitor's background clock (`MonitorSignal::Background`); `Resumed` ends
+  both (`MonitorSignal::Foreground`) – see "Background lock (phone)" under
+  "Desktop backend behaviour details". `RunEvent::Exit`/`Core::shutdown` practically never
+  run on Android (the process is killed, not quit): nothing
+  security-relevant depends on them. tao ignores the first `onResume` of
+  every activity: an activity the system recreates (rare with the
+  manifest's `configChanges`) comes back without `Resumed`, so the
+  background clock keeps running and the lock fires – the safe side.
+  iOS (not built yet): tauri maps `Suspended` to
+  `applicationWillResignActive` but `Resumed` to
+  `applicationWillEnterForeground`, which is asymmetric (a Control Center
+  pull-down resigns without a matching resume) – to revisit before an iOS
+  release.
+* **Clipboard** (`mobile::PluginClipboard`, installed before anything
+  else in `setup`): sensitive text goes through the plugin's `write_secret`
+  (`EXTRA_IS_SENSITIVE`: Android 13+ shows no preview); the backend never
+  reads (Android ≥ 10 refuses reads without focus), so clearing "our"
+  secret is unconditional. From the background – the normal case, the timer
+  fires while the user pastes in the other app – the plugin's `clear` would
+  do nothing (it calls `clearPrimaryClip()` only after `hasPrimaryClip()`,
+  which is false without focus), so the backend first overwrites the clip
+  with an empty text (writes are allowed without focus) and clears
+  afterwards; in the foreground the plain clear (both verified in the
+  emulator: a timed clear from the background empties the clipboard).
+  Known limits: Android freezes the process of an app that stays in the
+  background (cached-apps freezer; emulator API 36: frozen after about
+  60–70 s away, not within the first ~45 s) – the clear timer and the
+  monitor then only run again when the app returns, and a process the
+  system kills takes its clear timer with it; a secret whose timer is
+  that long then stays until the next copy, the return to the app, or
+  Android's own clipboard expiry (Android 13+: after an hour). The default
+  of 30 s is not affected. A Kotlin `AlarmManager` receiver would be the
+  hardening (it thaws the process).
+* Capabilities are split by platform (`platforms` in the capability file):
+  `capabilities/default.json` (windows, linux, macOS) and
+  `capabilities/mobile.json` (android, iOS – `core:default` and
+  `core:event:default` only). Neither grants the clipboard-manager or
+  opener plugin to the webview.
+* Builds on the PC (the environment needs `JAVA_HOME` = JDK 17,
+  `ANDROID_HOME` and `NDK_HOME` = NDK 28.2.13676358): `npx tauri android
+  build --apk --debug --target x86_64` for the emulator, `npx tauri android
+  build --apk --target aarch64` for phones (release build: R8, signed with
+  the release key when `keystore.properties` exists, else with the debug
+  key), `npx tauri android dev` with a running emulator (UI from the Vite
+  dev server – the reason for the debug manifest's `INTERNET`; not tried
+  in this project yet). The APK lands in
+  `gen/android/app/build/outputs/apk/universal/<debug|release>/
+  app-universal-<debug|release>.apk` (the "universal" flavour holds just
+  the ABIs that were built). The debug APK has `INTERNET` from the debug
+  manifest, is debuggable, keeps the Rust debug symbols (~200 MB) and is
+  signed with the debug key. Local builds keep Tauri's default
+  `versionCode` (`major*1e6 + minor*1e3 + patch`, 2000001 for 2.0.1) –
+  higher than any CI build's, so uninstall such a build before installing
+  a CI APK (it is signed with another key anyway). The CLI rewrites `tauri
+  = { version = "2", features = [] }` in `Cargo.toml` on every run (kept
+  in that form). Note: `tauri` itself pulls `reqwest` into the Android
+  build (its dev-server proxy); the app never uses it there.
+
+**Build, CI and signing** (job `android` in `.github/workflows/build.yml`,
+`.github/scripts/android-apk.mjs`; the release side in "Releases & in-app
+updates"):
+* Every push and pull request builds the release APK for arm64 on Ubuntu
+  (`npx tauri android build --apk --target aarch64 --ci`; Temurin JDK 17,
+  the runner's Android SDK plus – if the image lacks them – NDK
+  28.2.13676358, platform `android-37.0`, build-tools 36.0.0) and lints the
+  `cfg(mobile)` code, which the test job never compiles: `cargo clippy -p
+  keystead-core -p keystead-desktop --target aarch64-linux-android -- -D
+  warnings` (no `--all-targets`: the app crate's tests are desktop-only).
+* **Versions**: `versionName` = the build's version (`2.0.1-beta.57`, or
+  the tag's `2.0.1`); `versionCode` = the run number
+  (`release-version.mjs --write` sets `bundle.android.versionCode` in
+  `tauri.android.conf.json`, 1 … 2 100 000 000). Android installs an APK
+  over an installed app only with the same signing certificate and a
+  versionCode that is not lower; run numbers only grow (a re-run keeps its
+  number), so every build updates the ones before it – beta, stable
+  release, next beta. Tauri's default would give every build of a version
+  the same code. **Never rename `build.yml`**: its run number would start
+  at 1 again and installed apps would refuse every later APK
+  (`INSTALL_FAILED_VERSION_DOWNGRADE`). `autoIncrementVersionCode` is not
+  used (a second counter in a committed file).
+* **Signing**: the release key is the PKCS12 keystore
+  `keystead-android-release.jks` (RSA 4096, alias `keystead`, valid 30
+  years) in the private repo `CedrickGD/keys`, folder `keystead/`; its
+  certificate's SHA-256 is
+  `B7:3D:75:D6:F7:F4:60:5B:0B:4A:7A:3A:8E:00:6E:E8:E3:D0:81:F1:C3:37:85:BC:79:98:A8:8F:02:1F:3C:AA`
+  (also in README.md and the workflow's `ANDROID_RELEASE_CERT_SHA256`).
+  Only builds that publish (tags `v*`, pushes with `[release]` – the
+  release job's condition) get the secrets `ANDROID_KEYSTORE_BASE64`,
+  `ANDROID_KEYSTORE_PASSWORD` (store and key password) and
+  `ANDROID_KEY_ALIAS`: `android-apk.mjs keystore` refuses anything that is
+  not a PKCS12/JKS keystore, writes it to `$RUNNER_TEMP` (outside the
+  checkout) and `gen/android/keystore.properties` next to the project
+  (values escaped for `java.util.Properties`; both files mode 0600 and
+  removed after the build); a missing secret fails the build. Every other
+  build is signed with the runner's debug key (generated on the runner, so
+  it may differ from run to run) – it installs, but never as an update of
+  a release-signed app (nor the other way round, nor necessarily of another
+  run's debug-signed APK: then uninstall first). Losing the
+  keystore means no installed app can be updated again: users would have
+  to uninstall – which deletes the phone's data – and install an APK with
+  a new key.
+* **Gates** (`android-apk.mjs verify`, every build): `apksigner verify
+  --print-certs` (a valid signature, exactly one signer – on publishing
+  builds exactly the release certificate, so a wrong secret never ships an
+  APK that cannot update installed apps), `zipalign -c -P 16 -v 4` (native
+  libraries aligned for devices with 16 KB memory pages), `aapt2 dump
+  badging` (package `io.github.cedrickgd.keystead`, the expected
+  versionName and versionCode, minSdk 29, no `android.permission.INTERNET`,
+  not debuggable, `arm64-v8a` code). The step summary shows the APK's
+  SHA-256 and the signer certificate. The artifact `Keystead-<version>-
+  android` holds `Keystead-<version>-android.apk`; the release job
+  attaches it to the release.
+* **Updates**: the phone has no updater (stage 1 is offline; a "new
+  version" hint through a small Kotlin plugin is planned for stage 2,
+  decision E6). The user downloads the newer APK from the releases page
+  and installs it over the old one; the package installer checks
+  certificate and versionCode, the app's data stays. `latest.json` and the
+  `updater-beta` channel stay desktop-only.
+
+**Desktop-only, and why**:
+
+| Not on the phone | Why |
+|---|---|
+| Browser bridge, extension, pairing (`browser_status`, `respond_pairing`, …) | Native Messaging exists for desktop browsers only; the phone's counterpart is an Autofill service (stage 3) |
+| Terminal UI, `open_terminal`, `open_data_dir`, `open_extension_dir` | no terminal, no file manager to show a path in |
+| Tray, single instance, `--background`, portable mode | no such concepts on Android (one task, app-private storage) |
+| In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no network (above) |
+| Website-icon fetcher, leaked-password check | need the network; reqwest's platform TLS verifier would need JNI set-up; permanently off on the phone (E6) – stored icons are shown (`get_icons`) |
+| Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
+| Attachments, import, export, `show_export` | the commands take file-dialog paths; Android hands out `content://` URIs (next stages) |
+| Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
+
+**iOS** is not built. The code stays iOS-compatible (gates on
+`mobile`/`desktop`, `capabilities/mobile.json` names `iOS`, only plugins
+with iOS support); planned is an unsigned simulator build on GitHub's free
+macOS runner (`npx tauri ios build --debug --target aarch64-sim --no-sign`,
+launch and screenshots; decision E13) – no Apple account, no device build.
+Open before any iOS release: the `Suspended`/`Resumed` asymmetry (above),
+no `FLAG_SECURE` equivalent (the app-switcher snapshot shows the content),
+`tauri.ios.conf.json`/`Info.ios.plist`/`gen/apple`; see the iOS appendix
+of `docs/BLOCK5-DESIGN.md`.
+
 ## Data locations (`keystead_core::paths`)
 
 * `data_dir()`:
   1. The process-wide override set with `paths::set_data_dir_override(PathBuf)`
      – the mobile app sets its private app folder (Tauri
-     `app_local_data_dir()`) as the first thing at start-up, since a phone
+     `app_local_data_dir()`; Android: `/data/user/0/io.github.cedrickgd.keystead`,
+     see "Mobile (Android)") as the first thing at start-up, since a phone
      has neither an environment nor a usable OS default. Only the first call
      counts (a second call, or an empty path, returns `false` and changes
      nothing); `paths::data_dir_override()` reads it back. `is_portable()`
@@ -855,6 +1000,10 @@ Loading is lenient: missing fields (settings files of older versions) and
 invalid values get their defaults; unknown keys are ignored. `null` is a
 value of `lockInBackgroundSeconds` ("never"), not a missing key: it is
 written as `null` and read back as `null`.
+On the phone the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
+`startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
+`updateChannel`) are kept but do nothing, as do the two mobile fields on the
+desktop (see "Mobile (Android)").
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -880,7 +1029,7 @@ history. The bridge's own writes are not affected.
 
 | Command | Args | Returns |
 |---|---|---|
-| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean }` – `extensionId` is `null` on the phone (no browser integration there); `readOnly` = the vault cannot be changed from this app (the phone in this stage): the UI hides every editing control |
+| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean }` – `extensionId` is `null` and `portable` `false` on the phone (no browser integration, no portable mode there); `readOnly` = the vault cannot be changed from this app (the phone in this stage): the UI hides every editing control |
 | `list_vaults` | – | `VaultInfo[]` |
 | `session_state` | – | `SessionState { unlocked: boolean, vault: VaultInfo \| null }` |
 | `create_vault` | `name, masterPassword` | `VaultInfo` (and unlocks it) |
@@ -956,7 +1105,7 @@ portable build and Linux/macOS except an AppImage: the UI links to
 or `…/releases` without a version).
 
 **Events** (backend → frontend, `app.emit`):
-* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system"|"background" }` (`background` only on the phone, see "Background lock" under "Auto-lock, locking" below; the UI shows a carried info toast for `timeout`, `system` and `background`)
+* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system"|"background" }` (`background` only on the phone, see "Background lock (phone)" under "Desktop backend behaviour details" below; the UI shows a carried info toast for `timeout`, `system` and `background`)
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
 * `vault://icons` – payload `{}` – the icon fetcher stored new website icons; the UI calls `get_icons` again.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
@@ -1270,7 +1419,7 @@ vault without recovery key is dropped silently.
   through (`clipboard::clear_overdue_secret`, wall clock); `Resumed` then
   checks the lock a last time – a long absence locks even if Android froze
   the process meanwhile and no tick ran (emulator: frozen after about a
-  minute away, see "Android project"; with a longer delay the lock then
+  minute away, see "Mobile (Android)"; with a longer delay the lock then
   lands right on the return) –, then resets the clock; so a return before
   the delay
   (or, with "at once", before the clipboard clear) finds the vault still
@@ -1834,8 +1983,9 @@ are not involved (`ItemSummary` is unchanged).
 
 ## In-app updates (`src-tauri/src/update.rs`)
 
-`tauri-plugin-updater` 2 + `tauri-plugin-process` 2. The UI never calls the
-plugins' JS APIs (no `updater:*`/`process:*` permission in
+Desktop only – the phone has no updater (a newer APK is installed over the
+old one, see "Mobile (Android)"). `tauri-plugin-updater` 2 +
+`tauri-plugin-process` 2. The UI never calls the plugins' JS APIs (no `updater:*`/`process:*` permission in
 `capabilities/default.json`); it uses `check_update` / `pending_update` /
 `install_update` and the `update://*` events.
 
@@ -2015,12 +2165,28 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   (+ `.sig`) and writes `latest.json` (`.github/scripts/latest-json.mjs`,
   notes = the commit subject without `[release]`) pointing at exactly that
   asset name. The portable ZIP and the extension ZIP stay.
+* **android** (Ubuntu, every push and pull request like **windows**; details
+  in "Mobile (Android)" → "Build, CI and signing"): `release-version.mjs
+  --write` (the same version; `versionCode` = run number into
+  `tauri.android.conf.json`), clippy for `aarch64-linux-android`, `npx tauri
+  android build --apk --target aarch64 --ci` – with the release keystore
+  from the secrets `ANDROID_KEYSTORE_BASE64`/`ANDROID_KEYSTORE_PASSWORD`/
+  `ANDROID_KEY_ALIAS` only on builds that publish (the **release** job's
+  condition; a missing secret fails them), else signed with the debug key –,
+  then the gates of `.github/scripts/android-apk.mjs verify` (signature –
+  on publishing builds exactly the release certificate
+  `ANDROID_RELEASE_CERT_SHA256` –, 16 KB alignment, package, versionName/
+  versionCode, minSdk, no `INTERNET`, not debuggable, arm64) and the
+  artifact `Keystead-<version>-android` with
+  `Keystead-<version>-android.apk`.
 * **release** (tags `v*`, or pushes whose commit message contains
-  `[release]`): versions with a `-suffix` are published as **pre-release**
+  `[release]`; needs **test**, **windows** and **android**, and fails if the
+  two builds report different versions): versions with a `-suffix` are published as **pre-release**
   with `make_latest: false` (so the stable channel – GitHub's "latest"
   release – never sees a beta); a tag without suffix (`v2.0.0`) becomes a normal
-  release marked latest. All assets incl. `.sig` and `latest.json` are
-  uploaded. Then the beta channel: the pre-release `updater-beta` (created if
+  release marked latest. All assets incl. `.sig`, `latest.json` and the
+  APK are uploaded (the notes list them, the APK with its certificate's
+  SHA-256). Then the beta channel: the pre-release `updater-beta` (created if
   missing, kept pre-release and not latest, title "Keystead Updater
   (Beta-Kanal)", technical description) gets the new `latest.json` – unless
   it already offers a newer version (re-runs never move the channel back).
@@ -2029,6 +2195,14 @@ plugins' JS APIs (no `updater:*`/`process:*` permission in
   private key file generated with `tauri signer generate` with an empty
   password; its public key is the `pubkey` above). Losing it means installed
   copies can no longer be updated in-app (a new key needs a manual update).
+  For the APK: **`ANDROID_KEYSTORE_BASE64`** (the release keystore,
+  base64), **`ANDROID_KEYSTORE_PASSWORD`**, **`ANDROID_KEY_ALIAS`**
+  (`keystead`) – the keystore lives in the private repo `CedrickGD/keys`;
+  losing it means installed phone apps can never be updated again.
+* The `versionCode` is the run number of this workflow: **never rename
+  `build.yml`** (a new workflow counts from 1 and every installed app would
+  refuse the next APK). `discord-notify.yml` links a release's Windows
+  setup (and the APK on a line of its own), not its first asset.
 * **Release checklist** (stable version `X.Y.Z`):
   1. Tag the commit `vX.Y.Z` and push the tag → stable release (latest),
      also offered on the beta channel.
