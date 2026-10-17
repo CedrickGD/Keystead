@@ -288,11 +288,12 @@ fn check_auto_lock(core: &Core) {
 }
 
 /// Reloads the vault if another process saved it; emits `vault://changed`.
+/// The new revision also goes to the cloud-folder mirror (desktop).
 fn check_external_change(core: &Core, last_error: &mut Option<String>) {
-    let result = {
+    let (result, vault_id) = {
         let mut st = core.state();
         match st.vault.as_mut() {
-            Some(vault) => vault.reload_if_changed(),
+            Some(vault) => (vault.reload_if_changed(), vault.id().to_owned()),
             None => return,
         }
     };
@@ -300,13 +301,17 @@ fn check_external_change(core: &Core, last_error: &mut Option<String>) {
         Ok(true) => {
             *last_error = None;
             core.emit_changed();
+            core.request_mirror(&vault_id);
         }
         Ok(false) => *last_error = None,
         // The master password or vault key was changed by another process:
         // the cached key no longer opens the file, so end this session.
+        // The file with the new password is copied all the same (it is
+        // encrypted; the phone learns of the change from it).
         Err(keystead_core::Error::KeyChanged) => {
             *last_error = None;
             core.lock(Some(LockReason::Manual));
+            core.request_mirror(&vault_id);
         }
         Err(e) => {
             // Log each distinct problem once, not every 2 s.

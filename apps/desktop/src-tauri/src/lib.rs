@@ -38,6 +38,10 @@ mod gui;
 mod icons;
 #[cfg(desktop)]
 mod import_flow;
+// "Kopie im Cloud-Ordner aktuell halten": the desktop's copies for the
+// phone's cloud-folder sync.
+#[cfg(desktop)]
+mod mirror;
 #[cfg(mobile)]
 mod mobile;
 mod monitor;

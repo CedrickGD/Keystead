@@ -69,6 +69,13 @@ export const de = {
   "error.unsupported.folder_picker": "Auf diesem Gerät gibt es keine Ordnerauswahl.",
   "error.unsupported.sync_file_too_large": "Die Datei ist zu groß (höchstens 64 MB).",
   "error.unsupported.platform": "Auf diesem Gerät nicht verfügbar.",
+  "error.input.mirror_folder": "Das ist kein gültiger Ordner. Wähle den Ordner über „Ordner ändern“ aus.",
+  "error.input.mirror_folder_data_dir":
+    "Dieser Ordner gehört zu Keystead selbst (Datenordner oder Tresor-Ordner einer Installation). Wähle einen Ordner in deiner Cloud, z. B. „Nextcloud\\Keystead“.",
+  "error.unsupported.mirror_folder_missing":
+    "Der Cloud-Ordner ist nicht erreichbar – wurde er verschoben oder umbenannt, oder fehlt das Laufwerk? Keystead versucht es beim nächsten Speichern wieder.",
+  "error.unsupported.mirror_newer":
+    "Im Cloud-Ordner liegt eine neuere Kopie dieses Tresors (z. B. von einem anderen PC) – Keystead ersetzt sie nicht. Lösche sie dort, wenn der Stand dieses PCs gelten soll.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -133,7 +140,7 @@ export const de = {
   "welcome.importTitle": "Von VaultX umsteigen",
   "welcome.importDesc": "Neuen Tresor anlegen und Passwörter aus VaultX 1.x, dem Browser oder Bitwarden übernehmen.",
   "welcome.featLocal": "Lokal & offline",
-  "welcome.featLocalDesc": "Keine Cloud, kein Konto. Deine Daten verlassen nie dieses Gerät.",
+  "welcome.featLocalDesc": "Kein Keystead-Server, kein Konto. Deine Daten bleiben verschlüsselt bei dir – eine Kopie in deiner eigenen Cloud gibt es nur, wenn du sie einschaltest.",
   "welcome.featCrypto": "Starke Verschlüsselung",
   "welcome.featCryptoDesc": "Dein Master-Passwort ist der einzige Schlüssel – niemand sonst kann deine Daten lesen.",
   "welcome.featBrowser": "Browser-Integration",
@@ -812,6 +819,30 @@ export const de = {
   "sync.attachmentsFailed_one": "{n} Anhang fehlt",
   "sync.attachmentsFailed_other": "{n} Anhänge fehlen",
   "sync.passwordChanged": "Master-Passwort am PC geändert",
+  "settings.phone": "Handy",
+  "settings.phoneShort": "Handy",
+  "settings.phoneDesc": "Deine Tresore in der Android-App – über einen Ordner deiner eigenen Cloud. Keystead selbst verbindet sich dafür mit keinem Server.",
+  "mirror.title": "Kopie im Cloud-Ordner aktuell halten",
+  "mirror.desc":
+    "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt in einen Ordner deiner Wahl und aktualisiert ihn nach jedem Speichern. Die Nextcloud- oder OneDrive-App lädt ihn hoch, die Android-App holt ihn von dort.",
+  "mirror.folder": "Cloud-Ordner",
+  "mirror.changeFolder": "Ordner ändern",
+  "mirror.pickTitle": "Ordner in deiner Cloud für die Tresor-Kopien wählen",
+  "mirror.lastCopied": "Zuletzt aktualisiert {when}",
+  "mirror.noCopyYet": "Seit dem Start noch nichts kopiert – das passiert beim Öffnen eines Tresors und nach jedem Speichern.",
+  "mirror.enabledToast": "Keystead hält jetzt eine Kopie in „{folder}“ aktuell.",
+  "mirror.disabledToast": "Kopie im Cloud-Ordner ausgeschaltet – die Dateien im Ordner bleiben liegen.",
+  "mirror.failedToast": "Kopie im Cloud-Ordner nicht aktualisiert: {error}",
+  "mirror.step1Title": "Ordner in deiner Cloud wählen",
+  "mirror.step1Text":
+    "Schalte oben „Kopie im Cloud-Ordner aktuell halten“ ein und wähle einen Ordner in deinem Nextcloud- oder OneDrive-Ordner, z. B. „Nextcloud\\Keystead“. Die Cloud-App auf dem PC lädt die Dateien hoch.",
+  "mirror.step2Title": "Cloud-App auf dem Handy",
+  "mirror.step2Text": "Installiere auf dem Handy die Nextcloud- oder OneDrive-App und melde dich mit demselben Konto an wie am PC.",
+  "mirror.step3Title": "Ordner in Keystead auf dem Handy verbinden",
+  "mirror.step3Text":
+    "Installiere die Android-App (die APK aus den Releases), tippe auf „Cloud-Ordner wählen“ und wähle denselben Ordner über die Cloud-App – dann „Diesen Ordner verwenden“ und „Zulassen“. Danach holt das Handy jede neue Version selbst.",
+  "mirror.privacy":
+    "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud-Anbieter sieht Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Das Handy liest nur; bearbeiten kannst du weiterhin hier.",
   "settings.autoLock": "Automatisch sperren",
   "settings.autoLockDesc": "Nach dieser Zeit ohne Aktivität wird der Tresor gesperrt.",
   "settings.lockInBackground": "Sperren im Hintergrund",
@@ -912,7 +943,7 @@ export const de = {
   "danger.deleteButton": "Endgültig löschen",
   "danger.deleted": "Tresor „{name}“ gelöscht",
 
-  "about.tagline": "Lokaler Passwort-Manager. Deine Daten verlassen nie dieses Gerät.",
+  "about.tagline": "Lokaler Passwort-Manager. Deine Daten bleiben verschlüsselt bei dir – kein Keystead-Server, kein Konto.",
   "about.portable": "Portable Version",
   "about.installed": "Daten im Benutzerprofil",
   "about.phoneData": "Daten im App-Speicher",

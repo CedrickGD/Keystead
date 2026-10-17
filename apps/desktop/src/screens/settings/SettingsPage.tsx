@@ -22,6 +22,7 @@ import {
   Plug,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Sun,
   Upload,
   LockKeyhole,
@@ -30,7 +31,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { IS_MOCK, api, openExternal } from "../../lib/api";
+import { ApiError, IS_MOCK, api, openExternal } from "../../lib/api";
 import type {
   AppInfo,
   BrowserInfo,
@@ -57,6 +58,7 @@ import { useUpdate } from "../../state/update";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
 import { WebsiteIconsSetting } from "./WebsiteIconsSetting";
 import { useFolderSync } from "../../state/sync";
+import { useMirror } from "../../state/mirror";
 import {
   SyncFileList,
   SyncSteps,
@@ -924,6 +926,82 @@ function SyncSection() {
   );
 }
 
+/**
+ * Desktop: "Kopie im Cloud-Ordner aktuell halten" – the encrypted copies the
+ * phone reads ("Cloud-folder mirror (desktop) and phone link" in
+ * docs/ARCHITECTURE.md), and the way to the phone.
+ */
+function PhoneSection() {
+  const { t, errorText, formatDateTime, formatRelative } = useT();
+  const mirror = useMirror();
+  const { settings } = useApp();
+  const status = mirror?.status ?? null;
+  useRelativeTimeTick(Boolean(status?.lastMirroredAt));
+  if (!mirror) return null;
+  const folder = settings.mirrorFolder;
+  const on = folder !== null;
+
+  return (
+    <SettingsSection id="phone" title={t("settings.phone")} description={t("settings.phoneDesc")}>
+      <SettingRow title={t("mirror.title")} description={t("mirror.desc")}>
+        <Switch
+          checked={on}
+          onChange={(enable) => void (enable ? mirror.choose() : mirror.turnOff())}
+          label={t("mirror.title")}
+          disabled={mirror.busy}
+        />
+      </SettingRow>
+      {on && (
+        <SettingRow
+          title={t("mirror.folder")}
+          description={
+            <>
+              <code className="path selectable">{folder}</code>
+              <span className="mirror-state">
+                {status?.lastMirroredAt
+                  ? t("mirror.lastCopied", { when: `${formatRelative(status.lastMirroredAt)} · ${formatDateTime(status.lastMirroredAt)}` })
+                  : t("mirror.noCopyYet")}
+              </span>
+              {status?.lastError && (
+                <span className="callout callout-warning mirror-error" role="status">
+                  <TriangleAlert />
+                  <span>{errorText(new ApiError(status.lastError))}</span>
+                </span>
+              )}
+            </>
+          }
+        >
+          <Button variant="secondary" icon={<FolderOpen />} loading={mirror.busy} onClick={() => void mirror.choose()}>
+            {t("mirror.changeFolder")}
+          </Button>
+        </SettingRow>
+      )}
+      <div className="setting-row stacked">
+        <ol className="guide-steps">
+          <GuideStep n={1} done={on} title={t("mirror.step1Title")}>
+            <p>{t("mirror.step1Text")}</p>
+          </GuideStep>
+          <GuideStep n={2} done={false} title={t("mirror.step2Title")}>
+            <p>{t("mirror.step2Text")}</p>
+          </GuideStep>
+          <GuideStep n={3} done={false} title={t("mirror.step3Title")}>
+            <p>{t("mirror.step3Text")}</p>
+            <div>
+              <Button size="sm" variant="secondary" icon={<ExternalLink />} onClick={() => openExternal(releasesUrl())}>
+                {t("about.releasesOpen")}
+              </Button>
+            </div>
+          </GuideStep>
+        </ol>
+        <div className="callout callout-info mirror-privacy">
+          <ShieldCheck />
+          <span>{t("mirror.privacy")}</span>
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
 /** The system names in "Über Keystead" (product names, the same in every language). */
 const PLATFORM_NAMES: Record<AppInfo["platform"], string> = {
   windows: "Windows",
@@ -1039,8 +1117,9 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
   // vault section has nothing to offer while the vault is read-only.
   const desktop = !isPhonePlatform(info.platform);
   const shown = {
-    // The phone's cloud-folder sync.
+    // The phone's cloud-folder sync, and the desktop's copies for it.
     sync: !desktop,
+    phone: desktop,
     browser: desktop,
     data: desktop && !info.readOnly,
     advanced: desktop,
@@ -1056,6 +1135,7 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
     { id: "general", label: t("settings.general"), icon: <SlidersHorizontal /> },
     { id: "security", label: t("settings.security"), icon: <ShieldCheck /> },
     { id: "sync", label: t("settings.syncShort"), icon: <FolderSync />, hidden: !shown.sync },
+    { id: "phone", label: t("settings.phoneShort"), icon: <Smartphone />, hidden: !shown.phone },
     { id: "browser", label: t("settings.browserShort"), icon: <Plug />, hidden: !shown.browser },
     { id: "data", label: t("settings.data"), icon: <Upload />, hidden: !shown.data },
     { id: "advanced", label: t("settings.advanced"), icon: <Wrench />, hidden: !shown.advanced },
@@ -1154,6 +1234,7 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
           <GeneralSection />
           <SecuritySection />
           {shown.sync && <SyncSection />}
+          {shown.phone && <PhoneSection />}
           {shown.browser && <BrowserSection />}
           {shown.data && <ImportExportSection />}
           {shown.advanced && <AdvancedSection />}

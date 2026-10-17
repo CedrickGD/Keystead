@@ -21,6 +21,13 @@
 // password "demo2" (an open vault locks with reason `keyChanged`),
 // `simulateFolderLost()` makes the next sync fail with
 // `unsupported:folder_access_lost` (linking again repairs it).
+// The desktop's side, "Kopie im Cloud-Ordner aktuell halten"
+// (`mirrorFolder`, `mirror_status`, `mirror://status`), is simulated too:
+// the folder dialog picks `C:\Users\Demo\Nextcloud\Keystead`, every change
+// of the open vault (and its unlock) "copies" it ~0.4 s later, `?mirror=on`
+// starts with the folder set, and `simulateMirrorFolderLost(lost?)` lets
+// the copies fail with `unsupported:mirror_folder_missing` (a cloud drive
+// that is not there) until it is called with `false`.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -46,6 +53,7 @@ import type {
   ImportReport,
   LegacyVaultInfo,
   LockReason,
+  MirrorStatus,
   PairedClient,
   PairingRequest,
   SecretField,
@@ -110,6 +118,15 @@ interface MockState {
   pairings: Map<string, PairingRequest>;
   lastActivity: number;
   sync: MockSync;
+  mirror: MockMirror;
+}
+
+/** The desktop's cloud-folder mirror (see the header comment). */
+interface MockMirror {
+  lastMirroredAt: number | null;
+  lastError: string | null;
+  /** The copies fail: the folder is not there. */
+  lost: boolean;
 }
 
 /** The phone's linked cloud folder (see the header comment). */
@@ -126,6 +143,9 @@ interface MockSync {
   /** The next sync finds the folder's permission revoked. */
   lost: boolean;
 }
+
+/** What the mock's folder dialog picks (a Nextcloud folder). */
+const MOCK_MIRROR_FOLDER = "C:\\Users\\Demo\\Nextcloud\\Keystead";
 
 const PRIVATE_VAULT_ID = "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d";
 const WORK_VAULT_ID = "a83e7b10-55c2-4f6e-b1d9-7c8e9f0a1b2c";
@@ -252,6 +272,7 @@ function initState(): MockState {
       updateChannel: "beta",
       lockInBackgroundSeconds: 60,
       deviceUnlock: false,
+      mirrorFolder: !phone && params.get("mirror") === "on" ? MOCK_MIRROR_FOLDER : null,
     },
     appInfo: {
       version: installedMockVersion(),
@@ -274,6 +295,7 @@ function initState(): MockState {
     pairings: new Map(),
     lastActivity: now,
     sync: initSync(phone && params.get("sync") === "linked", empty, now),
+    mirror: { lastMirroredAt: null, lastError: null, lost: false },
   };
 }
 
@@ -519,6 +541,8 @@ export interface MockDevHelpers {
   simulatePcPasswordChange: () => void;
   /** Cloud-folder sync: the next sync finds the folder's permission revoked. */
   simulateFolderLost: () => void;
+  /** Desktop mirror: the copies fail as if the cloud folder were gone (`false`: it is back). */
+  simulateMirrorFolderLost: (lost?: boolean) => void;
   /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
   simulateUpdate: (portable?: boolean) => void;
   /** Drags a file over the window (the drop overlay stays until `dropFile` / `cancelDrag`). Default: a Chrome CSV export. */
@@ -550,6 +574,10 @@ function installDevHelpers(): void {
     simulatePcPasswordChange: () => mockPcSave(true),
     simulateFolderLost: () => {
       getState().sync.lost = true;
+    },
+    simulateMirrorFolderLost: (lost = true) => {
+      getState().mirror.lost = lost;
+      scheduleMirrorPass();
     },
     simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),
     dragFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "enter", paths: dropPaths(path) }),
@@ -807,8 +835,76 @@ function validateSettings(input: unknown): Settings {
     fail("invalid_input:lockInBackgroundSeconds");
   }
   if (typeof s.deviceUnlock !== "boolean") fail("invalid_input:settings");
-  return clone(s);
+  if (s.mirrorFolder !== null && typeof s.mirrorFolder !== "string") fail("invalid_input:settings");
+  return clone({ ...s, mirrorFolder: s.mirrorFolder?.trim() ? s.mirrorFolder : null });
 }
+
+// ---------------------------------------------------------------------------
+// Cloud-folder mirror (desktop, see the header comment)
+// ---------------------------------------------------------------------------
+
+/** Like `mirror::check_folder`: an absolute dialog path outside the data directory. */
+function checkMirrorFolder(folder: string): void {
+  const parts = folder.split(/[\\/]/);
+  if (!/^[A-Za-z]:[\\/]/.test(folder) || parts.includes("..") || parts.includes(".")) fail("invalid_input:mirror_folder");
+  const data = dataDir(getState().appInfo.portable).toLowerCase();
+  const lower = folder.toLowerCase().replace(/[\\/]+$/, "");
+  if (lower === data || lower.startsWith(`${data}\\`) || parts[parts.length - 1]?.toLowerCase() === "vaults") {
+    fail("invalid_input:mirror_folder_data_dir");
+  }
+}
+
+function mirrorStatus(): MirrorStatus {
+  const s = getState();
+  return { folder: s.settings.mirrorFolder, lastMirroredAt: s.mirror.lastMirroredAt, lastError: s.mirror.lastError };
+}
+
+let mirrorTimer: number | undefined;
+
+/** A pass of the mirror for the open vault, a moment after a change (like the worker thread). */
+function scheduleMirrorPass(): void {
+  window.clearTimeout(mirrorTimer);
+  mirrorTimer = window.setTimeout(() => {
+    const s = getState();
+    if (!s.settings.mirrorFolder || !s.unlockedId || s.appInfo.readOnly) return;
+    const before = JSON.stringify(mirrorStatus());
+    if (s.mirror.lost) {
+      s.mirror.lastError = "unsupported:mirror_folder_missing";
+    } else {
+      s.mirror.lastError = null;
+      s.mirror.lastMirroredAt = Date.now();
+    }
+    if (JSON.stringify(mirrorStatus()) !== before) emit("mirror://status", mirrorStatus());
+  }, 400);
+}
+
+/** Commands after which the real app copies the open vault into the mirror folder. */
+const MIRROR_TRIGGERS = new Set([
+  "create_vault",
+  "unlock_vault",
+  "unlock_with_recovery",
+  "save_item",
+  "set_favorite",
+  "trash_item",
+  "restore_item",
+  "delete_item",
+  "empty_trash",
+  "save_folder",
+  "delete_folder",
+  "rename_tag",
+  "delete_tag",
+  "generate_password",
+  "clear_generator_history",
+  "change_master_password",
+  "create_recovery_key",
+  "remove_recovery_key",
+  "rename_vault",
+  "import_data",
+  "commit_import",
+  "add_attachment",
+  "remove_attachment",
+  "clear_icons",
+]);
 
 let lastCopied: string | null = null;
 
@@ -1522,9 +1618,23 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "get_settings":
       return clone(s.settings);
 
-    case "save_settings":
-      s.settings = validateSettings(args.settings);
+    case "save_settings": {
+      const next = validateSettings(args.settings);
+      const folderChanged = next.mirrorFolder !== s.settings.mirrorFolder;
+      // The phone ignores the field (no mirror there).
+      if (folderChanged && next.mirrorFolder && !s.appInfo.readOnly) checkMirrorFolder(next.mirrorFolder);
+      s.settings = next;
+      if (folderChanged && !s.appInfo.readOnly) {
+        s.mirror.lastMirroredAt = null;
+        s.mirror.lastError = null;
+        emit("mirror://status", mirrorStatus());
+        scheduleMirrorPass();
+      }
       return clone(s.settings);
+    }
+
+    case "mirror_status":
+      return mirrorStatus();
 
     case "browser_status":
       return browserStatus();
@@ -1671,6 +1781,7 @@ export async function mockInvoke<T>(command: string, args: Record<string, unknow
   const result = (await dispatch(command, args)) as T;
   // The phone has no icon fetcher (no network); it shows stored icons only.
   if (ICON_FETCH_TRIGGERS.has(command) && !getState().appInfo.readOnly) scheduleIconFetch();
+  if (MIRROR_TRIGGERS.has(command)) scheduleMirrorPass();
   return result;
 }
 
@@ -1707,6 +1818,11 @@ export async function mockPickOpenFile(filters?: { name: string; extensions: str
     keystead: "Keystead-Export.keystead",
   };
   return `C:\\Users\\Demo\\Downloads\\${names[ext] ?? `import.${ext}`}`;
+}
+
+export async function mockPickFolder(): Promise<string | null> {
+  await sleep(150);
+  return MOCK_MIRROR_FOLDER;
 }
 
 export async function mockPickSaveFile(defaultPath?: string): Promise<string | null> {

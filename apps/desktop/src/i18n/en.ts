@@ -69,6 +69,13 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.folder_picker": "This device has no folder picker.",
   "error.unsupported.sync_file_too_large": "The file is too large (64 MB at most).",
   "error.unsupported.platform": "Not available on this device.",
+  "error.input.mirror_folder": "That is not a valid folder. Choose the folder with “Change folder”.",
+  "error.input.mirror_folder_data_dir":
+    "This folder belongs to Keystead itself (the data folder or the vault folder of an installation). Choose a folder in your cloud, e.g. “Nextcloud\\Keystead”.",
+  "error.unsupported.mirror_folder_missing":
+    "The cloud folder cannot be reached – was it moved or renamed, or is the drive missing? Keystead tries again with the next save.",
+  "error.unsupported.mirror_newer":
+    "The cloud folder holds a newer copy of this vault (from another PC, for example) – Keystead does not replace it. Delete it there if this PC's state should count.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -128,7 +135,7 @@ export const en: Record<MessageKey, string> = {
   "welcome.importTitle": "Switch from VaultX",
   "welcome.importDesc": "Create a new vault and bring over your passwords from VaultX 1.x, your browser or Bitwarden.",
   "welcome.featLocal": "Local & offline",
-  "welcome.featLocalDesc": "No cloud, no account. Your data never leaves this device.",
+  "welcome.featLocalDesc": "No Keystead server, no account. Your data stays encrypted with you – a copy in your own cloud only exists if you turn it on.",
   "welcome.featCrypto": "Strong encryption",
   "welcome.featCryptoDesc": "Your master password is the only key – nobody else can read your data.",
   "welcome.featBrowser": "Browser integration",
@@ -793,6 +800,30 @@ export const en: Record<MessageKey, string> = {
   "sync.attachmentsFailed_one": "{n} attachment missing",
   "sync.attachmentsFailed_other": "{n} attachments missing",
   "sync.passwordChanged": "Master password changed on the PC",
+  "settings.phone": "Phone",
+  "settings.phoneShort": "Phone",
+  "settings.phoneDesc": "Your vaults in the Android app – through a folder of your own cloud. Keystead itself connects to no server for it.",
+  "mirror.title": "Keep a copy in a cloud folder up to date",
+  "mirror.desc":
+    "Keystead puts every vault you open here, encrypted, into a folder of your choice and updates it after every save. The Nextcloud or OneDrive app uploads it, the Android app takes it from there.",
+  "mirror.folder": "Cloud folder",
+  "mirror.changeFolder": "Change folder",
+  "mirror.pickTitle": "Choose a folder in your cloud for the vault copies",
+  "mirror.lastCopied": "Last updated {when}",
+  "mirror.noCopyYet": "Nothing copied since the start – that happens when a vault is opened and after every save.",
+  "mirror.enabledToast": "Keystead now keeps a copy up to date in “{folder}”.",
+  "mirror.disabledToast": "Cloud-folder copy turned off – the files in the folder stay where they are.",
+  "mirror.failedToast": "Cloud-folder copy not updated: {error}",
+  "mirror.step1Title": "Choose a folder in your cloud",
+  "mirror.step1Text":
+    "Turn on “Keep a copy in a cloud folder up to date” above and choose a folder inside your Nextcloud or OneDrive folder, e.g. “Nextcloud\\Keystead”. The cloud app on the PC uploads the files.",
+  "mirror.step2Title": "Cloud app on the phone",
+  "mirror.step2Text": "Install the Nextcloud or OneDrive app on the phone and sign in with the same account as on the PC.",
+  "mirror.step3Title": "Link the folder in Keystead on the phone",
+  "mirror.step3Text":
+    "Install the Android app (the APK from the releases), tap “Choose cloud folder” and pick the same folder through the cloud app – then “Use this folder” and “Allow”. From then on the phone fetches every new version itself.",
+  "mirror.privacy":
+    "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud provider sees the vault name, revision and modification time, never the content – without your master password nobody opens the files. The phone only reads; you keep editing here.",
   "settings.autoLock": "Lock automatically",
   "settings.autoLockDesc": "The vault locks after this much time without activity.",
   "settings.lockInBackground": "Lock in the background",
@@ -893,7 +924,7 @@ export const en: Record<MessageKey, string> = {
   "danger.deleteButton": "Delete permanently",
   "danger.deleted": "Vault “{name}” deleted",
 
-  "about.tagline": "Local password manager. Your data never leaves this device.",
+  "about.tagline": "Local password manager. Your data stays encrypted with you – no Keystead server, no account.",
   "about.portable": "Portable version",
   "about.installed": "Data in user profile",
   "about.phoneData": "Data in app storage",

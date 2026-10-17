@@ -4,8 +4,12 @@ Keystead (*Key* + *Homestead* – your keys stay at home) is a local-only
 password manager in the spirit of Bitwarden:
 a desktop app (Tauri 2: Rust backend + React UI), a terminal UI, and a
 Chromium browser extension that talks to the desktop app via Native
-Messaging. **No vault data ever leaves the machine** – there is no server and
-no cloud sync. The app itself only goes online for the update check, (unless
+Messaging. **No Keystead server, no account, no cloud service**: the vaults
+stay encrypted on the user's machine; only if the user turns on "Kopie im
+Cloud-Ordner aktuell halten" does the desktop app put encrypted copies into
+a local folder of their choice, which their own cloud client (Nextcloud,
+OneDrive) uploads – for the phone (see "Cloud-folder mirror (desktop) and
+phone link"). The app itself only goes online for the update check, (unless
 turned off) to load website icons directly from the websites (see "Website
 icons"), and – only when the user presses the button, never on its own – to
 check passwords against Have I Been Pwned, where just the first 5 hex
@@ -60,7 +64,8 @@ Keystead`). The library holds the whole app; `#[cfg(desktop)]` /
 what only one side has. Desktop-only: the browser bridge and extension, the
 terminal UI, tray, single instance, in-app updates, portable mode, the
 website-icon fetcher (`icons/fetch.rs`), the leaked-password check, the
-file-dialog based attachment, import and export commands (the attachment
+cloud-folder mirror (`mirror.rs`), the file-dialog based attachment, import
+and export commands (the attachment
 image preview, `reveal_attachment`, is on both), Windows session lock
 detection and the suspend (clock-jump) detection. Phone-only
 (`src/mobile.rs`, Android and iOS): the data directory override, the
@@ -155,10 +160,10 @@ security report – and locks when it stays in the background. The vaults
 reach the phone through the **cloud-folder sync** (stage 2a, below): the
 user links the folder of their own cloud the PC keeps its vault copies in,
 and the phone copies them in – one way, it never writes there (creating or
-editing a vault on the phone is a write and not registered). Not yet:
-fingerprint unlock (stage 1b) and the PC's side of the sync ("Kopie im
-Cloud-Ordner aktuell halten", decision E7 – until it exists the copies are
-put into the folder by hand). The UI has its **phone layout** (below).
+editing a vault on the phone is a write and not registered); the PC keeps
+the copies there up to date ("Kopie im Cloud-Ordner aktuell halten",
+decision E7, see "Cloud-folder mirror (desktop) and phone link"). Not yet:
+fingerprint unlock (stage 1b). The UI has its **phone layout** (below).
 There is no Keystead server, and the app has no network permission at
 all – so no update check either: About links to the releases page instead.
 
@@ -192,7 +197,8 @@ all – so no update check either: About links to the releases page instead.
   used yet). `autoLockMinutes` and `clipboardClearSeconds` work as on the
   desktop; the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
   `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
-  `updateChannel`) are kept in the file but do nothing on the phone.
+  `updateChannel`, `mirrorFolder`) are kept in the file but do nothing on
+  the phone.
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
@@ -210,8 +216,9 @@ all – so no update check either: About links to the releases page instead.
     old one back) – no storage permission, no network. The PC keeps one copy
     per vault there: `<id>.keystead` and, with attachments,
     `<id>.keystead.attachments/<attachment id>.bin` (the data folder's
-    layout; never `.bak`, `.lock` or temporary files – the PC side, E7,
-    writes the blobs before the vault file). Only top-level files named
+    layout; never `.bak`, `.lock` or temporary files – the PC side writes
+    the blobs before the vault file, see "Cloud-folder mirror (desktop) and
+    phone link"). Only top-level files named
     `<id>.keystead` after the id in their own header count
     (`sync::vault_id_of_file_name`): renamed copies and a cloud app's
     conflict copies (`… (1).keystead`) are reported as skipped, hidden files
@@ -590,6 +597,7 @@ updates"):
 | Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
 | Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs. The read-only image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
+| The cloud-folder mirror (`mirror_status`, `mirrorFolder`) | the PC writes the folder, the phone only reads it (stage 2a, no write path back) |
 
 **iOS** is not built. The code stays iOS-compatible (gates on
 `mobile`/`desktop`, `capabilities/mobile.json` names `iOS`, only plugins
@@ -600,6 +608,99 @@ Open before any iOS release: the `Suspended`/`Resumed` asymmetry (above),
 no `FLAG_SECURE` equivalent (the app-switcher snapshot shows the content),
 `tauri.ios.conf.json`/`Info.ios.plist`/`gen/apple`; see the iOS appendix
 of `docs/BLOCK5-DESIGN.md`.
+
+## Cloud-folder mirror (desktop) and phone link (`src-tauri/src/mirror.rs`)
+
+"Kopie im Cloud-Ordner aktuell halten" (Block 5 stage 2a, decision E7) is
+the desktop's half of the phone's cloud-folder sync: the PC keeps encrypted
+copies of its vaults in a folder of the user's own cloud, the phone links
+that folder and copies them in ("Cloud-folder sync (phone)" under "Mobile
+(Android)"). Keystead talks to no cloud service on either side – the
+Nextcloud or OneDrive client syncs the folder. Desktop only
+(`#[cfg(desktop)]`; the phone ignores the setting).
+
+* **Setting** `Settings.mirrorFolder` (absolute path, `null` = off).
+  Settings → "Handy" (desktop only; the phone has its own
+  "Synchronisierung"): the switch "Kopie im Cloud-Ordner aktuell halten"
+  (on → the folder dialog, `@tauri-apps/plugin-dialog` `open({ directory:
+  true })` under the existing `dialog:allow-open`; cancelled → stays off),
+  the folder with "Ordner ändern", the status (last copy, last error), the
+  three steps to the phone (a folder in the PC's Nextcloud/OneDrive folder,
+  the cloud app on the phone, linking the folder in the phone app – with
+  "Releases auf GitHub öffnen") and what the provider sees. Off → nothing is
+  written any more; the copies already in the folder stay (the phone keeps
+  using them). A new folder starts with the open vault; the old folder's
+  copies stay where they are.
+* **Checks** (`mirror::check_folder`): `save_settings` checks a *changed*
+  folder before anything is saved (an unchanged one is not – an offline
+  cloud drive must not block saving another setting), and every pass checks
+  again. Not of the folder dialog's shape (relative, `.`/`..`) →
+  `invalid_input:mirror_folder`; inside the data directory (this store's or
+  the process's default one, resolved like attachment targets:
+  `attachments::is_inside`) or a Keystead vaults folder (named `vaults` with
+  a `settings.json` beside it, or holding a `*.keystead.bak` /
+  `*.keystead.lock` – e.g. a portable copy's working files) →
+  `invalid_input:mirror_folder_data_dir`; missing →
+  `unsupported:mirror_folder_missing` (never created: a cloud drive that is
+  not mounted must not turn into a local folder).
+* **Layout** – exactly the phone's contract, at the folder's top level:
+  `<id>.keystead`, the vault file byte for byte as it is on disk, and
+  `<id>.keystead.attachments/<attachment id>.bin`, the blobs byte for byte.
+  Nothing is decrypted or re-encrypted, so the folder never holds plaintext.
+  Never a `.bak`, `.lock`, export or other file of the data folder; the only
+  temporary files are `format::write_atomic`'s hidden `.<name>.<16 hex>.tmp`
+  (the phone ignores hidden names). The provider sees the file names (vault
+  and attachment ids), sizes and times and the vault file's plain-text
+  header (vault name, revision, times, KDF parameters) – never an item, an
+  attachment's name or a key.
+* **When** (`MirrorTracker` in `Core`): after every successful change of the
+  open vault (`Core::mutate_with` – the UI's commands, the browser
+  extension, the icon fetcher, import, rename, master password, recovery
+  key; also after a `conflict` reload), once whenever a vault is opened
+  (`install_vault_since`: UI, extension, recovery key, new vault – this
+  catches up on changes made while the app was closed or by the terminal
+  UI), when the monitor reloads the open vault after another process saved
+  it (also on `KeyChanged`, right before the lock), and for the open vault
+  when the folder is set or changed. `delete_vault` removes the vault's copy
+  (`<id>.keystead` only if its header has that id, and the `<id>.bin` files
+  of its blob folder; nothing while the vault file still exists – the phone
+  then reports it as "missing" and keeps its own copy). Vaults never opened
+  in the app are not copied.
+* **A pass** (`mirror::mirror_vault` on the thread `keystead-mirror`; jobs
+  queued meanwhile are merged, the last one per vault wins): read the vault
+  file (gone → nothing to do), parse it (`VaultFile::parse`; the id must be
+  the file's), check the folder, compare with the folder's copy – missing,
+  unreadable (half a download), another vault's or a lower revision →
+  written; the same revision → only the blobs (no needless upload); a
+  **higher** revision in the folder (another PC writing into the same
+  folder, a restored backup here) → `unsupported:mirror_newer` and nothing
+  is touched (only revisions count – the phone would not take an older one
+  either). Then list the data folder's blobs – after reading the vault
+  file, so every blob that revision references is there –, copy those the
+  folder lacks or whose size differs (a blob never changes under its id;
+  only `<id>.bin` names with a blob's shape, `attachments::looks_like_blob`,
+  at most 20 MiB + 45 bytes), write the vault file (`write_atomic`), and
+  only then remove the folder's `<id>.bin` files the data folder no longer
+  has, and the blob folder once it is empty (anything else in it stays). A
+  blob that cannot be written ends the pass before the vault file. So the
+  phone, which reads the vault file first and lists its blob folder
+  afterwards, never gets a revision without its blobs. Left: the phone
+  reads revision N, the PC writes N+1 without an attachment and removes its
+  blob before the phone lists the folder – the phone then has N without
+  that attachment until its next sync brings N+1.
+* **Never blocks saving**: the change returns first, the pass runs on its
+  own thread. An error is logged once per distinct code and kept as
+  `lastError` until a pass succeeds; `mirror://status` announces every
+  change of the status (`MirrorStatus { folder, lastMirroredAt, lastError }`,
+  also the answer of `mirror_status`; `lastMirroredAt` counts since the app
+  started or the folder was set). The UI (`state/mirror.tsx`) shows a toast
+  ("Kopie im Cloud-Ordner nicht aktualisiert: …") when a new error appears
+  – not again for the same one, nor after a page reload – and the settings
+  row shows it; the next change tries again. `Core::shutdown` lets the
+  worker finish what is queued (at most 3 s).
+* **The phone's side**: see "Cloud-folder sync (phone)". A new master
+  password reaches the phone with the next revision (it sees the changed
+  KDF salt). A vault file above 64 MiB is written but skipped by the phone.
 
 ## Data locations (`keystead_core::paths`)
 
@@ -634,6 +735,10 @@ of `docs/BLOCK5-DESIGN.md`.
 * Phone only: `<data_dir>/sync/link.json` – the linked cloud folder and the
   last sync's results (no secrets, see "Cloud-folder sync (phone)");
   `<data_dir>/sync/incoming/` holds a file only while the sync copies it in.
+* Desktop, when turned on: the copies in `Settings.mirrorFolder` (outside
+  the data directory; `<id>.keystead` and `<id>.keystead.attachments/`, see
+  "Cloud-folder mirror (desktop) and phone link") – the app keeps working on
+  the data directory's files.
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
 * Browser extension: `<data_dir>/browser-extension` – written and kept up to
@@ -1229,16 +1334,20 @@ interface Settings {
   updateChannel: "beta" | "stable";          // default "stable" (stable releases only); "beta" = betas + stable releases
   lockInBackgroundSeconds: number | null;    // mobile: lock the open vault this many seconds after the app went to the background; null = never, 0 = immediately; default 60, clamped to 24 h. The desktop ignores it
   deviceUnlock: boolean;                     // mobile: unlock with the device's biometrics (opt-in); default false. The desktop ignores it
+  mirrorFolder: string | null;               // desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (absolute path) with the encrypted copies of the vaults
+                                             // opened in the app, for the phone; null = off (default). A changed value is checked before saving
+                                             // (see "Cloud-folder mirror (desktop) and phone link"). The phone ignores it
 }
 ```
 Loading is lenient: missing fields (settings files of older versions) and
 invalid values get their defaults; unknown keys are ignored. `null` is a
 value of `lockInBackgroundSeconds` ("never"), not a missing key: it is
-written as `null` and read back as `null`.
+written as `null` and read back as `null`. `mirrorFolder`: a path is kept
+as written; empty (or only spaces) counts as `null`.
 On the phone the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
 `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
-`updateChannel`) are kept but do nothing, as do the two mobile fields on the
-desktop (see "Mobile (Android)").
+`updateChannel`, `mirrorFolder`) are kept but do nothing, as do the two
+mobile fields on the desktop (see "Mobile (Android)").
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -1314,7 +1423,8 @@ history. The bridge's own writes are not affected.
 | `get_icons` | `pageVaultId` | `{ [host]: "data:image/png;base64,…" }` – the stored website icons of the page's vault (`locked` if another vault is open); hosts as in "Website icons" |
 | `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
-| `save_settings` | `settings: Settings` | `Settings` |
+| `save_settings` | `settings: Settings` | `Settings` – desktop: a changed `mirrorFolder` is checked first (`invalid_input:mirror_folder`, `invalid_input:mirror_folder_data_dir`, `unsupported:mirror_folder_missing`; nothing saved), then the open vault is copied into the new folder |
+| `mirror_status` | – | **Desktop only.** `MirrorStatus { folder: string\|null, lastMirroredAt: number\|null, lastError: string\|null }` – the cloud-folder mirror ("Cloud-folder mirror (desktop) and phone link"): the folder (`Settings.mirrorFolder`), the last successful copy (ms, since the start or since the folder was set) and the last error code (`unsupported:mirror_folder_missing`, `unsupported:mirror_newer`, `invalid_input:mirror_folder_data_dir`, `io:…`; `null` after a success); not user activity |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
 | `register_browsers` | `browsers: string[]` (ids) | `BrowserStatus` |
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
@@ -1368,6 +1478,10 @@ or `…/releases` without a version).
   toast `lock.switchedToast` is carried over) and the boot shows the new one.
   Until then the old view's commands marked † answer `locked`.
   Not sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
+* `mirror://status` – payload `MirrorStatus` (see `mirror_status`) –
+  desktop only: a copy into the mirror folder succeeded or failed (sent when
+  the status changed), or the folder was set, changed or turned off. The UI
+  updates Settings → "Handy" and shows a toast when a new error appears.
 * `sync://status` – payload `FolderStatus` (see `folder_status`) – phone
   only: a sync started or ended, or the folder was linked or unlinked. The
   UI re-reads the vault list (a vault may have arrived) and shows the
@@ -1392,7 +1506,12 @@ flows show, while the app's default is `stable`), `&updateSpeed=slow` keeps the 
 on screen (a normal install "restarts" by reloading with the new version), and
 `window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
 `simulateExternalChange()`, `simulateUnlockRequest()`,
-`simulateUpdate(portable?)` and, for drag & drop, `dragFile(path?)` (the
+`simulateUpdate(portable?)`, for the desktop's cloud-folder mirror
+`simulateMirrorFolderLost(lost?)` (the copies fail with
+`unsupported:mirror_folder_missing` until called with `false`; `?mirror=on`
+starts with the folder set, the folder dialog picks
+`C:\Users\Demo\Nextcloud\Keystead`, every change of the open vault and its
+unlock "copy" it ~0.4 s later) and, for drag & drop, `dragFile(path?)` (the
 overlay stays until `dropFile` / `cancelDrag()`), `dropFile(path?)` (a string
 or an array of paths; default `C:\Users\Demo\Downloads\Chrome-Passwörter.csv`)
 and `cancelDrag()`. The mock recognises import files by name
@@ -1428,7 +1547,8 @@ by count desc then item id) and answers after ~1 s – `locked` if the
 page's vault was locked or switched meanwhile (see "Leaked-password check").
 
 Frontend integration requirements for `src-tauri`:
-* File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
+* File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`; `open` with
+  `directory: true` for the mirror folder): register
   `tauri-plugin-dialog` and grant `dialog:allow-open` + `dialog:allow-save`
   (plus `core:default` for events) to the main window's desktop capability
   (`capabilities/default.json`; the phone's `mobile.json` grants only
@@ -1643,7 +1763,7 @@ vault without recovery key is dropped silently.
   `sync_now`, `unlink_folder`, …) and bridge
   user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
   `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
-  `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
+  `get_icons`, `mirror_status`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
 * `lockOnSystemLock`: Windows uses session notifications
   (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`) and `PBT_APMSUSPEND`; on every
   OS a clock jump > 2 min between the monitor's 1-s ticks (suspend /

@@ -424,6 +424,12 @@ export interface Settings {
   lockInBackgroundSeconds: number | null;
   /** Mobile: unlock with the device's biometrics (opt-in). Default false. The desktop ignores it. */
   deviceUnlock: boolean;
+  /**
+   * Desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (absolute path, from the folder
+   * dialog) in which the app keeps an encrypted copy of every vault opened in it, for the phone.
+   * null = off (default). The phone ignores it.
+   */
+  mirrorFolder: string | null;
 }
 
 export type UpdateChannel = "beta" | "stable";
@@ -528,6 +534,16 @@ export interface FolderStatus {
   /** Error code of the last failed sync, e.g. `unsupported:folder_access_lost`. */
   lastError: string | null;
   files: SyncFileResult[];
+}
+
+/** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
+export interface MirrorStatus {
+  /** `Settings.mirrorFolder`; null = off. */
+  folder: string | null;
+  /** When a copy last succeeded in this folder (ms; since the start or since the folder was set). */
+  lastMirroredAt: number | null;
+  /** Error code of the last attempt (e.g. `unsupported:mirror_folder_missing`), null after a success. */
+  lastError: string | null;
 }
 
 /** Stable error codes returned by the backend (see ARCHITECTURE.md). */

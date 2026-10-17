@@ -21,6 +21,7 @@ import type {
   LegacyVaultInfo,
   LockReason,
   MasterPasswordChanged,
+  MirrorStatus,
   PairingRequest,
   PwnedReport,
   SecretField,
@@ -236,6 +237,11 @@ export const api = {
 
   getSettings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
+  /**
+   * Desktop: the cloud-folder mirror ("Kopie im Cloud-Ordner aktuell halten", `Settings.mirrorFolder`) –
+   * the folder, the last successful copy and the last error. Changes come as `mirror://status`.
+   */
+  mirrorStatus: () => call<MirrorStatus>("mirror_status"),
 
   /** Stored website icons of the page's vault: { [host]: "data:image/png;base64,…" } (see lib/icons.ts). */
   getIcons: () => call<Record<string, string>>("get_icons", { pageVaultId }),
@@ -310,6 +316,8 @@ export const events = {
   onIconsChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://icons", () => handler()),
   /** The vault was unlocked outside the UI (browser extension). */
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
+  /** Desktop: the cloud-folder mirror copied a vault, failed, or its folder changed. */
+  onMirrorStatus: (handler: (status: MirrorStatus) => void) => subscribe<MirrorStatus>("mirror://status", handler),
   /** Phone: the cloud-folder sync started or ended, or the folder was (un)linked. */
   onSyncStatus: (handler: (status: FolderStatus) => void) => subscribe<FolderStatus>("sync://status", handler),
   /** Phone: the app left the foreground (Android `onPause`); revealed values are hidden. */
@@ -386,6 +394,17 @@ export async function pickOpenFile(options: { title?: string; filters?: FileFilt
   }
   const mock = await import("./mock");
   return mock.mockPickOpenFile(options.filters);
+}
+
+/** Lets the user pick a folder (desktop: the cloud folder for the vault copies). Returns null when cancelled. */
+export async function pickFolder(options: { title?: string; defaultPath?: string } = {}): Promise<string | null> {
+  if (IN_TAURI) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({ multiple: false, directory: true, title: options.title, defaultPath: options.defaultPath });
+    return typeof result === "string" ? result : null;
+  }
+  const mock = await import("./mock");
+  return mock.mockPickFolder();
 }
 
 /** Lets the user pick a file to attach to an item (any type). Returns null when cancelled. */

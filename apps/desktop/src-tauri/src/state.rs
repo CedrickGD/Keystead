@@ -256,6 +256,11 @@ pub struct Core {
     /// Website icon fetcher: told when a vault opens, closes or changes
     /// (see `crate::icons`). Never locked together with `state`.
     icons: crate::icons::IconTracker,
+    /// "Kopie im Cloud-Ordner aktuell halten": told when a vault opens,
+    /// changes or is deleted (see `crate::mirror`); the copies are written
+    /// on its own thread.
+    #[cfg(desktop)]
+    mirror: crate::mirror::MirrorTracker,
     /// Incremented by every lock (any reason – also while no vault is open,
     /// e.g. during an unlock's key derivation), when the portable-mode move
     /// or `delete_vault` closes the vault, and when another vault replaces
@@ -320,6 +325,8 @@ impl Core {
             #[cfg(desktop)]
             import_slot: Mutex::new(ImportSlot::default()),
             icons: crate::icons::IconTracker::default(),
+            #[cfg(desktop)]
+            mirror: crate::mirror::MirrorTracker::default(),
             lock_epoch: AtomicU64::new(0),
         })
     }
@@ -327,6 +334,23 @@ impl Core {
     /// The website icon fetcher's session tracker.
     pub fn icons(&self) -> &crate::icons::IconTracker {
         &self.icons
+    }
+
+    /// The cloud-folder mirror's queue and status (desktop).
+    #[cfg(desktop)]
+    pub fn mirror(&self) -> &crate::mirror::MirrorTracker {
+        &self.mirror
+    }
+
+    /// Desktop: lets the cloud-folder mirror copy vault `vault_id` – after
+    /// a change, on unlock (see `crate::mirror`; without a mirror folder
+    /// the worker does nothing). The phone has no mirror.
+    pub fn request_mirror(&self, vault_id: &str) {
+        #[cfg(desktop)]
+        self.mirror
+            .request(crate::mirror::Job::Vault(vault_id.to_owned()));
+        #[cfg(mobile)]
+        let _ = vault_id;
     }
 
     /// The app version shown to the user and to the browser extension.
@@ -634,6 +658,9 @@ impl Core {
         };
         self.finish_lock(previous, None);
         self.icons.vault_opened();
+        // Once per opening: the copy in the cloud folder catches up with
+        // changes made while the app was closed or by another process.
+        self.request_mirror(&info.id);
         Ok(info)
     }
 
@@ -704,15 +731,16 @@ impl Core {
         select: impl FnOnce(&mut AppState) -> AppResult<&mut UnlockedVault>,
         mut f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
     ) -> AppResult<T> {
-        let (result, reloaded) = {
+        let (result, reloaded, vault_id) = {
             let mut st = self.state();
             let vault = select(&mut st)?;
+            let vault_id = vault.id().to_owned();
             match f(vault) {
                 Err(CoreError::Conflict) => {
                     let reloaded = vault.reload_if_changed()?;
-                    (f(vault), reloaded)
+                    (f(vault), reloaded, vault_id)
                 }
-                other => (other, false),
+                other => (other, false, vault_id),
             }
         };
         if reloaded {
@@ -721,6 +749,12 @@ impl Core {
         if result.is_ok() {
             // Maybe a login with a website that has no icon yet.
             self.icons.vault_changed();
+        }
+        if result.is_ok() || reloaded {
+            // A new revision (ours, or another process's we reloaded); an
+            // operation that changed nothing costs the mirror one header
+            // read.
+            self.request_mirror(&vault_id);
         }
         Ok(result?)
     }
@@ -834,6 +868,8 @@ impl Core {
         #[cfg(desktop)]
         {
             *lock_mutex(&self.update_wake) = None;
+            // The copies of the last changes (bounded wait).
+            self.mirror.shutdown();
         }
         self.icons.stop();
     }

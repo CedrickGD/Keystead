@@ -97,6 +97,13 @@ pub struct Settings {
     /// Mobile: unlock with the device's biometrics (opt-in, default false).
     /// The desktop app ignores it.
     pub device_unlock: bool,
+    /// Desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (an
+    /// absolute path, typically inside the user's Nextcloud or OneDrive
+    /// folder) in which the app keeps a copy of every vault opened in it,
+    /// for the phone's cloud-folder sync; `None` = off (default). The phone
+    /// ignores it. Loading only drops an empty value; the app checks the
+    /// folder when it is set.
+    pub mirror_folder: Option<String>,
 }
 
 impl Default for Settings {
@@ -116,6 +123,7 @@ impl Default for Settings {
             update_channel: UpdateChannel::Stable,
             lock_in_background_seconds: Some(DEFAULT_LOCK_IN_BACKGROUND_SECONDS),
             device_unlock: false,
+            mirror_folder: None,
         }
     }
 }
@@ -182,11 +190,12 @@ impl Settings {
             &mut s.lock_in_background_seconds,
         );
         take(&obj, "deviceUnlock", &mut s.device_unlock);
+        take(&obj, "mirrorFolder", &mut s.mirror_folder);
         s.normalized()
     }
 
     /// Clamps numeric values to sane ranges and clears an empty
-    /// `last_vault_id`.
+    /// `last_vault_id` and `mirror_folder`.
     pub fn normalized(mut self) -> Settings {
         self.auto_lock_minutes = self.auto_lock_minutes.min(MAX_AUTO_LOCK_MINUTES);
         self.clipboard_clear_seconds = self
@@ -201,6 +210,14 @@ impl Settings {
             .is_some_and(|id| id.trim().is_empty())
         {
             self.last_vault_id = None;
+        }
+        // A path is kept as written (no trimming): only "nothing" means off.
+        if self
+            .mirror_folder
+            .as_deref()
+            .is_some_and(|folder| folder.trim().is_empty())
+        {
+            self.mirror_folder = None;
         }
         self
     }
@@ -248,6 +265,7 @@ mod tests {
         assert_eq!(s.update_channel, UpdateChannel::Stable);
         assert_eq!(s.lock_in_background_seconds, Some(60));
         assert!(!s.device_unlock);
+        assert_eq!(s.mirror_folder, None);
     }
 
     #[test]
@@ -268,6 +286,7 @@ mod tests {
         assert_eq!(s.update_channel, UpdateChannel::Stable);
         assert_eq!(s.lock_in_background_seconds, Some(60));
         assert!(!s.device_unlock);
+        assert_eq!(s.mirror_folder, None);
         // The strict deserializer (Tauri `save_settings` argument) as well.
         let strict: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(strict, s);
@@ -317,6 +336,49 @@ mod tests {
             Settings::from_json_lenient(&json.to_string()).lock_in_background_seconds,
             None
         );
+    }
+
+    #[test]
+    fn mirror_folder_parses_and_falls_back() {
+        let s = Settings::from_json_lenient(
+            r#"{"mirrorFolder":"C:\\Users\\Max\\Nextcloud\\Keystead"}"#,
+        );
+        assert_eq!(
+            s.mirror_folder.as_deref(),
+            Some(r"C:\Users\Max\Nextcloud\Keystead")
+        );
+        // Kept as written: a path is not trimmed.
+        let s = Settings::from_json_lenient(r#"{"mirrorFolder":"/home/max/Nextcloud/Keystead "}"#);
+        assert_eq!(
+            s.mirror_folder.as_deref(),
+            Some("/home/max/Nextcloud/Keystead ")
+        );
+        // Off: null, missing, empty or not a string.
+        for json in [
+            r#"{"mirrorFolder":null}"#,
+            "{}",
+            r#"{"mirrorFolder":""}"#,
+            r#"{"mirrorFolder":"  "}"#,
+            r#"{"mirrorFolder":42}"#,
+            r#"{"mirrorFolder":["a"]}"#,
+        ] {
+            assert_eq!(
+                Settings::from_json_lenient(json).mirror_folder,
+                None,
+                "{json}"
+            );
+        }
+        // The strict deserializer (Tauri `save_settings`): missing and null
+        // are off, an empty string is normalized away.
+        let strict: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(strict.mirror_folder, None);
+        let strict: Settings = serde_json::from_str(r#"{"mirrorFolder":""}"#).unwrap();
+        assert_eq!(strict.normalized().mirror_folder, None);
+        assert!(serde_json::from_str::<Settings>(r#"{"mirrorFolder":42}"#).is_err());
+        // Off is written as null (not left out).
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert!(json["mirrorFolder"].is_null());
+        assert!(json.get("mirrorFolder").is_some());
     }
 
     #[test]
@@ -372,7 +434,8 @@ mod tests {
         assert_eq!(v["updateChannel"], "stable");
         assert_eq!(v["lockInBackgroundSeconds"], 60);
         assert_eq!(v["deviceUnlock"], false);
-        assert_eq!(v.as_object().unwrap().len(), 14);
+        assert!(v["mirrorFolder"].is_null());
+        assert_eq!(v.as_object().unwrap().len(), 15);
     }
 
     #[test]
@@ -410,6 +473,7 @@ mod tests {
             update_channel: UpdateChannel::Stable,
             lock_in_background_seconds: None,
             device_unlock: true,
+            mirror_folder: Some("/home/max/Nextcloud/Keystead".into()),
         };
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);

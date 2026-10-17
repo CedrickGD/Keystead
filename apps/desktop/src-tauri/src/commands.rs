@@ -637,6 +637,8 @@ pub async fn delete_vault(
         };
         // The UI navigates itself after deleting; no `vault://locked`.
         c.finish_lock(closed, None);
+        // Its copy in the cloud folder goes as well (the phone keeps its own).
+        c.mirror().request(crate::mirror::Job::Removed(vault_id));
         Ok(())
     })
     .await
@@ -720,10 +722,13 @@ pub async fn save_settings(core: Shared<'_>, settings: Value) -> CmdResult<Setti
 }
 
 /// Persists new settings and applies their side effects (desktop: update
-/// checks, tray labels, close-to-tray, bridge on/off; the phone has none of
-/// these, its background-lock setting is read by the monitor).
+/// checks, tray labels, close-to-tray, bridge on/off, the cloud-folder
+/// mirror – a new folder is checked before anything is saved; the phone has
+/// none of these, its background-lock setting is read by the monitor).
 fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
     let settings = settings.normalized();
+    #[cfg(desktop)]
+    crate::mirror::check_setting(core, &settings)?;
     let old = {
         let mut st = core.state();
         settings.save()?;
@@ -740,6 +745,9 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
             core.wake_update_checker();
         }
         core.set_minimize_to_tray(settings.minimize_to_tray);
+        if settings.mirror_folder != old.mirror_folder {
+            crate::mirror::folder_changed(core);
+        }
         if old.language != settings.language {
             core.with_tray(|tray| tray.set_language(settings.language));
         }

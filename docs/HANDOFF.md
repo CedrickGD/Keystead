@@ -598,6 +598,89 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
    Verknüpft man einen anderen Ordner, bleiben die Tresore des alten auf dem
    Handy (ohne „nicht mehr im Ordner“-Eintrag).
 
+9. **Cloud-Ordner-Sync, PC-Seite** (Stufe 2a, E7, `WIP: mobile 2a - desktop
+   mirror`; Vertrag: ARCHITECTURE „Cloud-folder mirror (desktop) and phone
+   link“): neue Einstellung `mirrorFolder` – **„Kopie im Cloud-Ordner aktuell
+   halten“** unter Einstellungen → **Handy** (neuer Abschnitt, nur Desktop):
+   Schalter → Ordnerdialog (`open({ directory: true })` mit der vorhandenen
+   Berechtigung `dialog:allow-open`; abgebrochen → bleibt aus), Ordner mit
+   „Ordner ändern“, Status (zuletzt aktualisiert bzw. der Fehler), drei
+   Schritte zum Handy (Ordner im Nextcloud-/OneDrive-Ordner, Cloud-App am
+   Handy, Ordner in der Handy-App verbinden – mit „Releases auf GitHub
+   öffnen“) und was der Cloud-Anbieter sieht.
+   * **Engine** `src-tauri/src/mirror.rs` (`#[cfg(desktop)]`, eigener Thread
+     `keystead-mirror`): ein Auftrag nach jedem erfolgreichen Speichern
+     (`Core::mutate_with` – UI, Erweiterung, Icon-Abruf, Import, Umbenennen,
+     Master-Passwort, Wiederherstellungsschlüssel), beim Öffnen eines Tresors
+     (`install_vault_since`, holt auch nach, was die TUI oder ein früherer
+     Start geändert hat), wenn der Monitor die Änderung eines anderen
+     Prozesses übernimmt (auch bei `KeyChanged`) und beim Setzen des Ordners;
+     `delete_vault` entfernt die Kopie (nur `<id>.keystead` mit dieser ID im
+     Kopf und die `<id>.bin` des Anhang-Ordners). Ein Durchgang:
+     Tresordatei lesen und prüfen → Blobs des Datenordners listen →
+     fehlende bzw. andere Blobs kopieren → Tresordatei per `write_atomic`
+     (die Bytes wie auf der Platte, nichts wird entschlüsselt) → **erst
+     danach** Blobs entfernen, die der Datenordner nicht mehr hat. Gleiche
+     Revision → nur die Blobs (kein unnötiger Upload); höhere Revision im
+     Ordner → `unsupported:mirror_newer`, nichts wird angefasst. Nie `.bak`,
+     `.lock` oder Exporte.
+   * **Prüfungen** (`check_folder`): ein Ordner im Datenordner oder ein
+     Keystead-`vaults`-Ordner (heißt `vaults` und hat `settings.json` daneben,
+     oder enthält `*.keystead.bak`/`.lock`, z. B. der eines portablen Sticks)
+     → `invalid_input:mirror_folder_data_dir`; fehlt er →
+     `unsupported:mirror_folder_missing` (wird nie angelegt). `save_settings`
+     prüft nur einen **geänderten** Ordner (ein gerade nicht erreichbares
+     Laufwerk blockiert sonst das Speichern des Designs), jeder Durchgang
+     prüft erneut.
+   * **Fehler blockieren das Speichern nie**: je Code einmal geloggt, Event
+     `mirror://status` (dazu das Kommando `mirror_status`), ein Toast je
+     **neuem** Fehler („Kopie im Cloud-Ordner nicht aktualisiert: …“, nicht
+     nach einem Neuladen der Seite wiederholt), der nächste Speichervorgang
+     versucht es erneut. Beim Beenden wartet die App höchstens 3 s auf offene
+     Kopien.
+   * **Texte** (Doku-Pflicht aus BLOCK5-DESIGN): „Deine Daten verlassen nie
+     dieses Gerät“ ist in Willkommen („Lokal & offline“) und „Über Keystead“
+     ersetzt (de/en: „Deine Daten bleiben verschlüsselt bei dir – kein
+     Keystead-Server, kein Konto …“); README de/en: Einleitung, Funktion
+     „Aufs Handy“, Schritte PC → Cloud-App → Handy, was der Anbieter sieht
+     (verschlüsselte Daten, Dateinamen = Tresor-IDs, Klartext-Kopf mit
+     Tresorname/Revision/Zeiten), Datenorte, Sicherheit; Release-Notes-Zeile
+     in `build.yml`. ARCHITECTURE: neuer Abschnitt, Settings, Kommandotabelle
+     (`mirror_status`), Events, Datenorte, Mock, Intro.
+   * **Mock**: `?mirror=on` (Ordner schon gesetzt), der Ordnerdialog liefert
+     `C:\Users\Demo\Nextcloud\Keystead`, jede Änderung „kopiert“ nach
+     ~0,4 s, `__keysteadMock.simulateMirrorFolderLost(lost?)`.
+   * **Tests**: 11 neue Rust-Tests in `mirror.rs` (Tresordatei und Anhänge
+     byte-genau, keine Hilfsdateien im Ordner, veraltete Blobs entfernt,
+     fremde Dateien bleiben, ein nicht schreibbarer Blob hält die alte
+     Tresordatei, fehlender Ordner einmal gemeldet und danach wieder heil,
+     Datenordner/`vaults` verweigert, neuere Kopie nie ersetzt, Löschen
+     entfernt nur die eigene Kopie, Ordnerwechsel, Worker-Thread samt Warten
+     beim Beenden, und ein **Vertragstest**: das `folder_sync` des Handys
+     übernimmt, was der PC geschrieben hat – Import samt Anhang, dann die
+     neue Revision); Core-Test für `mirrorFolder` (nachsichtig, leer = aus).
+   **Im Browser geprüft** (Mock, `npm run dev`): Abschnitt „Handy“ mit
+   Schalter, Ordner, Status, Schritten und Datenschutz-Hinweis; Fehler →
+   genau ein Toast, Status zeigt den Fehler, danach wieder „Zuletzt
+   aktualisiert“; aus/an mit Ordnerdialog; mit `?platform=android` kein
+   Abschnitt „Handy“ und kein Aufruf von `mirror_status`.
+   **Entscheidung dieses Laufs** (für den Besitzer): die Handy-App bleibt
+   **ohne `INTERNET`-Berechtigung** – keine Update-Prüfung auf Android;
+   „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Browser öffnet
+   sich, keine Berechtigung nötig); das Hauptmanifest bleibt ohne jede
+   Berechtigung.
+   **So umgesetzt, bitte bestätigen:** Nur Tresore, die in der App geöffnet
+   werden, kommen in den Ordner (nicht von selbst alle im Datenordner).
+   Löschen eines Tresors entfernt auch seine Kopie im Ordner (das Handy
+   behält seine, Status „nicht mehr im Ordner“). Ausschalten oder ein
+   Ordnerwechsel lässt die bisherigen Kopien liegen.
+   **Nicht geprüft:** mit einer echten Nextcloud-/OneDrive-App am PC (Tests
+   und Mock nutzen lokale Ordner) und Ende-zu-Ende echte Desktop-App →
+   Emulator (der Vertragstest deckt Format und Reihenfolge ab, die
+   Handy-Seite wurde in Punkt 8 im Emulator geprüft). Eine Änderung, die die
+   TUI an einem Tresor macht, den die App gerade nicht offen hat, kommt erst
+   beim nächsten Öffnen in der App in den Ordner.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -625,8 +708,11 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
    `adb shell pm install -r /data/local/tmp/keystead.apk` (`adb install`
    scheiterte hier mit leerer Meldung).
 5. Tresor aufs Handy holen (Cloud-Ordner-Sync; nimm einen
-   **Test-Tresor**, nicht deinen echten): `<id>.keystead` und ggf. den Ordner
-   `<id>.keystead.attachments` in einen Ordner auf dem Emulator legen, z. B.
+   **Test-Tresor**, nicht deinen echten): am PC unter Einstellungen → Handy
+   „Kopie im Cloud-Ordner aktuell halten“ einschalten und einen Ordner wählen
+   – Keystead legt `<id>.keystead` und ggf. den Ordner
+   `<id>.keystead.attachments` hinein. Der Emulator hat keine Cloud-App, also
+   diese Dateien von Hand in einen Ordner auf dem Emulator legen, z. B.
    `adb shell mkdir -p /sdcard/Download/KeysteadSync` und `adb push
    <id>.keystead /sdcard/Download/KeysteadSync/` (Git Bash:
    `MSYS_NO_PATHCONV=1` davor). In der App „Cloud-Ordner wählen“ (bzw.
@@ -652,30 +738,27 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
 8. Logs: `adb logcat -s RustStdoutStderr:* Tauri:*` – erwartet sind nur
    Chromium-Zeilen des WebView, keine Panik.
 
-Erwartete Grenzen in dieser Stufe: die automatische Kopie vom PC in den
-Cloud-Ordner fehlt noch (nächste Stufe, E7) – die Tresordatei kommt bis
-dahin von Hand in den Ordner; bearbeiten geht nur am PC (die
-Handy-Oberfläche zeigt keine Bearbeiten-Knöpfe).
+Erwartete Grenzen in dieser Stufe: bearbeiten geht nur am PC (die
+Handy-Oberfläche zeigt keine Bearbeiten-Knöpfe); im Emulator ersetzt `adb
+push` die Cloud-App (auf einem echten Handy synchronisiert die Nextcloud-
+oder OneDrive-App den Ordner, den der PC füllt).
 
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
-1. **Stufe 2a, PC-Seite** (E7): Einstellung „Kopie im Cloud-Ordner aktuell
-   halten“ (Ordner wählen; nach jedem erfolgreichen Speichern
-   `<id>.keystead` per `write_atomic` in den Ordner, die Blobs aus
-   `<id>.keystead.attachments/` **vorher** – nie `.bak`, `.lock`, `.tmp`).
-   Die Handy-Seite ist fertig (Punkt 8); ein eigener Einzeldatei-Import
-   (`import_vault_file`) ist damit überflüssig geworden. Englischer Name der
-   Einstellung, wie ihn die Handy-Texte schon nennen: „Keep a copy in a
-   cloud folder up to date“.
-2. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
+Stufe 2a ist mit Punkt 9 auf beiden Seiten fertig (ein eigener
+Einzeldatei-Import `import_vault_file` ist damit überflüssig).
+
+1. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
    KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5). Ein
-   gespeicherter KEK wird nach `keyChanged` (Sync) wertlos – dann löschen.
-3. Update-Hinweis auf dem Handy: nach der Entscheidung dieses Laufs **nicht**
-   (keine `INTERNET`-Berechtigung, siehe Punkt 8); nur wieder aufnehmen,
-   wenn der Besitzer das will.
-4. Danach **Autofill** (E11), dann **2b** Bearbeiten am Handy +
-   Zwei-Wege-Sync mit Konfliktdialog.
-5. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
+   gespeicherter KEK wird nach `keyChanged` (Sync) wertlos – dann löschen
+   (die Sperre passiert in `folder_sync::install_copy`).
+2. Update-Hinweis auf dem Handy: nach der Entscheidung dieses Laufs **nicht**
+   (keine `INTERNET`-Berechtigung, siehe Punkte 8 und 9); nur wieder
+   aufnehmen, wenn der Besitzer das will.
+3. Danach **Autofill** (E11), dann **2b** Bearbeiten am Handy +
+   Zwei-Wege-Sync mit Konfliktdialog (der PC-Spiegel ersetzt bisher nie eine
+   höhere Revision im Ordner – 2b braucht dort die Konfliktlogik).
+4. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
    Signatur, nur Screenshots).
 
 Bekannte Grenzen: Zwischenablage auf dem Handy – wird der Prozess

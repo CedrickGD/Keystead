@@ -1617,6 +1617,20 @@ code.path {
   font-size: 12px;
 }
 
+/* Settings → Handy: the cloud-folder mirror (desktop). */
+.mirror-state {
+  display: block;
+  margin-top: 4px;
+}
+
+.mirror-error {
+  margin-top: 8px;
+}
+
+.mirror-privacy {
+  margin-top: 16px;
+}
+
 .rename-form {
   display: flex;
   gap: 8px;

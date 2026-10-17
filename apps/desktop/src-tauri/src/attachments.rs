@@ -119,7 +119,7 @@ fn read_file(path: &Path) -> AppResult<Zeroizing<Vec<u8>>> {
 /// rest below that ancestor). `canonicalize` sees through symlinks and, on
 /// Windows, case and 8.3 variants of the directory names.
 #[cfg(desktop)]
-fn is_inside(path: &Path, dir: &Path) -> bool {
+pub(crate) fn is_inside(path: &Path, dir: &Path) -> bool {
     if path.starts_with(dir) {
         return true;
     }
@@ -141,7 +141,7 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
 /// opaque to `canonicalize`, but `write_atomic`'s `create_dir_all` would
 /// make it resolve – into the vaults directory, if the page chose so.
 #[cfg(desktop)]
-fn is_dialog_path(path: &Path) -> bool {
+pub(crate) fn is_dialog_path(path: &Path) -> bool {
     path.is_absolute()
         && !path
             .components()

@@ -31,8 +31,10 @@
 
 **Keystead** = *Key* + *Homestead*: deine Schlüssel bleiben zu Hause. Keystead ist
 ein Passwort-Manager im Stil von Bitwarden oder 1Password – aber **komplett lokal**.
-Es gibt keinen Server, kein Konto und keine Cloud-Synchronisation; deine Tresore
-liegen verschlüsselt auf deinem Rechner und verlassen ihn nie.
+Es gibt keinen Keystead-Server und kein Konto; deine Tresore liegen verschlüsselt
+auf deinem Rechner. Nur wenn du es einschaltest, legt Keystead eine verschlüsselte
+Kopie in einen Ordner deiner eigenen Cloud (Nextcloud, OneDrive) – für die
+Android-App; das Hochladen übernimmt deine Cloud-App.
 
 Keystead 2.0 ist der Nachfolger von VaultX 1.x (PowerShell). Alte VaultX-Tresore
 lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
@@ -77,6 +79,10 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
   Eine Vorschau zeigt vorher, was neu ist; vorhandene Einträge werden nicht doppelt
   übernommen, bei geändertem Passwort entscheidest du. **Export** als verschlüsselte
   `.keystead`-Datei, CSV oder Bitwarden-JSON.
+- **Aufs Handy**: „Kopie im Cloud-Ordner aktuell halten“ legt jeden Tresor, den
+  du öffnest, verschlüsselt in einen Ordner deiner Nextcloud oder deines OneDrive
+  und hält ihn nach jedem Speichern aktuell; die [Android-App](#android-app-vorschau)
+  liest ihn von dort (nur lesend).
 - **Portabler Modus** (Daten neben der EXE, z. B. auf einem USB-Stick),
   Infobereich-Symbol, helles/dunkles Design, Deutsch und Englisch.
 
@@ -131,20 +137,30 @@ anlegen kann sie nicht.
    installieren – deine Daten bleiben. Die App meldet neue Versionen noch nicht
    selbst.
 
-**Tresor aufs Handy holen:** Beim ersten Start „Cloud-Ordner wählen“ tippen
-(später unter Einstellungen → Synchronisierung) und im Android-Dialog über die
-Nextcloud- oder OneDrive-App den Ordner wählen, in dem die Kopie deines Tresors
-liegt. Keystead behält nur Lesezugriff darauf und gleicht beim Start, beim
+**Tresor aufs Handy holen:**
+
+1. **Am PC** unter **Einstellungen → Handy** „Kopie im Cloud-Ordner aktuell
+   halten“ einschalten und einen Ordner in deinem Nextcloud- oder
+   OneDrive-Ordner wählen, z. B. `Nextcloud\Keystead`. Keystead legt jeden
+   Tresor, den du am PC öffnest, samt Anhängen dort hinein und aktualisiert ihn
+   nach jedem Speichern; deine Cloud-App am PC lädt ihn hoch.
+2. **Auf dem Handy** die Nextcloud- oder OneDrive-App installieren und mit
+   demselben Konto anmelden.
+3. In Keystead auf dem Handy „Cloud-Ordner wählen“ tippen (später unter
+   Einstellungen → Synchronisierung) und im Android-Dialog über die Cloud-App
+   denselben Ordner wählen – „Diesen Ordner verwenden“, „Zulassen“.
+
+Das Handy behält nur Lesezugriff auf den Ordner und gleicht beim Start, beim
 Zurückkehren in die App und auf Knopfdruck ab: Eine neuere Version vom PC
 ersetzt die Kopie auf dem Handy, eine ältere nie; in den Ordner schreibt die
-App nichts. Der Cloud-Anbieter sieht die verschlüsselte Datei samt Tresorname
-und Änderungszeit, nie den Inhalt.
+App nichts. Im Ordner liegen nur verschlüsselte Dateien: `<Tresor-ID>.keystead`
+und der Ordner `<Tresor-ID>.keystead.attachments` mit den verschlüsselten
+Anhängen – die Dateinamen sind Tresor-IDs. Dein Cloud-Anbieter sieht die
+verschlüsselten Daten und den unverschlüsselten Dateikopf (Tresorname,
+Revision, Zeiten), nie den Inhalt; Keystead selbst verbindet sich mit keinem
+Cloud-Dienst.
 
-Was noch fehlt: Die automatische Kopie vom PC in den Cloud-Ordner („Kopie im
-Cloud-Ordner aktuell halten“) kommt mit einer der nächsten Versionen – bis
-dahin kopierst du `<id>.keystead` und, falls vorhanden, den Ordner
-`<id>.keystead.attachments` aus dem Datenordner des PCs (`vaults\`) selbst in
-den Cloud-Ordner. Außerdem Bearbeiten, Entsperren per Fingerabdruck und
+Was noch fehlt: Bearbeiten am Handy, Entsperren per Fingerabdruck und
 Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
 App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
 
@@ -220,6 +236,7 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | macOS | `~/Library/Application Support/Keystead` |
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
 | Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht; dazu `sync/link.json` (der verbundene Cloud-Ordner, ohne Geheimnisse) |
+| Cloud-Kopie (wenn eingeschaltet) | der Ordner aus **Einstellungen → Handy**: `<id>.keystead` und `<id>.keystead.attachments\` – verschlüsselte Kopien; gearbeitet wird weiter im Datenordner |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
 Stand), `vaults\<id>.keystead.attachments\` (die verschlüsselten Dateianhänge dieses
@@ -246,7 +263,9 @@ von der App verwaltet). Den portablen Modus schaltest du unter
   Unix-Socket, die ausschließlich dem eigenen Benutzer zugänglich sind. Ins Internet
   gehen nur die (abschaltbare) Update-Prüfung bei GitHub, – ebenfalls abschaltbar –
   das Laden der Website-Icons und, ausschließlich auf Knopfdruck, die Prüfung auf
-  geleakte Passwörter (siehe unten).
+  geleakte Passwörter (siehe unten). „Kopie im Cloud-Ordner aktuell halten“
+  schreibt nur die verschlüsselten Dateien in einen lokalen Ordner deiner Wahl;
+  hochladen tut deine Cloud-App.
 - Website-Icons werden direkt bei der jeweiligen Website abgerufen (nur `https`,
   ohne Cookies, ohne Tresordaten); die Website sieht dabei wie bei jedem Besuch
   deine IP-Adresse. Einen eingerichteten Proxy umgeht die App nie: Ist für eine
@@ -310,8 +329,10 @@ Aus dem Quellcode bauen: siehe [Build from source](#build-from-source).
 
 **Keystead** = *Key* + *Homestead*: your keys stay at home. Keystead is a password
 manager in the spirit of Bitwarden or 1Password – but **entirely local**. There is
-no server, no account and no cloud sync; your vaults are stored encrypted on your
-computer and never leave it.
+no Keystead server and no account; your vaults are stored encrypted on your
+computer. Only if you turn it on, Keystead puts an encrypted copy into a folder of
+your own cloud (Nextcloud, OneDrive) – for the Android app; your cloud app does
+the upload.
 
 Keystead 2.0 is the successor of VaultX 1.x (PowerShell); old VaultX vaults can be
 imported (see [Legacy VaultX vaults](#legacy-vaultx-vaults)). The UI is German first
@@ -353,6 +374,10 @@ and also available in English.
   exports – just drag the file into the window, the format is detected. A preview shows
   what is new first; existing entries are never imported twice, and you decide about
   changed passwords. **Export** as an encrypted `.keystead` file, CSV or Bitwarden JSON.
+- **On the phone**: “Keep a copy in a cloud folder up to date” puts every vault you
+  open, encrypted, into a folder of your Nextcloud or OneDrive and keeps it up to
+  date after every save; the [Android app](#android-app-preview) reads it from there
+  (read-only).
 - **Portable mode** (data next to the exe, e.g. on a USB stick), tray icon, light/dark theme.
 
 ### Download & quick start
@@ -403,22 +428,31 @@ vault.
 4. **Updates:** download the newer APK and install it over the old one – your
    data stays. The app does not announce new versions itself yet.
 
-**Getting a vault onto the phone:** on first start tap “Choose cloud folder”
-(later under Settings → Sync) and, in Android's dialog, pick the folder that
-holds the copy of your vault through the Nextcloud or OneDrive app. Keystead
-keeps read access only and syncs at start, when you return to the app and on
-request: a newer version from the PC replaces the copy on the phone, an older
-one never does; the app writes nothing to the folder. The cloud provider sees
-the encrypted file with the vault's name and modification time, never its
-content.
+**Getting a vault onto the phone:**
 
-Not yet: the PC's automatic copy into the cloud folder (“Keep a copy in a
-cloud folder up to date”) comes with one of the next versions – until then
-copy `<id>.keystead` and, if present, the folder `<id>.keystead.attachments`
-from the PC's data folder (`vaults\`) into the cloud folder yourself. Also
-missing: editing, fingerprint unlock and filling in other apps. Uninstalling
-the app makes Android delete its data – including the vaults on the phone (the
-cloud folder is not touched).
+1. **On the PC**, under **Settings → Phone**, turn on “Keep a copy in a cloud
+   folder up to date” and choose a folder inside your Nextcloud or OneDrive
+   folder, e.g. `Nextcloud\Keystead`. Keystead puts every vault you open on the
+   PC, with its attachments, into it and updates it after every save; your
+   cloud app on the PC uploads it.
+2. **On the phone**, install the Nextcloud or OneDrive app and sign in with the
+   same account.
+3. In Keystead on the phone tap “Choose cloud folder” (later under Settings →
+   Sync) and, in Android's dialog, pick the same folder through the cloud app –
+   “Use this folder”, “Allow”.
+
+The phone keeps read access to the folder only and syncs at start, when you
+return to the app and on request: a newer version from the PC replaces the copy
+on the phone, an older one never does; the app writes nothing to the folder.
+The folder holds encrypted files only: `<vault id>.keystead` and the folder
+`<vault id>.keystead.attachments` with the encrypted attachments – the file
+names are vault ids. Your cloud provider sees the encrypted data and the
+unencrypted file header (vault name, revision, times), never the content;
+Keystead itself connects to no cloud service.
+
+Still missing: editing on the phone, fingerprint unlock and filling in other
+apps. Uninstalling the app makes Android delete its data – including the
+vaults on the phone (the cloud folder is not touched).
 
 Once a vault is on the phone: unlock it, search and view items, reveal and
 copy passwords (the clipboard is cleared again as on the PC), 2FA codes, the
@@ -491,6 +525,7 @@ the shell history may see it).
 | macOS | `~/Library/Application Support/Keystead` |
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
 | Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled; plus `sync/link.json` (the linked cloud folder, no secrets) |
+| Cloud copy (when turned on) | the folder from **Settings → Phone**: `<id>.keystead` and `<id>.keystead.attachments/` – encrypted copies; the app keeps working in the data folder |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
 previous version), `vaults/<id>.keystead.attachments/` (that vault's encrypted file
@@ -517,7 +552,8 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
   current user) or a Unix socket (mode 0600, peer uid checked). The only internet
   access is the update check against GitHub, loading website icons (both can be
   switched off) and – only when you press the button – the leaked-password check
-  (see below).
+  (see below). “Keep a copy in a cloud folder up to date” only writes the
+  encrypted files into a local folder of your choice; your cloud app uploads them.
 - Website icons are fetched directly from each website (`https` only, no cookies, no
   vault data); like any visit, the site sees your IP address. The app never goes
   around a proxy: if one is configured for a site (system settings or

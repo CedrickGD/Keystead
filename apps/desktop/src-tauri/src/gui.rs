@@ -186,6 +186,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             commands::get_settings,
             commands::save_settings,
             #[cfg(desktop)]
+            crate::mirror::mirror_status,
+            #[cfg(desktop)]
             commands::browser_status,
             #[cfg(desktop)]
             commands::register_browsers,
@@ -289,6 +291,9 @@ fn setup(app: &AppHandle, background: bool) {
     });
     let core = Core::new(app.clone(), store, settings.clone());
     app.manage(Arc::clone(&core));
+    // The cloud-folder mirror's worker: before anything can open a vault.
+    #[cfg(desktop)]
+    crate::mirror::spawn(&core);
     // The linked cloud folder, and the first sync of this start.
     #[cfg(mobile)]
     crate::mobile::sync::start(app, &core);

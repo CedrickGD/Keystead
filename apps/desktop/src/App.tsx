@@ -19,6 +19,7 @@ import { MainScreen } from "./screens/main/MainScreen";
 import { IconsProvider } from "./state/icons";
 import { BreachesProvider } from "./state/breaches";
 import { FolderSyncProvider } from "./state/sync";
+import { MirrorProvider } from "./state/mirror";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
 import { isPhonePlatform, useKeepFocusedFieldVisible, usePhoneLayout } from "./lib/phone";
@@ -363,14 +364,17 @@ function AppRoot({
 
   return (
     <AppContext.Provider value={ctx}>
-      {/* The phone's cloud-folder sync (no such commands on the desktop). */}
+      {/* The phone's cloud-folder sync (no such commands on the desktop) and the
+          desktop's copies for it ("Kopie im Cloud-Ordner aktuell halten"). */}
       <FolderSyncProvider enabled={mobile} onStatus={onSyncStatus}>
-        {mobile ? (
-          frame
-        ) : (
-          // Files dragged onto the window: the import dialog (unlocked) or a hint.
-          <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
-        )}
+        <MirrorProvider enabled={!mobile}>
+          {mobile ? (
+            frame
+          ) : (
+            // Files dragged onto the window: the import dialog (unlocked) or a hint.
+            <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
+          )}
+        </MirrorProvider>
       </FolderSyncProvider>
     </AppContext.Provider>
   );
