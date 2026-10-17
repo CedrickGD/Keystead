@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { RefreshCw, ServerCrash } from "lucide-react";
 import { api, events, setPageVault, subscribeEffect } from "./lib/api";
 import { discardPageData } from "./lib/discard";
-import type { AppInfo, PairingRequest, Settings, ThemeSetting, VaultInfo } from "./lib/types";
+import type { AppInfo, FolderStatus, PairingRequest, Settings, ThemeSetting, VaultInfo } from "./lib/types";
 import { localPrefs } from "./lib/utils";
 import { I18nProvider, useT } from "./i18n";
 import { ToastProvider, useToast } from "./components/Toasts";
@@ -18,6 +18,7 @@ import { UnlockScreen } from "./screens/UnlockScreen";
 import { MainScreen } from "./screens/main/MainScreen";
 import { IconsProvider } from "./state/icons";
 import { BreachesProvider } from "./state/breaches";
+import { FolderSyncProvider } from "./state/sync";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
 import { isPhonePlatform, useKeepFocusedFieldVisible, usePhoneLayout } from "./lib/phone";
@@ -165,6 +166,7 @@ function AppRoot({
           if (reason === "timeout") toast.show({ kind: "info", message: t("lock.timeoutToast", { minutes }), carry: true });
           if (reason === "system") toast.show({ kind: "info", message: t("lock.systemToast"), carry: true });
           if (reason === "background") toast.show({ kind: "info", message: t("lock.backgroundToast"), carry: true });
+          if (reason === "keyChanged") toast.show({ kind: "info", message: t("lock.keyChangedToast"), carry: true });
         }),
       ),
     [t, toast, toUnlockOrWelcome],
@@ -259,6 +261,20 @@ function AppRoot({
     else if (vaultShown.current && (screen === "unlock" || screen === "welcome")) discardPageData(toast.carried);
   }, [screen, toast]);
 
+  // Phone: a sync may have brought a vault (or a new name) – re-read the
+  // list; the welcome screen gives way to the unlock screen once one is there.
+  const onSyncStatus = useCallback(
+    (status: FolderStatus) => {
+      if (status.syncing) return;
+      void refreshVaults()
+        .then((vaults) => {
+          if (vaults.length > 0 && screenRef.current === "welcome") setScreen("unlock");
+        })
+        .catch(() => undefined);
+    },
+    [refreshVaults],
+  );
+
   const lock = useCallback(async () => {
     try {
       await api.lockVault();
@@ -347,12 +363,15 @@ function AppRoot({
 
   return (
     <AppContext.Provider value={ctx}>
-      {mobile ? (
-        frame
-      ) : (
-        // Files dragged onto the window: the import dialog (unlocked) or a hint.
-        <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
-      )}
+      {/* The phone's cloud-folder sync (no such commands on the desktop). */}
+      <FolderSyncProvider enabled={mobile} onStatus={onSyncStatus}>
+        {mobile ? (
+          frame
+        ) : (
+          // Files dragged onto the window: the import dialog (unlocked) or a hint.
+          <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
+        )}
+      </FolderSyncProvider>
     </AppContext.Provider>
   );
 }

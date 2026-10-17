@@ -568,6 +568,155 @@
   border-radius: 14px;
 }
 
+/* ---------- Cloud-folder sync (phone platform only, so not keyed on the layout) ---------- */
+
+/* The welcome slot: the way to the first vault. */
+.welcome-slot.sync-slot {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  border-style: solid;
+  border-color: var(--border);
+}
+
+.sync-slot-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sync-slot-head h2 {
+  margin: 0;
+  line-height: 1.3;
+}
+
+.sync-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.sync-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sync-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* What the last sync did with each vault file. */
+.sync-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sync-file {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.sync-file-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-file-outcome {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.sync-file.skipped .sync-file-outcome {
+  color: var(--warning-text);
+}
+
+.sync-folder-name {
+  display: block;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sync-folder-desc {
+  display: block;
+  margin-top: 2px;
+}
+
+.sync-error {
+  margin-top: 8px;
+}
+
+/* The unlock screen's sync line. */
+.sync-line-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sync-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 4px 4px 12px;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.sync-line > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.sync-line.warning {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+
+.sync-line.warning > svg {
+  color: var(--warning-icon);
+}
+
+.sync-line-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.sync-line .btn-link {
+  flex: none;
+  min-height: 44px;
+  padding: 0 8px;
+}
+
+.sync-line .icon-btn {
+  flex: none;
+}
+
+.sync-line-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning-text);
+}
+
 /* ---------- Dialogs and toasts ---------- */
 
 /* Dialogs sit at the bottom, in thumb reach; the keyboard pushes them up (the webview shrinks). */

@@ -106,11 +106,11 @@ Regel schon installiert).
 ### Android-App (Vorschau)
 
 Jedes Release enthält auch die Android-App – vorerst als **frühe
-Vorschau**: **Sie kann noch keinen Tresor anlegen und noch keinen vom PC
-übernehmen.** Das kommt mit einer der nächsten Versionen; bis dahin lässt sie
-sich nur installieren und starten. Danach wird sie zum Nachschlagen dienen:
-Tresore öffnen, Benutzernamen, Passwörter und 2FA-Codes zeigen und kopieren,
-den Sicherheitsbericht zeigen – ändern wird sie noch nichts.
+Vorschau** zum Nachschlagen: Tresore öffnen, Benutzernamen, Passwörter und
+2FA-Codes zeigen und kopieren, den Sicherheitsbericht zeigen – ändern kann sie
+nichts. Ihre Tresore holt sie **nur lesend aus einem Ordner deiner eigenen
+Cloud** (über die Nextcloud- oder OneDrive-App auf dem Handy); einen Tresor neu
+anlegen kann sie nicht.
 
 1. Auf dem Handy unter [Releases](../../releases) `Keystead-<version>-android.apk`
    herunterladen (Android 10 oder neuer, 64-Bit-ARM – praktisch jedes Handy ab 2019).
@@ -131,13 +131,22 @@ den Sicherheitsbericht zeigen – ändern wird sie noch nichts.
    installieren – deine Daten bleiben. Die App meldet neue Versionen noch nicht
    selbst.
 
-Was noch fehlt: **einen Tresor aufs Handy bringen** – neu anlegen geht dort
-noch nicht, und die Übernahme vom PC kommt mit der nächsten Stufe
-(Tresordatei auswählen, später über deinen eigenen Cloud-Ordner); bis dahin
-ist die App nur eine Vorschau. Außerdem Bearbeiten, ein eigenes Handy-Layout
-(die Oberfläche ist noch die vom PC), Entsperren per Fingerabdruck und
+**Tresor aufs Handy holen:** Beim ersten Start „Cloud-Ordner wählen“ tippen
+(später unter Einstellungen → Synchronisierung) und im Android-Dialog über die
+Nextcloud- oder OneDrive-App den Ordner wählen, in dem die Kopie deines Tresors
+liegt. Keystead behält nur Lesezugriff darauf und gleicht beim Start, beim
+Zurückkehren in die App und auf Knopfdruck ab: Eine neuere Version vom PC
+ersetzt die Kopie auf dem Handy, eine ältere nie; in den Ordner schreibt die
+App nichts. Der Cloud-Anbieter sieht die verschlüsselte Datei samt Tresorname
+und Änderungszeit, nie den Inhalt.
+
+Was noch fehlt: Die automatische Kopie vom PC in den Cloud-Ordner („Kopie im
+Cloud-Ordner aktuell halten“) kommt mit einer der nächsten Versionen – bis
+dahin kopierst du `<id>.keystead` und, falls vorhanden, den Ordner
+`<id>.keystead.attachments` aus dem Datenordner des PCs (`vaults\`) selbst in
+den Cloud-Ordner. Außerdem Bearbeiten, Entsperren per Fingerabdruck und
 Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
-App – auch die Tresore auf dem Handy.
+App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
 
 Sobald ein Tresor auf dem Handy liegt: Tresor entsperren, Einträge suchen und
 ansehen, Passwörter aufdecken und kopieren (die Zwischenablage wird wie am PC
@@ -210,7 +219,7 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
-| Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht |
+| Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht; dazu `sync/link.json` (der verbundene Cloud-Ordner, ohne Geheimnisse) |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
 Stand), `vaults\<id>.keystead.attachments\` (die verschlüsselten Dateianhänge dieses
@@ -369,11 +378,11 @@ Requires Windows 10 or 11 (the WebView2 runtime they need is normally already in
 ### Android app (preview)
 
 Every release also carries the Android app – for now an **early
-preview**: **it cannot create a vault yet, nor take one over from the PC.**
-That comes with one of the next versions; until then you can only install and
-start it. After that it will be for looking things up: open vaults, show and
-copy usernames, passwords and 2FA codes, show the security report – it will
-not change anything yet.
+preview** for looking things up: open vaults, show and copy usernames,
+passwords and 2FA codes, show the security report – it cannot change
+anything. It takes its vaults **read-only from a folder of your own cloud**
+(through the Nextcloud or OneDrive app on the phone); it cannot create a
+vault.
 
 1. On the phone, download `Keystead-<version>-android.apk` from
    [Releases](../../releases) (Android 10 or later, 64-bit ARM – practically
@@ -394,12 +403,22 @@ not change anything yet.
 4. **Updates:** download the newer APK and install it over the old one – your
    data stays. The app does not announce new versions itself yet.
 
-Not yet: **getting a vault onto the phone** – creating one there does not
-work yet, and taking one over from the PC comes with the next stage (pick the
-vault file, later through your own cloud folder); until then the app is only a
-preview. Also missing: editing, a phone layout (the UI is still the desktop
-one), fingerprint unlock and filling in other apps. Uninstalling the app makes
-Android delete its data – including the vaults on the phone.
+**Getting a vault onto the phone:** on first start tap “Choose cloud folder”
+(later under Settings → Sync) and, in Android's dialog, pick the folder that
+holds the copy of your vault through the Nextcloud or OneDrive app. Keystead
+keeps read access only and syncs at start, when you return to the app and on
+request: a newer version from the PC replaces the copy on the phone, an older
+one never does; the app writes nothing to the folder. The cloud provider sees
+the encrypted file with the vault's name and modification time, never its
+content.
+
+Not yet: the PC's automatic copy into the cloud folder (“Keep a copy in a
+cloud folder up to date”) comes with one of the next versions – until then
+copy `<id>.keystead` and, if present, the folder `<id>.keystead.attachments`
+from the PC's data folder (`vaults\`) into the cloud folder yourself. Also
+missing: editing, fingerprint unlock and filling in other apps. Uninstalling
+the app makes Android delete its data – including the vaults on the phone (the
+cloud folder is not touched).
 
 Once a vault is on the phone: unlock it, search and view items, reveal and
 copy passwords (the clipboard is cleared again as on the PC), 2FA codes, the
@@ -471,7 +490,7 @@ the shell history may see it).
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
-| Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled |
+| Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled; plus `sync/link.json` (the linked cloud folder, no secrets) |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the
 previous version), `vaults/<id>.keystead.attachments/` (that vault's encrypted file

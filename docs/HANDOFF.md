@@ -512,6 +512,92 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
    Accessibility bei Touch-Eingaben ohne Screenreader; mit TalkBack
    gegenprüfen. Querformat, Tablets, iOS.
 
+8. **Cloud-Ordner-Sync, Handy-Seite** (Stufe 2a, `WIP: mobile 2a - folder
+   sync`; Vertrag: ARCHITECTURE „Mobile (Android)“ → „Cloud-folder sync
+   (phone)“): Das Handy verknüpft **einen Ordner** (nicht eine Datei) der
+   eigenen Cloud über den System-Ordnerdialog (`ACTION_OPEN_DOCUMENT_TREE`,
+   Nextcloud/OneDrive-App als DocumentsProvider) mit dauerhafter
+   **Lese**-Freigabe – so kommen `<id>.keystead` **und** der Anhang-Ordner
+   `<id>.keystead.attachments/` mit (die offene Frage zu den Anhängen ist
+   damit gelöst). Nur Kopieren nach innen, nie zurück.
+   * **Kotlin-Plugin** `KeysteadFolderPlugin.kt` in `gen/android`
+     (`pickFolder`, `releaseFolder`, `listChildren`, `copyFile`;
+     Provider-Arbeit auf eigenem Thread, Kopien nur nach
+     `<app>/sync/incoming/`, kein Schreibzugriff auf den Ordner), aus Rust
+     registriert als Plugin `keystead-folder` (`src/mobile/sync.rs`) – die
+     Webview darf es nicht aufrufen (keine Capability, Tauri prüft die ACL
+     für jedes `plugin:`-Kommando). Statt Base64 kopiert das Plugin die
+     Dateien in einen Eingangsordner, Rust liest, prüft und löscht sie dort
+     (Anhänge bis 20 MiB ohne JNI-Riesenstrings).
+   * **Engine** `src/folder_sync.rs` (plattformneutral, Tests laufen auf dem
+     PC): Tresordatei ≤ 64 MiB, Name `<id>.keystead` passend zur ID im
+     Header, `VaultFile::parse` vor jedem Schreiben; Entscheidung
+     `keystead_core::sync::decide_copy_in` (rein, getestet): unbekannt →
+     neu, höhere Revision → atomar ersetzen, gleich → nichts, niedriger →
+     Handy behält seine („Kopie am PC ist älter“), anderer Tresor an der
+     Stelle → nie anfassen. Anhänge: fehlende Blobs (bzw. andere Größe)
+     werden **vor** dem Ersetzen der Tresordatei gespeichert; nur `<id>.bin`
+     mit Blob-Form (`attachments::looks_like_blob`). Offener Tresor: Datei
+     unter dem State-Lock ersetzen und `reload_if_changed` →
+     `vault://changed`; neues Master-Passwort → Sperre mit neuem Grund
+     `keyChanged` (Toast „am PC geändert“); ein geändertes KDF-Salz markiert
+     die Datei `passwordChanged` → der Entsperrbildschirm erklärt ein
+     „falsches Passwort“.
+   * **Wann**: beim Start, bei `Resumed` (höchstens alle 60 s, eigener
+     Thread), nach dem Verknüpfen und auf „Jetzt synchronisieren“. Zustand
+     in `<data>/sync/link.json` (Ordner-URI, Name, Zeiten, letzter Fehler,
+     Ergebnis je Datei – keine Geheimnisse). Kommandos (nur Handy):
+     `folder_status`, `link_folder`, `sync_now`, `unlink_folder`; Event
+     `sync://status`.
+   * **UI**: Willkommen (Platz `data-slot="vault-source"`): drei Schritte
+     (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“, Cloud-App,
+     Ordner wählen) + „Cloud-Ordner wählen“; verknüpft ohne Tresor: Hinweis,
+     Ergebnisliste, „Jetzt synchronisieren“/„Anderen Ordner wählen“. Kommt
+     ein Tresor an, wechselt die App zum Entsperren. Entsperren: Statuszeile
+     (zuletzt synchronisiert + Knopf; Ordner verloren → „Ordner neu wählen“;
+     nicht verbunden → „Verbinden“ – das ist auch der Weg zu weiteren
+     Tresoren: sie liegen einfach im selben Ordner). Einstellungen →
+     „Synchronisierung“ (nur Handy): Ordner, letzte Synchronisierung, Tresore
+     im Ordner mit Ergebnis, „Jetzt synchronisieren“, „Ordner ändern“,
+     „Verbindung trennen“ (mit Rückfrage; Kopien bleiben). Mock:
+     `?platform=android` (+ `?mock=empty` / `?sync=linked`),
+     `__keysteadMock.simulatePcSave()`, `simulatePcPasswordChange()` (neues
+     Passwort `demo2`), `simulateFolderLost()`.
+   * **Entscheidung dieses Laufs** (für den Besitzer): Die Handy-App bleibt
+     **ohne `INTERNET`-Berechtigung** – keine Update-Prüfung auf Android,
+     auch nicht über ein Kotlin-Plugin (E6 sah das für Stufe 2 vor);
+     „Über Keystead“ bietet weiter „Releases auf GitHub öffnen“ (der Browser
+     öffnet sich, keine Berechtigung nötig).
+   **Im Emulator geprüft** (MB_S26, Debug-APK x86_64, Test-Tresor
+   „Cloud-Test“ – Passwort `demo`, danach `demo2` – mit PNG-Anhang am PC
+   erzeugt und nach `/sdcard/Download/KeysteadSync/` gelegt; „Handy-Test“
+   und „Handy-Demo“ bleiben unverändert): Entsperren ohne Verknüpfung zeigt
+   „Kein Cloud-Ordner verbunden · Verbinden“ → System-Dialog → Download →
+   KeysteadSync → „Diesen Ordner verwenden“ → „Zulassen“ → Tresor und
+   Anhang kopiert (`link.json`: `imported`, 1 Anhang), Bildvorschau des
+   Anhangs funktioniert. Neue Revision am PC, App kurz verlassen und zurück
+   → automatischer Sync lädt den offenen Tresor neu (neuer Eintrag
+   sichtbar). Master-Passwort am PC geändert → „Jetzt synchronisieren“ →
+   Sperre mit Toast; altes Passwort → Hinweis „am PC geändert“, neues
+   entsperrt. Ordner verschoben → „Keystead kann den Cloud-Ordner nicht
+   mehr lesen“ + „Ordner neu wählen“; zurückgeschoben und App beendet
+   (`force-stop`) → der Start-Sync liest mit der dauerhaften Freigabe, der
+   Fehler ist weg. „Verbindung trennen“ → `link.json` weg, Freigabe
+   zurückgegeben, Tresore bleiben. Dialog abbrechen → nichts ändert sich.
+   Screenshots `phone-2a-*.png` im Scratchpad. **Nicht geprüft:** echte
+   Nextcloud/OneDrive-Apps (das Emulator-Image hat keinen Play Store – nur
+   der eingebaute Speicher-Provider), das Entziehen der Freigabe über die
+   Android-Einstellungen, Querformat, der R8-Release-Build mit dem Plugin
+   (die Consumer-ProGuard-Regeln von tauri-android behalten
+   `@TauriPlugin`/`@InvokeArg`-Klassen).
+   **Bekannt:** Der Ordnerdialog ist eine andere Activity – mit „Sperren im
+   Hintergrund: Sofort“ sperrt ein offener Tresor beim Ordnerwechsel in den
+   Einstellungen (Verknüpfen und Sync laufen trotzdem zu Ende). Der Toast
+   „Synchronisiert …“ geht verloren, wenn derselbe Sync den Tresor wegen
+   `keyChanged` sperrt (die Seite lädt neu; der Sperr-Toast bleibt).
+   Verknüpft man einen anderen Ordner, bleiben die Tresore des alten auf dem
+   Handy (ohne „nicht mehr im Ordner“-Eintrag).
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -538,15 +624,18 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
 4. Installieren: `adb push <apk> /data/local/tmp/keystead.apk` und
    `adb shell pm install -r /data/local/tmp/keystead.apk` (`adb install`
    scheiterte hier mit leerer Meldung).
-5. Tresor hineinlegen, bis `import_vault_file` kommt – geht nur mit der
-   Debug-APK (`run-as` verlangt eine debuggable App); nimm einen
-   **Test-Tresor**, nicht deinen echten: `adb push <id>.keystead
-   /data/local/tmp/` und `adb shell run-as io.github.cedrickgd.keystead sh
-   -c 'mkdir -p vaults && cp /data/local/tmp/<id>.keystead vaults/'`, danach
-   die Datei in `/data/local/tmp` löschen. Hat der Tresor Anhänge, den
-   Ordner `<id>.keystead.attachments` genauso pushen und mit `cp -r` nach
-   `vaults/` kopieren. Mit der Release-APK lässt sich bisher nur der Start
-   prüfen.
+5. Tresor aufs Handy holen (Cloud-Ordner-Sync; nimm einen
+   **Test-Tresor**, nicht deinen echten): `<id>.keystead` und ggf. den Ordner
+   `<id>.keystead.attachments` in einen Ordner auf dem Emulator legen, z. B.
+   `adb shell mkdir -p /sdcard/Download/KeysteadSync` und `adb push
+   <id>.keystead /sdcard/Download/KeysteadSync/` (Git Bash:
+   `MSYS_NO_PATHCONV=1` davor). In der App „Cloud-Ordner wählen“ (bzw.
+   „Verbinden“ auf dem Entsperrbildschirm) → Download → KeysteadSync →
+   „Diesen Ordner verwenden“ → „Zulassen“. Eine neuere Kopie pushen und die
+   App kurz verlassen (oder Einstellungen → Synchronisierung → „Jetzt
+   synchronisieren“) – die App übernimmt sie. Geht mit Debug- und
+   Release-APK; den Ordner `Download` selbst lässt Android nicht freigeben,
+   nur einen Unterordner.
 6. Durchklicken: Start → Willkommen/Entsperren → Liste und Suche →
    Passwort aufdecken (nach 30 s wieder verborgen) → kopieren (die
    Zwischenablage des PCs spiegelt die des Emulators; nach 30 s leer) →
@@ -563,28 +652,27 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
 8. Logs: `adb logcat -s RustStdoutStderr:* Tauri:*` – erwartet sind nur
    Chromium-Zeilen des WebView, keine Panik.
 
-Erwartete Grenzen in dieser Stufe: ohne `adb` kommt noch kein Tresor aufs
-Handy (der Willkommensbildschirm erklärt das); bearbeiten geht nur am PC
-(die Handy-Oberfläche zeigt keine Bearbeiten-Knöpfe).
+Erwartete Grenzen in dieser Stufe: die automatische Kopie vom PC in den
+Cloud-Ordner fehlt noch (nächste Stufe, E7) – die Tresordatei kommt bis
+dahin von Hand in den Ordner; bearbeiten geht nur am PC (die
+Handy-Oberfläche zeigt keine Bearbeiten-Knöpfe).
 
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
-1. **Rest von Stufe 1**: das Handy-Layout ist fertig (Punkt 7 oben); es
-   fehlt `import_vault_file` (Tresordatei per System-Auswahl einmalig in den
-   App-Ordner kopieren, `sync::header_of` prüft sie; der Eintrag dafür
-   gehört in den markierten Platz des Willkommensbildschirms,
-   `data-slot="vault-source"`) – erst dann ist die App ohne `adb`
-   benutzbar. Offen dabei: Anhänge liegen neben der
-   Tresordatei im Ordner `<id>.keystead.attachments` und kämen mit einer
-   einzelnen Datei nicht mit (die Bildvorschau wäre dann leer) – mit dem
-   Besitzer klären, ob der Import sie mitnimmt oder die Vorschau bis
-   Stufe 2 wartet.
+1. **Stufe 2a, PC-Seite** (E7): Einstellung „Kopie im Cloud-Ordner aktuell
+   halten“ (Ordner wählen; nach jedem erfolgreichen Speichern
+   `<id>.keystead` per `write_atomic` in den Ordner, die Blobs aus
+   `<id>.keystead.attachments/` **vorher** – nie `.bak`, `.lock`, `.tmp`).
+   Die Handy-Seite ist fertig (Punkt 8); ein eigener Einzeldatei-Import
+   (`import_vault_file`) ist damit überflüssig geworden. Englischer Name der
+   Einstellung, wie ihn die Handy-Texte schon nennen: „Keep a copy in a
+   cloud folder up to date“.
 2. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
-   KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5).
-3. **Stufe 2a**: Einweg-Sync PC → Handy über den eigenen Cloud-Ordner
-   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“, E7; am Handy
-   Storage Access Framework mit dauerhafter Freigabe) plus Update-Hinweis
-   über ein kleines Kotlin-Plugin (E6).
+   KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5). Ein
+   gespeicherter KEK wird nach `keyChanged` (Sync) wertlos – dann löschen.
+3. Update-Hinweis auf dem Handy: nach der Entscheidung dieses Laufs **nicht**
+   (keine `INTERNET`-Berechtigung, siehe Punkt 8); nur wieder aufnehmen,
+   wenn der Besitzer das will.
 4. Danach **Autofill** (E11), dann **2b** Bearbeiten am Handy +
    Zwei-Wege-Sync mit Konfliktdialog.
 5. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne

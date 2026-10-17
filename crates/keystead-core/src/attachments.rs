@@ -65,6 +65,25 @@ pub fn blob_path(dir: &Path, attachment_id: &str) -> PathBuf {
     dir.join(format!("{attachment_id}.{BLOB_EXTENSION}"))
 }
 
+/// The attachment id a blob file is named after – `<id>.bin` with an id of
+/// letters, digits, `-` and `_` (at most 64) – or `None` for any other
+/// name (a temporary file, a cloud app's conflict copy, …). For copying a
+/// vault's blobs from elsewhere without its key (the phone's folder sync).
+pub fn blob_id_of_file_name(name: &str) -> Option<&str> {
+    let id = name.strip_suffix(&format!(".{BLOB_EXTENSION}"))?;
+    crate::store::is_valid_id(id).then_some(id)
+}
+
+/// Whether `bytes` have the shape of a blob: the magic bytes, at least
+/// [`BLOB_OVERHEAD`] and at most the largest attachment plus the overhead.
+/// Without the key it cannot say whether the blob opens; a blob that does
+/// not is still refused later ([`open_blob`]).
+pub fn looks_like_blob(bytes: &[u8]) -> bool {
+    bytes.len() >= BLOB_OVERHEAD
+        && bytes.len() as u64 <= ATTACHMENT_MAX_BYTES + BLOB_OVERHEAD as u64
+        && bytes.starts_with(BLOB_MAGIC)
+}
+
 fn blob_aad(vault_id: &str, attachment_id: &str) -> Vec<u8> {
     format!("keystead:v1:attachment:{vault_id}:{attachment_id}").into_bytes()
 }
@@ -412,5 +431,41 @@ mod tests {
         assert!(!orphan.exists() && !stale_tmp.exists());
         assert!(dir.join("sub.bin").is_dir());
         assert_eq!(sweep(&dir, &data), 0);
+    }
+
+    #[test]
+    fn blob_names_and_shapes_without_a_key() {
+        let id = "0b5d7c1e-8f2a-4d3b-9c6e-1a2b3c4d5e6f";
+        assert_eq!(blob_id_of_file_name(&format!("{id}.bin")), Some(id));
+        for name in [
+            "x.txt",
+            ".bin",
+            "a b.bin",
+            "../x.bin",
+            "x.bin.tmp",
+            ".x.bin.0123456789abcdef.tmp",
+            "x (1).bin",
+            "x.BIN",
+        ] {
+            assert_eq!(blob_id_of_file_name(name), None, "{name}");
+        }
+        assert_eq!(
+            blob_id_of_file_name(&format!("{}.bin", "a".repeat(65))),
+            None
+        );
+
+        let key = crypto::random_key().unwrap();
+        let blob = seal_blob(&key, "vault", "att", b"file bytes").unwrap();
+        assert!(looks_like_blob(&blob));
+        assert!(looks_like_blob(
+            &seal_blob(&key, "vault", "att", b"").unwrap()
+        ));
+        assert!(!looks_like_blob(&blob[..BLOB_OVERHEAD - 1]));
+        assert!(!looks_like_blob(
+            b"not a blob at all, but long enough to pass the size"
+        ));
+        let mut magic = blob.clone();
+        magic[4] = b'2';
+        assert!(!looks_like_blob(&magic));
     }
 }

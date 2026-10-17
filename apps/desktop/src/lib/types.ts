@@ -484,7 +484,51 @@ export interface PairingRequest {
 }
 
 /** Payload of `vault://locked`; `background` only on the phone (`lockInBackgroundSeconds`). */
-export type LockReason = "manual" | "timeout" | "system" | "background";
+export type LockReason = "manual" | "timeout" | "system" | "background" | "keyChanged";
+
+/**
+ * What the phone's last cloud-folder sync did with one vault file of the
+ * folder ("Cloud-folder sync (phone)" in ARCHITECTURE.md).
+ */
+export type SyncOutcome =
+  | "imported"
+  | "updated"
+  | "upToDate"
+  | "pcOlder"
+  | "otherVault"
+  | "misnamed"
+  | "unreadable"
+  | "tooLarge"
+  | "failed"
+  | "missing";
+
+export interface SyncFileResult {
+  fileName: string;
+  vaultId: string | null;
+  vaultName: string | null;
+  /** The folder copy's revision. */
+  revision: number | null;
+  outcome: SyncOutcome;
+  /** The error code behind `unreadable` / `failed`. */
+  error: string | null;
+  attachmentsCopied: number;
+  attachmentsFailed: number;
+  /** The master password was changed on the PC (the old one no longer opens this copy). */
+  passwordChanged: boolean;
+}
+
+/** The phone's linked cloud folder (`folder_status`, `sync://status`). No secrets. */
+export interface FolderStatus {
+  linked: boolean;
+  syncing: boolean;
+  folderName: string | null;
+  linkedAt: number | null;
+  /** The last sync that could read the folder (ms). */
+  lastSyncAt: number | null;
+  /** Error code of the last failed sync, e.g. `unsupported:folder_access_lost`. */
+  lastError: string | null;
+  files: SyncFileResult[];
+}
 
 /** Stable error codes returned by the backend (see ARCHITECTURE.md). */
 export type ErrorCode =

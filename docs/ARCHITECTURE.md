@@ -11,8 +11,12 @@ icons"), and – only when the user presses the button, never on its own – to
 check passwords against Have I Been Pwned, where just the first 5 hex
 characters of a password's SHA-1 leave the device (see "Leaked-password
 check").
-The Android app (read-only in its first stage, see "Mobile (Android)") has
-no network permission at all.
+The Android app (read-only in its first stages, see "Mobile (Android)") has
+no network permission at all: it reads encrypted vault copies from a
+folder of the user's own cloud that the user links through the system
+picker – the cloud's own app (Nextcloud, OneDrive) does the transfer, and
+the provider sees the encrypted file with its plain-text header (vault
+name, revision, times), never its content.
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -142,21 +146,21 @@ returned code: `0` success, `1` error, `2` invalid usage.
 ## Mobile (Android)
 
 Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
-**Stage 1a – the state described here – is a read-only, offline Android
-app**: the same Rust crate and the same React UI as the desktop, built by CI
-as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 / API 29 and
-later) that every release carries. It opens the vaults in its own app
-folder – lists, searches, reveals and copies, shows TOTP codes and the
-security report – and locks when it stays in the background. Not yet: a way
-to bring a vault onto the phone (next stage: a `.keystead` file picked in
-the system file picker, later a copy in the user's own cloud folder,
-`docs/BLOCK5-DESIGN.md` "Stufe 2"; creating one there is a write and not
-registered either) – so a published APK on its own can only be installed
-and started, and the release notes and README say so plainly (an "early
-preview") – and fingerprint unlock (stage 1b). The UI has its **phone
-layout** (below). There is no Keystead server, and the app has no network
-permission at all – so no update check either: About links to the
-releases page instead.
+**Stages 1a and 2a – the state described here – are a read-only, offline
+Android app**: the same Rust crate and the same React UI as the desktop,
+built by CI as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 /
+API 29 and later) that every release carries. It opens the vaults in its own
+app folder – lists, searches, reveals and copies, shows TOTP codes and the
+security report – and locks when it stays in the background. The vaults
+reach the phone through the **cloud-folder sync** (stage 2a, below): the
+user links the folder of their own cloud the PC keeps its vault copies in,
+and the phone copies them in – one way, it never writes there (creating or
+editing a vault on the phone is a write and not registered). Not yet:
+fingerprint unlock (stage 1b) and the PC's side of the sync ("Kopie im
+Cloud-Ordner aktuell halten", decision E7 – until it exists the copies are
+put into the folder by hand). The UI has its **phone layout** (below).
+There is no Keystead server, and the app has no network permission at
+all – so no update check either: About links to the releases page instead.
 
 * **Entry point and gates**: the Android shell (`MainActivity`, a
   `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
@@ -169,15 +173,16 @@ releases page instead.
   `paths::set_data_dir_override(app_local_data_dir())` – on Android the
   app's private internal storage `/data/user/0/io.github.cedrickgd.keystead/`
   (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
-  and `settings.json`; nothing of the bridge (`bridge-clients.json`), no
+  and `settings.json`, plus `sync/link.json` (the linked cloud folder,
+  below); nothing of the bridge (`bridge-clients.json`), no
   `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
   "Data locations"). Other apps cannot read the folder, Android's cloud
   backup and device-to-device transfer skip it (manifest below), and
   **uninstalling the app deletes it** – in this stage the phone only ever
-  holds copies of vaults made elsewhere.
-* **Commands**: only the read commands are registered ("**On the phone**"
-  under "Desktop backend ↔ frontend"); every other command is unknown to
-  the phone's invoke handler. `app_info` answers `platform: "android"`,
+  holds copies of vaults made elsewhere (the linked folder is untouched).
+* **Commands**: only the read commands and the phone's own sync commands
+  are registered ("**On the phone**" under "Desktop backend ↔ frontend");
+  every other command is unknown to the phone's invoke handler. `app_info` answers `platform: "android"`,
   `readOnly: true`, `extensionId: null`, `portable: false`; the UI is to
   hide every editing control on `readOnly` (part of the phone layout).
 * **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
@@ -191,6 +196,82 @@ releases page instead.
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
+* **Cloud-folder sync (phone)** – stage 2a, copy-in only
+  (`src-tauri/src/folder_sync.rs`: the platform-neutral engine, unit-tested
+  on the desktop host; `src/mobile/sync.rs`: the Kotlin plugin binding, the
+  commands, the automatic sync; `KeysteadFolderPlugin.kt` in the Android
+  project, below):
+  * **The folder**: the user picks one folder in the system's folder picker
+    (`ACTION_OPEN_DOCUMENT_TREE`) – the Nextcloud or OneDrive app offers its
+    folders there as a `DocumentsProvider` (OneDrive's support is not
+    verified: the emulator image has no Play Store). The app keeps a
+    **persisted read permission** (`takePersistableUriPermission`, read
+    only; `unlink_folder` gives it back, linking another folder gives the
+    old one back) – no storage permission, no network. The PC keeps one copy
+    per vault there: `<id>.keystead` and, with attachments,
+    `<id>.keystead.attachments/<attachment id>.bin` (the data folder's
+    layout; never `.bak`, `.lock` or temporary files – the PC side, E7,
+    writes the blobs before the vault file). Only top-level files named
+    `<id>.keystead` after the id in their own header count
+    (`sync::vault_id_of_file_name`): renamed copies and a cloud app's
+    conflict copies (`… (1).keystead`) are reported as skipped, hidden files
+    are ignored.
+  * **Copy-in** (`folder_sync::sync_folder`): every vault file is untrusted
+    input – at most 64 MiB (`unsupported:sync_file_too_large`, reported as
+    "too large"), copied by the plugin into `<data>/sync/incoming/` (the
+    only target it accepts; emptied before and after every sync), parsed and
+    validated (`VaultFile::parse`, KDF limits included) before anything is
+    written; then `keystead_core::sync::decide_copy_in` (pure, unit-tested)
+    against the phone's copy `<data>/vaults/<id>.keystead`: no copy →
+    **import** (a new vault on the phone), higher revision → **update**
+    (replaced atomically with `format::write_atomic`, no `.bak` – an older
+    copy would still open with an old master password), equal → nothing,
+    lower → the phone keeps its copy and reports "the PC's copy is older" (a
+    rollback is never copied in, nothing is ever written back), another
+    vault at that place (other id) → never touched. A damaged copy on the
+    phone is replaced. **Attachments**: the vault file is read first, then
+    its blob folder listed (every blob that copy references is already
+    there); blobs the phone lacks or whose size differs (a blob never
+    changes under its id) are copied – only names `<id>.bin` with a blob's
+    shape (`attachments::looks_like_blob`: magic bytes, size; nothing is
+    decrypted) – and stored **before** the phone's vault file is replaced.
+    Blobs the vault no longer references are left to the core's sweep (on
+    unlock, and after a reload of the open vault: an hour after they
+    arrived). Vaults the folder no longer has stay on the phone ("missing").
+  * **The open vault**: its file is replaced and reloaded
+    (`reload_if_changed`) under the same state lock, so the monitor's own
+    2-s change check never sees it first → `vault://changed`. A new master
+    password (`Error::KeyChanged`) closes it like a lock with reason
+    `keyChanged` (toast: the password was changed on the PC). A copy whose
+    key-derivation salt changed (a new master password) is marked
+    `passwordChanged` until a newer revision arrives – the unlock screen
+    then explains a "wrong password".
+  * **When**: at start, when the app comes back to the foreground
+    (`Resumed`) – at most every 60 s, on a thread of its own –, after
+    linking and on "Jetzt synchronisieren" (`sync_now`, always). One sync
+    at a time. Never in the background without the app (no service, no
+    job). Every change of the state is announced as `sync://status`.
+  * **State** `<data>/sync/link.json` (`LinkState`, camelCase, written
+    atomically, read leniently – a damaged file counts as "not linked"):
+    `treeUri`, `folderName`, `linkedAt`, `lastSyncAt` (the last sync that
+    read the folder), `lastError` (the code of the last failed attempt –
+    `unsupported:folder_access_lost` when the permission was revoked, the
+    cloud app removed or signed out, or the folder deleted or moved: pick it
+    again), `files` (per vault file: `fileName`, `vaultId`, `vaultName`,
+    `revision`, `outcome` – `imported`, `updated`, `upToDate`, `pcOlder`,
+    `otherVault`, `misnamed`, `unreadable`, `tooLarge`, `failed`,
+    `missing` –, `error`, `attachmentsCopied`, `attachmentsFailed`,
+    `passwordChanged`). No secrets anywhere; the commands answer this
+    status (`FolderStatus`).
+  * **UI**: the welcome screen without a vault explains the way (on the PC:
+    "Kopie im Cloud-Ordner aktuell halten" with the Nextcloud/OneDrive
+    folder; on the phone: that same folder through the cloud app) and offers
+    "Cloud-Ordner wählen"; the unlock screen has a sync status line (last
+    sync, "Jetzt synchronisieren", a lost folder); Settings →
+    "Synchronisierung" (phone only): folder, last sync, per-vault result,
+    "Jetzt synchronisieren", "Ordner ändern", "Verbindung trennen" (the
+    copies stay). The mock (`?platform=android`) simulates it (see "Mock"
+    below).
 * **Phone layout** (the same React app; `src/lib/layout.mjs` decides,
   `src/lib/phone.ts` holds the hooks, `src/styles/phone.css` the styles):
   App.tsx sets `data-layout="phone"` on `<html>` when `AppInfo.platform` is
@@ -256,7 +337,14 @@ releases page instead.
     platform and refuses every command the phone does not register
     (`PHONE_COMMANDS` in `mock.ts`, like Tauri's "not found"), so a phone
     screen that still reaches a desktop command shows up in the console;
-    `__keysteadMock.simulateBack()` sends the back gesture. Narrow the
+    `__keysteadMock.simulateBack()` sends the back gesture. The sync
+    commands are simulated: "Cloud-Ordner wählen" links "Nextcloud ›
+    Keystead" and copies in the sample vaults (with `?mock=empty` the
+    welcome screen shows first), `simulatePcSave()` lets the next sync bring
+    a newer revision of the open vault (`vault://changed`),
+    `simulatePcPasswordChange()` one with a new master password (lock reason
+    `keyChanged`), `simulateFolderLost()` lets the next sync fail with
+    `unsupported:folder_access_lost`. Narrow the
     browser to phone width to see the layout; a narrow window without
     `?platform` shows the phone layout with editing (the editor is stacked
     like the detail).
@@ -319,6 +407,27 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   `onCreate` and moves it on top in `onWebViewCreate` (`remove()`, then
   `addCallback` again). The UI may therefore use history (`pushState`,
   `#anchors`) without changing what back does.
+* `KeysteadFolderPlugin.kt` (`app/src/main/java/io/github/cedrickgd/keystead/`,
+  a Tauri Android plugin – a `@TauriPlugin` class with `@Command`s – that
+  `mobile::sync::plugin()` registers as `keystead-folder` with
+  `register_android_plugin("io.github.cedrickgd.keystead",
+  "KeysteadFolderPlugin")`; the tauri-android consumer ProGuard rules keep
+  `@TauriPlugin`/`@InvokeArg` classes for R8): `pickFolder` (tree picker,
+  `EXTRA_INITIAL_URI` = the linked folder, persisted **read** permission →
+  `{ tree, name }`; closed → code `cancelled`), `releaseFolder`,
+  `listChildren(tree, parent?)` (`{ entries: [{ name, uri, dir, size }] }`
+  – document URIs that must lie inside the granted tree), `copyFile(tree,
+  uri, target, maxBytes)` (streams the document into a **new** file, which
+  must be in `<app data>/sync/incoming/`; more than `maxBytes` → code
+  `too_large`, the file is removed; fsync before the answer). Rejection
+  codes: `access_lost` (no persisted permission, `SecurityException`, a
+  provider that no longer knows the URI), `not_found`, `too_large`,
+  `picker_unavailable`, `io`. Provider calls run on the plugin's own
+  thread (a cloud app may download first; never on the UI thread). Read
+  only: no write grant, no `openOutputStream`/`createDocument` on the
+  folder (guard test in `gui.rs`). No capability grants
+  `keystead-folder:*`, and Tauri checks the ACL for every `plugin:`
+  command – the webview cannot call it.
 * `app/build.gradle.kts`: release signing from `gen/android/keystore.
   properties` (gitignored; keys `storeFile`, `password`, `keyAlias`,
   optional `keyPassword`; CI writes it from the secrets) – without the file
@@ -332,7 +441,8 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   activity's `onPause`/`onResume`; the first `onResume` is swallowed by
   tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`
   and starts the monitor's background clock (`MonitorSignal::Background`);
-  `Resumed` stops it (`MonitorSignal::Foreground`) – see "Background lock (phone)" under
+  `Resumed` stops it (`MonitorSignal::Foreground`) and starts the throttled
+  cloud-folder sync (above) – see "Background lock (phone)" under
   "Desktop backend behaviour details". `RunEvent::Exit`/`Core::shutdown` practically never
   run on Android (the process is killed, not quit): nothing
   security-relevant depends on them. tao ignores the first `onResume` of
@@ -460,9 +570,10 @@ updates"):
   SHA-256 and the signer certificate. The artifact `Keystead-<version>-
   android` holds `Keystead-<version>-android.apk`; the release job
   attaches it to the release.
-* **Updates**: the phone has no updater (stage 1 is offline; a "new
-  version" hint through a small Kotlin plugin is planned for stage 2,
-  decision E6). The user downloads the newer APK from the releases page
+* **Updates**: the phone has no updater and no update check – it stays
+  without the `INTERNET` permission (the "new version" hint through a
+  Kotlin plugin that decision E6 planned for stage 2 was dropped for that;
+  About links to the releases page). The user downloads the newer APK from the releases page
   and installs it over the old one; the package installer checks
   certificate and versionCode, the app's data stays. `latest.json` and the
   `updater-beta` channel stay desktop-only.
@@ -477,7 +588,7 @@ updates"):
 | In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no network (above) |
 | Website-icon fetcher, leaked-password check | need the network; reqwest's platform TLS verifier would need JNI set-up; permanently off on the phone (E6) – stored icons are shown (`get_icons`) |
 | Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
-| Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs (next stages). The read-only image preview `reveal_attachment` is on the phone |
+| Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs. The read-only image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
 
 **iOS** is not built. The code stays iOS-compatible (gates on
@@ -520,6 +631,9 @@ of `docs/BLOCK5-DESIGN.md`.
   data directory – vault file plus this folder –, since no export contains
   attachments.
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
+* Phone only: `<data_dir>/sync/link.json` – the linked cloud folder and the
+  last sync's results (no secrets, see "Cloud-folder sync (phone)");
+  `<data_dir>/sync/incoming/` holds a file only while the sync copies it in.
 * Paired browser clients: `<data_dir>/bridge-clients.json` (stores only
   SHA-256 hashes of client tokens).
 * Browser extension: `<data_dir>/browser-extension` – written and kept up to
@@ -1213,8 +1327,12 @@ history. The bridge's own writes are not affected.
 | `check_update` | – | `UpdateInfo` – checks the configured channel now; network/HTTP errors → `io:<detail>` |
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
+| `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, syncing, folderName, linkedAt, lastSyncAt, lastError, files }` – the linked folder and what the last sync found (`files` as in `link.json`); no access to the folder, not user activity |
+| `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read access to the choice, links it in place of the previous one (whose permission is given back) and syncs; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
+| `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
+| `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's read permission back and removes `link.json`; the vault copies stay on the phone (and are no longer updated) |
 
-**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`. (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
 `PairedClient { id, name, createdAt, lastSeenAt }`,
@@ -1226,7 +1344,7 @@ portable build and Linux/macOS except an AppImage: the UI links to
 or `…/releases` without a version).
 
 **Events** (backend → frontend, `app.emit`):
-* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system"|"background" }` (`background` only on the phone, see "Background lock (phone)" under "Desktop backend behaviour details" below; the UI shows a carried info toast for `timeout`, `system` and `background`)
+* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system"|"background"|"keyChanged" }` (`background` and `keyChanged` only on the phone: see "Background lock (phone)" under "Desktop backend behaviour details" below, and "Cloud-folder sync (phone)" – a synced copy of the open vault has a new master password; the UI shows a carried info toast for `timeout`, `system`, `background` and `keyChanged`)
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
 * `vault://icons` – payload `{}` – the icon fetcher stored new website icons; the UI calls `get_icons` again.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
@@ -1250,6 +1368,10 @@ or `…/releases` without a version).
   toast `lock.switchedToast` is carried over) and the boot shows the new one.
   Until then the old view's commands marked † answer `locked`.
   Not sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
+* `sync://status` – payload `FolderStatus` (see `folder_status`) – phone
+  only: a sync started or ended, or the folder was linked or unlinked. The
+  UI re-reads the vault list (a vault may have arrived) and shows the
+  status.
 * `app://suspended` – payload `{}` – phone only: the app left the
   foreground (`WindowEvent::Suspended`, the activity's `onPause`).
   `useRevealedValue` hides revealed secrets and attachment previews on it,
@@ -1517,7 +1639,8 @@ vault without recovery key is dropped silently.
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
   mutations, `copy_text`, `reveal_secret`, `copy_secret_field`,
   `get_item_for_edit`, the attachment commands, the leaked-password
-  checks, generator, import/export, settings, …) and bridge
+  checks, generator, import/export, settings, the phone's `link_folder`,
+  `sync_now`, `unlink_folder`, …) and bridge
   user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
   `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
   `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).

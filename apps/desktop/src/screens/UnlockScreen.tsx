@@ -4,6 +4,8 @@ import { ApiError, api } from "../lib/api";
 import { useT } from "../i18n";
 import { useApp } from "../state/app";
 import { useToast } from "../components/Toasts";
+import { SyncStatusLine } from "../components/FolderSync";
+import { useFolderSync } from "../state/sync";
 import { Logo } from "../components/Logo";
 import { Button, Field, PasswordInput, Select } from "../components/Controls";
 import {
@@ -33,6 +35,11 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const pwId = useId();
   const vaultSelectId = useId();
   const vault = vaults.find((v) => v.id === vaultId) ?? vaults[0];
+  // Phone: the cloud-folder sync (null on the desktop).
+  const folderSync = useFolderSync();
+  const passwordChangedOnPc = Boolean(
+    folderSync?.status?.files.some((f) => f.vaultId === vault?.id && f.passwordChanged),
+  );
 
   // Phone: no focus on its own – it would pop the on-screen keyboard over
   // the form before the user even looked at it.
@@ -55,7 +62,9 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
       setPassword("");
       enterVault(info);
     } catch (err) {
-      setError(err instanceof ApiError && err.code === "wrong_password" ? t("unlock.wrongPassword") : errorText(err));
+      const wrong = err instanceof ApiError && err.code === "wrong_password";
+      // The synced copy carries a master password set on the PC since.
+      setError(wrong ? (passwordChangedOnPc ? t("unlock.passwordChangedOnPc") : t("unlock.wrongPassword")) : errorText(err));
       setShake((n) => n + 1);
       requestAnimationFrame(() => inputRef.current?.select());
     } finally {
@@ -128,6 +137,8 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
                 </button>
               </div>
             )}
+            {/* Phone: where the vaults come from (the cloud-folder sync). */}
+            {folderSync && <SyncStatusLine vaultId={vault?.id} />}
           </form>
         ) : (
           vault && <RecoveryUnlock vaultId={vault.id} vaultName={vault.name} hasKey={vault.hasRecoveryKey} onBack={() => setMode("password")} />

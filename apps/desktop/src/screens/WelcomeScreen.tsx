@@ -13,6 +13,7 @@ import {
   MonitorSmartphone,
   Plug,
   Puzzle,
+  RefreshCw,
   TriangleAlert,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -26,6 +27,8 @@ import { RecoveryKeyReveal } from "../components/RecoveryKey";
 import { ImportFlow } from "../components/import/ImportFlow";
 import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
+import { useFolderSync } from "../state/sync";
+import { SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
@@ -116,10 +119,11 @@ export function WelcomeScreen() {
 }
 
 /**
- * The phone without a vault: what the app is, and where a vault will come
- * from. The marked slot gets the entry for the next stage ("Tresor vom PC
- * holen": a copy in the user's own cloud folder, picked in the system file
- * picker – docs/BLOCK5-DESIGN.md, Stufe 2a); until then it explains the way.
+ * The phone without a vault: what the app is, and how a vault gets here –
+ * the cloud-folder sync (docs/ARCHITECTURE.md, "Cloud-folder sync
+ * (phone)"): the PC keeps a copy in a folder of the user's own cloud, the
+ * phone links that folder in the system picker. Once a vault has arrived
+ * the app moves on to the unlock screen (App.tsx).
  */
 function PhoneWelcome() {
   const { t } = useT();
@@ -132,16 +136,8 @@ function PhoneWelcome() {
           <p>{t("welcome.phoneSubtitle")}</p>
         </div>
 
-        <section className="welcome-slot" data-slot="vault-source" aria-labelledby="welcome-slot-title">
-          <span className="choice-icon muted-icon" aria-hidden>
-            <MonitorSmartphone />
-          </span>
-          <span className="choice-text">
-            <span className="choice-title" id="welcome-slot-title">
-              {t("welcome.phoneNoVaultTitle")}
-            </span>
-            <span className="choice-desc">{t("welcome.phoneNoVaultText")}</span>
-          </span>
+        <section className="welcome-slot sync-slot" data-slot="vault-source" aria-labelledby="welcome-slot-title">
+          <PhoneVaultSource />
         </section>
 
         <ul className="welcome-features">
@@ -169,6 +165,87 @@ function PhoneWelcome() {
         </ul>
       </div>
     </div>
+  );
+}
+
+/** The welcome slot: the way to the first vault, or the linked folder's state. */
+function PhoneVaultSource() {
+  const { t } = useT();
+  const folderSync = useFolderSync();
+  const errorFor = useSyncErrorText();
+  const status = folderSync?.status ?? null;
+  const busy = folderSync?.busy ?? null;
+  const linked = status?.linked === true;
+  const lost = folderLost(status);
+  const syncing = Boolean(status?.syncing) || busy === "sync";
+
+  return (
+    <>
+      <div className="sync-slot-head">
+        <span className="choice-icon muted-icon" aria-hidden>
+          <MonitorSmartphone />
+        </span>
+        <h2 className="choice-title" id="welcome-slot-title">
+          {linked && !lost ? t("sync.linkedEmptyTitle", { folder: status?.folderName ?? "" }) : t("sync.welcomeTitle")}
+        </h2>
+      </div>
+
+      {linked && !lost ? (
+        <>
+          <p className="choice-desc">{t("sync.linkedEmptyText")}</p>
+          {status?.lastError && (
+            <div className="callout callout-warning" role="status">
+              <TriangleAlert />
+              <span>{errorFor(status.lastError)}</span>
+            </div>
+          )}
+          {status && <SyncFileList files={status.files} />}
+          <div className="sync-actions">
+            <Button
+              variant="primary"
+              block
+              icon={<RefreshCw />}
+              loading={syncing}
+              disabled={busy !== null && busy !== "sync"}
+              onClick={() => void folderSync?.sync()}
+            >
+              {t("sync.syncNow")}
+            </Button>
+            <Button
+              variant="secondary"
+              block
+              icon={<FolderOpen />}
+              loading={busy === "link"}
+              disabled={busy !== null && busy !== "link"}
+              onClick={() => void folderSync?.link()}
+            >
+              {t("sync.otherFolder")}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          {lost && (
+            <div className="callout callout-warning" role="status">
+              <TriangleAlert />
+              <span>{errorFor("unsupported:folder_access_lost")}</span>
+            </div>
+          )}
+          <SyncSteps />
+          <Button
+            variant="primary"
+            block
+            icon={<FolderOpen />}
+            loading={busy === "link"}
+            disabled={!folderSync || busy !== null}
+            onClick={() => void folderSync?.link()}
+          >
+            {lost ? t("sync.repick") : t("sync.pickFolder")}
+          </Button>
+        </>
+      )}
+      <p className="subtle sync-note">{t("sync.readOnlyNote")}</p>
+    </>
   );
 }
 

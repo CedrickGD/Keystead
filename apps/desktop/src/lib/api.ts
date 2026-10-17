@@ -9,6 +9,7 @@ import type {
   BrowserStatus,
   ExportFormat,
   Folder,
+  FolderStatus,
   GeneratedPassword,
   GeneratorOptions,
   HealthReport,
@@ -254,6 +255,22 @@ export const api = {
   openExtensionDir: () => call<null>("open_extension_dir"),
   setPortableMode: (enabled: boolean) => call<AppInfo>("set_portable_mode", { enabled }),
 
+  // Cloud-folder sync – phone only (see "Cloud-folder sync (phone)" in
+  // ARCHITECTURE.md). The phone reads its vaults from a folder of the user's
+  // own cloud; it never writes there.
+  /** The linked folder and what the last sync found (no access to the folder). */
+  folderStatus: () => call<FolderStatus>("folder_status"),
+  /**
+   * Opens the system folder picker, keeps read access to the choice, links it
+   * and syncs. `null` when the picker was closed without a choice; a failed
+   * first sync is in `lastError`.
+   */
+  linkFolder: () => call<FolderStatus | null>("link_folder"),
+  /** Syncs now; rejects with the sync's error (also recorded in `lastError`). */
+  syncNow: () => call<FolderStatus>("sync_now"),
+  /** Forgets the folder; the vault copies stay on the phone. */
+  unlinkFolder: () => call<FolderStatus>("unlink_folder"),
+
   /** Checks the configured update channel now (network errors → `io:<detail>`). */
   checkUpdate: () => call<UpdateInfo>("check_update"),
   /** The update the last (background) check found, without a network request. */
@@ -293,6 +310,8 @@ export const events = {
   onIconsChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://icons", () => handler()),
   /** The vault was unlocked outside the UI (browser extension). */
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
+  /** Phone: the cloud-folder sync started or ended, or the folder was (un)linked. */
+  onSyncStatus: (handler: (status: FolderStatus) => void) => subscribe<FolderStatus>("sync://status", handler),
   /** Phone: the app left the foreground (Android `onPause`); revealed values are hidden. */
   onSuspended: (handler: () => void) => subscribe<Record<string, never>>("app://suspended", () => handler()),
   onPairingRequest: (handler: (payload: PairingRequest) => void) =>

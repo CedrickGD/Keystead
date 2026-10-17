@@ -18,14 +18,18 @@ pub struct VaultStore {
     root: PathBuf,
 }
 
-/// Vault ids become file names: only allow a conservative character set.
-fn check_vault_id(id: &str) -> Result<()> {
-    let ok = !id.is_empty()
+/// Vault ids become file names: only a conservative character set (the
+/// same rule for attachment ids, see `attachments::blob_id_of_file_name`).
+pub(crate) fn is_valid_id(id: &str) -> bool {
+    !id.is_empty()
         && id.len() <= 64
         && id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if ok {
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn check_vault_id(id: &str) -> Result<()> {
+    if is_valid_id(id) {
         Ok(())
     } else {
         Err(Error::NotFound(format!("vault {id}")))

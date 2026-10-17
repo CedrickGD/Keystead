@@ -8,6 +8,7 @@ import {
   FileDown,
   FileUp,
   FolderOpen,
+  FolderSync,
   RefreshCw,
   CircleArrowUp,
   CircleAlert,
@@ -24,6 +25,8 @@ import {
   Sun,
   Upload,
   LockKeyhole,
+  TriangleAlert,
+  Unlink,
   Wrench,
   Zap,
 } from "lucide-react";
@@ -53,6 +56,14 @@ import { useUpdateErrorText } from "../../components/UpdateBanner";
 import { useUpdate } from "../../state/update";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
 import { WebsiteIconsSetting } from "./WebsiteIconsSetting";
+import { useFolderSync } from "../../state/sync";
+import {
+  SyncFileList,
+  SyncSteps,
+  folderLost,
+  useRelativeTimeTick,
+  useSyncErrorText,
+} from "../../components/FolderSync";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -810,6 +821,109 @@ function UpdateCheckResult({ result }: { result: CheckResult }) {
   );
 }
 
+/**
+ * Phone only: the linked cloud folder the vaults come from ("Cloud-folder
+ * sync (phone)" in docs/ARCHITECTURE.md) – copy-in only.
+ */
+function SyncSection() {
+  const { t, formatDateTime, formatRelative } = useT();
+  const folderSync = useFolderSync();
+  const errorFor = useSyncErrorText();
+  useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt));
+  if (!folderSync) return null;
+  const { status, busy, link, sync, unlink } = folderSync;
+  const linked = status?.linked === true;
+  const syncing = Boolean(status?.syncing) || busy === "sync";
+
+  return (
+    <SettingsSection id="sync" title={t("settings.sync")} description={t("settings.syncDesc")}>
+      {!linked ? (
+        <SettingRow title={t("settings.syncFolder")} description={<SyncSteps />} stacked>
+          <Button
+            variant="primary"
+            icon={<FolderOpen />}
+            loading={busy === "link"}
+            disabled={!status || busy !== null}
+            onClick={() => void link()}
+          >
+            {t("sync.pickFolder")}
+          </Button>
+        </SettingRow>
+      ) : (
+        <>
+          <SettingRow
+            title={t("settings.syncFolder")}
+            description={
+              <>
+                <strong className="sync-folder-name">{status?.folderName}</strong>
+                <span className="sync-folder-desc">{t("settings.syncFolderDesc")}</span>
+              </>
+            }
+            stacked
+          >
+            <Button
+              variant="secondary"
+              icon={<FolderOpen />}
+              loading={busy === "link"}
+              disabled={busy !== null && busy !== "link"}
+              onClick={() => void link()}
+            >
+              {folderLost(status) ? t("sync.repick") : t("sync.changeFolder")}
+            </Button>
+          </SettingRow>
+          <SettingRow
+            title={t("settings.syncLast")}
+            description={
+              <>
+                {syncing
+                  ? t("sync.syncing")
+                  : status?.lastSyncAt
+                    ? `${formatRelative(status.lastSyncAt)} · ${formatDateTime(status.lastSyncAt)}`
+                    : t("sync.neverSynced")}
+                {status?.lastError && !syncing && (
+                  <span className="callout callout-warning sync-error" role="status">
+                    <TriangleAlert />
+                    <span>{errorFor(status.lastError)}</span>
+                  </span>
+                )}
+              </>
+            }
+            stacked
+          >
+            <Button
+              variant="secondary"
+              icon={<RefreshCw />}
+              loading={syncing}
+              disabled={busy !== null && busy !== "sync"}
+              onClick={() => void sync()}
+            >
+              {t("sync.syncNow")}
+            </Button>
+          </SettingRow>
+          <SettingRow
+            title={t("settings.syncVaults")}
+            description={
+              status && status.files.length > 0 ? <SyncFileList files={status.files} /> : t("settings.syncNoFiles")
+            }
+            stacked
+          />
+          <SettingRow title={t("sync.unlink")} description={t("settings.syncUnlinkDesc")} stacked>
+            <Button
+              variant="danger-outline"
+              icon={<Unlink />}
+              loading={busy === "unlink"}
+              disabled={busy !== null && busy !== "unlink"}
+              onClick={() => void unlink()}
+            >
+              {t("sync.unlink")}
+            </Button>
+          </SettingRow>
+        </>
+      )}
+    </SettingsSection>
+  );
+}
+
 /** The system names in "Über Keystead" (product names, the same in every language). */
 const PLATFORM_NAMES: Record<AppInfo["platform"], string> = {
   windows: "Windows",
@@ -925,6 +1039,8 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
   // vault section has nothing to offer while the vault is read-only.
   const desktop = !isPhonePlatform(info.platform);
   const shown = {
+    // The phone's cloud-folder sync.
+    sync: !desktop,
     browser: desktop,
     data: desktop && !info.readOnly,
     advanced: desktop,
@@ -939,6 +1055,7 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
   const sections: { id: string; label: string; icon: ReactNode; hidden?: boolean }[] = [
     { id: "general", label: t("settings.general"), icon: <SlidersHorizontal /> },
     { id: "security", label: t("settings.security"), icon: <ShieldCheck /> },
+    { id: "sync", label: t("settings.syncShort"), icon: <FolderSync />, hidden: !shown.sync },
     { id: "browser", label: t("settings.browserShort"), icon: <Plug />, hidden: !shown.browser },
     { id: "data", label: t("settings.data"), icon: <Upload />, hidden: !shown.data },
     { id: "advanced", label: t("settings.advanced"), icon: <Wrench />, hidden: !shown.advanced },
@@ -1036,6 +1153,7 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
         <div className="settings-content">
           <GeneralSection />
           <SecuritySection />
+          {shown.sync && <SyncSection />}
           {shown.browser && <BrowserSection />}
           {shown.data && <ImportExportSection />}
           {shown.advanced && <AdvancedSection />}

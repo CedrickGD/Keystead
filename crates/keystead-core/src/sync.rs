@@ -1,11 +1,15 @@
 //! Vault files as opaque bytes: what a file import and the cloud-folder
 //! sync of the mobile app (Block 5) need to know about a `.keystead` file
-//! without its master password – which vault it is and how new it is.
+//! without its master password – which vault it is and how new it is – and
+//! what the read-only phone does with a copy it finds in its cloud folder
+//! ([`decide_copy_in`]).
+
+use std::cmp::Ordering;
 
 use serde::Serialize;
 
 use crate::error::Result;
-use crate::format::VaultFile;
+use crate::format::{VaultFile, VAULT_EXTENSION};
 
 /// The public header of a vault file: no secrets, readable without the
 /// master password. Two files with the same `id` are copies of one vault;
@@ -29,14 +33,68 @@ pub struct VaultHeader {
 /// legacy VaultX file, random bytes) or a format version this build does
 /// not know → `Error::Unsupported`.
 pub fn header_of(bytes: &[u8]) -> Result<VaultHeader> {
-    let file = VaultFile::parse(bytes)?;
-    Ok(VaultHeader {
-        id: file.id,
-        name: file.name,
-        revision: file.revision,
-        updated_at: file.updated_at,
-        version: file.version,
-    })
+    VaultFile::parse(bytes).map(|file| VaultHeader::from(&file))
+}
+
+impl From<&VaultFile> for VaultHeader {
+    fn from(file: &VaultFile) -> Self {
+        VaultHeader {
+            id: file.id.clone(),
+            name: file.name.clone(),
+            revision: file.revision,
+            updated_at: file.updated_at,
+            version: file.version,
+        }
+    }
+}
+
+/// What the read-only phone does with a copy of a vault it found in its
+/// linked cloud folder (copy-in, Block 5 stage 2a). Only the PC writes the
+/// folder's copy; the phone never writes back, so a revision counter is
+/// enough to tell old from new (no divergence is possible yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyIn {
+    /// The phone has no copy of this vault yet: add it.
+    Import,
+    /// The folder's copy is newer (higher revision): replace the phone's.
+    Update,
+    /// The same revision: nothing to do.
+    UpToDate,
+    /// The folder's copy is older than the phone's – the PC went back to
+    /// an older file (a restored backup) or the cloud app has not fetched
+    /// the newest one yet. The phone keeps its copy: an older revision is
+    /// never copied in (a rollback), and nothing is ever written back.
+    RemoteOlder,
+    /// The phone's file at that place belongs to another vault (another
+    /// id): it is never touched.
+    OtherVault,
+}
+
+/// The copy-in decision for the folder's copy `remote` against the
+/// phone's copy of that vault, `local` (`None`: the phone has none). Pure:
+/// headers only, no file access.
+pub fn decide_copy_in(local: Option<&VaultHeader>, remote: &VaultHeader) -> CopyIn {
+    let Some(local) = local else {
+        return CopyIn::Import;
+    };
+    if local.id != remote.id {
+        return CopyIn::OtherVault;
+    }
+    match remote.revision.cmp(&local.revision) {
+        Ordering::Greater => CopyIn::Update,
+        Ordering::Equal => CopyIn::UpToDate,
+        Ordering::Less => CopyIn::RemoteOlder,
+    }
+}
+
+/// The vault id a vault file in a synced folder is named after:
+/// `<id>.keystead` with an id of letters, digits, `-` and `_` (at most
+/// 64), as the app names its vault files. Any other name → `None`: a
+/// renamed copy, a cloud app's conflict copy (`… (1).keystead`), a hidden
+/// temporary file (`.<id>.keystead.<hex>.tmp`) or a backup (`.bak`).
+pub fn vault_id_of_file_name(name: &str) -> Option<&str> {
+    let id = name.strip_suffix(&format!(".{VAULT_EXTENSION}"))?;
+    crate::store::is_valid_id(id).then_some(id)
 }
 
 #[cfg(test)]
@@ -116,6 +174,105 @@ mod tests {
         json["version"] = 99.into();
         let err = header_of(&serde_json::to_vec(&json).unwrap()).unwrap_err();
         assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+    }
+
+    fn header(id: &str, revision: u64) -> VaultHeader {
+        VaultHeader {
+            id: id.into(),
+            name: "Privat".into(),
+            revision,
+            updated_at: 1_700_000_000_000,
+            version: crate::format::FORMAT_VERSION,
+        }
+    }
+
+    #[test]
+    fn copy_in_decisions() {
+        let remote = header("a", 7);
+        // No copy on the phone yet: added.
+        assert_eq!(decide_copy_in(None, &remote), CopyIn::Import);
+        // Newer in the folder: replaced; equal: nothing; older: kept.
+        assert_eq!(
+            decide_copy_in(Some(&header("a", 6)), &remote),
+            CopyIn::Update
+        );
+        assert_eq!(
+            decide_copy_in(Some(&header("a", 1)), &remote),
+            CopyIn::Update
+        );
+        assert_eq!(
+            decide_copy_in(Some(&header("a", 7)), &remote),
+            CopyIn::UpToDate
+        );
+        assert_eq!(
+            decide_copy_in(Some(&header("a", 8)), &remote),
+            CopyIn::RemoteOlder
+        );
+        assert_eq!(
+            decide_copy_in(Some(&header("a", u64::MAX)), &remote),
+            CopyIn::RemoteOlder
+        );
+        // Another vault at that place is never replaced, whatever its revision.
+        for revision in [1, 7, 9] {
+            assert_eq!(
+                decide_copy_in(Some(&header("b", revision)), &remote),
+                CopyIn::OtherVault
+            );
+        }
+        // Only id and revision count: a renamed vault or another clock is still an update.
+        let mut renamed = header("a", 8);
+        renamed.name = "Familie".into();
+        renamed.updated_at = 0;
+        assert_eq!(
+            decide_copy_in(Some(&header("a", 7)), &renamed),
+            CopyIn::Update
+        );
+    }
+
+    #[test]
+    fn copy_in_of_real_files_and_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path());
+        let mut v = store
+            .create_vault_with_params("Privat", "pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        let phone = header_of(&fs::read(v.path()).unwrap()).unwrap();
+        v.save_item(VaultItem::new(ItemType::Note, "n")).unwrap();
+        let pc = fs::read(v.path()).unwrap();
+        let remote = header_of(&pc).unwrap();
+        assert_eq!(decide_copy_in(Some(&phone), &remote), CopyIn::Update);
+        assert_eq!(decide_copy_in(Some(&remote), &phone), CopyIn::RemoteOlder);
+        // Garbage never gets as far as a decision.
+        assert!(header_of(&pc[..pc.len() - 10]).is_err());
+        assert!(header_of(b"PK a zip").is_err());
+    }
+
+    #[test]
+    fn vault_ids_of_file_names() {
+        let id = "29a9e366-e89d-4f3f-8c15-814a2200224b";
+        assert_eq!(vault_id_of_file_name(&format!("{id}.keystead")), Some(id));
+        assert_eq!(
+            vault_id_of_file_name("legacy_id_1.keystead"),
+            Some("legacy_id_1")
+        );
+        for name in [
+            "Privat.keystead.bak",
+            ".keystead",
+            "Privat (1).keystead",
+            "Kopie von Privat.keystead",
+            ".29a9e366.keystead.0123456789abcdef.tmp",
+            "29a9e366.keystead.lock",
+            "29a9e366.KEYSTEAD",
+            "29a9e366.keystead.attachments",
+            "../29a9e366.keystead",
+            "a/b.keystead",
+        ] {
+            assert_eq!(vault_id_of_file_name(name), None, "{name}");
+        }
+        assert_eq!(
+            vault_id_of_file_name(&format!("{}.keystead", "x".repeat(65))),
+            None
+        );
     }
 
     #[test]

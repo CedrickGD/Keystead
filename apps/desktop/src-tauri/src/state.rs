@@ -70,6 +70,12 @@ pub enum LockReason {
     /// `lockInBackgroundSeconds` (see `monitor`).
     #[cfg_attr(desktop, allow(dead_code))]
     Background,
+    /// Phone: the cloud-folder sync brought a copy of the open vault with a
+    /// new master password (changed on the PC); the session's key no longer
+    /// opens it (`folder_sync`).
+    #[cfg_attr(all(desktop, not(test)), allow(dead_code))]
+    #[serde(rename = "keyChanged")]
+    KeyChanged,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -926,6 +932,7 @@ mod tests {
             (LockReason::Timeout, "timeout"),
             (LockReason::System, "system"),
             (LockReason::Background, "background"),
+            (LockReason::KeyChanged, "keyChanged"),
         ] {
             assert_eq!(serde_json::to_value(reason).unwrap(), name);
         }

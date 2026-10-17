@@ -12,6 +12,15 @@
 // page's visibility – switch tabs or minimise the browser to leave the app
 // (the backend's wait for a pending clipboard clear is not simulated).
 // `__keysteadMock.simulateBack()` sends the Android back gesture.
+// The phone's cloud-folder sync is simulated (`link_folder` & co.): the
+// "PC's folder" holds the two sample vaults; "Cloud-Ordner wählen" links
+// "Keystead" and copies them in (with `?mock=empty` the welcome screen shows
+// first), `?sync=linked` starts already linked. `simulatePcSave()` lets the
+// next sync bring a newer revision (a note "Neu vom PC" in the open vault
+// or "Privat"), `simulatePcPasswordChange()` one with the new master
+// password "demo2" (an open vault locks with reason `keyChanged`),
+// `simulateFolderLost()` makes the next sync fail with
+// `unsupported:folder_access_lost` (linking again repairs it).
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -29,6 +38,7 @@ import type {
   BrowserStatus,
   ExportFormat,
   Folder,
+  FolderStatus,
   GeneratedPassword,
   GeneratorOptions,
   HealthReport,
@@ -41,6 +51,7 @@ import type {
   SecretField,
   SessionState,
   Settings,
+  SyncFileResult,
   TotpCode,
   UpdateInfo,
   VaultData,
@@ -98,7 +109,26 @@ interface MockState {
   clients: PairedClient[];
   pairings: Map<string, PairingRequest>;
   lastActivity: number;
+  sync: MockSync;
 }
+
+/** The phone's linked cloud folder (see the header comment). */
+interface MockSync {
+  link: { folderName: string; linkedAt: number } | null;
+  lastSyncAt: number | null;
+  lastError: string | null;
+  files: SyncFileResult[];
+  syncing: boolean;
+  /** The PC's copies in the folder, by vault id. */
+  folder: Map<string, { revision: number; password: string; newNotes: number }>;
+  /** The revisions of the phone's copies. */
+  phone: Map<string, number>;
+  /** The next sync finds the folder's permission revoked. */
+  lost: boolean;
+}
+
+const PRIVATE_VAULT_ID = "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d";
+const WORK_VAULT_ID = "a83e7b10-55c2-4f6e-b1d9-7c8e9f0a1b2c";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,8 +223,8 @@ function initState(): MockState {
   const empty = params.get("mock") === "empty";
   const vaults = new Map<string, MockVault>();
   if (!empty) {
-    const priv = vaultFromSample(privateVault(now), "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d", now);
-    const work = vaultFromSample(workVault(now), "a83e7b10-55c2-4f6e-b1d9-7c8e9f0a1b2c", now);
+    const priv = vaultFromSample(privateVault(now), PRIVATE_VAULT_ID, now);
+    const work = vaultFromSample(workVault(now), WORK_VAULT_ID, now);
     vaults.set(priv.info.id, priv);
     // Website icons as if the app had loaded them before (sample icons).
     seedSampleIcons(priv.info.id, priv.data.items);
@@ -215,7 +245,7 @@ function initState(): MockState {
       minimizeToTray: true,
       startInTray: false,
       browserIntegration: true,
-      lastVaultId: empty ? null : "6f1c2a9e-3b7d-4c51-9a0e-1d2f3a4b5c6d",
+      lastVaultId: empty ? null : PRIVATE_VAULT_ID,
       websiteIcons: true,
       updateCheck: true,
       // The app's default is "stable"; the mock starts on "beta" so the fake update flows (?update=…) show.
@@ -243,7 +273,32 @@ function initState(): MockState {
       : [{ id: "c-7f3a", name: "Chrome – DESKTOP-4F2K9", createdAt: now - 32 * DAY, lastSeenAt: now - 2 * 3_600_000 }],
     pairings: new Map(),
     lastActivity: now,
+    sync: initSync(phone && params.get("sync") === "linked", empty, now),
   };
+}
+
+function initSync(linked: boolean, empty: boolean, now: number): MockSync {
+  const folder = new Map([
+    [PRIVATE_VAULT_ID, { revision: 42, password: DEMO_PASSWORD, newNotes: 0 }],
+    [WORK_VAULT_ID, { revision: 17, password: DEMO_PASSWORD, newNotes: 0 }],
+  ]);
+  const phone = new Map<string, number>(empty ? [] : [...folder].map(([id, copy]) => [id, copy.revision]));
+  const sync: MockSync = {
+    link: null,
+    lastSyncAt: null,
+    lastError: null,
+    files: [],
+    syncing: false,
+    folder,
+    phone,
+    lost: false,
+  };
+  if (linked && !empty) {
+    sync.link = { folderName: "Keystead", linkedAt: now - 3 * DAY };
+    sync.lastSyncAt = now - 4 * 60_000;
+    sync.files = [...folder].map(([id, copy]) => syncResult(id, copy.revision, "upToDate", false));
+  }
+  return sync;
 }
 
 function getState(): MockState {
@@ -458,6 +513,12 @@ export interface MockDevHelpers {
   simulateBackgroundLock: () => void;
   simulateExternalChange: () => void;
   simulateUnlockRequest: () => void;
+  /** Cloud-folder sync: the PC saved the open vault (or "Privat"); the next sync brings it. */
+  simulatePcSave: () => void;
+  /** Cloud-folder sync: the PC changed that vault's master password to "demo2". */
+  simulatePcPasswordChange: () => void;
+  /** Cloud-folder sync: the next sync finds the folder's permission revoked. */
+  simulateFolderLost: () => void;
   /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
   simulateUpdate: (portable?: boolean) => void;
   /** Drags a file over the window (the drop overlay stays until `dropFile` / `cancelDrag`). Default: a Chrome CSV export. */
@@ -485,6 +546,11 @@ function installDevHelpers(): void {
     simulateBackgroundLock: () => lock("background"),
     simulateExternalChange: () => emit("vault://changed", {}),
     simulateUnlockRequest: () => emit("bridge://unlock-request", {}),
+    simulatePcSave: () => mockPcSave(false),
+    simulatePcPasswordChange: () => mockPcSave(true),
+    simulateFolderLost: () => {
+      getState().sync.lost = true;
+    },
     simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),
     dragFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "enter", paths: dropPaths(path) }),
     dropFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "drop", paths: dropPaths(path) }),
@@ -875,6 +941,149 @@ async function commitImport(args: Record<string, unknown>): Promise<ImportReport
 function dropPaths(path?: string | string[]): string[] {
   if (Array.isArray(path)) return path;
   return [path ?? "C:\\Users\\Demo\\Downloads\\Chrome-Passwörter.csv"];
+}
+
+// ---------------------------------------------------------------------------
+// Cloud-folder sync (phone, see the header comment)
+// ---------------------------------------------------------------------------
+
+function sampleFor(id: string, now: number): SampleVault {
+  return id === WORK_VAULT_ID ? workVault(now) : privateVault(now);
+}
+
+function syncResult(id: string, revision: number, outcome: SyncFileResult["outcome"], passwordChanged: boolean): SyncFileResult {
+  const name = getStateOrNull()?.vaults.get(id)?.info.name ?? sampleFor(id, Date.now()).name;
+  return {
+    fileName: `${id}.keystead`,
+    vaultId: id,
+    vaultName: name,
+    revision,
+    outcome,
+    error: null,
+    attachmentsCopied: 0,
+    attachmentsFailed: 0,
+    passwordChanged,
+  };
+}
+
+function folderStatus(): FolderStatus {
+  const sync = getState().sync;
+  return {
+    linked: sync.link !== null,
+    syncing: sync.syncing,
+    folderName: sync.link?.folderName ?? null,
+    linkedAt: sync.link?.linkedAt ?? null,
+    lastSyncAt: sync.link ? sync.lastSyncAt : null,
+    lastError: sync.link ? sync.lastError : null,
+    files: sync.link ? clone(sync.files) : [],
+  };
+}
+
+function emitSyncStatus(): void {
+  emit("sync://status", folderStatus());
+}
+
+/** The PC saved a vault (and maybe changed its master password): the folder's copy gets newer. */
+function mockPcSave(newPassword: boolean): void {
+  const s = getState();
+  const id = s.unlockedId && s.sync.folder.has(s.unlockedId) ? s.unlockedId : PRIVATE_VAULT_ID;
+  const copy = s.sync.folder.get(id);
+  if (!copy) return;
+  copy.revision += 1;
+  copy.newNotes += 1;
+  if (newPassword) copy.password = "demo2";
+}
+
+/** One sync of the linked folder: copy-in only, like `folder_sync::sync_folder`. */
+async function mockSyncFolder(): Promise<FolderStatus> {
+  const s = getState();
+  const sync = s.sync;
+  if (!sync.link) fail("unsupported:folder_not_linked");
+  sync.syncing = true;
+  emitSyncStatus();
+  await sleep(900);
+  sync.syncing = false;
+  if (sync.lost) {
+    sync.lastError = "unsupported:folder_access_lost";
+    emitSyncStatus();
+    fail(sync.lastError);
+  }
+  const now = Date.now();
+  const previous = sync.files;
+  const files: SyncFileResult[] = [];
+  let lockedForKey = false;
+  let changedOpen = false;
+  for (const [id, copy] of sync.folder) {
+    const phoneRevision = sync.phone.get(id);
+    let outcome: SyncFileResult["outcome"];
+    let passwordChanged = false;
+    let attachments = 0;
+    if (phoneRevision === undefined || !s.vaults.has(id)) {
+      const vault = vaultFromSample(sampleFor(id, now), id, now);
+      vault.password = copy.password;
+      s.vaults.set(id, vault);
+      if (id === PRIVATE_VAULT_ID) seedSampleIcons(id, vault.data.items);
+      attachments = mockAttachmentsOfVault(id);
+      outcome = "imported";
+    } else if (copy.revision > phoneRevision) {
+      const vault = s.vaults.get(id);
+      if (vault) {
+        passwordChanged = vault.password !== copy.password;
+        vault.password = copy.password;
+        for (let n = 0; n < copy.newNotes; n += 1) {
+          vault.data.items.push({
+            id: uuid(),
+            type: "note",
+            name: "Neu vom PC",
+            folderId: null,
+            favorite: false,
+            notes: "Diese Notiz kam mit der Synchronisierung aus dem Cloud-Ordner.",
+            tags: [],
+            login: null,
+            card: null,
+            identity: null,
+            fields: [],
+            passwordHistory: [],
+            createdAt: now,
+            updatedAt: now,
+            deletedAt: null,
+          });
+        }
+        copy.newNotes = 0;
+        touch(vault);
+        if (s.unlockedId === id) {
+          if (passwordChanged) lockedForKey = true;
+          else changedOpen = true;
+        }
+      }
+      outcome = "updated";
+    } else if (copy.revision < phoneRevision) {
+      outcome = "pcOlder";
+    } else {
+      outcome = "upToDate";
+      passwordChanged = previous.some((f) => f.vaultId === id && f.revision === copy.revision && f.passwordChanged);
+    }
+    if (outcome !== "pcOlder") sync.phone.set(id, copy.revision);
+    files.push({ ...syncResult(id, copy.revision, outcome, passwordChanged), attachmentsCopied: attachments });
+  }
+  sync.files = files;
+  sync.lastSyncAt = now;
+  sync.lastError = null;
+  if (lockedForKey) lock("keyChanged");
+  else if (changedOpen) emit("vault://changed", {});
+  emitSyncStatus();
+  return folderStatus();
+}
+
+/** Attachments the sample vault comes with (copied in with it). */
+function mockAttachmentsOfVault(id: string): number {
+  const vault = getState().vaults.get(id);
+  if (!vault) return 0;
+  return vault.data.items.reduce((sum, item) => sum + mockAttachmentsOf(id, item.id).length, 0);
+}
+
+function getStateOrNull(): MockState | null {
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,6 +1594,37 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return clone(s.appInfo);
     }
 
+    case "folder_status":
+      return folderStatus();
+
+    case "link_folder": {
+      // The system picker; the user picks the PC's folder in the cloud app.
+      await sleep(700);
+      s.sync.link = { folderName: "Keystead", linkedAt: Date.now() };
+      s.sync.lost = false;
+      s.sync.lastError = null;
+      s.lastActivity = Date.now();
+      try {
+        await mockSyncFolder();
+      } catch {
+        /* recorded in lastError */
+      }
+      return folderStatus();
+    }
+
+    case "sync_now":
+      s.lastActivity = Date.now();
+      return mockSyncFolder();
+
+    case "unlink_folder":
+      s.lastActivity = Date.now();
+      s.sync.link = null;
+      s.sync.files = [];
+      s.sync.lastSyncAt = null;
+      s.sync.lastError = null;
+      emitSyncStatus();
+      return folderStatus();
+
     default:
       fail(`unsupported:unknown command ${command}`);
   }
@@ -1414,6 +1654,10 @@ const PHONE_COMMANDS = new Set([
   "get_icons",
   "get_settings",
   "save_settings",
+  "folder_status",
+  "link_folder",
+  "sync_now",
+  "unlink_folder",
 ]);
 
 export async function mockInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {

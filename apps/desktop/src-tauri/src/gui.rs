@@ -94,12 +94,15 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
                 .build(),
-        );
+        )
+        // The cloud-folder sync's Kotlin plugin (Rust-only as well).
+        .plugin(crate::mobile::sync::plugin());
     builder
         .plugin(tauri_plugin_dialog::init())
         // `#[cfg(desktop)]`: not registered on the phone (read-only, or the
-        // feature is desktop-only). The unit test below keeps this list and
-        // the table in docs/ARCHITECTURE.md in step.
+        // feature is desktop-only); `#[cfg(mobile)]`: the phone's own
+        // (cloud-folder sync). The unit test below keeps this list and the
+        // table in docs/ARCHITECTURE.md in step.
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_vaults,
@@ -213,6 +216,14 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::pwned::check_pwned_password,
             #[cfg(desktop)]
             crate::pwned::check_pwned_vault,
+            #[cfg(mobile)]
+            crate::mobile::sync::folder_status,
+            #[cfg(mobile)]
+            crate::mobile::sync::link_folder,
+            #[cfg(mobile)]
+            crate::mobile::sync::sync_now,
+            #[cfg(mobile)]
+            crate::mobile::sync::unlink_folder,
         ])
         .setup(move |app| {
             setup(app.handle(), background);
@@ -255,6 +266,8 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             }
             WindowEvent::Resumed => {
                 core.signal_monitor(MonitorSignal::Foreground);
+                // Pick up what the PC saved meanwhile (throttled, own thread).
+                crate::mobile::sync::auto_sync(window.app_handle());
             }
             _ => {}
         }
@@ -276,6 +289,9 @@ fn setup(app: &AppHandle, background: bool) {
     });
     let core = Core::new(app.clone(), store, settings.clone());
     app.manage(Arc::clone(&core));
+    // The linked cloud folder, and the first sync of this start.
+    #[cfg(mobile)]
+    crate::mobile::sync::start(app, &core);
 
     let window = match build_main_window(app, &core) {
         Ok(window) => window,
@@ -491,7 +507,13 @@ mod tests {
         // through `platform::open_url`.
         for (file, capability) in capabilities() {
             for id in permission_ids(&capability) {
-                for plugin in ["updater:", "process:", "clipboard-manager:", "opener:"] {
+                for plugin in [
+                    "updater:",
+                    "process:",
+                    "clipboard-manager:",
+                    "opener:",
+                    "keystead-folder:",
+                ] {
                     assert!(!id.starts_with(plugin), "{file}: {id}");
                 }
             }
@@ -593,6 +615,44 @@ mod tests {
             on_webview_create.contains("onBackPressedDispatcher.addCallback(this, backCallback)")
         );
 
+        // The cloud-folder plugin: read access only (persisted, given back on
+        // unlink), copies only into the app's sync/incoming folder, the
+        // provider work off the UI thread.
+        let folder = include_str!(
+            "../gen/android/app/src/main/java/io/github/cedrickgd/keystead/KeysteadFolderPlugin.kt"
+        );
+        assert!(folder.contains(
+            "class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity)"
+        ));
+        assert!(folder.contains("Intent.ACTION_OPEN_DOCUMENT_TREE"));
+        assert!(folder
+            .contains("takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)"));
+        assert!(folder.contains("releasePersistableUriPermission"));
+        assert!(
+            !folder.contains("FLAG_GRANT_WRITE_URI_PERMISSION"),
+            "read-only"
+        );
+        for write in [
+            "openOutputStream",
+            "createDocument",
+            "deleteDocument",
+            "renameDocument",
+        ] {
+            assert!(
+                !folder.contains(write),
+                "{write}: the folder is never written"
+            );
+        }
+        assert!(folder.contains(r#"incoming.name != "incoming""#));
+        assert!(folder.contains("Executors.newSingleThreadExecutor()"));
+        for command in ["pickFolder", "releaseFolder", "listChildren", "copyFile"] {
+            assert!(
+                folder.contains(&format!("fun {command}(invoke: Invoke)")),
+                "{command}"
+            );
+        }
+        assert!(source_registers_the_folder_plugin());
+
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains(r#"android:allowBackup="false""#));
         assert!(manifest.contains(r#"android:dataExtractionRules="@xml/data_extraction_rules""#));
@@ -663,6 +723,14 @@ mod tests {
         assert!(app_ignored.lines().any(|line| line == "/tauri.properties"));
     }
 
+    /// `mobile/sync.rs` loads the Kotlin class under the app's package.
+    fn source_registers_the_folder_plugin() -> bool {
+        let source = include_str!("mobile/sync.rs");
+        source.contains(r#""io.github.cedrickgd.keystead","#)
+            && source.contains(r#""KeysteadFolderPlugin","#)
+            && source.contains(r#"pub const PLUGIN_NAME: &str = "keystead-folder";"#)
+    }
+
     #[test]
     fn app_urls() {
         let u = |s: &str| Url::parse(s).unwrap();
@@ -677,28 +745,43 @@ mod tests {
         assert!(!is_app_url(&u("javascript:alert(1)"), None));
     }
 
+    /// Where a command of the handler list is registered.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Registered {
+        Both,
+        DesktopOnly,
+        PhoneOnly,
+    }
+
     /// The entries of this file's `generate_handler!` list as
-    /// (command name, desktop only).
-    fn handler_entries() -> Vec<(String, bool)> {
+    /// (command name, where).
+    fn handler_entries() -> Vec<(String, Registered)> {
         let source = include_str!("gui.rs");
         let start = source.find("generate_handler![").unwrap() + "generate_handler![".len();
         let body = &source[start..];
         let body = &body[..body.find("])").unwrap()];
         let mut entries = Vec::new();
-        let mut desktop_only = false;
+        let mut gate = Registered::Both;
         for line in body.lines().map(str::trim) {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            if line == "#[cfg(desktop)]" {
-                desktop_only = true;
-                continue;
+            match line {
+                "#[cfg(desktop)]" => {
+                    gate = Registered::DesktopOnly;
+                    continue;
+                }
+                "#[cfg(mobile)]" => {
+                    gate = Registered::PhoneOnly;
+                    continue;
+                }
+                _ => {}
             }
             assert!(!line.starts_with('#'), "unexpected attribute: {line}");
             let path = line.trim_end_matches(',');
             let name = path.rsplit("::").next().unwrap().to_owned();
-            entries.push((name, desktop_only));
-            desktop_only = false;
+            entries.push((name, gate));
+            gate = Registered::Both;
         }
         entries
     }
@@ -740,17 +823,27 @@ mod tests {
         let registered: BTreeSet<String> = entries.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(registered.len(), entries.len(), "duplicate entries");
         let (table, phone_documented) = documented_commands();
-        // Every documented command is registered on the desktop, and the
-        // desktop registers nothing undocumented.
+        // Every command is documented, and nothing undocumented is
+        // registered on either side.
         assert_eq!(registered, table);
-        // The phone registers exactly the documented read-only subset.
+        // The phone registers exactly the documented subset: the read
+        // commands plus its own (the cloud-folder sync).
         let phone: BTreeSet<String> = entries
             .iter()
-            .filter(|(_, desktop_only)| !desktop_only)
+            .filter(|(_, gate)| *gate != Registered::DesktopOnly)
             .map(|(n, _)| n.clone())
             .collect();
         assert!(!phone.is_empty());
         assert_eq!(phone, phone_documented);
+        let phone_only: BTreeSet<&str> = entries
+            .iter()
+            .filter(|(_, gate)| *gate == Registered::PhoneOnly)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(
+            phone_only,
+            BTreeSet::from(["folder_status", "link_folder", "sync_now", "unlink_folder"])
+        );
         // Nothing that writes the vault, opens a dialog path or needs the
         // network is on the phone.
         for name in [

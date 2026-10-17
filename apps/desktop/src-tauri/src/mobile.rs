@@ -10,6 +10,9 @@
 //! * **Diagnostics**: `state::log` writes to stderr; on Android the
 //!   activity runtime forwards stdout/stderr to logcat (tag
 //!   `RustStdoutStderr`), so nothing extra is installed. Never log secrets.
+//! * **Cloud-folder sync** (`sync`): the Kotlin folder plugin, the sync
+//!   commands and the automatic sync at start and resume (copy-in only, see
+//!   `crate::folder_sync`).
 //! * **Clipboard**: `keystead-core` has no clipboard backend on the phone
 //!   (arboard is desktop-only); [`PluginClipboard`] provides one through
 //!   `tauri-plugin-clipboard-manager`, called from Rust only – the webview
@@ -24,6 +27,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt as _;
 
 use crate::state::log;
+
+pub mod sync;
 
 /// Sets the data directory and installs the clipboard backend. Must run
 /// before `Settings::load()` / `VaultStore::open_default()`.

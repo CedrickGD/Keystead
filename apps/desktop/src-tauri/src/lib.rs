@@ -30,6 +30,10 @@ mod commands;
 mod error;
 #[cfg(desktop)]
 mod extension;
+// The phone's cloud-folder sync (copy-in); platform-neutral, so its unit
+// tests run on the desktop host too.
+#[cfg(any(mobile, test))]
+mod folder_sync;
 mod gui;
 mod icons;
 #[cfg(desktop)]
