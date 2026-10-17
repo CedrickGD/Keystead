@@ -1,7 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions of the Keystead main window (the app's own commands need no extra grant).",
+  "description": "Permissions of the Keystead main window on the desktop (the app's own commands need no extra grant); the phone's are in mobile.json.",
+  "platforms": ["windows", "linux", "macOS"],
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only (merged into src/main/AndroidManifest.xml by Gradle):
+     `tauri android dev` loads the UI from the Vite dev server on the PC,
+     which needs the network. Release builds have no INTERNET permission at
+     all – keep it that way. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

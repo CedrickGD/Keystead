@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Permissions of the Keystead main window on the phone (Android, iOS): the app's own commands need no grant; the clipboard and opener plugins are called from Rust only and stay unreachable from the webview.",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

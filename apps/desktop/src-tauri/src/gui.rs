@@ -426,22 +426,170 @@ mod tests {
         assert_eq!(config["productName"], "Keystead");
     }
 
+    /// The desktop's and the phone's capability files (`capabilities/`).
+    fn capabilities() -> [(&'static str, serde_json::Value); 2] {
+        [
+            (
+                "default.json",
+                serde_json::from_str(include_str!("../capabilities/default.json")).unwrap(),
+            ),
+            (
+                "mobile.json",
+                serde_json::from_str(include_str!("../capabilities/mobile.json")).unwrap(),
+            ),
+        ]
+    }
+
+    fn permission_ids(capability: &serde_json::Value) -> BTreeSet<String> {
+        capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|permission| {
+                permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
     #[test]
     fn the_webview_cannot_call_the_rust_only_plugins() {
         // The UI only uses the app's own commands (check_update,
         // install_update, copy_text, …); the plugins' JS APIs stay
-        // unreachable – also the phone's clipboard and opener plugins.
-        let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        for permission in capability["permissions"].as_array().unwrap() {
-            let id = permission
-                .as_str()
-                .or_else(|| permission["identifier"].as_str())
-                .unwrap();
-            for plugin in ["updater:", "process:", "clipboard-manager:", "opener:"] {
-                assert!(!id.starts_with(plugin), "{id}");
+        // unreachable – also the phone's clipboard and opener plugins, so
+        // the core keeps the whole clipboard policy and every link goes
+        // through `platform::open_url`.
+        for (file, capability) in capabilities() {
+            for id in permission_ids(&capability) {
+                for plugin in ["updater:", "process:", "clipboard-manager:", "opener:"] {
+                    assert!(!id.starts_with(plugin), "{file}: {id}");
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_capabilities_are_split_by_platform() {
+        // Tauri applies a capability only on the platforms it names
+        // (`platforms`, tauri-utils `Target`: "macOS" and "iOS" are spelled
+        // like that); without the field it would apply everywhere.
+        let [(_, desktop), (_, mobile)] = capabilities();
+        assert_eq!(
+            desktop["platforms"],
+            serde_json::json!(["windows", "linux", "macOS"])
+        );
+        assert_eq!(mobile["platforms"], serde_json::json!(["android", "iOS"]));
+        for capability in [&desktop, &mobile] {
+            assert_eq!(capability["windows"], serde_json::json!([MAIN_WINDOW]));
+        }
+        // The phone gets nothing the desktop does not have (no file
+        // dialogs in this stage either).
+        let desktop_ids = permission_ids(&desktop);
+        let mobile_ids = permission_ids(&mobile);
+        assert!(mobile_ids.is_subset(&desktop_ids), "{mobile_ids:?}");
+        assert!(mobile_ids.contains("core:default"));
+        assert!(mobile_ids.iter().all(|id| id.starts_with("core:")));
+    }
+
+    #[test]
+    fn the_android_config_follows_the_design_decisions() {
+        // tauri.android.conf.json is merged into tauri.conf.json for Android
+        // builds (identifier, minimum API level, the window); everything it
+        // does not mention – above all the CSP – is inherited unchanged.
+        let android: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.android.conf.json")).unwrap();
+        assert_eq!(android["identifier"], "io.github.cedrickgd.keystead");
+        assert_eq!(android["bundle"]["android"]["minSdkVersion"], 29);
+        assert!(
+            android["app"].get("security").is_none(),
+            "the CSP must stay the desktop's (inherited)"
+        );
+        let windows = android["app"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 1);
+        let main = &windows[0];
+        assert_eq!(main["label"], MAIN_WINDOW);
+        assert_eq!(main["title"], "Keystead");
+        // `setup` builds the window itself (navigation and new-window hooks
+        // route links to the system browser), so Tauri must not create it.
+        assert_eq!(main["create"], false);
+        // A phone window is plain: visible, no size, no desktop decoration.
+        for key in [
+            "visible",
+            "width",
+            "height",
+            "minWidth",
+            "minHeight",
+            "center",
+        ] {
+            assert!(main.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
+    fn the_android_project_is_hardened() {
+        // `gen/android` is generated by `tauri android init` and committed
+        // with these changes; a re-run of `init` or a careless edit must not
+        // lose them (see "Executable modes" in docs/ARCHITECTURE.md).
+        let activity = include_str!(
+            "../gen/android/app/src/main/java/io/github/cedrickgd/keystead/MainActivity.kt"
+        );
+        assert!(activity.contains("FLAG_SECURE"));
+        assert!(activity.contains("allowFileAccess = false"));
+        assert!(activity.contains("allowContentAccess = false"));
+        assert!(activity.contains("keystead:back"));
+        assert!(activity.contains("moveTaskToBack(true)"));
+
+        let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
+        assert!(manifest.contains(r#"android:allowBackup="false""#));
+        assert!(manifest.contains(r#"android:dataExtractionRules="@xml/data_extraction_rules""#));
+        assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
+        assert!(manifest.contains(r#"android.webkit.WebView.EnableSafeBrowsing""#));
+        assert!(
+            !manifest.contains("uses-permission"),
+            "no permission at all"
+        );
+        assert!(!manifest.contains("android:debuggable"));
+        // Only debug builds (`tauri android dev`) may reach the network.
+        let debug = include_str!("../gen/android/app/src/debug/AndroidManifest.xml");
+        assert!(debug.contains("android.permission.INTERNET"));
+
+        let rules = include_str!("../gen/android/app/src/main/res/xml/data_extraction_rules.xml");
+        assert!(rules.contains("<cloud-backup"));
+        assert!(rules.contains("<device-transfer>"));
+        assert!(!rules.contains("<include"));
+        // Every domain excluded in both sections.
+        for domain in [
+            "root",
+            "file",
+            "database",
+            "sharedpref",
+            "external",
+            "device",
+        ] {
+            let needle = format!(r#"<exclude domain="{domain}" />"#);
+            assert_eq!(rules.matches(&needle).count(), 2, "{domain}");
+        }
+
+        let gradle = include_str!("../gen/android/app/build.gradle.kts");
+        assert!(gradle.contains("minSdk = 29"));
+        assert!(gradle.contains(r#"applicationId = "io.github.cedrickgd.keystead""#));
+        assert!(gradle.contains(r#"namespace = "io.github.cedrickgd.keystead""#));
+        assert!(gradle.contains(r#"rootProject.file("keystore.properties")"#));
+        // The keystore never enters the repository.
+        let ignored = include_str!("../gen/android/.gitignore");
+        for entry in [
+            "keystore.properties",
+            "local.properties",
+            "build",
+            ".gradle",
+        ] {
+            assert!(ignored.lines().any(|line| line == entry), "{entry}");
+        }
+        let app_ignored = include_str!("../gen/android/app/.gitignore");
+        assert!(app_ignored.lines().any(|line| line == "/tauri.properties"));
     }
 
     #[test]

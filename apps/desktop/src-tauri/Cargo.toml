@@ -25,7 +25,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 keystead-core = { path = "../../../crates/keystead-core" }
 # Without features here; the desktop table below adds the tray icon.
-tauri = "2"
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -36,7 +36,8 @@ an interface here, change every side.
 | `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report, the offline half of the leaked-password check (hashing, answer parsing). No UI, no IPC, no networking. |
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
-| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). |
+| `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). `src-tauri/tauri.android.conf.json` = the Android overrides of `tauri.conf.json` (merged by Tauri). |
+| `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening – see "Android project" under "Executable modes". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
@@ -75,6 +76,61 @@ only and Cargo has no instruction for a library's unit tests.
   the binary has no role there (`fn main() {}`). The phone is **read-only**
   in this stage: only the read commands are registered, see "Desktop
   backend ↔ frontend".
+
+**Android project** (`src-tauri/gen/android`, generated once by `npx tauri
+android init` with CLI 2.12 – Gradle 9.6.1, AGP 9.3.1, Kotlin 2.2.10,
+compileSdk/targetSdk 37 – and committed). `tauri.android.conf.json` is
+merged into `tauri.conf.json` for Android builds: identifier
+`io.github.cedrickgd.keystead` (the desktop keeps `com.keystead.desktop`),
+`bundle.android.minSdkVersion` 29 (Android 10), and the main window as a
+plain phone window (`label`, `title`, `create: false` – `setup` builds it
+itself, like on the desktop, for the navigation and new-window hooks); the
+CSP and everything else are inherited unchanged. Hardening on top of the
+template, guarded by unit tests in `gui.rs` (`include_str!` of the
+committed files):
+* `AndroidManifest.xml`: **no permission at all** – in particular no
+  `INTERNET` (the phone is offline by design; website icons, the leaked-
+  password check and update checks do not exist there). Only
+  `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
+  dev` loads the UI from the Vite dev server on the PC. `allowBackup=
+  "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
+  excludes every domain for cloud backup and device-to-device transfer),
+  `windowSoftInputMode="adjustResize"`, WebView Safe Browsing off
+  (`android.webkit.WebView.EnableSafeBrowsing` = false), no `debuggable`.
+* `MainActivity.kt`: `FLAG_SECURE` on the window (no screenshots,
+  recordings or recents thumbnails – Tauri's `contentProtected` is a no-op
+  on Android); in `onWebViewCreate` `allowFileAccess`/`allowContentAccess`/
+  geolocation/Safe Browsing off (the UI is served from `tauri.localhost`
+  only). **Back gesture**: the activity dispatches the DOM event
+  `keystead:back` (cancelable) on `window`; a listener that calls
+  `preventDefault()` has consumed it (close a dialog, leave the detail
+  view), otherwise the activity calls `moveTaskToBack(true)` – the app goes
+  to the background without finishing, so an open vault stays open until
+  the background lock applies. (Tauri's own back handling is off:
+  `TauriActivity.handleBackNavigation = false`.)
+* `app/build.gradle.kts`: release signing from `gen/android/keystore.
+  properties` (gitignored; keys `storeFile`, `password`, `keyAlias`,
+  optional `keyPassword`; CI writes it from the secrets) – without the file
+  a release build is signed with the debug key so it still installs
+  locally, but such an APK can never update a release-signed app.
+* Capabilities are split by platform (`platforms` in the capability file):
+  `capabilities/default.json` (windows, linux, macOS) and
+  `capabilities/mobile.json` (android, iOS – `core:default` and
+  `core:event:default` only). Neither grants the clipboard-manager or
+  opener plugin to the webview.
+* Builds: `npx tauri android build --apk --debug --target x86_64` for the
+  emulator, `--target aarch64` for phones; the APK lands in
+  `gen/android/app/build/outputs/apk/universal/<debug|release>/
+  app-universal-<debug|release>.apk` (the "universal" flavour holds just
+  the ABIs that were built). The debug APK has `INTERNET` from the debug
+  manifest, is debuggable, keeps the Rust debug symbols (~200 MB) and is
+  signed with the debug key. The environment needs `JAVA_HOME` (JDK 17),
+  `ANDROID_HOME` and `NDK_HOME`; the CLI rewrites `tauri = { version = "2",
+  features = [] }` in `Cargo.toml` on every run (kept in that form).
+  `versionCode` is Tauri's default `major*1e6 + minor*1e3 + patch` until
+  the CI stage sets it (see docs/BLOCK5-DESIGN.md "Versionierung").
+  Note: `tauri` itself pulls `reqwest` into the Android build (its dev-
+  server proxy); the app never uses it there.
 
 One portable `Keystead.exe` (Windows GUI subsystem in release) does everything:
 
@@ -938,7 +994,10 @@ page's vault was locked or switched meanwhile (see "Leaked-password check").
 Frontend integration requirements for `src-tauri`:
 * File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
   `tauri-plugin-dialog` and grant `dialog:allow-open` + `dialog:allow-save`
-  (plus `core:default` for events) to the main window's capability.
+  (plus `core:default` for events) to the main window's desktop capability
+  (`capabilities/default.json`; the phone's `mobile.json` grants only
+  `core:default` + `core:event:default` – no file dialogs in this stage,
+  and never a plugin the webview is not meant to call).
 * Website links call `window.open(url, "_blank")` (http/https only); the app
   must route new-window requests to the system browser (e.g. via
   `tauri-plugin-opener`) instead of opening a webview window.

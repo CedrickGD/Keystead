@@ -263,6 +263,45 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
    Autofill-Dienst zuletzt. Offen: ob Sync über den eigenen Cloud-Ordner für
    den Besitzer in Ordnung ist.
 
+## In Arbeit: Block 5 „Mobile“ (Branch `claude/mobile-android`)
+
+Entwurf und Entscheidungen des Besitzers: [`BLOCK5-DESIGN.md`](BLOCK5-DESIGN.md)
+(Paketname `io.github.cedrickgd.keystead`, minSdk 29, Stufe 1 ohne Netz und
+nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
+(alles als `WIP: mobile 1a – … [skip ci]` committet, nicht gepusht):
+
+1. **Core** (Commit `80ff650`): Clipboard-Backend-Trait (arboard nur auf dem
+   Desktop), `paths::set_data_dir_override`, Settings-Felder für das Handy.
+2. **App-Crate** (`ab87cc9`): `keystead_lib` (lib + bin), `cfg(desktop)`/
+   `cfg(mobile)`-Gates, Handy-Kommandoliste (read-only), `src/mobile.rs`
+   (Datenordner, Clipboard über `tauri-plugin-clipboard-manager`, Links
+   über `tauri-plugin-opener`).
+3. **Android-Projekt** (dieser Stand): `tauri.android.conf.json`,
+   `gen/android` aus `npx tauri android init` (Gradle 9.6.1, AGP 9.3.1,
+   Kotlin 2.2.10, SDK 37) committet und gehärtet – kein `INTERNET` im
+   Hauptmanifest (nur `src/debug/` für `tauri android dev`),
+   `allowBackup=false` + `dataExtractionRules`, `FLAG_SECURE`,
+   WebView ohne Datei-/Content-Zugriff, Zurück-Geste als DOM-Event
+   `keystead:back` (sonst `moveTaskToBack`), Release-Signatur aus
+   `gen/android/keystore.properties` (gitignored; Fallback Debug-Key),
+   Capabilities nach Plattform getrennt (`capabilities/mobile.json`);
+   Guard-Tests in `gui.rs`. Debug-APK für den Emulator:
+   `cd apps/desktop && npx tauri android build --apk --debug --target x86_64`
+   (JAVA_HOME = JDK 17, ANDROID_HOME, NDK_HOME gesetzt; Ausgabe
+   `gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`,
+   ~200 MB wegen Debug-Symbolen; `adb install` über Streamed Install schlug
+   mit leerer Meldung fehl – `adb push … /data/local/tmp/` + `pm install -r`
+   funktioniert). Im Emulator MB_S26 (API 36, x86_64) startet die App und
+   zeigt den Willkommensbildschirm (noch Desktop-Layout, Englisch nach
+   Systemsprache); `adb screencap` liefert wegen `FLAG_SECURE` schwarz,
+   `adb emu screenrecord screenshot <Ordner>` zeigt das Bild.
+
+Offen (nächste Stufen laut Design): Lebenszyklus (`Suspended`/`Resumed` →
+Sperre im Hintergrund), Handy-Layout der UI (inkl. Listener auf
+`keystead:back`), `import_vault_file`, CI-Job `android` mit Keystore aus den
+Secrets und `versionCode` = Run-Nummer, Biometrie (1b), Doku (README,
+CLAUDE.md-Regeln).
+
 ## Bekannte Grenzen / offene Punkte
 
 - EXE ist nicht code-signiert → SmartScreen-Warnung. Der Besitzer will nichts

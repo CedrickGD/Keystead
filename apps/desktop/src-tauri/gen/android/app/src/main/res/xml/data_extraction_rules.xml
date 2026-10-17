@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing of the app leaves the device through Android's cloud backup or
+     a device-to-device transfer (Android 12+; older versions are covered by
+     android:allowBackup="false"): the vault files, settings and WebView
+     data stay in the app's private folder (docs/BLOCK5-DESIGN.md, E8). -->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device" />
+    </device-transfer>
+</data-extraction-rules>
