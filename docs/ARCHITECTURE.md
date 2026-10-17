@@ -780,7 +780,9 @@ In the desktop app only the preset commands (`generator_presets`,
 `generatorDefault`; `save_settings` keeps the stored values of both (see the
 command table). The default preset is what the editor's generator popover
 and the browser extension's suggestions use for every option they do not
-set themselves (see "Browser bridge protocol").
+set themselves (see "Browser bridge protocol"). The user picks it on the
+generator page ("Als Standard verwenden", see "UI/UX principles"); the
+settings page has no row for it – one place for everything about presets.
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -1079,8 +1081,17 @@ item; copying never sends it there.
   state, which is dropped after save / cancel (`save_item` answers the
   redacted entry). The password history lists dates and reveals / copies an
   entry on demand. The health report comes from `health_report`; its "no
-  2FA" list uses `hasPassword` / `hasTotp`. The mock backend redacts the same
-  way (`src/lib/demo/redact.ts`). The leaked-password check (see
+  2FA" list uses `hasPassword` / `hasTotp`. The generator history
+  (`GeneratorPage`) holds only `GeneratedPasswordInfo`s: masked rows with
+  the relative time; the eye (`useRevealedGenerated` on the same
+  `useRevealedValue` hook) calls `reveal_generated` and hides the password
+  again under the same rules (30 s, blur / hidden window, lock, unmount –
+  also when the history is cleared), the copy button calls
+  `copy_generated`. The generator preview is the one generator value the
+  page holds (component state, never in `localStorage`); copying it uses
+  `copy_text` with `sensitive` and then `remember_generated`. The mock
+  backend redacts the same way (`src/lib/demo/redact.ts`; the generator
+  history in `src/lib/mock.ts`). The leaked-password check (see
   "Leaked-password check") brings no secret into the page either: the
   vault-wide run sends only `pageVaultId` and gets item ids and counts back;
   the editor's button sends the password the editor already holds.
@@ -2362,6 +2373,50 @@ The extension's security model and file roles are in
   keyboard shortcuts (Ctrl+F search, Ctrl+N new, Ctrl+L lock,
   Ctrl+Shift+C on a selected item copies its password, Ctrl+B the username,
   Ctrl+S saves while editing, Esc cancels editing / closes dialogs).
+* Generator (`src/screens/GeneratorPage.tsx`, `src/components/Generator*.tsx`):
+  nothing is generated behind the user's back. The page opens with an empty
+  state ("Noch nichts generiert") and the primary button "Generieren"
+  (focused, so Enter works at once; Enter in an option's input and Ctrl+G
+  while the focus is on the page do the same – not in a dialog); changing
+  an option never generates – a preview made with other options shows "Die
+  Optionen haben sich geändert …" until "Neu generieren". The preview
+  (`generate_password`, `remember: false`) is shown with the strength meter,
+  "Neu generieren" and "Kopieren"; only copying stores it (`copy_text`
+  sensitive, then `remember_generated`; the backend skips a repeat of the
+  newest entry). Options: password / passphrase; length 4–128 (slider and
+  number); the four character groups (at least one stays on) with a
+  minimum per group (0 … length); the allowed symbols (an input, "Standard
+  wiederherstellen" back to `!#$%&*+-=?@^_`); "Diese Zeichen nie verwenden"
+  (removed from every group); "Mit einem Buchstaben beginnen"; "Verwechselbare
+  Zeichen vermeiden". Passphrase: words 3–20, separator (≤ 8 characters),
+  word list Englisch / Deutsch, capitalise, number. Problems are shown
+  inline at their field, checked like the core in the core's order
+  (`src/lib/generatorRules.ts`, the same `invalid_input` codes; an emptied
+  group names the group), and disable "Generieren"; below the options the
+  estimated entropy – password: length × log2(characters left to draw
+  from), passphrase: like `passphrase_entropy_bits` with the real list
+  sizes 7776 / 7724 – with a strength word. Presets: a picker above the
+  options (built-ins with translated names, then "Eigene Vorlagen"; the
+  default carries ★); choosing one loads its options (no generation);
+  edited options show "Geändert" with "Zurücksetzen" (and "Änderungen
+  speichern" for a user preset); the "…" menu saves the options as a new
+  preset (name dialog, the backend's codes inline), renames, deletes
+  (confirmation; a deleted default falls back to "Standard") and makes the
+  preset the default ("Als Standard verwenden", also as a link under the
+  picker: "Standard für den Editor und die Browser-Erweiterung"). The page
+  remembers its preset id and options per device in `localStorage`
+  (`keystead.generator.page`, non-secret); without it the page starts with
+  the default preset. History: masked rows, newest first, eye and copy per
+  row (see "Secrets and the webview"), "Verlauf leeren", and the note that
+  only copied or used passwords are kept (at most 50); it is re-read after
+  a copy and on `vault://changed`. The editor's popover (the "Generieren"
+  link of the password field) starts with the default preset's options
+  (`generator_presets().defaultOptions`), has the preset picker and the
+  options in compact form ("Weitere Optionen" opens minimums, symbols,
+  exclusions and the checkboxes), generates only on its button (Enter in its
+  inputs / Ctrl+G inside it – Enter never submits the editor), and
+  "Verwenden" – or copying – reports the password with
+  `remember_generated`.
 * German first, English second (`src/i18n/de.ts`, `src/i18n/en.ts`).
 * Logins show their website's icon (see "Website icons") on a light rounded
   tile, otherwise a tinted letter tile; cards, identities and notes a type

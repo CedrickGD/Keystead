@@ -73,6 +73,7 @@ export function MenuItem({
   danger,
   checked,
   hint,
+  disabled,
 }: {
   icon?: ReactNode;
   children: ReactNode;
@@ -81,6 +82,7 @@ export function MenuItem({
   /** Renders as a radio item with a check mark when true. */
   checked?: boolean;
   hint?: ReactNode;
+  disabled?: boolean;
 }) {
   const radio = checked !== undefined;
   return (
@@ -90,6 +92,7 @@ export function MenuItem({
       aria-checked={radio ? checked : undefined}
       className={`menu-item ${danger ? "danger" : ""}`}
       tabIndex={-1}
+      disabled={disabled}
       onClick={onSelect}
     >
       {icon}

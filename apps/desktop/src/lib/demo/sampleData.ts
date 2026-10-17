@@ -260,9 +260,9 @@ export function privateVault(now: number): SampleVault {
       { id: soc, name: "Soziale Netzwerke" },
     ],
     generatorHistory: [
-      { password: "Zug#Fahrt7!Rhein2Mosel", createdAt: now - 20 * DAY },
-      { password: "gh$Wq9!nVb3@Lr7tYp2", createdAt: now - 3 * DAY },
-      { password: "Maple-Harbor-Comet7-Velvet-Tundra", createdAt: now - 2 * DAY },
+      { id: "9b1f3c2e-6d4a-4e8b-a7c5-2f0d1e3b4a59", password: "Maple-Harbor-Comet7-Velvet-Tundra", createdAt: now - 2 * DAY },
+      { id: "4c7e2a1b-8f3d-4b6e-9a0c-5d1e2f3a4b6c", password: "gh$Wq9!nVb3@Lr7tYp2", createdAt: now - 3 * DAY },
+      { id: "e2a9d4f1-3b5c-4d7e-8f0a-1b2c3d4e5f60", password: "Zug#Fahrt7!Rhein2Mosel", createdAt: now - 20 * DAY },
     ],
     // The contract and the ID copy the provider asked for (one image for the preview).
     attachments: [

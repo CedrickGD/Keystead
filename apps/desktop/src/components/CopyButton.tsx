@@ -2,10 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import type { SecretField } from "../lib/types";
 import { useT } from "../i18n";
-import { useCopy, useCopySecret } from "../state/app";
+import { useCopy, useCopyGenerated, useCopySecret } from "../state/app";
 
-/** What to copy: a value the page has, or a secret of an item the backend copies itself. */
-export type CopySource = { value: string; sensitive: boolean } | { secret: { itemId: string; field: SecretField } };
+/**
+ * What to copy: a value the page has, or a secret the backend copies itself –
+ * of an item, or a generator history entry (by id).
+ */
+export type CopySource =
+  | { value: string; sensitive: boolean }
+  | { secret: { itemId: string; field: SecretField } }
+  | { generatedId: string };
 
 /** Icon button that copies a value and briefly turns into a check mark. */
 export function CopyButton({
@@ -22,6 +28,7 @@ export function CopyButton({
   const { t } = useT();
   const copy = useCopy();
   const copySecret = useCopySecret();
+  const copyGenerated = useCopyGenerated();
   const [done, setDone] = useState(false);
   const timer = useRef(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -35,7 +42,9 @@ export function CopyButton({
         const copied =
           "secret" in source
             ? copySecret(source.secret.itemId, source.secret.field, label)
-            : copy(source.value, { label, sensitive: source.sensitive });
+            : "generatedId" in source
+              ? copyGenerated(source.generatedId, label)
+              : copy(source.value, { label, sensitive: source.sensitive });
         void copied.then((ok) => {
           if (!ok) return;
           setDone(true);

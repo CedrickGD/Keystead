@@ -1,17 +1,16 @@
-// Password / passphrase generator for the mock backend (the real one lives in
-// keystead-core). Uses crypto.getRandomValues with rejection sampling so every
-// character is picked uniformly.
+// Password / passphrase generator and the built-in presets for the mock
+// backend (the real ones live in keystead-core's generator.rs). The option
+// checks come from ../generatorRules.ts (the same codes in the same order as
+// the core); randomness from crypto.getRandomValues with rejection sampling,
+// so every pick is uniform.
 
-import type { GeneratorOptions } from "../types";
+import { DEFAULT_GENERATOR_OPTIONS, type GeneratorOptions, type GeneratorPreset, type Wordlist } from "../types";
+import { normalizedOptions, passphraseIssue, passwordPlan, PRESET_NAME_MAX_CHARS } from "../generatorRules";
 
-const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const LOWER = "abcdefghijklmnopqrstuvwxyz";
-const DIGITS = "0123456789";
-const SYMBOLS = "!@#$%^&*";
-const AMBIGUOUS = /[Il1O0]/g;
-
-// A short list of easy-to-type English words (the real app embeds the EFF large wordlist).
-const WORDS = (
+// Short lists of easy words. The real app embeds the EFF large list (7776
+// words) and a German list derived from dys2p's de-7776 (7724 words); the
+// page computes the entropy from those real sizes, not from these.
+const WORDS_EN = (
   "acorn actor adapt agent alarm album alert alien alpine amber anchor angle ankle apple april arena armor arrow " +
   "atlas attic audio august autumn avocado bacon badge bagel baker balmy bamboo banjo barn basil basket beacon " +
   "beaver bench berry bicycle bison blanket blossom blue bonsai border bottle brave breeze brick bridge broccoli " +
@@ -31,6 +30,23 @@ const WORDS = (
   "willow window winter wizard yogurt zebra zephyr zigzag"
 ).split(" ");
 
+const WORDS_DE = (
+  "abend adler ahorn ampel anker apfel april atlas auge bach backen bagger banane bank bauer baum beere berg biene " +
+  "birne blatt blume boot brille brot brunnen buch burg butter dach dampf decke delfin donner dorf drache dusche " +
+  "eiche eimer eis elster engel ente erbse esel eule fahne falke farbe feder fenster ferien fichte fisch flasche " +
+  "flocke floh flur fluss fohlen forelle frosch fuchs gabel garten geige gipfel glocke gold gras hafen hagel hammer " +
+  "hase haus hecke heft himmel hirsch honig horn hummel hut igel insel jacke jaguar juli kabel kaffee kamel kanu " +
+  "karte kater kerze kiefer kirsche kiste klee knopf koffer komet korb kran krone kuchen kugel lampe laterne laub " +
+  "leiter lerche linde loewe loeffel luchs mais mantel marder meer melone milch minze moewe mond moos mosaik muehle " +
+  "muschel nadel nebel nelke nest nuss oase ofen orgel otter palme papier pfanne pferd pinsel planet pilz pudel " +
+  "quelle rabe radio rakete regen reh riese ring rose rubin ruder saat salat sand sattel schaf schal schiff schnee " +
+  "schule segel sessel sonne spatz spiegel stern stiefel strand tafel tanne tasse teich teller tiger tisch tomate " +
+  "torte traube tulpe turm uhr ufer vase vogel wagen wald wal wasser welle wiese wind wolke wurzel zebra zelt " +
+  "ziege zimt zitrone zucker zwerg"
+).split(" ");
+
+const DEMO_WORDS: Record<Wordlist, string[]> = { en: WORDS_EN, de: WORDS_DE };
+
 /** Uniform random integer in [0, max). */
 function randomInt(max: number): number {
   if (max <= 0) throw new Error("max must be positive");
@@ -43,8 +59,10 @@ function randomInt(max: number): number {
   }
 }
 
-function pick(chars: string): string {
-  return chars.charAt(randomInt(chars.length));
+function pick<T>(list: T[]): T {
+  const value = list[randomInt(list.length)];
+  if (value === undefined) throw new Error("empty list");
+  return value;
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -57,35 +75,99 @@ function shuffle<T>(arr: T[]): T[] {
   return arr;
 }
 
-export function generate(opts: GeneratorOptions): string {
-  if (opts.kind === "passphrase") {
-    if (opts.words < 3 || opts.words > 20) throw new Error("invalid_input:words");
-    const words = Array.from({ length: opts.words }, () => {
-      const word = WORDS[randomInt(WORDS.length)] ?? "word";
-      return opts.capitalize ? word.charAt(0).toUpperCase() + word.slice(1) : word;
-    });
-    if (opts.includeNumber) {
-      const idx = randomInt(words.length);
-      words[idx] = `${words[idx] ?? ""}${randomInt(10)}`;
-    }
-    return words.join(opts.separator);
-  }
+const isLetter = (c: string) => /^[A-Za-z]$/.test(c);
 
-  if (opts.length < 5 || opts.length > 128) throw new Error("invalid_input:length");
-  const strip = (s: string) => (opts.avoidAmbiguous ? s.replace(AMBIGUOUS, "") : s);
-  const upper = opts.uppercase ? strip(UPPER) : "";
-  const lower = opts.lowercase ? strip(LOWER) : "";
-  const digits = opts.digits ? strip(DIGITS) : "";
-  const symbols = opts.symbols ? SYMBOLS : "";
-  const all = upper + lower + digits + symbols;
-  if (!all) throw new Error("invalid_input:no_character_set");
+/** Throws `Error("invalid_input:<code>")` like the core's checks. */
+function invalid(code: string): never {
+  throw new Error(`invalid_input:${code}`);
+}
 
+function generatePassword(opts: GeneratorOptions): string {
+  const result = passwordPlan(opts);
+  if (!result.ok) invalid(result.issue);
+  const { plan } = result;
   const chars: string[] = [];
-  if (upper) chars.push(pick(upper));
-  if (lower) chars.push(pick(lower));
-  for (let i = 0; digits && i < Math.max(opts.minDigits, 1); i++) chars.push(pick(digits));
-  for (let i = 0; symbols && i < Math.max(opts.minSymbols, 1); i++) chars.push(pick(symbols));
-  if (chars.length > opts.length) throw new Error("invalid_input:minimums_exceed_length");
-  while (chars.length < opts.length) chars.push(pick(all));
-  return shuffle(chars).join("");
+  for (const cls of plan.classes) {
+    for (let i = 0; i < cls.min; i++) chars.push(pick(cls.chars));
+  }
+  if (plan.extraLetter) chars.push(pick(plan.letters));
+  while (chars.length < opts.length) chars.push(pick(plan.all));
+  shuffle(chars);
+  if (opts.startWithLetter && !isLetter(chars[0] ?? "")) {
+    // Swap a uniformly chosen letter to the front (as the core does).
+    const positions = chars.flatMap((c, i) => (isLetter(c) ? [i] : []));
+    const pos = pick(positions);
+    [chars[0], chars[pos]] = [chars[pos] as string, chars[0] as string];
+  }
+  return chars.join("");
+}
+
+function generatePassphrase(opts: GeneratorOptions): string {
+  const issue = passphraseIssue(opts);
+  if (issue) invalid(issue);
+  const list = DEMO_WORDS[opts.wordlist] ?? WORDS_EN;
+  const words = Array.from({ length: opts.words }, () => {
+    const word = pick(list);
+    return opts.capitalize ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+  });
+  if (opts.includeNumber) {
+    const idx = randomInt(words.length);
+    words[idx] = `${words[idx] ?? ""}${randomInt(10)}`;
+  }
+  return words.join(opts.separator);
+}
+
+export function generate(opts: GeneratorOptions): string {
+  return opts.kind === "passphrase" ? generatePassphrase(opts) : generatePassword(opts);
+}
+
+/** The core's `GeneratorOptions::normalized`: checked, password symbol set / exclude without duplicates. */
+export function normalizeOptions(opts: GeneratorOptions): GeneratorOptions {
+  if (opts.kind === "passphrase") {
+    const issue = passphraseIssue(opts);
+    if (issue) invalid(issue);
+  } else {
+    const result = passwordPlan(opts);
+    if (!result.ok) invalid(result.issue);
+  }
+  return normalizedOptions(opts);
+}
+
+/** The core's `validate_preset_name`: trimmed, 1..=40 characters. */
+export function validatePresetName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) invalid("preset_name_required");
+  if (Array.from(trimmed).length > PRESET_NAME_MAX_CHARS) invalid("preset_name_too_long");
+  return trimmed;
+}
+
+const D = DEFAULT_GENERATOR_OPTIONS;
+
+/** The core's `builtin_presets()` (names are English fallbacks; the UI translates by id). */
+export function builtinPresets(): GeneratorPreset[] {
+  return [
+    { id: "standard", name: "Standard", options: { ...D } },
+    { id: "alnum", name: "Letters and digits only", options: { ...D, symbols: false, minSymbols: 0 } },
+    {
+      id: "pin",
+      name: "PIN",
+      options: {
+        ...D,
+        length: 6,
+        uppercase: false,
+        lowercase: false,
+        symbols: false,
+        minUppercase: 0,
+        minLowercase: 0,
+        minDigits: 0,
+        minSymbols: 0,
+      },
+    },
+    {
+      id: "long",
+      name: "Long and strong",
+      options: { ...D, length: 32, minUppercase: 2, minLowercase: 2, minDigits: 2, minSymbols: 2 },
+    },
+    { id: "passphrase", name: "Passphrase", options: { ...D, kind: "passphrase" } },
+  ];
 }

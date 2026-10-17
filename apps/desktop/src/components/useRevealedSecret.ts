@@ -96,3 +96,13 @@ export function useRevealedSecret(itemId: string, field: SecretField, revision: 
   const fieldKey = JSON.stringify(field);
   return useRevealedValue(`${itemId}\n${fieldKey}\n${revision}`, () => api.revealSecret(itemId, field));
 }
+
+/**
+ * An eye toggle for one generator history entry (`reveal_generated`), see
+ * `useRevealedValue`: the history itself reaches the page redacted (ids and
+ * times); the password is hidden again after 30 s, when the window loses
+ * focus or is hidden, on lock and on unmount (e.g. the history is cleared).
+ */
+export function useRevealedGenerated(id: string): RevealedSecret {
+  return useRevealedValue(`generated\n${id}`, () => api.revealGenerated(id));
+}

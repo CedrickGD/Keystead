@@ -885,6 +885,205 @@ code {
   border-top: 1px solid var(--border);
 }
 
+.gen-history-main .mask {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--text-2);
+}
+
+.gen-history-main .gen-history-value {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* Generator: nothing generated yet */
+.gen-empty {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.gen-empty-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.gen-empty-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.gen-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gen-empty-hint {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-2);
+  max-width: 640px;
+}
+
+.gen-note {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.gen-note.warning {
+  color: var(--warning-text);
+}
+
+.gen-note.error {
+  color: var(--danger-text);
+}
+
+.gen-shortcut {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* Generator: presets */
+.gen-preset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gen-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gen-preset-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.gen-preset-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 22px;
+  font-size: 12px;
+}
+
+.gen-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-3);
+}
+
+.gen-default svg {
+  color: var(--warning-icon);
+  fill: currentColor;
+}
+
+.menu-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* Generator: option groups */
+.gen-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gen-grid4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gen-grid4 .gen-number {
+  width: 100%;
+}
+
+.gen-number:disabled {
+  opacity: 0.5;
+}
+
+.gen-wordlist .segmented button {
+  padding-inline: 10px;
+}
+
+.gen-more {
+  margin: -4px 0 -6px -4px;
+}
+
+/* Generator: entropy of the options */
+.gen-entropy {
+  --level: var(--strength-2);
+  --level-text: var(--strength-2-text);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.gen-entropy[data-score="0"] {
+  --level: var(--strength-0);
+  --level-text: var(--strength-0-text);
+}
+
+.gen-entropy[data-score="1"] {
+  --level: var(--strength-1);
+  --level-text: var(--strength-1-text);
+}
+
+.gen-entropy[data-score="3"] {
+  --level: var(--strength-3);
+  --level-text: var(--strength-3-text);
+}
+
+.gen-entropy[data-score="4"] {
+  --level: var(--strength-4);
+  --level-text: var(--strength-4-text);
+}
+
+.gen-entropy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--level);
+}
+
+.gen-entropy-bits {
+  font-weight: 600;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.gen-entropy-label {
+  font-weight: 600;
+  color: var(--level-text);
+}
+
+.gen-entropy-detail::before {
+  content: "· ";
+}
+
 /* Health */
 .health-loading {
   display: flex;
