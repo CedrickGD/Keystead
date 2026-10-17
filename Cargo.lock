@@ -2749,6 +2749,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "uuid",
  "windows-sys 0.61.2",
  "winreg",
  "zeroize",

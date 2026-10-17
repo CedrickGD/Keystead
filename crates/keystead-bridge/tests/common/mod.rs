@@ -52,6 +52,8 @@ pub struct FakeBackend {
     pub copied: Mutex<Vec<String>>,
     /// The generator history of the open vault (newest last).
     pub generated: Mutex<Vec<String>>,
+    /// The app's default generator preset (`None`: the trait's default).
+    pub default_options: Mutex<Option<GeneratorOptions>>,
 }
 
 fn login(id: &str, name: &str, username: &str, password: &str, uri: &str, totp: &str) -> VaultItem {
@@ -105,6 +107,7 @@ impl FakeBackend {
             lock_calls: AtomicUsize::new(0),
             copied: Mutex::new(Vec::new()),
             generated: Mutex::new(Vec::new()),
+            default_options: Mutex::new(None),
         }
     }
 
@@ -300,6 +303,14 @@ impl VaultBackend for FakeBackend {
             return Err(BridgeError::NotFound);
         }
         Ok(totp::totp_now(&seed)?)
+    }
+
+    fn default_generator_options(&self) -> GeneratorOptions {
+        self.default_options
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default()
     }
 
     fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> {

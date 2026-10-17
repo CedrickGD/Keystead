@@ -53,6 +53,9 @@ raw-window-handle = "0.6.2"
 # Wipes secrets in values handed to the UI and a copied secret kept for
 # clear-on-lock.
 zeroize = "1.9.1"
+# Ids of the user's generator presets (`src/generator.rs`); the version the
+# core already uses.
+uuid = { version = "1.27.0", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Probe for the AppIndicator library before creating the tray icon.

@@ -185,9 +185,10 @@ pub enum Payload {
         item_id: String,
     },
     GeneratePassword {
-        /// Partial options; missing fields take the generator defaults.
+        /// Partial options; missing fields take the values of the app's
+        /// default generator preset (see [`GeneratorOptionsPatch`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        options: Option<GeneratorOptions>,
+        options: Option<GeneratorOptionsPatch>,
         /// `false`: only a preview (the extension's password suggestion) –
         /// not stored in the generator history and no user activity; the
         /// password goes into the history with `remember_generated` once
@@ -242,6 +243,64 @@ pub enum Payload {
 pub enum CopyField {
     Password,
     Totp,
+}
+
+/// The `options` of a `generate_password` request: only the fields the
+/// extension sent (camelCase keys of [`GeneratorOptions`]). Parsing accepts
+/// exactly what [`GeneratorOptions`] accepts – a field with a value of the
+/// wrong type makes the request `invalid_request`, unknown keys are ignored
+/// – but keeps which fields were given, so the dispatcher can apply them
+/// over the app's default generator preset
+/// ([`VaultBackend::default_generator_options`](crate::dispatcher::VaultBackend::default_generator_options))
+/// instead of the generator defaults. Serialises as the fields it holds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GeneratorOptionsPatch(serde_json::Map<String, Value>);
+
+impl GeneratorOptionsPatch {
+    /// A patch that sets every field to its value in `options`.
+    pub fn from_options(options: &GeneratorOptions) -> Self {
+        match serde_json::to_value(options) {
+            Ok(Value::Object(fields)) => GeneratorOptionsPatch(fields),
+            _ => GeneratorOptionsPatch::default(),
+        }
+    }
+
+    /// True if the patch sets the field `key` (camelCase, e.g. `"length"`).
+    pub fn sets(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    /// `base` with the fields this patch sets replaced by its values
+    /// (unknown keys are ignored). Not validated – see
+    /// [`GeneratorOptions::validate`].
+    pub fn apply_to(&self, base: &GeneratorOptions) -> GeneratorOptions {
+        let Ok(Value::Object(mut merged)) = serde_json::to_value(base) else {
+            return base.clone();
+        };
+        for (key, value) in &self.0 {
+            if let Some(slot) = merged.get_mut(key) {
+                *slot = value.clone();
+            }
+        }
+        // Every value parsed on its own when the patch was read, and serde
+        // reads the fields independently: this cannot fail.
+        serde_json::from_value(Value::Object(merged)).unwrap_or_else(|_| base.clone())
+    }
+}
+
+impl Serialize for GeneratorOptionsPatch {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GeneratorOptionsPatch {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let fields = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+        serde_json::from_value::<GeneratorOptions>(Value::Object(fields.clone()))
+            .map_err(serde::de::Error::custom)?;
+        Ok(GeneratorOptionsPatch(fields))
+    }
 }
 
 /// (De)serialises a [`Zeroizing<String>`] as a plain JSON string.

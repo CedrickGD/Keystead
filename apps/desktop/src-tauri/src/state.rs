@@ -139,16 +139,18 @@ impl AppState {
 
     /// Persists `settings` (`<data_dir>/settings.json`), logging failures.
     pub fn save_settings(&self) {
-        // Unit tests keep it next to their temporary store, never in the
-        // real data directory.
-        #[cfg(test)]
-        let result = self
-            .settings
-            .save_to(&self.store.root().join("settings.json"));
-        #[cfg(not(test))]
-        let result = self.settings.save();
-        if let Err(e) = result {
+        if let Err(e) = self.write_settings(&self.settings) {
             log(format_args!("could not save the settings: {}", e.code()));
+        }
+    }
+
+    /// Writes `settings` to `settings.json` (atomically). Unit tests keep it
+    /// next to their temporary store, never in the real data directory.
+    pub fn write_settings(&self, settings: &Settings) -> keystead_core::Result<()> {
+        if cfg!(test) {
+            settings.save_to(&self.store.root().join("settings.json"))
+        } else {
+            settings.save()
         }
     }
 }

@@ -8,10 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use keystead_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_ID};
-use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::health::{self, HealthReport, Strength};
 use keystead_core::import::{self, ImportReport, LegacyVaultInfo};
-use keystead_core::model::{Folder, GeneratedPassword, VaultInfo, VaultItem};
+use keystead_core::model::{Folder, VaultInfo, VaultItem};
 use keystead_core::settings::Settings;
 use keystead_core::totp::{self, TotpCode};
 use keystead_core::{export, paths, Error as CoreError, VaultStore};
@@ -398,51 +397,8 @@ fn delete_tag_on(c: &Core, page_vault_id: Option<&str>, tag: &str) -> AppResult<
 }
 
 // ---------------------------------------------------------------------------
-// Generator, strength, TOTP, clipboard, health
+// Strength, TOTP, clipboard, health (the generator: `crate::generator`)
 // ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub async fn generate_password(
-    core: Shared<'_>,
-    options: Value,
-    remember: bool,
-    page_vault_id: Option<String>,
-) -> CmdResult<String> {
-    run(&core, true, move |c| {
-        let options: GeneratorOptions = parse(options, "options")?;
-        let password = generator::generate(&options)?;
-        if remember {
-            // Only an unlocked vault has a history; generating works anyway.
-            match c.mutate_for_page(page_vault_id.as_deref(), |v| {
-                v.add_generated_password(&password)
-            }) {
-                Ok(()) | Err(AppError::Locked) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(password)
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn generator_history(core: Shared<'_>) -> CmdResult<Wiped<Vec<GeneratedPassword>>> {
-    run(&core, true, |c| {
-        c.read(|v| Wiped(v.generator_history().to_vec()))
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn clear_generator_history(
-    core: Shared<'_>,
-    page_vault_id: Option<String>,
-) -> CmdResult<()> {
-    run(&core, true, move |c| {
-        c.mutate_for_page(page_vault_id.as_deref(), |v| v.clear_generator_history())
-    })
-    .await
-}
 
 #[tauri::command]
 pub async fn password_strength(core: Shared<'_>, password: String) -> CmdResult<Strength> {
@@ -651,20 +607,50 @@ pub async fn get_settings(core: Shared<'_>) -> CmdResult<Settings> {
 pub async fn save_settings(core: Shared<'_>, settings: Value) -> CmdResult<Settings> {
     run(&core, true, move |c| {
         let settings: Settings = parse(settings, "settings")?;
-        apply_settings(c, settings)
+        save_settings_on(c, settings)
     })
     .await
 }
 
-/// Persists new settings and applies their side effects (tray labels,
-/// close-to-tray, bridge on/off).
-fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
-    let settings = settings.normalized();
-    let old = {
+/// The work of [`save_settings`]. The generator presets and the default
+/// preset stay as stored: only the preset commands (`crate::generator`)
+/// change them – they validate and report errors, and a settings object the
+/// page read before such a change cannot undo it.
+fn save_settings_on(core: &Arc<Core>, mut settings: Settings) -> AppResult<Settings> {
+    let ((), saved) = change_settings(core, |stored| {
+        settings.generator_presets = std::mem::take(&mut stored.generator_presets);
+        settings.generator_default = std::mem::take(&mut stored.generator_default);
+        *stored = settings;
+        Ok(())
+    })?;
+    Ok(saved)
+}
+
+/// Changes the settings: `change` edits a copy of the current settings
+/// under the state lock (so concurrent changes cannot undo each other); the
+/// copy is normalised, persisted and only then made current. Afterwards the
+/// side effects of what changed are applied (tray labels, close-to-tray,
+/// bridge on/off, update checks, website icons). An error of `change` or of
+/// the save changes nothing.
+pub(crate) fn change_settings<R>(
+    core: &Arc<Core>,
+    change: impl FnOnce(&mut Settings) -> AppResult<R>,
+) -> AppResult<(R, Settings)> {
+    let (result, settings, old) = {
         let mut st = core.state();
-        settings.save()?;
-        std::mem::replace(&mut st.settings, settings.clone())
+        let mut next = st.settings.clone();
+        let result = change(&mut next)?;
+        let next = next.normalized();
+        st.write_settings(&next)?;
+        let old = std::mem::replace(&mut st.settings, next.clone());
+        (result, next, old)
     };
+    apply_side_effects(core, &old, &settings);
+    Ok((result, settings))
+}
+
+/// What a settings change does besides storing the settings.
+fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
     if settings.update_channel != old.update_channel || (settings.update_check && !old.update_check)
     {
         core.wake_update_checker();
@@ -687,7 +673,6 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
             bridge::stop(core);
         }
     }
-    Ok(settings)
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +969,44 @@ mod tests {
         assert!(c
             .read(|v| v.items().iter().all(|i| i.tags.is_empty()))
             .unwrap());
+    }
+
+    /// Only the preset commands change the generator presets and the
+    /// default: a settings object the page read before keeps neither from
+    /// being saved nor undoes them.
+    #[test]
+    fn saving_settings_keeps_the_generator_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let stale = c.state().settings.clone();
+        let saved = crate::generator::save_preset(
+            &c,
+            None,
+            "Bank",
+            keystead_core::generator::GeneratorOptions::default(),
+        )
+        .unwrap();
+        crate::generator::set_default_preset(&c, &saved.id).unwrap();
+
+        let result = save_settings_on(
+            &c,
+            Settings {
+                clipboard_clear_seconds: 45,
+                generator_presets: Vec::new(),
+                generator_default: "pin".into(),
+                ..stale
+            },
+        )
+        .unwrap();
+        assert_eq!(result.clipboard_clear_seconds, 45);
+        assert_eq!(result.generator_presets.len(), 1);
+        assert_eq!(result.generator_presets[0].id, saved.id);
+        assert_eq!(result.generator_default, saved.id);
+        assert_eq!(c.state().settings, result);
+        assert_eq!(
+            Settings::load_from(&c.data_dir().join("settings.json")),
+            result
+        );
     }
 
     #[test]

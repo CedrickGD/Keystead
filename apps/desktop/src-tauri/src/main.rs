@@ -13,6 +13,7 @@ mod bridge;
 mod commands;
 mod error;
 mod extension;
+mod generator;
 mod gui;
 mod icons;
 mod import_flow;

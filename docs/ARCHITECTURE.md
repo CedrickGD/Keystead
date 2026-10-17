@@ -774,6 +774,13 @@ preset. Built-in presets (`generator::builtin_presets`, ids in this order):
 `standard` (the `GeneratorOptions` defaults), `alnum` (letters and digits
 only), `pin` (6 digits), `long` (32 characters, at least 2 of each class),
 `passphrase` (5 English words) – their names are translated by the UIs.
+In the desktop app only the preset commands (`generator_presets`,
+`save_generator_preset`, `delete_generator_preset`,
+`set_default_generator_preset`) change `generatorPresets` and
+`generatorDefault`; `save_settings` keeps the stored values of both (see the
+command table). The default preset is what the editor's generator popover
+and the browser extension's suggestions use for every option they do not
+set themselves (see "Browser bridge protocol").
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -825,12 +832,19 @@ history. The bridge's own writes are not affected.
 | `save_attachment` † | `attachmentId, path` | `null` – decrypts the attachment and writes it to `path` (the native save dialog's choice) atomically; refuses a target inside the vaults directory (the path or its deepest existing ancestor resolved), with the `.keystead` extension, relative or with `.`/`..` components (`invalid_input:attachment_target`); `not_found`, `corrupt:…`, `io:…`; `locked` also when the vault was locked or switched between reading and writing. Changes nothing but counts as user activity; the file is remembered for `show_export` |
 | `remove_attachment` † | `attachmentId` | `ItemListEntry` – deletes the attachment (entry, then blob) and answers its item's new entry; `not_found` |
 | `reveal_attachment` | `attachmentId, pageVaultId` | `string` – a `data:image/…;base64,…` URL for the in-app preview: only PNG, JPEG, GIF and WebP recognised by their magic bytes and at most 8 MiB, anything else `unsupported:attachment_preview` (a too large file without reading it); `not_found`, `corrupt:…`. The only command that brings attachment bytes into the webview; wiped after serialization |
-| `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
-| `generator_history` | – | `GeneratedPassword[]` (`{ id, password, createdAt }`) |
+| `generate_password` † | `options: GeneratorOptions, remember?: boolean` | `string` – a password for `options` (`invalid_input:options` if they do not parse, the generator's `invalid_input:…` codes if invalid). `remember` absent or `false`: a **preview**, nothing is stored – what the UI uses (the generator page and the editor's popover); the page reports a password the user used with `remember_generated`. `true` (compatibility): also added to the history of the page's vault (skipped for another vault or none) |
+| `remember_generated` † | `password` | `null` – the user used a previewed password (copied it, took it into an item): added to the page's vault's generator history (newest first, at most 50); the same password as the newest entry is not added again. 1–1024 characters (`invalid_input:password_empty` / `password_too_long`); same rules as the bridge's `remember_generated` |
+| `generator_history` | – | `GeneratedPasswordInfo[]` (`{ id, createdAt }`, newest first) – **redacted**, never a password (see "Secrets and the webview") |
+| `reveal_generated` | `id, pageVaultId` | `string` – the password of one history entry, for an eye toggle; `not_found` for an unknown id |
+| `copy_generated` | `id, pageVaultId` | `null` – copies one history entry like `copy_secret_field`; the password never reaches the webview; `not_found` for an unknown id |
 | `clear_generator_history` † | – | `null` |
+| `generator_presets` | – | `GeneratorPresets { builtin: GeneratorPreset[], user: GeneratorPreset[], defaultId: string, defaultOptions: GeneratorOptions }` – the built-in presets in display order (`name` is an English fallback; the UI translates by id), the user's presets (`settings.generatorPresets`), the default preset's id and its options (`Settings::default_generator_options`) |
+| `save_generator_preset` | `id: string \| null, name, options: GeneratorOptions` | `{ id, presets: GeneratorPresets }` – `id` `null`: a new user preset with a fresh UUID v4 (at most 50, else `invalid_input:presets_too_many`); otherwise replaces name and options of that user preset (`not_found`; a built-in id → `invalid_input:preset_id`). Name trimmed, 1–40 characters (`preset_name_required` / `preset_name_too_long`); a name another user preset has (case-insensitive) → `preset_name_taken`; options normalised (`GeneratorOptions::normalized`, the generator's codes). Saved to `settings.json` |
+| `delete_generator_preset` | `id` | `GeneratorPresets` – removes a user preset (`not_found`; a built-in id → `invalid_input:preset_id`); if it was the default, the default becomes `"standard"` |
+| `set_default_generator_preset` | `id` | `GeneratorPresets` – makes a built-in or user preset the default (`not_found` for an unknown id) |
 | `password_strength` | `password` | `Strength` |
 | `totp_code` | `seed` | `TotpCode` (kept for compatibility; the item view has no keys and uses `totp_for_item`) |
-| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies notes of every item type, generated passwords and the recovery key as sensitive; the secrets of items – passwords, TOTP codes, card number/code, hidden fields, old passwords – go through `copy_secret_field`, which copies the same way) |
+| `copy_text` | `text, sensitive: boolean` | `null` (sensitive → excluded from clipboard history, cleared after `clipboardClearSeconds` and on lock/quit – also with `clipboardClearSeconds` = 0 –, only if clipboard still holds it. The UI copies notes of every item type, the generator's preview and the recovery key as sensitive; the secrets of items – passwords, TOTP codes, card number/code, hidden fields, old passwords – go through `copy_secret_field` and the generator history through `copy_generated`, which copy the same way) |
 | `health_report` | – | `HealthReport` |
 | `check_pwned_password` | `password` | `number` – the password's breach count at Have I Been Pwned (0: not in known breaches), only on the user's button press; only the first 5 hex characters of its SHA-1 leave the process (`GET https://api.pwnedpasswords.com/range/<PREFIX>`, see "Leaked-password check"). No vault needed. Errors: `unsupported:pwned_proxy` (a proxy configuration the app cannot evaluate – it never goes around a proxy), `io:HTTP <status>` (non-2xx, also 429; no retry), `io:<detail>` (network) |
 | `check_pwned_vault` | `pageVaultId` | `PwnedReport { checkedAt: number, checked: number, leaked: { itemId, count: number }[], failed: number }` – checks every distinct password of the page's vault's non-trashed logins (one request per distinct prefix, ≤ 4 at a time; `checked` = distinct passwords incl. the failed ones, `leaked` = the items behind the leaked ones sorted by count desc, `failed` = passwords whose request failed or brought no listing after others succeeded). `locked` if another vault is open, or if the vault was locked or switched while the requests ran (the result is discarded); the first HTTP error (`io:HTTP <status>`) or a network error before any answer (`io:<detail>`) ends the run; `unsupported:pwned_proxy` as above. Nothing is cached or written into the vault; counts as user activity |
@@ -849,7 +863,7 @@ history. The bridge's own writes are not affected.
 | `get_icons` | `pageVaultId` | `{ [host]: "data:image/png;base64,…" }` – the stored website icons of the page's vault (`locked` if another vault is open); hosts as in "Website icons" |
 | `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
-| `save_settings` | `settings: Settings` | `Settings` |
+| `save_settings` | `settings: Settings` | `Settings` – normalised and saved; `generatorPresets` and `generatorDefault` keep their stored values (only the preset commands change them, so a settings object the page read before cannot undo a preset change) |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
 | `register_browsers` | `browsers: string[]` (ids) | `BrowserStatus` |
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
@@ -1029,6 +1043,23 @@ item; copying never sends it there.
   results wiped; `reveal_attachment` is the only way attachment bytes reach
   the webview, as a data URL the UI treats like a revealed secret. The
   bridge / extension path is unchanged.
+* **Generator** (`src-tauri/src/generator.rs`). Nothing is generated or
+  stored behind the user's back: the generator page and the editor's popover
+  generate a **preview** only when the user asks (`generate_password` with
+  `remember: false`), which is not stored. Only a password the user *used* –
+  copied from the generator, or taken into an item – enters the vault's
+  generator history, reported by the page with `remember_generated` (the
+  browser extension reports a suggestion the user took with the bridge's
+  `remember_generated`). `generator_history` answers
+  `GeneratedPasswordInfo { id, createdAt }` only; `reveal_generated` (one
+  password, for an eye toggle that hides again like the item's – 30 s, blur
+  / hidden window, lock, unmount) and `copy_generated` (the sensitive
+  clipboard path, lock epoch checked like `copy_secret_field`) address an
+  entry by its id and take `pageVaultId` (another open vault or none →
+  `locked`, an unknown id → `not_found`). Ids are UUIDs v4; entries of older
+  payloads get one when the vault is opened (persisted with the next save).
+  The preview itself is the one generator value the page holds – the user
+  asked for it, like a revealed secret.
 * **UI.** The item list (`MainScreen`) holds only `ItemListEntry`s. Eye
   toggles (`SecretFieldRow`, `useRevealedSecret`) call `reveal_secret` and
   hide the value again after 30 s, when the item or its `updatedAt` changes,
@@ -1155,10 +1186,12 @@ vault without recovery key is dropped silently.
 * Auto-lock activity = `touch_activity`, deliberate user commands (unlock,
   mutations, `copy_text`, `reveal_secret`, `copy_secret_field`,
   `get_item_for_edit`, the attachment commands, the leaked-password
-  checks, generator, import/export, settings, …) and bridge
-  user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
+  checks, `generate_password`, `remember_generated`, `reveal_generated`,
+  `copy_generated`, the preset commands, import/export, settings, …) and
+  bridge user actions. Polled/passive commands (`totp_code`, `totp_for_item`,
   `browser_status`, `session_state`, `app_info`, `list_*`, `get_settings`,
-  `get_icons`) do **not** reset the timer. The monitor checks every 5 s (idle time includes sleep).
+  `get_icons`, `generator_history`, `generator_presets`) do **not** reset
+  the timer. The monitor checks every 5 s (idle time includes sleep).
 * `lockOnSystemLock`: Windows uses session notifications
   (`WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`) and `PBT_APMSUSPEND`; on every
   OS a clock jump > 2 min between the monitor's 1-s ticks (suspend /
@@ -1173,8 +1206,9 @@ vault without recovery key is dropped silently.
   quitting the app. `lock_vault` (the UI's own request) emits no event;
   tray "Sperren" and the extension's `lock` emit `vault://locked {manual}`.
 * `list_items`, `save_item`, `set_favorite`, `reveal_secret`,
-  `totp_for_item`, `get_item_for_edit`, `generator_history`,
-  `add_attachment`, `remove_attachment` and `reveal_attachment` overwrite the
+  `totp_for_item`, `get_item_for_edit`, `generate_password`,
+  `reveal_generated`, `add_attachment`, `remove_attachment` and
+  `reveal_attachment` overwrite the
   strings of their cloned result once Tauri has serialized it
   (`src/wipe.rs`); the serialized IPC message itself is out of reach.
 * Every unlock/create stores the vault as `lastVaultId` (also an
@@ -1983,7 +2017,7 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 | `search` | yes, unlocked | `query` | `ItemSummary[]` (max 50; optional `icon`) |
 | `get_login` | yes, unlocked | `itemId` | `{ id, name, username, password, totp: TotpCode\|null, uris: string[] }` |
 | `get_totp` | yes, unlocked | `itemId` | `TotpCode` |
-| `generate_password` | yes | `options?` (GeneratorOptions partial), `remember?: bool` | `string` (uses defaults; stored in generator history if unlocked – unless `remember: false`: a preview, not stored, no user activity) |
+| `generate_password` | yes | `options?` (GeneratorOptions partial), `remember?: bool` | `string` – every option the request does not set comes from the app's default generator preset (see below); stored in the generator history if unlocked – unless `remember: false`: a preview, not stored, no user activity |
 | `remember_generated` | yes, unlocked | `password` (1–1024 chars) | `null` – adds a password the user took from a preview to the open vault's generator history |
 | `save_login` | yes, unlocked | `name, url, username, password` | `{ id }` (creates new login) |
 | `update_password` | yes, unlocked | `itemId, password` | `{ id }` |
@@ -2084,7 +2118,23 @@ Behaviour (additive to the table above):
   extension treats as "already stored". `remember_generated` checks the
   length (empty or > 1024 characters → `invalid_request`) and calls
   `VaultBackend::remember_generated` (default `invalid_request`; the desktop
-  app adds it to the open vault's history like the generator view does).
+  app adds it to the open vault's history like the page's
+  `remember_generated` – the same password as the newest entry is not added
+  again).
+* `generate_password` options: the request's `options` are read as a
+  `protocol::GeneratorOptionsPatch` – exactly what `GeneratorOptions`
+  accepts (a known field with a value of the wrong type → `invalid_request`,
+  unknown keys ignored), but it remembers which fields were sent.
+  `dispatcher::generator_options_for` applies them over
+  `VaultBackend::default_generator_options()` (default: the generator
+  defaults; the desktop app: its settings' default preset,
+  `Settings::default_generator_options`); no `options` (absent, `null`) or
+  `{}` → the default preset itself. If the sent fields make the preset
+  invalid while the same fields over the generator defaults are valid (e.g.
+  `symbols: true` over a preset with an empty symbol set), the defaults stand
+  in for the preset – a request that worked before presets existed keeps
+  working; invalid either way → `invalid_request`. This holds for previews
+  and stored passwords alike.
 * `copy_secret` calls `VaultBackend::copy_secret`, `copy_field` calls
   `VaultBackend::copy_field` (default: `get_login` / `get_totp`, then
   `copy_secret`). The default `copy_secret`
@@ -2154,6 +2204,7 @@ pub trait VaultBackend: Send + Sync + 'static {   // implemented by the desktop 
     fn search(&self, query: &str) -> Result<Vec<ItemSummary>, BridgeError>;     // capped to 50 by the dispatcher
     fn get_login(&self, item_id: &str) -> Result<LoginSecret, BridgeError>;
     fn get_totp(&self, item_id: &str) -> Result<TotpCode, BridgeError>;
+    fn default_generator_options(&self) -> GeneratorOptions { /* default: GeneratorOptions::default(); the app: its default preset */ }
     fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError>; // + stored in the history if unlocked
     fn preview_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> { /* default: core generator, not stored */ }
     fn remember_generated(&self, password: &str) -> Result<(), BridgeError> { /* default: Err(InvalidRequest) */ }
@@ -2237,7 +2288,8 @@ The extension's security model and file roles are in
 * **Password suggestion**: on a focus that follows a user gesture
   (transient user activation) on a suggestion field while unlocked, the
   service worker generates a preview (`generate_password`, `remember: false`,
-  the popup's generator options or the app's defaults) and the page shows it
+  the popup's generator options over the app's default generator preset)
+  and the page shows it
   masked in a bubble in the closed shadow root. *Verwenden* (trusted click,
   500 ms dwell) fills the field and its confirmation fields, counts as user
   input for the save prompt and sends `remember_generated` (skipped if
