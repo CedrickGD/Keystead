@@ -5,10 +5,13 @@
 // Two demo vaults ("Privat", "Arbeit"), master password "demo" for both.
 // URL parameters: `?mock=empty` starts without any vault (first-run screen).
 // `?platform=android` (or `ios`) pretends to be the phone app: `AppInfo`
-// says so (`readOnly`, no extension id) and the background lock
-// (`lockInBackgroundSeconds`) runs on the page's visibility – switch tabs
-// or minimise the browser to leave the app (the backend's wait for a
-// pending clipboard clear is not simulated).
+// says so (`readOnly`, no extension id), only the phone's commands exist
+// (`PHONE_COMMANDS`; any other one fails like an unknown command), the UI
+// takes its phone layout (narrow the window as well to see it at phone
+// size) and the background lock (`lockInBackgroundSeconds`) runs on the
+// page's visibility – switch tabs or minimise the browser to leave the app
+// (the backend's wait for a pending clipboard clear is not simulated).
+// `__keysteadMock.simulateBack()` sends the Android back gesture.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -445,6 +448,11 @@ function requestPairing(clientName = "Microsoft Edge – DESKTOP-4F2K9"): Pairin
 
 export interface MockDevHelpers {
   triggerPairing: (clientName?: string) => PairingRequest;
+  /**
+   * The Android back gesture (`keystead:back`, as MainActivity sends it):
+   * true = the page used it, false = the app would move to the background.
+   */
+  simulateBack: () => boolean;
   simulateTimeoutLock: () => void;
   /** The phone's lock after `lockInBackgroundSeconds` in the background (`vault://locked {background}`). */
   simulateBackgroundLock: () => void;
@@ -468,6 +476,11 @@ declare global {
 function installDevHelpers(): void {
   window.__keysteadMock = {
     triggerPairing: (clientName?: string) => requestPairing(clientName),
+    simulateBack: () => {
+      const event = new Event("keystead:back", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    },
     simulateTimeoutLock: () => lock("timeout"),
     simulateBackgroundLock: () => lock("background"),
     simulateExternalChange: () => emit("vault://changed", {}),
@@ -1377,11 +1390,43 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
   }
 }
 
+/**
+ * The commands the phone app registers (`gui.rs`, "On the phone" in
+ * docs/ARCHITECTURE.md) – with `?platform=android` every other one fails,
+ * so a phone screen that still reaches a desktop command shows up here.
+ */
+const PHONE_COMMANDS = new Set([
+  "app_info",
+  "list_vaults",
+  "session_state",
+  "unlock_vault",
+  "lock_vault",
+  "touch_activity",
+  "list_items",
+  "list_folders",
+  "reveal_secret",
+  "copy_secret_field",
+  "totp_for_item",
+  "reveal_attachment",
+  "password_strength",
+  "copy_text",
+  "health_report",
+  "get_icons",
+  "get_settings",
+  "save_settings",
+]);
+
 export async function mockInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
   // Simulate IPC latency so loading states are exercised.
   await sleep(20 + Math.random() * 60);
+  if (getState().appInfo.readOnly && !PHONE_COMMANDS.has(command)) {
+    // Tauri rejects a command its handler does not know with a plain message.
+    console.warn(`[mock] the phone app has no command ${command}`);
+    fail(`Command ${command} not found`);
+  }
   const result = (await dispatch(command, args)) as T;
-  if (ICON_FETCH_TRIGGERS.has(command)) scheduleIconFetch();
+  // The phone has no icon fetcher (no network); it shows stored icons only.
+  if (ICON_FETCH_TRIGGERS.has(command) && !getState().appInfo.readOnly) scheduleIconFetch();
   return result;
 }
 

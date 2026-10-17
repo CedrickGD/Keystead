@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useT } from "../i18n";
 import { useEscapeLayer } from "../lib/layers";
+import { phoneLayoutActive } from "../lib/phone";
 
 // Open modals, newest last – only the top-most one traps Tab.
 const openModals: string[] = [];
@@ -59,10 +60,15 @@ export function Modal({
 
     const dialog = dialogRef.current;
     if (dialog) {
-      const preferred = dialog.querySelector<HTMLElement>("[data-autofocus]");
-      const firstInput = dialog.querySelector<HTMLElement>(
-        "input:not([disabled]):not([type=checkbox]), textarea:not([disabled])",
-      );
+      // Phone: never a text field on its own – the on-screen keyboard would
+      // pop up over the dialog; the user taps the field when they want it.
+      const typing = (el: HTMLElement | null) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+      const phone = phoneLayoutActive();
+      let preferred = dialog.querySelector<HTMLElement>("[data-autofocus]");
+      if (phone && typing(preferred)) preferred = null;
+      const firstInput = phone
+        ? null
+        : dialog.querySelector<HTMLElement>("input:not([disabled]):not([type=checkbox]), textarea:not([disabled])");
       const fallback = dialog.querySelector<HTMLElement>(".modal-footer button:not([disabled])");
       (preferred ?? firstInput ?? fallback ?? dialog).focus();
     }

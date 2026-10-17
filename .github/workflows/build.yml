@@ -70,7 +70,7 @@ jobs:
       - name: Check extension and release scripts
         run: |
           for f in $(find extension/chrome .github/scripts -name '*.js' -o -name '*.mjs'); do node --check "$f"; done
-          node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
+          node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs apps/desktop/tests/*.test.mjs
 
   windows:
     name: Windows build

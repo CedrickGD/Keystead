@@ -4,11 +4,13 @@ import {
   BookOpen,
   Check,
   ChevronRight,
+  ClipboardCopy,
   FolderInput,
   FolderOpen,
   HardDrive,
   KeyRound,
   LifeBuoy,
+  MonitorSmartphone,
   Plug,
   Puzzle,
   TriangleAlert,
@@ -36,9 +38,12 @@ type Mode = "choose" | "create" | "import";
 
 export function WelcomeScreen() {
   const { t } = useT();
-  const { vaults, showUnlock } = useApp();
+  const { vaults, showUnlock, info } = useApp();
   const [mode, setMode] = useState<Mode>("choose");
   const firstRun = vaults.length === 0;
+
+  // The read-only phone cannot create a vault (no `create_vault` there).
+  if (info.readOnly) return <PhoneWelcome />;
 
   if (mode !== "choose") {
     return <CreateVaultWizard withImport={mode === "import"} onBack={() => setMode("choose")} />;
@@ -102,6 +107,63 @@ export function WelcomeScreen() {
             <span>
               <strong>{t("welcome.featBrowser")}</strong>
               {t("welcome.featBrowserDesc")}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The phone without a vault: what the app is, and where a vault will come
+ * from. The marked slot gets the entry for the next stage ("Tresor vom PC
+ * holen": a copy in the user's own cloud folder, picked in the system file
+ * picker – docs/BLOCK5-DESIGN.md, Stufe 2a); until then it explains the way.
+ */
+function PhoneWelcome() {
+  const { t } = useT();
+  return (
+    <div className="auth-screen">
+      <div className="welcome phone-welcome">
+        <div className="welcome-hero">
+          <Logo size={64} title="Keystead" />
+          <h1>{t("welcome.title")}</h1>
+          <p>{t("welcome.phoneSubtitle")}</p>
+        </div>
+
+        <section className="welcome-slot" data-slot="vault-source" aria-labelledby="welcome-slot-title">
+          <span className="choice-icon muted-icon" aria-hidden>
+            <MonitorSmartphone />
+          </span>
+          <span className="choice-text">
+            <span className="choice-title" id="welcome-slot-title">
+              {t("welcome.phoneNoVaultTitle")}
+            </span>
+            <span className="choice-desc">{t("welcome.phoneNoVaultText")}</span>
+          </span>
+        </section>
+
+        <ul className="welcome-features">
+          <li>
+            <HardDrive />
+            <span>
+              <strong>{t("welcome.featLocal")}</strong>
+              {t("welcome.phoneFeatLocalDesc")}
+            </span>
+          </li>
+          <li>
+            <KeyRound />
+            <span>
+              <strong>{t("welcome.featCrypto")}</strong>
+              {t("welcome.featCryptoDesc")}
+            </span>
+          </li>
+          <li>
+            <ClipboardCopy />
+            <span>
+              <strong>{t("welcome.phoneFeatLookup")}</strong>
+              {t("welcome.phoneFeatLookupDesc")}
             </span>
           </li>
         </ul>

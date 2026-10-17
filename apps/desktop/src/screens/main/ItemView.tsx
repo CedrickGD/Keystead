@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import {
+  ArrowLeft,
   Check,
   ChevronRight,
   Download,
@@ -137,12 +138,15 @@ function AttachmentRow({
   item,
   attachment,
   readOnly,
+  canSave,
   onSave,
   onRemove,
 }: {
   item: ItemListEntry;
   attachment: AttachmentListEntry;
   readOnly: boolean;
+  /** "Speichern unter …" exists (a native save dialog: not on the phone). */
+  canSave: boolean;
   onSave: () => void;
   onRemove: () => void;
 }) {
@@ -179,15 +183,17 @@ function AttachmentRow({
               {shown ? <EyeOff /> : <Eye />}
             </button>
           )}
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={onSave}
-            title={t("attachments.save")}
-            aria-label={`${t("attachments.save")}: ${attachment.name}`}
-          >
-            <Download />
-          </button>
+          {canSave && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={onSave}
+              title={t("attachments.save")}
+              aria-label={`${t("attachments.save")}: ${attachment.name}`}
+            >
+              <Download />
+            </button>
+          )}
           {!readOnly && (
             <button
               type="button"
@@ -223,25 +229,31 @@ function AttachmentRow({
 /**
  * The item's attachments: preview (images), "Speichern unter …" and
  * "Entfernen" per file, "Datei anhängen …" below. A trashed item shows its
- * files read-only (preview and save still work, nothing changes).
+ * files read-only (preview and save still work, nothing changes); so does a
+ * read-only vault (the phone), which has no "Speichern unter …" either.
  */
 function Attachments({
   item,
   attaching,
+  vaultReadOnly,
+  canSave,
   onAdd,
   onSave,
   onRemove,
 }: {
   item: ItemListEntry;
   attaching: boolean;
+  vaultReadOnly: boolean;
+  canSave: boolean;
   onAdd: () => void;
   onSave: (attachment: AttachmentListEntry) => void;
   onRemove: (attachment: AttachmentListEntry) => void;
 }) {
   const { t } = useT();
   const trashed = item.deletedAt !== null;
+  const readOnly = trashed || vaultReadOnly;
   const list = item.attachments;
-  if (trashed && list.length === 0) return null;
+  if (readOnly && list.length === 0) return null;
   const full = list.length >= ATTACHMENTS_PER_ITEM_MAX;
   return (
     <section className="detail-section">
@@ -255,13 +267,14 @@ function Attachments({
             key={attachment.id}
             item={item}
             attachment={attachment}
-            readOnly={trashed}
+            readOnly={readOnly}
+            canSave={canSave}
             onSave={() => onSave(attachment)}
             onRemove={() => onRemove(attachment)}
           />
         ))}
         {list.length === 0 && <div className="attachment-empty">{t("attachments.empty")}</div>}
-        {!trashed && (
+        {!readOnly && (
           <div className="attachment-add">
             <Button variant="secondary" size="sm" icon={<Paperclip />} loading={attaching} disabled={full} onClick={onAdd}>
               {t("attachments.add")}
@@ -387,7 +400,7 @@ function IdentityBody({ item }: { item: ItemListEntry }) {
  * password (see `state/breaches.tsx`; gone once the item changes).
  * "Passwort ändern" opens the editor.
  */
-function LeakWarning({ item, onEdit }: { item: ItemListEntry; onEdit: () => void }) {
+function LeakWarning({ item, onEdit }: { item: ItemListEntry; onEdit?: () => void }) {
   const { t, tp, locale } = useT();
   const { breachCount } = useBreaches();
   const count = breachCount(item);
@@ -399,9 +412,11 @@ function LeakWarning({ item, onEdit }: { item: ItemListEntry; onEdit: () => void
         <strong>{t("pwned.itemTitle")}</strong>
         <span>{tp("pwned.itemText", count, { n: new Intl.NumberFormat(locale).format(count) })}</span>
       </div>
-      <Button variant="danger" size="sm" onClick={onEdit}>
-        {t("pwned.changePassword")}
-      </Button>
+      {onEdit && (
+        <Button variant="danger" size="sm" onClick={onEdit}>
+          {t("pwned.changePassword")}
+        </Button>
+      )}
     </div>
   );
 }
@@ -421,6 +436,12 @@ export interface ItemViewProps {
   onAddAttachment: () => void;
   onSaveAttachment: (attachment: AttachmentListEntry) => void;
   onRemoveAttachment: (attachment: AttachmentListEntry) => void;
+  /** The vault cannot be changed here (the phone): no favourite toggle, edit, trash or attachment changes. */
+  readOnly: boolean;
+  /** "Speichern unter …" for attachments (a native save dialog: desktop only). */
+  canSaveAttachments: boolean;
+  /** Phone layout: back to the list (an arrow in front of the title). */
+  onBack?: () => void;
 }
 
 export function ItemView({
@@ -436,6 +457,9 @@ export function ItemView({
   onAddAttachment,
   onSaveAttachment,
   onRemoveAttachment,
+  readOnly,
+  canSaveAttachments,
+  onBack,
 }: ItemViewProps) {
   const { t, tp, formatDateTime, formatRelative } = useT();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -446,6 +470,11 @@ export function ItemView({
   return (
     <div className="detail" tabIndex={-1} data-detail-root>
       <header className="detail-header">
+        {onBack && (
+          <button type="button" className="icon-btn detail-back" onClick={onBack} aria-label={t("common.back")} title={t("common.back")}>
+            <ArrowLeft />
+          </button>
+        )}
         <Avatar name={item.name} type={item.type} size="lg" site={iconHost(item)} />
         <div className="detail-title">
           <h1 className="selectable" title={item.name}>
@@ -456,6 +485,13 @@ export function ItemView({
               {TYPE_ICONS[item.type]}
               {t(`type.${item.type}`)}
             </span>
+            {readOnly && item.favorite && !trashed && (
+              // Read-only: the star is no button, so the chip says it.
+              <span className="chip">
+                <Star />
+                {t("item.favorite")}
+              </span>
+            )}
             {folder && (
               <span className="chip">
                 <FolderIcon />
@@ -493,7 +529,7 @@ export function ItemView({
             )}
           </div>
         </div>
-        {!trashed && (
+        {!trashed && !readOnly && (
           <div className="detail-actions">
             <button
               type="button"
@@ -549,25 +585,35 @@ export function ItemView({
               <strong>{t("trash.itemInTrash")}</strong>
               <span>{t("trash.deletedAt", { when: formatRelative(item.deletedAt ?? 0) })}</span>
             </div>
-            <div className="trash-banner-actions">
-              <button type="button" className="btn btn-secondary btn-sm" onClick={onRestore} data-detail-primary>
-                <RotateCcw />
-                {t("trash.restore")}
-              </button>
-              <button type="button" className="btn btn-danger-ghost btn-sm" onClick={onDeleteForever}>
-                {t("trash.deleteForever")}
-              </button>
-            </div>
+            {!readOnly && (
+              <div className="trash-banner-actions">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={onRestore} data-detail-primary>
+                  <RotateCcw />
+                  {t("trash.restore")}
+                </button>
+                <button type="button" className="btn btn-danger-ghost btn-sm" onClick={onDeleteForever}>
+                  {t("trash.deleteForever")}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
-        {!trashed && item.type === "login" && <LeakWarning item={item} onEdit={onEdit} />}
+        {!trashed && item.type === "login" && <LeakWarning item={item} onEdit={readOnly ? undefined : onEdit} />}
         {item.type === "login" && <LoginBody item={item} />}
         {item.type === "card" && <CardBody item={item} />}
         {item.type === "identity" && <IdentityBody item={item} />}
         <Notes item={item} />
         <CustomFields item={item} />
-        <Attachments item={item} attaching={attaching} onAdd={onAddAttachment} onSave={onSaveAttachment} onRemove={onRemoveAttachment} />
+        <Attachments
+          item={item}
+          attaching={attaching}
+          vaultReadOnly={readOnly}
+          canSave={canSaveAttachments}
+          onAdd={onAddAttachment}
+          onSave={onSaveAttachment}
+          onRemove={onRemoveAttachment}
+        />
         {item.type === "login" && <PasswordHistory item={item} />}
 
         <dl className="detail-meta">

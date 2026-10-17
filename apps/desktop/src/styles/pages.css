@@ -1234,9 +1234,11 @@ code {
   color: var(--text-3);
 }
 
-.settings-toc-item:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+@media (hover: hover) {
+  .settings-toc-item:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
 }
 
 .settings-toc-item.active {

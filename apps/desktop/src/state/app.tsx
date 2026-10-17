@@ -23,6 +23,13 @@ export interface AppContextValue {
   showWelcome: () => void;
   /** Returns to the unlock screen (or the welcome screen when there are no vaults). */
   showUnlock: () => void;
+  /**
+   * The phone layout is on (`data-layout="phone"`, styles/phone.css): the
+   * phone app, or a narrow viewport. Not the same as the phone *platform*
+   * (`isPhonePlatform(info.platform)`, desktop-only features) or
+   * `info.readOnly` (no editing).
+   */
+  phoneLayout: boolean;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);

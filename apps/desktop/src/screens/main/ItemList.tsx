@@ -5,6 +5,7 @@ import {
   CreditCard,
   IdCard,
   KeyRound,
+  Menu as MenuIcon,
   Plus,
   Search,
   SearchX,
@@ -128,6 +129,10 @@ export interface ItemListProps {
   onSort: (sort: SortKey) => void;
   onNew: (type: ItemType) => void;
   onEmptyTrash: () => void;
+  /** The vault cannot be changed here (the phone): no "Neu", no emptying the trash. */
+  readOnly: boolean;
+  /** Phone layout: opens the navigation drawer (a menu button in front of the search). */
+  onMenu?: () => void;
 }
 
 export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function ItemList(
@@ -147,6 +152,8 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
     onSort,
     onNew,
     onEmptyTrash,
+    readOnly,
+    onMenu,
   },
   searchRef,
 ) {
@@ -226,10 +233,16 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
     ) : isTrash ? (
       <EmptyState icon={<Trash2 />} title={t("list.trashEmpty")} hint={t("list.trashEmptyHint")} />
     ) : filter.kind === "favorites" ? (
-      <EmptyState icon={<Star />} title={t("list.noFavorites")} hint={t("list.noFavoritesHint")} />
+      <EmptyState
+        icon={<Star />}
+        title={t("list.noFavorites")}
+        hint={readOnly ? t("list.noFavoritesHintReadOnly") : t("list.noFavoritesHint")}
+      />
     ) : filter.kind === "all" ? (
-      // The detail pane shows the "get started" actions for an empty vault.
-      <EmptyState icon={<Layers />} title={t("list.empty")} />
+      // The detail pane shows the "get started" actions for an empty vault (not on the phone).
+      <EmptyState icon={<Layers />} title={t("list.empty")} hint={readOnly ? t("list.emptyHintReadOnly") : undefined} />
+    ) : readOnly ? (
+      <EmptyState icon={<Layers />} title={t("list.empty")} hint={t("list.emptyHintReadOnly")} />
     ) : (
       <EmptyState
         icon={<Layers />}
@@ -323,6 +336,11 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
     <section className="list-pane" aria-label={title}>
       <div className="list-header">
         <div className="list-header-row">
+          {onMenu && (
+            <button type="button" className="icon-btn list-menu-btn" onClick={onMenu} aria-label={t("nav.openMenu")} title={t("nav.openMenu")}>
+              <MenuIcon />
+            </button>
+          )}
           <div className="search">
             <Search className="search-icon" aria-hidden />
             <input
@@ -347,7 +365,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
               </span>
             )}
           </div>
-          {!isTrash && <NewItemButton onNew={onNew} />}
+          {!isTrash && !readOnly && <NewItemButton onNew={onNew} />}
         </div>
         <div className="list-toolbar">
           <div className="list-title truncate">
@@ -356,7 +374,7 @@ export const ItemList = forwardRef<HTMLInputElement, ItemListProps>(function Ite
               {terms.length ? t("list.countFiltered", { shown: items.length, total: totalInFilter }) : items.length}
             </span>
           </div>
-          {isTrash ? (
+          {isTrash && readOnly ? null : isTrash ? (
             <button
               type="button"
               className="btn btn-danger-ghost btn-sm"

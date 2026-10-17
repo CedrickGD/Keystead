@@ -154,9 +154,12 @@
   height: 16px;
 }
 
-.icon-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text);
+/* Hover backgrounds only for pointers that hover: on touch screens they would stick after a tap. */
+@media (hover: hover) {
+  .icon-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
 }
 
 .icon-btn:active:not(:disabled) {
@@ -182,9 +185,11 @@
   color: var(--success-icon);
 }
 
-.icon-btn.danger:hover:not(:disabled) {
-  color: var(--danger-text);
-  background: var(--danger-soft);
+@media (hover: hover) {
+  .icon-btn.danger:hover:not(:disabled) {
+    color: var(--danger-text);
+    background: var(--danger-soft);
+  }
 }
 
 .icon-btn.on {
@@ -691,9 +696,11 @@ textarea.input {
     color var(--dur) var(--ease);
 }
 
-.chip-btn:hover {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+@media (hover: hover) {
+  .chip-btn:hover {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
 }
 
 .chip-btn:focus-visible {
@@ -1228,7 +1235,12 @@ mark {
   color: var(--text-2);
 }
 
-.menu-item:hover,
+@media (hover: hover) {
+  .menu-item:hover {
+    background: var(--bg-hover);
+  }
+}
+
 .menu-item:focus-visible,
 .menu-item.active {
   background: var(--bg-hover);

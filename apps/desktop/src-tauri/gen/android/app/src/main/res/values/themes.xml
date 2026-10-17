@@ -1,6 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.keystead_desktop" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- Shown around the webview: behind the status bar, the gesture bar
+             and the keyboard (MainActivity pads the content view by those
+             insets). The UI's light background (the bg-app token in tokens.css). -->
+        <item name="android:windowBackground">@color/keystead_background</item>
     </style>
 </resources>

@@ -1,0 +1,615 @@
+/* ---------- Phone layout ----------
+ * Active while <html data-layout="phone"> (App.tsx: the phone app, or a
+ * viewport up to 700 px – lib/layout.mjs). One column: the sidebar becomes a
+ * drawer, the item detail is stacked over the list, pages get a bar with the
+ * menu button; touch targets of at least 44 px; no hover-only controls.
+ * Everything here is keyed on the attribute, so the desktop is unaffected.
+ *
+ * Insets: the Android shell pads the webview by the status bar, the gesture
+ * bar, a display cutout and the on-screen keyboard (MainActivity.kt), so
+ * env(safe-area-inset-*) is 0 there; it matters where a webview reaches
+ * under the system bars itself (iOS, later).
+ */
+
+:root[data-layout="phone"] {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --phone-bar-h: 56px;
+  --phone-gutter: 12px;
+}
+
+:root[data-layout="phone"] body {
+  font-size: 15px;
+}
+
+/* The visible viewport, not the largest one (mobile browsers' toolbars). */
+:root[data-layout="phone"] .app-frame {
+  height: 100dvh;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+:root[data-layout="phone"] .splash,
+:root[data-layout="phone"] .auth-screen {
+  height: 100dvh;
+}
+
+:root[data-layout="phone"] .app-frame-body > .auth-screen {
+  height: 100%;
+}
+
+/* ---------- Shell, drawer ---------- */
+
+:root[data-layout="phone"] .shell {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+:root[data-layout="phone"] .sidebar {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(304px, 86vw);
+  padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
+  box-shadow: var(--shadow-lg);
+  /* Closed: not displayed – out of reach for taps, focus and screen readers.
+     (Not `visibility`: Android's accessibility bridge kept a drawer opened
+     that way out of its tree, so TalkBack would not have found it.) The
+     slide runs as a discrete transition; without support it just appears. */
+  display: none;
+  transform: translateX(-100%);
+  transition:
+    transform 220ms var(--ease),
+    display 220ms allow-discrete;
+}
+
+:root[data-layout="phone"] .sidebar.open {
+  display: flex;
+  transform: none;
+}
+
+@starting-style {
+  :root[data-layout="phone"] .sidebar.open {
+    transform: translateX(-100%);
+  }
+}
+
+:root[data-layout="phone"] .drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: var(--overlay);
+  animation: fade-in 160ms var(--ease);
+}
+
+:root[data-layout="phone"] .sidebar-header {
+  height: 64px;
+  padding: 0 6px 0 16px;
+}
+
+:root[data-layout="phone"] .sidebar-vault-name {
+  font-size: 13px;
+}
+
+.sidebar-readonly {
+  flex: none;
+  margin-left: 4px;
+  font-size: 11px;
+}
+
+:root[data-layout="phone"] .sidebar-scroll {
+  padding: 4px 8px 16px;
+}
+
+:root[data-layout="phone"] .nav-item {
+  height: 46px;
+  gap: 14px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+:root[data-layout="phone"] .nav-item svg {
+  width: 19px;
+  height: 19px;
+}
+
+:root[data-layout="phone"] .nav-count {
+  font-size: 13px;
+}
+
+:root[data-layout="phone"] .nav-section-title {
+  height: 34px;
+  margin-top: 12px;
+  padding-left: 12px;
+  font-size: 12px;
+}
+
+:root[data-layout="phone"] .nav-group-spaced {
+  margin-top: 10px;
+}
+
+:root[data-layout="phone"] .nav-row-actions {
+  top: 3px;
+}
+
+:root[data-layout="phone"] .nav-row-actions .icon-btn.sm {
+  width: 40px;
+  height: 40px;
+}
+
+:root[data-layout="phone"] .sidebar-footer {
+  padding: 8px;
+}
+
+/* ---------- Touch-sized controls ---------- */
+
+:root[data-layout="phone"] .icon-btn,
+:root[data-layout="phone"] .icon-btn.sm {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+:root[data-layout="phone"] .icon-btn svg,
+:root[data-layout="phone"] .icon-btn.sm svg {
+  width: 20px;
+  height: 20px;
+}
+
+:root[data-layout="phone"] .btn,
+:root[data-layout="phone"] .btn-sm {
+  height: auto;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+:root[data-layout="phone"] .btn-lg {
+  min-height: 48px;
+}
+
+/* 16 px text in fields: no zoom-in on focus (iOS), easier to read. */
+:root[data-layout="phone"] .input,
+:root[data-layout="phone"] .select-wrap select,
+:root[data-layout="phone"] textarea.input {
+  height: 44px;
+  font-size: 16px;
+}
+
+:root[data-layout="phone"] .input.lg,
+:root[data-layout="phone"] .select-wrap.lg select,
+:root[data-layout="phone"] .auth-card .input.lg,
+:root[data-layout="phone"] .auth-card .select-wrap.lg select {
+  height: 48px;
+}
+
+:root[data-layout="phone"] .menu {
+  max-width: calc(100vw - 16px);
+  max-height: min(70dvh, 440px);
+  overflow-y: auto;
+}
+
+:root[data-layout="phone"] .menu-item {
+  height: 48px;
+  font-size: 15px;
+}
+
+:root[data-layout="phone"] .segmented button {
+  height: 40px;
+}
+
+/* Small controls keep their look but get a 44 px tall hit area. */
+:root[data-layout="phone"] .switch::before,
+:root[data-layout="phone"] .chip-btn::before {
+  content: "";
+  position: absolute;
+  inset: -11px -4px;
+}
+
+:root[data-layout="phone"] .chip-btn {
+  position: relative;
+}
+
+/* Keyboard hints mean nothing without a keyboard. */
+:root[data-layout="phone"] .kbd,
+:root[data-layout="phone"] .shortcuts {
+  display: none;
+}
+
+/* ---------- Item list and detail (stacked) ---------- */
+
+:root[data-layout="phone"] .vault-view {
+  display: block;
+  position: relative;
+  height: 100%;
+}
+
+:root[data-layout="phone"] .list-pane {
+  height: 100%;
+  border-right: 0;
+}
+
+:root[data-layout="phone"] .vault-view.detail-open .list-pane {
+  /* Under the detail: hidden from screen readers, scroll position kept. */
+  visibility: hidden;
+}
+
+:root[data-layout="phone"] .detail-pane {
+  display: none;
+}
+
+:root[data-layout="phone"] .vault-view.detail-open .detail-pane {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  animation: phone-push 180ms var(--ease);
+}
+
+@keyframes phone-push {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+:root[data-layout="phone"] .list-header {
+  gap: 4px;
+  padding: 8px 8px 2px;
+}
+
+:root[data-layout="phone"] .list-header-row {
+  gap: 4px;
+}
+
+:root[data-layout="phone"] .list-menu-btn {
+  flex: none;
+}
+
+:root[data-layout="phone"] .search-input {
+  padding-right: 44px;
+}
+
+:root[data-layout="phone"] .search-clear {
+  right: 0;
+}
+
+:root[data-layout="phone"] .list-toolbar {
+  min-height: 44px;
+  padding: 0 0 0 8px;
+}
+
+:root[data-layout="phone"] .list-title {
+  font-size: 16px;
+}
+
+:root[data-layout="phone"] .sort-btn {
+  width: 44px;
+  padding: 0;
+}
+
+:root[data-layout="phone"] .list-scroll {
+  padding: 2px 8px 16px;
+}
+
+:root[data-layout="phone"] .row {
+  min-height: 64px;
+  padding: 8px 2px 8px 10px;
+}
+
+:root[data-layout="phone"] .row-sub {
+  font-size: 14px;
+}
+
+/* The quick copy buttons: always there, beside the text instead of over it. */
+:root[data-layout="phone"] .row-actions {
+  position: static;
+  transform: none;
+  display: flex;
+  flex: none;
+  gap: 0;
+  padding: 0;
+  background: none;
+}
+
+:root[data-layout="phone"] .row-actions .icon-btn {
+  width: 44px;
+  height: 44px;
+}
+
+:root[data-layout="phone"] .detail-header {
+  gap: 10px;
+  padding: 8px var(--phone-gutter) 12px 4px;
+}
+
+:root[data-layout="phone"] .detail-back {
+  flex: none;
+}
+
+:root[data-layout="phone"] .detail-header .avatar.lg {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  font-size: 17px;
+}
+
+:root[data-layout="phone"] .detail-title h1 {
+  font-size: 18px;
+}
+
+:root[data-layout="phone"] .detail-header .edit-btn {
+  width: 44px;
+  padding: 0;
+}
+
+:root[data-layout="phone"] .detail-header .edit-btn .btn-label {
+  display: none;
+}
+
+:root[data-layout="phone"] .detail-body {
+  gap: 16px;
+  padding: 0 var(--phone-gutter) 24px;
+}
+
+:root[data-layout="phone"] .fieldrow {
+  min-height: 64px;
+  padding: 8px 4px 8px 14px;
+}
+
+:root[data-layout="phone"] .fieldrow-label {
+  font-size: 13px;
+}
+
+:root[data-layout="phone"] .fieldrow-value,
+:root[data-layout="phone"] .fieldrow-value.mono {
+  font-size: 15px;
+}
+
+:root[data-layout="phone"] .fieldrow-actions {
+  gap: 4px;
+}
+
+:root[data-layout="phone"] .detail-footer {
+  padding: 10px var(--phone-gutter);
+}
+
+:root[data-layout="phone"] .trash-banner {
+  flex-wrap: wrap;
+}
+
+/* ---------- Pages (settings, security report, generator) ---------- */
+
+:root[data-layout="phone"] .phone-page {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+:root[data-layout="phone"] .phone-page > .page {
+  flex: 1;
+}
+
+:root[data-layout="phone"] .phone-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--phone-bar-h);
+  padding: 0 var(--phone-gutter) 0 6px;
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border);
+}
+
+:root[data-layout="phone"] .phone-bar-title {
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* The bar names the page; its heading stays for screen readers. */
+:root[data-layout="phone"] .phone-page .page-header h1 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:root[data-layout="phone"] .phone-page .page-header p {
+  margin-top: 0;
+}
+
+:root[data-layout="phone"] .page-inner {
+  gap: 16px;
+  padding: 16px var(--phone-gutter) 32px;
+}
+
+:root[data-layout="phone"] .page-header.with-action {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+:root[data-layout="phone"] .settings-layout {
+  padding: 12px var(--phone-gutter) 40px;
+}
+
+:root[data-layout="phone"] .settings-toc {
+  margin: 0 calc(-1 * var(--phone-gutter)) 16px;
+  padding: 6px var(--phone-gutter);
+}
+
+:root[data-layout="phone"] .settings-toc-item {
+  height: 40px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+
+:root[data-layout="phone"] .setting-row {
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding: 14px;
+}
+
+:root[data-layout="phone"] .setting-text {
+  flex: 1 1 200px;
+}
+
+/* A control that does not fit beside its text moves below it, right-aligned; selects take the width. */
+:root[data-layout="phone"] .setting-control {
+  flex: 1 0 auto;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+/* Stacked rows are a column: no flex basis (it would be a height there). */
+:root[data-layout="phone"] .setting-row.stacked .setting-text,
+:root[data-layout="phone"] .setting-row.stacked .setting-control {
+  flex: none;
+}
+
+:root[data-layout="phone"] .setting-row.stacked .setting-control {
+  justify-content: flex-start;
+}
+
+:root[data-layout="phone"] .setting-select {
+  width: 100%;
+  min-width: 180px;
+}
+
+:root[data-layout="phone"] .setting-desc {
+  font-size: 14px;
+}
+
+:root[data-layout="phone"] .health-summary {
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 16px;
+  text-align: center;
+}
+
+:root[data-layout="phone"] .health-summary-chips {
+  justify-content: center;
+}
+
+:root[data-layout="phone"] .about {
+  align-items: flex-start;
+  padding: 16px 14px;
+}
+
+:root[data-layout="phone"] .about-name {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+:root[data-layout="phone"] .about-version {
+  white-space: nowrap;
+}
+
+/* ---------- Unlock and welcome ---------- */
+
+:root[data-layout="phone"] .auth-screen {
+  padding: 24px 16px;
+}
+
+:root[data-layout="phone"] .auth-card {
+  padding: 24px 20px;
+}
+
+:root[data-layout="phone"] .unlock-links {
+  font-size: 14px;
+}
+
+:root[data-layout="phone"] .unlock-links .btn-link {
+  min-height: 44px;
+}
+
+:root[data-layout="phone"] .welcome-hero {
+  margin: 8px 0 24px;
+}
+
+:root[data-layout="phone"] .welcome-hero h1 {
+  font-size: 24px;
+}
+
+:root[data-layout="phone"] .welcome-choices,
+:root[data-layout="phone"] .welcome-features {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root[data-layout="phone"] .welcome-features {
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 20px;
+}
+
+/* The phone's welcome: where a vault comes from (the next stage's entry goes here). */
+.welcome-slot {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  padding: 18px;
+  background: var(--bg-panel);
+  border: 1px dashed var(--border-strong);
+  border-radius: 14px;
+}
+
+/* ---------- Dialogs and toasts ---------- */
+
+/* Dialogs sit at the bottom, in thumb reach; the keyboard pushes them up (the webview shrinks). */
+:root[data-layout="phone"] .modal-overlay {
+  place-items: end center;
+  padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right)) calc(12px + var(--safe-bottom))
+    calc(12px + var(--safe-left));
+}
+
+:root[data-layout="phone"] .modal,
+:root[data-layout="phone"] .modal.wide {
+  width: 100%;
+  max-height: 100%;
+}
+
+:root[data-layout="phone"] .modal-header {
+  padding: 20px 18px 0;
+}
+
+:root[data-layout="phone"] .modal-body {
+  padding: 14px 18px 4px;
+}
+
+:root[data-layout="phone"] .modal-footer {
+  flex-wrap: wrap;
+  padding: 16px 18px 18px;
+}
+
+:root[data-layout="phone"] .modal-footer .btn {
+  flex: 1 1 auto;
+}
+
+/* Above Android 13+'s own "copied" bubble at the bottom left (it would cover a copy toast). */
+:root[data-layout="phone"] .toast-region {
+  bottom: calc(96px + var(--safe-bottom));
+  width: calc(100vw - 24px - var(--safe-left) - var(--safe-right));
+  max-width: none;
+}
+
+:root[data-layout="phone"] .toast {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  font-size: 14px;
+}

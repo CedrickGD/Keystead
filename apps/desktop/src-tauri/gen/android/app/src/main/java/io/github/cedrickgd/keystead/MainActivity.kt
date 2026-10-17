@@ -6,10 +6,13 @@
 package io.github.cedrickgd.keystead
 
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
@@ -35,6 +38,27 @@ class MainActivity : TauriActivity() {
       WindowManager.LayoutParams.FLAG_SECURE,
       WindowManager.LayoutParams.FLAG_SECURE
     )
+    // Edge-to-edge (above) draws the window behind the status bar, the
+    // gesture bar, a display cutout and the keyboard. Android's WebView
+    // reports at most the cutout to the page (`env(safe-area-inset-*)`),
+    // and `adjustResize` does nothing for an edge-to-edge window: the UI's
+    // header would sit under the status bar and the keyboard would cover a
+    // focused field. So the content view – the webview's parent (wry calls
+    // `setContentView(webView)`) – is padded by exactly these insets and
+    // consumes them: the webview gets the free area and shrinks while the
+    // keyboard is open. The padding shows the window background
+    // (`windowBackground` in res/values*/themes.xml: the UI's background
+    // colour in light and dark).
+    val content = findViewById<View>(android.R.id.content)
+    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+      val free = insets.getInsets(
+        WindowInsetsCompat.Type.systemBars() or
+          WindowInsetsCompat.Type.displayCutout() or
+          WindowInsetsCompat.Type.ime()
+      )
+      view.setPadding(free.left, free.top, free.right, free.bottom)
+      WindowInsetsCompat.CONSUMED
+    }
     // Registered now so the gesture is ours before the webview exists too
     // (AppPlugin's callback, added after this, hands it on while there is
     // no page history); moved on top in onWebViewCreate.

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Menu as MenuIcon } from "lucide-react";
 import { ApiError, api, events, pickAttachmentFile, pickSaveFile, subscribeEffect } from "../../lib/api";
 import type { AttachmentListEntry, Folder, ItemListEntry, ItemType, VaultItem } from "../../lib/types";
 import { cloneItem, fileNameOf, itemsEqual, localPrefs, newItem, searchTerms } from "../../lib/utils";
-import { hasModalLayer } from "../../lib/layers";
+import { hasModalLayer, useBackHandler, useEscapeLayer } from "../../lib/layers";
+import { isPhonePlatform, phoneBackStep } from "../../lib/phone";
 import { useT, type MessageKey } from "../../i18n";
 import { useApp, useCopy, useCopySecret } from "../../state/app";
 import { useToast } from "../../components/Toasts";
@@ -44,7 +46,12 @@ export function MainScreen() {
   const confirm = useConfirm();
   const copy = useCopy();
   const copySecret = useCopySecret();
-  const { vault, lock, showUnlock } = useApp();
+  const { vault, lock, showUnlock, info, phoneLayout } = useApp();
+  // The phone: nothing in the vault changes here (no write command exists
+  // there), and the desktop's file dialogs are missing. Every write action
+  // below returns early on `readOnly` as well – the UI hides them anyway.
+  const readOnly = info.readOnly;
+  const mobile = isPhonePlatform(info.platform);
   // Via a ref: `reload` must not change (and refetch) with every context update.
   const showUnlockRef = useRef(showUnlock);
   showUnlockRef.current = showUnlock;
@@ -69,8 +76,16 @@ export function MainScreen() {
     importSeq.current += 1;
     setImportDialog({ request: path ? { path, seq: importSeq.current, others } : null });
   }, []);
-  useFileDropTarget((path, others) => openImport(path, others));
+  useFileDropTarget((path, others) => openImport(path, others), !readOnly);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Phone layout: the sidebar is a drawer (menu button in the list header
+  // and the page bar); Escape and the back gesture close it like a menu.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerShown = phoneLayout && drawerOpen;
+  useEscapeLayer(() => setDrawerOpen(false), drawerShown);
+  useEffect(() => {
+    if (!phoneLayout) setDrawerOpen(false);
+  }, [phoneLayout]);
   const [editing, setEditing] = useState<EditState | null>(null);
   // Bumped whenever the detail pane moves on (another item, none, another
   // view): a `get_item_for_edit` answer for an older request is dropped
@@ -198,14 +213,17 @@ export function MainScreen() {
     [confirm, dirty, editing, t],
   );
 
-  const navigate = (next: View) =>
+  const navigate = (next: View) => {
+    // Phone: the drawer closes on every choice, and a new list starts without a detail on top.
+    setDrawerOpen(false);
     void guard(() => {
       setView(next);
       if (next.kind === "vault") {
         const stillVisible = selectedId && visibleItems(allItems, next.filter, terms, sort).some((i) => i.id === selectedId);
-        if (!stillVisible) setSelectedId(null);
+        if (!stillVisible || phoneLayout) setSelectedId(null);
       }
     });
+  };
 
   const select = (id: string) => {
     if (id === selectedId && !editing) return;
@@ -223,7 +241,8 @@ export function MainScreen() {
     });
   };
 
-  const startNew = (type: ItemType) =>
+  const startNew = (type: ItemType) => {
+    if (readOnly) return;
     void guard(() => {
       const folderId = filter.kind === "folder" ? filter.id : null;
       const draft = newItem(type, folderId);
@@ -233,9 +252,11 @@ export function MainScreen() {
       setEditing({ draft, baseline: cloneItem(draft), isNew: true, showErrors: false });
       setSelectedId(null);
     });
+  };
 
   /** Loads the full item (with its secrets) for the editor. */
   const startEdit = async (item: ItemListEntry) => {
+    if (readOnly) return;
     const request = ++editRequest.current;
     try {
       const draft = await api.getItemForEdit(item.id);
@@ -294,6 +315,7 @@ export function MainScreen() {
   // ------------------------------------------------------- item actions
 
   const trash = async (item: ItemListEntry) => {
+    if (readOnly) return;
     try {
       await api.trashItem(item.id);
       upsertLocal({ ...item, deletedAt: Date.now() });
@@ -321,6 +343,7 @@ export function MainScreen() {
   };
 
   const restore = async (item: ItemListEntry) => {
+    if (readOnly) return;
     try {
       await api.restoreItem(item.id);
       upsertLocal({ ...item, deletedAt: null });
@@ -332,6 +355,7 @@ export function MainScreen() {
   };
 
   const deleteForever = async (item: ItemListEntry) => {
+    if (readOnly) return;
     const ok = await confirm({
       title: t("trash.deleteForeverTitle"),
       message: t("trash.deleteForeverText", { name: item.name }),
@@ -350,6 +374,7 @@ export function MainScreen() {
   };
 
   const emptyTrash = async () => {
+    if (readOnly) return;
     const ok = await confirm({
       title: t("trash.emptyTitle"),
       message: tp("trash.emptyText", counts.trash),
@@ -368,6 +393,7 @@ export function MainScreen() {
   };
 
   const toggleFavorite = async (item: ItemListEntry) => {
+    if (readOnly) return;
     try {
       // Not `saveItem`: the list entry has no secrets to send back.
       const saved = await api.setFavorite(item.id, !item.favorite);
@@ -395,7 +421,7 @@ export function MainScreen() {
   };
 
   const addAttachment = async (item: ItemListEntry) => {
-    if (attaching) return;
+    if (attaching || readOnly) return;
     let path: string | null;
     try {
       path = await pickAttachmentFile(t("attachments.pickTitle"));
@@ -417,6 +443,7 @@ export function MainScreen() {
   };
 
   const saveAttachment = async (attachment: AttachmentListEntry) => {
+    if (mobile) return;
     let path: string | null;
     try {
       path = await pickSaveFile({ title: t("attachments.saveTitle"), defaultPath: attachment.name });
@@ -445,6 +472,7 @@ export function MainScreen() {
   };
 
   const removeAttachment = async (attachment: AttachmentListEntry) => {
+    if (readOnly) return;
     const ok = await confirm({
       title: t("attachments.removeTitle"),
       message: t("attachments.removeText", { name: attachment.name }),
@@ -464,6 +492,7 @@ export function MainScreen() {
   // ------------------------------------------------------------- folders
 
   const createFolder = async (name: string) => {
+    if (readOnly) return;
     try {
       const folder = await api.saveFolder({ id: "", name });
       setFolders((list) => [...list, folder].sort(byName));
@@ -474,6 +503,7 @@ export function MainScreen() {
   };
 
   const renameFolder = async (folder: Folder, name: string) => {
+    if (readOnly) return;
     try {
       const saved = await api.saveFolder({ ...folder, name });
       setFolders((list) => list.map((f) => (f.id === saved.id ? saved : f)).sort(byName));
@@ -483,6 +513,7 @@ export function MainScreen() {
   };
 
   const deleteFolder = async (folder: Folder) => {
+    if (readOnly) return;
     const ok = await confirm({
       title: t("folder.deleteTitle", { name: folder.name }),
       message: t("folder.deleteText"),
@@ -523,6 +554,7 @@ export function MainScreen() {
     );
 
   const renameTag = async (from: string, to: string) => {
+    if (readOnly) return;
     try {
       const changed = await api.renameTag(from, to);
       retagEditing(from, to);
@@ -540,6 +572,7 @@ export function MainScreen() {
   };
 
   const deleteTag = async (tag: string) => {
+    if (readOnly) return;
     // Like the backend: every spelling, the trash included.
     const affected = allItems.filter((i) => hasTag(i.tags, tag)).length;
     const ok = await confirm({
@@ -614,6 +647,35 @@ export function MainScreen() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  // The phone's back gesture once no dialog, menu or drawer is open (those
+  // close first, lib/layers.ts): editor → detail → search → all items →
+  // Android (the app moves to the background).
+  useBackHandler(() => {
+    const step = phoneBackStep({
+      editing: editing !== null,
+      detailOpen: view.kind === "vault" && selected !== null,
+      searching: query !== "",
+      page: view.kind !== "vault",
+      filtered: view.kind === "vault" && view.filter.kind !== "all",
+    });
+    switch (step) {
+      case "editor":
+        cancelEdit();
+        return true;
+      case "detail":
+        setSelectedId(null);
+        return true;
+      case "search":
+        setQuery("");
+        return true;
+      case "home":
+        navigate({ kind: "vault", filter: { kind: "all" } });
+        return true;
+      default:
+        return false;
+    }
+  }, phoneLayout);
+
   // --------------------------------------------------------------- render
 
   const renderDetail = () => {
@@ -658,10 +720,14 @@ export function MainScreen() {
           onAddAttachment={() => void addAttachment(selected)}
           onSaveAttachment={(attachment) => void saveAttachment(attachment)}
           onRemoveAttachment={(attachment) => void removeAttachment(attachment)}
+          readOnly={readOnly}
+          canSaveAttachments={!mobile}
+          onBack={phoneLayout ? () => setSelectedId(null) : undefined}
         />
       );
     }
-    if (!items) return null;
+    // Phone: the detail is stacked over the list only while an item is open.
+    if (!items || phoneLayout) return null;
     return (
       <StartPanel
         empty={counts.all === 0}
@@ -672,15 +738,42 @@ export function MainScreen() {
     );
   };
 
+  const detailOpen = view.kind === "vault" && (editing !== null || selected !== null);
+  const openDrawer = () => setDrawerOpen(true);
+
+  let page: ReactNode = null;
+  let pageTitle = "";
+  if (view.kind === "generator") {
+    page = <GeneratorPage />;
+    pageTitle = t("nav.generator");
+  } else if (view.kind === "health") {
+    page = (
+      <HealthPage
+        items={allItems}
+        onOpenItem={(id) => {
+          setView({ kind: "vault", filter: { kind: "all" } });
+          setQuery("");
+          setSelectedId(id);
+        }}
+      />
+    );
+    pageTitle = t("nav.health");
+  } else if (view.kind === "settings") {
+    page = <SettingsPage initialSection={view.section} items={allItems} />;
+    pageTitle = t("nav.settings");
+  }
+
   return (
-    <ImportLauncherContext.Provider value={openImport}>
-      <div className="shell">
+    <ImportLauncherContext.Provider value={readOnly ? null : openImport}>
+      <div className={`shell ${drawerShown ? "drawer-open" : ""}`}>
         <Sidebar
           vaultName={vault?.name ?? ""}
           view={view}
           counts={counts}
           folders={folders}
           tags={tags}
+          readOnly={readOnly}
+          drawerOpen={drawerShown}
           onNavigate={navigate}
           onLock={() => void lock()}
           onCreateFolder={(name) => void createFolder(name)}
@@ -689,8 +782,9 @@ export function MainScreen() {
           onRenameTag={(tag, name) => void renameTag(tag, name)}
           onDeleteTag={(tag) => void deleteTag(tag)}
         />
+        {drawerShown && <div className="drawer-scrim" onClick={() => setDrawerOpen(false)} aria-hidden />}
         {view.kind === "vault" && (
-          <div className="vault-view">
+          <div className={`vault-view ${detailOpen ? "detail-open" : ""}`}>
             <ItemList
               ref={searchRef}
               title={filterTitle(filter)}
@@ -708,24 +802,29 @@ export function MainScreen() {
               onSort={setSort}
               onNew={startNew}
               onEmptyTrash={() => void emptyTrash()}
+              readOnly={readOnly}
+              onMenu={phoneLayout ? openDrawer : undefined}
             />
             <main className="detail-pane" ref={detailRef} aria-label={t("detail.label")}>
               {renderDetail()}
             </main>
           </div>
         )}
-        {view.kind === "generator" && <GeneratorPage />}
-        {view.kind === "health" && (
-          <HealthPage
-            items={allItems}
-            onOpenItem={(id) => {
-              setView({ kind: "vault", filter: { kind: "all" } });
-              setQuery("");
-              setSelectedId(id);
-            }}
-          />
-        )}
-        {view.kind === "settings" && <SettingsPage initialSection={view.section} items={allItems} />}
+        {page &&
+          (phoneLayout ? (
+            // Phone: the pages get a bar with the menu button (the drawer holds the navigation).
+            <div className="phone-page">
+              <header className="phone-bar">
+                <button type="button" className="icon-btn" onClick={openDrawer} aria-label={t("nav.openMenu")} title={t("nav.openMenu")}>
+                  <MenuIcon />
+                </button>
+                <span className="phone-bar-title truncate">{pageTitle}</span>
+              </header>
+              {page}
+            </div>
+          ) : (
+            page
+          ))}
         {importDialog && <ImportDialog request={importDialog.request} onClose={() => setImportDialog(null)} />}
       </div>
     </ImportLauncherContext.Provider>

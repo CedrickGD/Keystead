@@ -5,6 +5,11 @@ const REPO_URL = "https://github.com/CedrickGD/Keystead";
 /** Versions CI builds and publishes (`2.0.0`, `2.0.0-beta.57`, `2.1.0-rc.1`). */
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/;
 
+/** The releases page (newest first): where the phone's APK updates come from. */
+export function releasesUrl(): string {
+  return `${REPO_URL}/releases`;
+}
+
 /**
  * The browser extension ZIP of the running version's release
  * (`…/releases/download/v<version>/Keystead-<version>-browser-extension.zip`);

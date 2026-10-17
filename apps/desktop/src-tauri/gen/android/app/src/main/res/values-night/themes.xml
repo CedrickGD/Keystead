@@ -1,6 +1,7 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.keystead_desktop" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- See values/themes.xml; the UI's dark background. -->
+        <item name="android:windowBackground">@color/keystead_background</item>
     </style>
 </resources>

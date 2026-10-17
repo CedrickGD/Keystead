@@ -125,13 +125,16 @@
   transition: color var(--dur) var(--ease);
 }
 
-.nav-item:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
+/* Hover backgrounds only for pointers that hover: on touch screens they would stick after a tap. */
+@media (hover: hover) {
+  .nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
 
-.nav-item:hover svg {
-  color: var(--text-2);
+  .nav-item:hover svg {
+    color: var(--text-2);
+  }
 }
 
 .nav-item:focus-visible {
@@ -407,8 +410,10 @@
   transition: background-color 80ms var(--ease);
 }
 
-.row:hover {
-  --row-bg: var(--row-hover);
+@media (hover: hover) {
+  .row:hover {
+    --row-bg: var(--row-hover);
+  }
 }
 
 .row.selected {
@@ -467,10 +472,12 @@
   color: var(--text-2);
 }
 
-.row-actions .icon-btn:hover {
-  background: var(--bg-panel);
-  color: var(--accent-text);
-  box-shadow: 0 0 0 1px var(--border);
+@media (hover: hover) {
+  .row-actions .icon-btn:hover {
+    background: var(--bg-panel);
+    color: var(--accent-text);
+    box-shadow: 0 0 0 1px var(--border);
+  }
 }
 
 .list-skeleton {

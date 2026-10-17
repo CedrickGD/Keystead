@@ -21,7 +21,7 @@ function formatRecoveryInput(raw: string): string {
 
 export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const { t, errorText } = useT();
-  const { vaults, settings, enterVault, showWelcome, info } = useApp();
+  const { vaults, settings, enterVault, showWelcome, info, phoneLayout } = useApp();
   const initial = vaults.find((v) => v.id === settings.lastVaultId)?.id ?? vaults[0]?.id ?? "";
   const [vaultId, setVaultId] = useState(initial);
   const [mode, setMode] = useState<"password" | "recovery">("password");
@@ -34,9 +34,11 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const vaultSelectId = useId();
   const vault = vaults.find((v) => v.id === vaultId) ?? vaults[0];
 
+  // Phone: no focus on its own – it would pop the on-screen keyboard over
+  // the form before the user even looked at it.
   useEffect(() => {
-    if (mode === "password") inputRef.current?.focus();
-  }, [focusSignal, mode, vaultId]);
+    if (mode === "password" && !phoneLayout) inputRef.current?.focus();
+  }, [focusSignal, mode, vaultId, phoneLayout]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -105,7 +107,7 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
                   size="lg"
                   mono={false}
                   invalid={Boolean(error)}
-                  autoFocus
+                  autoFocus={!phoneLayout}
                 />
               </div>
             </Field>
@@ -114,15 +116,18 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
               {t("unlock.button")}
             </Button>
 
-            <div className="unlock-links">
-              <button type="button" className="btn-link" onClick={() => setMode("recovery")}>
-                {t("unlock.forgot")}
-              </button>
-              <button type="button" className="btn-link" onClick={showWelcome}>
-                <Plus size={14} style={{ verticalAlign: "-2px", marginRight: 4 }} />
-                {t("unlock.createNew")}
-              </button>
-            </div>
+            {/* Both set a new master password or create a vault: not on the read-only phone. */}
+            {!info.readOnly && (
+              <div className="unlock-links">
+                <button type="button" className="btn-link" onClick={() => setMode("recovery")}>
+                  {t("unlock.forgot")}
+                </button>
+                <button type="button" className="btn-link" onClick={showWelcome}>
+                  <Plus size={14} style={{ verticalAlign: "-2px", marginRight: 4 }} />
+                  {t("unlock.createNew")}
+                </button>
+              </div>
+            )}
           </form>
         ) : (
           vault && <RecoveryUnlock vaultId={vault.id} vaultName={vault.name} hasKey={vault.hasRecoveryKey} onBack={() => setMode("password")} />

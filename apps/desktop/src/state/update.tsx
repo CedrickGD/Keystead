@@ -5,6 +5,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, events, openExternal, subscribeEffect } from "../lib/api";
 import type { UpdateInfo, UpdateProgress } from "../lib/types";
+import { isPhonePlatform } from "../lib/phone";
 
 export type UpdatePhase = "idle" | "downloading" | "restarting" | "error";
 
@@ -65,10 +66,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // A page that reloaded (lock) gets the update the backend already found.
+  // The phone app has no updater (and no such command).
   useEffect(() => {
     let active = true;
     api
-      .pendingUpdate()
+      .appInfo()
+      .then((info) => (isPhonePlatform(info.platform) ? null : api.pendingUpdate()))
       .then((pending) => {
         if (active && pending) adopt(pending);
       })

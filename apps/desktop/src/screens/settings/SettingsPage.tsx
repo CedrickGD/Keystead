@@ -27,7 +27,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { IS_MOCK, api } from "../../lib/api";
+import { IS_MOCK, api, openExternal } from "../../lib/api";
 import type {
   AppInfo,
   BrowserInfo,
@@ -45,7 +45,8 @@ import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
 import { Button, Segmented, Select, Switch } from "../../components/Controls";
 import { useOpenImport } from "../../components/import/ImportDialog";
-import { extensionDownloadUrl } from "../../lib/links";
+import { extensionDownloadUrl, releasesUrl } from "../../lib/links";
+import { isPhonePlatform } from "../../lib/phone";
 import { clearRecoveryUnconfirmed } from "../../lib/recoveryMarker";
 import { Logo } from "../../components/Logo";
 import { useUpdateErrorText } from "../../components/UpdateBanner";
@@ -115,10 +116,12 @@ export function SettingRow({
 
 function GeneralSection() {
   const { t } = useT();
-  const { settings, updateSettings } = useApp();
+  const { info, settings, updateSettings } = useApp();
   const langId = useId();
+  // Tray and website icons do not exist on the phone (no tray, no network).
+  const desktop = !isPhonePlatform(info.platform);
   return (
-    <SettingsSection id="general" title={t("settings.general")} description={t("settings.generalDesc")}>
+    <SettingsSection id="general" title={t("settings.general")} description={desktop ? t("settings.generalDesc") : t("settings.generalDescPhone")}>
       <SettingRow title={t("settings.theme")} description={t("settings.themeDesc")}>
         <Segmented<ThemeSetting>
           ariaLabel={t("settings.theme")}
@@ -143,17 +146,21 @@ function GeneralSection() {
           className="setting-select"
         />
       </SettingRow>
-      <SettingRow title={t("settings.minimizeToTray")} description={t("settings.minimizeToTrayDesc")}>
-        <Switch
-          checked={settings.minimizeToTray}
-          onChange={(minimizeToTray) => void updateSettings({ minimizeToTray })}
-          label={t("settings.minimizeToTray")}
-        />
-      </SettingRow>
-      <SettingRow title={t("settings.startInTray")} description={t("settings.startInTrayDesc")}>
-        <Switch checked={settings.startInTray} onChange={(startInTray) => void updateSettings({ startInTray })} label={t("settings.startInTray")} />
-      </SettingRow>
-      <WebsiteIconsSetting />
+      {desktop && (
+        <>
+          <SettingRow title={t("settings.minimizeToTray")} description={t("settings.minimizeToTrayDesc")}>
+            <Switch
+              checked={settings.minimizeToTray}
+              onChange={(minimizeToTray) => void updateSettings({ minimizeToTray })}
+              label={t("settings.minimizeToTray")}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.startInTray")} description={t("settings.startInTrayDesc")}>
+            <Switch checked={settings.startInTray} onChange={(startInTray) => void updateSettings({ startInTray })} label={t("settings.startInTray")} />
+          </SettingRow>
+          <WebsiteIconsSetting />
+        </>
+      )}
     </SettingsSection>
   );
 }
@@ -168,8 +175,11 @@ function SecuritySection() {
   const clipboardId = useId();
   const [dialog, setDialog] = useState<"password" | "recovery" | null>(null);
   const hasKey = vault?.hasRecoveryKey ?? false;
-  // The background lock exists on the phone only (the desktop ignores the setting).
-  const phone = info.platform === "android" || info.platform === "ios";
+  // The background lock exists on the phone only (the desktop ignores the
+  // setting); the Windows session lock only on the desktop.
+  const phone = isPhonePlatform(info.platform);
+  // Master password and recovery key change the vault: not on the phone.
+  const readOnly = info.readOnly;
 
   const autoLockOptions = [1, 5, 15, 30, 60, 240, 0];
   if (!autoLockOptions.includes(settings.autoLockMinutes)) autoLockOptions.unshift(settings.autoLockMinutes);
@@ -211,7 +221,11 @@ function SecuritySection() {
   };
 
   return (
-    <SettingsSection id="security" title={t("settings.security")} description={t("settings.securityDesc")}>
+    <SettingsSection
+      id="security"
+      title={t("settings.security")}
+      description={readOnly ? t("settings.securityDescPhone") : t("settings.securityDesc")}
+    >
       <SettingRow title={t("settings.autoLock")} description={t("settings.autoLockDesc")} htmlFor={autoLockId}>
         <Select
           id={autoLockId}
@@ -232,13 +246,15 @@ function SecuritySection() {
           />
         </SettingRow>
       )}
-      <SettingRow title={t("settings.lockOnSystemLock")} description={t("settings.lockOnSystemLockDesc")}>
-        <Switch
-          checked={settings.lockOnSystemLock}
-          onChange={(lockOnSystemLock) => void updateSettings({ lockOnSystemLock })}
-          label={t("settings.lockOnSystemLock")}
-        />
-      </SettingRow>
+      {!phone && (
+        <SettingRow title={t("settings.lockOnSystemLock")} description={t("settings.lockOnSystemLockDesc")}>
+          <Switch
+            checked={settings.lockOnSystemLock}
+            onChange={(lockOnSystemLock) => void updateSettings({ lockOnSystemLock })}
+            label={t("settings.lockOnSystemLock")}
+          />
+        </SettingRow>
+      )}
       <SettingRow title={t("settings.clipboard")} description={t("settings.clipboardDesc")} htmlFor={clipboardId}>
         <Select
           id={clipboardId}
@@ -251,33 +267,37 @@ function SecuritySection() {
           className="setting-select"
         />
       </SettingRow>
-      <SettingRow title={t("settings.masterPassword")} description={t("settings.masterPasswordDesc")}>
-        <Button variant="secondary" icon={<KeyRound />} onClick={() => setDialog("password")}>
-          {t("settings.changeMaster")}
-        </Button>
-      </SettingRow>
-      <SettingRow
-        title={
-          <span className="setting-title-with-chip">
-            {t("settings.recoveryKey")}
-            <span className={`chip ${hasKey ? "success" : "warning"}`}>
-              {hasKey ? t("settings.recoveryActive") : t("settings.recoveryMissing")}
-            </span>
-          </span>
-        }
-        description={hasKey ? t("settings.recoveryDescActive") : t("settings.recoveryDescMissing")}
-      >
-        <div className="setting-buttons">
-          {hasKey && (
-            <Button variant="danger-ghost" onClick={() => void removeKey()}>
-              {t("recovery.remove")}
-            </Button>
-          )}
-          <Button variant={hasKey ? "secondary" : "primary"} icon={<LifeBuoy />} onClick={() => setDialog("recovery")}>
-            {hasKey ? t("recovery.replace") : t("recovery.create")}
+      {!readOnly && (
+        <SettingRow title={t("settings.masterPassword")} description={t("settings.masterPasswordDesc")}>
+          <Button variant="secondary" icon={<KeyRound />} onClick={() => setDialog("password")}>
+            {t("settings.changeMaster")}
           </Button>
-        </div>
-      </SettingRow>
+        </SettingRow>
+      )}
+      {!readOnly && (
+        <SettingRow
+          title={
+            <span className="setting-title-with-chip">
+              {t("settings.recoveryKey")}
+              <span className={`chip ${hasKey ? "success" : "warning"}`}>
+                {hasKey ? t("settings.recoveryActive") : t("settings.recoveryMissing")}
+              </span>
+            </span>
+          }
+          description={hasKey ? t("settings.recoveryDescActive") : t("settings.recoveryDescMissing")}
+        >
+          <div className="setting-buttons">
+            {hasKey && (
+              <Button variant="danger-ghost" onClick={() => void removeKey()}>
+                {t("recovery.remove")}
+              </Button>
+            )}
+            <Button variant={hasKey ? "secondary" : "primary"} icon={<LifeBuoy />} onClick={() => setDialog("recovery")}>
+              {hasKey ? t("recovery.replace") : t("recovery.create")}
+            </Button>
+          </div>
+        </SettingRow>
+      )}
 
       {dialog === "password" && <ChangeMasterPasswordDialog hasRecoveryKey={hasKey} onClose={() => setDialog(null)} />}
       {dialog === "recovery" && (
@@ -647,7 +667,10 @@ function AdvancedSection() {
 function VaultSection({ items }: { items: ItemListEntry[] }) {
   const { t, tp, locale, errorText } = useT();
   const toast = useToast();
-  const { vault, setVault, refreshVaults, showUnlock } = useApp();
+  const { info, vault, setVault, refreshVaults, showUnlock } = useApp();
+  // Renaming and deleting change the vault; the folder button needs a file manager.
+  const readOnly = info.readOnly;
+  const desktop = !isPhonePlatform(info.platform);
   const nameId = useId();
   const [name, setName] = useState(vault?.name ?? "");
   const [busy, setBusy] = useState(false);
@@ -684,20 +707,22 @@ function VaultSection({ items }: { items: ItemListEntry[] }) {
 
   return (
     <SettingsSection id="vault" title={t("settings.vault")} description={t("settings.vaultDesc", { name: vault?.name ?? "" })}>
-      <SettingRow title={t("danger.rename")} description={t("danger.renameDesc")} htmlFor={nameId}>
-        <form
-          className="rename-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void rename();
-          }}
-        >
-          <input id={nameId} className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
-          <Button type="submit" variant="secondary" disabled={!changed} loading={busy}>
-            {t("danger.renameButton")}
-          </Button>
-        </form>
-      </SettingRow>
+      {!readOnly && (
+        <SettingRow title={t("danger.rename")} description={t("danger.renameDesc")} htmlFor={nameId}>
+          <form
+            className="rename-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void rename();
+            }}
+          >
+            <input id={nameId} className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+            <Button type="submit" variant="secondary" disabled={!changed} loading={busy}>
+              {t("danger.renameButton")}
+            </Button>
+          </form>
+        </SettingRow>
+      )}
       <SettingRow
         title={
           <>
@@ -714,15 +739,19 @@ function VaultSection({ items }: { items: ItemListEntry[] }) {
           </>
         }
       >
-        <Button variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
-          {t("data.openFolder")}
-        </Button>
+        {desktop && (
+          <Button variant="secondary" icon={<FolderOpen />} onClick={() => void openFolder()}>
+            {t("data.openFolder")}
+          </Button>
+        )}
       </SettingRow>
-      <SettingRow title={t("danger.delete")} description={t("danger.deleteDesc")}>
-        <Button variant="danger-outline" onClick={() => setDeleteOpen(true)}>
-          {t("danger.deleteOpen")}
-        </Button>
-      </SettingRow>
+      {!readOnly && (
+        <SettingRow title={t("danger.delete")} description={t("danger.deleteDesc")}>
+          <Button variant="danger-outline" onClick={() => setDeleteOpen(true)}>
+            {t("danger.deleteOpen")}
+          </Button>
+        </SettingRow>
+      )}
       {deleteOpen && vault && (
         <DeleteVaultDialog
           vault={vault}
@@ -799,6 +828,9 @@ function AboutSection() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
   const platform = PLATFORM_NAMES[info.platform] ?? PLATFORM_NAMES.linux;
+  // The phone app has no network permission, so no update check: new
+  // versions come as an APK from the releases page (installed over the old one).
+  const phone = isPhonePlatform(info.platform);
 
   const check = async () => {
     setChecking(true);
@@ -833,37 +865,47 @@ function AboutSection() {
           </div>
           <p className="muted">{t("about.tagline")}</p>
           <p className="subtle about-meta">
-            {platform} · {info.portable ? t("about.portable") : t("about.installed")}
+            {platform} · {phone ? t("about.phoneData") : info.portable ? t("about.portable") : t("about.installed")}
           </p>
         </div>
       </div>
-      <SettingRow
-        title={t("update.checkTitle")}
-        description={result ? <UpdateCheckResult result={result} /> : t("update.checkDesc", { version: info.version })}
-      >
-        <Button variant="secondary" icon={<RefreshCw />} loading={checking} onClick={() => void check()}>
-          {t("update.checkNow")}
-        </Button>
-      </SettingRow>
-      <SettingRow title={t("update.auto")} description={t("update.autoDesc")}>
-        <Switch
-          checked={settings.updateCheck}
-          onChange={(updateCheck) => void updateSettings({ updateCheck })}
-          label={t("update.auto")}
-        />
-      </SettingRow>
-      <SettingRow title={t("update.channel")} description={t("update.channelDesc")} htmlFor={channelId}>
-        <Select<UpdateChannel>
-          id={channelId}
-          value={settings.updateChannel}
-          onChange={(channel) => void changeChannel(channel)}
-          options={[
-            { value: "beta", label: t("update.channelBeta") },
-            { value: "stable", label: t("update.channelStable") },
-          ]}
-          className="setting-select"
-        />
-      </SettingRow>
+      {phone ? (
+        <SettingRow title={t("about.releasesTitle")} description={t("about.releasesDesc")} stacked>
+          <Button variant="secondary" icon={<ExternalLink />} onClick={() => openExternal(releasesUrl())}>
+            {t("about.releasesOpen")}
+          </Button>
+        </SettingRow>
+      ) : (
+        <>
+          <SettingRow
+            title={t("update.checkTitle")}
+            description={result ? <UpdateCheckResult result={result} /> : t("update.checkDesc", { version: info.version })}
+          >
+            <Button variant="secondary" icon={<RefreshCw />} loading={checking} onClick={() => void check()}>
+              {t("update.checkNow")}
+            </Button>
+          </SettingRow>
+          <SettingRow title={t("update.auto")} description={t("update.autoDesc")}>
+            <Switch
+              checked={settings.updateCheck}
+              onChange={(updateCheck) => void updateSettings({ updateCheck })}
+              label={t("update.auto")}
+            />
+          </SettingRow>
+          <SettingRow title={t("update.channel")} description={t("update.channelDesc")} htmlFor={channelId}>
+            <Select<UpdateChannel>
+              id={channelId}
+              value={settings.updateChannel}
+              onChange={(channel) => void changeChannel(channel)}
+              options={[
+                { value: "beta", label: t("update.channelBeta") },
+                { value: "stable", label: t("update.channelStable") },
+              ]}
+              className="setting-select"
+            />
+          </SettingRow>
+        </>
+      )}
     </SettingsSection>
   );
 }
@@ -878,21 +920,31 @@ const SECTION_ALIASES: Record<string, string> = { appearance: "general", termina
 /** `items`: the main screen's list entries, for the attachment totals in the vault section. */
 export function SettingsPage({ initialSection, items }: { initialSection?: string; items: ItemListEntry[] }) {
   const { t } = useT();
+  const { info } = useApp();
+  // The phone: no browser integration, import/export or desktop extras; its
+  // vault section has nothing to offer while the vault is read-only.
+  const desktop = !isPhonePlatform(info.platform);
+  const shown = {
+    browser: desktop,
+    data: desktop && !info.readOnly,
+    advanced: desktop,
+    vault: desktop || !info.readOnly,
+  };
   const scrollRef = useRef<HTMLElement>(null);
   /** Section picked in the list: keeps it highlighted until the user scrolls by hand. */
   const pinned = useRef<string | null>(null);
   const initial = initialSection ? SECTION_ALIASES[initialSection] ?? initialSection : undefined;
   const [active, setActive] = useState(initial ?? "general");
 
-  const sections: { id: string; label: string; icon: ReactNode }[] = [
+  const sections: { id: string; label: string; icon: ReactNode; hidden?: boolean }[] = [
     { id: "general", label: t("settings.general"), icon: <SlidersHorizontal /> },
     { id: "security", label: t("settings.security"), icon: <ShieldCheck /> },
-    { id: "browser", label: t("settings.browserShort"), icon: <Plug /> },
-    { id: "data", label: t("settings.data"), icon: <Upload /> },
-    { id: "advanced", label: t("settings.advanced"), icon: <Wrench /> },
-    { id: "vault", label: t("settings.vault"), icon: <LockKeyhole /> },
+    { id: "browser", label: t("settings.browserShort"), icon: <Plug />, hidden: !shown.browser },
+    { id: "data", label: t("settings.data"), icon: <Upload />, hidden: !shown.data },
+    { id: "advanced", label: t("settings.advanced"), icon: <Wrench />, hidden: !shown.advanced },
+    { id: "vault", label: t("settings.vault"), icon: <LockKeyhole />, hidden: !shown.vault },
     { id: "about", label: t("settings.aboutShort"), icon: <Info /> },
-  ];
+  ].filter((s) => !s.hidden);
 
   const scrollTo = (id: string, smooth: boolean) => {
     const root = scrollRef.current;
@@ -984,10 +1036,10 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
         <div className="settings-content">
           <GeneralSection />
           <SecuritySection />
-          <BrowserSection />
-          <ImportExportSection />
-          <AdvancedSection />
-          <VaultSection items={items} />
+          {shown.browser && <BrowserSection />}
+          {shown.data && <ImportExportSection />}
+          {shown.advanced && <AdvancedSection />}
+          {shown.vault && <VaultSection items={items} />}
           <AboutSection />
         </div>
       </div>

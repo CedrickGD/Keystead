@@ -587,7 +587,7 @@ npx tauri dev        # the real desktop app
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
+node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs apps/desktop/tests/*.test.mjs
 ```
 
 Releases: CI (`.github/workflows/build.yml`) versions every build

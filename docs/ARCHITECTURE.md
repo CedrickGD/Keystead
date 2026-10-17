@@ -41,6 +41,7 @@ an interface here, change every side.
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). `src-tauri/tauri.android.conf.json` = the Android overrides of `tauri.conf.json` (merged by Tauri). |
 | `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening – see "Mobile (Android)". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
+| `apps/desktop/tests` | `node --test` tests of the UI's dependency-free modules (`src/lib/layout.mjs`: phone-layout decision and back-gesture order). |
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, Android build (APK signing and gates: `android-apk.mjs`), versioning, updater signing/manifest, releases (see "Releases & in-app updates", "Mobile (Android)"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
@@ -152,9 +153,10 @@ the system file picker, later a copy in the user's own cloud folder,
 `docs/BLOCK5-DESIGN.md` "Stufe 2"; creating one there is a write and not
 registered either) – so a published APK on its own can only be installed
 and started, and the release notes and README say so plainly (an "early
-preview") –, the phone layout of the UI (it still
-shows the desktop layout) and fingerprint unlock (stage 1b). There is no
-Keystead server, and the app has no network permission at all.
+preview") – and fingerprint unlock (stage 1b). The UI has its **phone
+layout** (below). There is no Keystead server, and the app has no network
+permission at all – so no update check either: About links to the
+releases page instead.
 
 * **Entry point and gates**: the Android shell (`MainActivity`, a
   `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
@@ -189,6 +191,75 @@ Keystead server, and the app has no network permission at all.
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
+* **Phone layout** (the same React app; `src/lib/layout.mjs` decides,
+  `src/lib/phone.ts` holds the hooks, `src/styles/phone.css` the styles):
+  App.tsx sets `data-layout="phone"` on `<html>` when `AppInfo.platform` is
+  `android`/`ios` or the viewport is at most 700 px wide (one breakpoint,
+  `matchMedia`, so the browser preview with the mock gets it too; the
+  desktop window's minimum is 900 px); every phone rule is keyed on that
+  attribute. `AppContext.phoneLayout` tells components. Three different
+  questions, kept apart: the layout (`phoneLayout`), the platform
+  (`isPhonePlatform(info.platform)`: desktop-only features) and
+  `info.readOnly` (no editing).
+  * **Structure**: one column. The sidebar is a drawer (menu button in front
+    of the search field and in the bar the pages – settings, security
+    report, generator – get; scrim; closes on every choice, on Escape and
+    on back; closed it is `display: none` – Android's accessibility bridge
+    missed a drawer shown by `visibility`, so TalkBack would not have found
+    it). The item list stays mounted; an opened item is stacked over it
+    (`.vault-view.detail-open`, the list keeps its scroll position and is
+    hidden from screen readers) with a back arrow in its header; nothing
+    selected shows just the list (no start panel). Navigating through the
+    drawer always starts a new list without a detail on top.
+  * **Back gesture** (`keystead:back` from MainActivity, see below):
+    `lib/layers.ts` routes it like Escape – the top layer (dialog, menu,
+    drawer) closes first, even a dialog that cannot be dismissed consumes
+    it; then the back handlers (`useBackHandler`, newest first). The main
+    screen's handler follows `phoneBackStep`: editor (narrow browser
+    preview only) → detail → clear the search → from a page or a filter to
+    "Alle Elemente" → not handled, so Android moves the app to the
+    background. The unlock and welcome screens register nothing.
+  * **Touch**: icon buttons, buttons, fields, menu items and drawer rows at
+    least 44 px (small switches and tag chips get a 44-px hit area), 15-px
+    body and 16-px field text; the list's quick-copy buttons are always
+    there beside the text; hover backgrounds that would stick after a tap
+    are wrapped in `@media (hover: hover)` in the shared stylesheets
+    (unchanged for a mouse); no keyboard hints. Heights use `100dvh`;
+    `env(safe-area-inset-*)` pads the frame, dialogs and toasts (0 on
+    Android, where the shell pads the webview – for iOS later). Menus are
+    moved back into the window when they would stick out (`Menu.tsx`, all
+    platforms), dialogs sit at the bottom at full width, toasts span the
+    width and sit above Android 13+'s own "copied" bubble. Nothing focuses a text field on its own (unlock screen, dialogs:
+    the keyboard would cover the form); when the keyboard opens, the
+    focused field is scrolled back into view.
+  * **Read-only** (`info.readOnly`): no "Neu", edit, favourite toggle (a
+    "Favorit" chip instead), trash / restore / delete, empty trash, folder
+    and tag management (empty folder/tag sections are left out), attachment
+    add / remove, generator (it keeps a history: `generate_password` is not
+    on the phone), import (also no drop target), master password, recovery
+    key, rename / delete vault, the recovery reminder, "Passwort vergessen?"
+    and "Neuen Tresor erstellen" on the unlock screen; the welcome screen
+    without a vault shows what the app is and a marked slot
+    (`data-slot="vault-source"`) for the next stage's "Tresor vom PC
+    holen". Every write action in `MainScreen.tsx` also returns early on
+    `readOnly`.
+  * **Desktop-only on the phone platform**: browser integration (settings
+    section, pairing dialog), file drop (no `FileDropProvider`), import /
+    export and advanced sections (data folder, portable mode, terminal),
+    tray switches, "Beim Sperren des Computers sperren", website icons,
+    the Have I Been Pwned card, "Speichern unter …" for attachments, the
+    update banner, check, auto check and channel (and the boot's
+    `pending_update`); About says "Android · Daten im App-Speicher" and
+    offers "Releases auf GitHub öffnen" (`openExternal`; Android opens the
+    browser – no permission needed).
+  * **Mock**: `?platform=android` (or `ios`) gives `readOnly` and the phone
+    platform and refuses every command the phone does not register
+    (`PHONE_COMMANDS` in `mock.ts`, like Tauri's "not found"), so a phone
+    screen that still reaches a desktop command shows up in the console;
+    `__keysteadMock.simulateBack()` sends the back gesture. Narrow the
+    browser to phone width to see the layout; a narrow window without
+    `?platform` shows the phone layout with editing (the editor is stacked
+    like the detail).
 
 **Android project** (`src-tauri/gen/android`, generated once by `npx tauri
 android init` with CLI 2.12 – Gradle 9.6.1, AGP 9.3.1, Kotlin 2.2.10,
@@ -219,7 +290,21 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   recordings or recents thumbnails – Tauri's `contentProtected` is a no-op
   on Android); in `onWebViewCreate` `allowFileAccess`/`allowContentAccess`/
   geolocation/Safe Browsing off (the UI is served from `tauri.localhost`
-  only). **Back gesture**: the activity dispatches the DOM event
+  only). **Insets**: the activity is edge-to-edge (`enableEdgeToEdge`), but
+  Android's WebView reports at most a display cutout to the page as
+  `env(safe-area-inset-*)` (verified: WebView 133 gave the cutout's top
+  inset, 0 for the gesture bar) and `adjustResize` does nothing for an
+  edge-to-edge window (the keyboard covered a focused field, the viewport
+  stayed 800 px). So an insets listener pads the content view – the
+  webview's parent, wry calls `setContentView(webView)` – by the system
+  bars, the cutout and the keyboard (`WindowInsetsCompat.Type.systemBars()
+  or displayCutout() or ime()`) and consumes them: the webview gets the
+  free area (360×724 CSS px on the emulator, 449 px high with the keyboard
+  open; `env()` is then 0) and the padding shows the window background
+  (`windowBackground` in `res/values*/themes.xml`: the UI's `--bg-app`
+  colour, light and dark, so the status bar's icons – dark or light with
+  the system theme – stay readable; a UI theme set against the system
+  theme leaves a light/dark strip behind the bars). **Back gesture**: the activity dispatches the DOM event
   `keystead:back` (cancelable) on `window`; a listener that calls
   `preventDefault()` has consumed it (close a dialog, leave the detail
   view), otherwise the activity calls `moveTaskToBack(true)` – the app goes
@@ -2179,7 +2264,8 @@ old one, see "Mobile (Android)"). `tauri-plugin-updater` 2 +
 
 * **test** (Linux): `cargo fmt --check`, clippy `-D warnings`, `cargo test`,
   `npm run build`, `node --check` of the extension and `.github/scripts`,
-  `node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs`.
+  `node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
+  apps/desktop/tests/*.test.mjs`.
 * **windows**: `.github/scripts/release-version.mjs --write` first: version
   `v<semver>` tag → that version, otherwise `<tauri.conf.json version>-beta.
   <run number>` (e.g. `2.0.0-beta.57`), written into `tauri.conf.json`
@@ -2594,7 +2680,10 @@ The extension's security model and file roles are in
 * Look & feel of a modern password manager (Bitwarden/1Password-like):
   left sidebar (Alle Elemente, Favoriten, Typen, Ordner, Tags, Papierkorb,
   Werkzeuge: Generator, Sicherheitsbericht), middle item list with search,
-  right detail pane. Edit inline in the detail pane.
+  right detail pane. Edit inline in the detail pane. The phone (and any
+  window up to 700 px) uses the same screens in one column – sidebar as a
+  drawer, detail stacked over the list, back gesture like Escape – see
+  "Phone layout" under "Mobile (Android)".
 * Tags: the sidebar group lists every tag outside the trash – one row per
   tag whatever its spellings ("Bank" and "bank", as the core compares them),
   showing the most frequent spelling and the summed item count – with

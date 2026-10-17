@@ -20,6 +20,7 @@ import { IconsProvider } from "./state/icons";
 import { BreachesProvider } from "./state/breaches";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
+import { isPhonePlatform, useKeepFocusedFieldVisible, usePhoneLayout } from "./lib/phone";
 
 type Screen = "loading" | "error" | "welcome" | "unlock" | "main";
 
@@ -90,6 +91,16 @@ function AppRoot({
   settingsRef.current = settings;
   const vaultsRef = useRef<VaultInfo[]>([]);
   vaultsRef.current = boot?.vaults ?? [];
+  // The phone layout (styles/phone.css): the phone app, or a narrow viewport.
+  const phoneLayout = usePhoneLayout(boot?.info.platform);
+  // Desktop-only integrations (file drop, browser pairing, in-app updates).
+  const mobile = isPhonePlatform(boot?.info.platform);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    if (phoneLayout) root.dataset.layout = "phone";
+    else delete root.dataset.layout;
+  }, [phoneLayout]);
+  useKeepFocusedFieldVisible(phoneLayout);
   // Boot must run once – not again when the language (and thus errorText) changes.
   const errorTextRef = useRef(errorText);
   errorTextRef.current = errorText;
@@ -272,8 +283,9 @@ function AppRoot({
       lock,
       showWelcome: () => setScreen("welcome"),
       showUnlock: () => void toUnlockOrWelcome(),
+      phoneLayout,
     };
-  }, [boot, settings, updateSettings, refreshVaults, vault, enterVault, lock, toUnlockOrWelcome]);
+  }, [boot, settings, updateSettings, refreshVaults, vault, enterVault, lock, toUnlockOrWelcome, phoneLayout]);
 
   if (screen === "error" || (screen !== "loading" && !ctx)) {
     return (
@@ -301,37 +313,46 @@ function AppRoot({
     );
   }
 
-  const currentPairing = pairings[0];
+  // The phone has no browser pairing (no bridge there).
+  const currentPairing = mobile ? undefined : pairings[0];
+
+  const frame = (
+    <>
+      <div className="app-frame">
+        {/* New versions: above the main window and the unlock screen. The phone has no in-app updates. */}
+        {!mobile && (screen === "main" || screen === "unlock") && <UpdateBanner />}
+        {/* A new recovery key that was never confirmed as stored (lost to a lock / reload). */}
+        {!ctx.info.readOnly && screen === "main" && vault && <RecoveryReminder key={vault.id} />}
+        <div className="app-frame-body">
+          {screen === "welcome" && <WelcomeScreen />}
+          {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
+          {screen === "main" && vault && (
+            <IconsProvider key={vault.id}>
+              <BreachesProvider key={vault.id}>
+                <MainScreen key={vault.id} />
+              </BreachesProvider>
+            </IconsProvider>
+          )}
+        </div>
+      </div>
+      {currentPairing && (
+        <PairingModal
+          key={currentPairing.requestId}
+          request={currentPairing}
+          onDone={() => setPairings((list) => list.filter((r) => r.requestId !== currentPairing.requestId))}
+        />
+      )}
+    </>
+  );
 
   return (
     <AppContext.Provider value={ctx}>
-      {/* Files dragged onto the window: the import dialog (unlocked) or a hint. */}
-      <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>
-        <div className="app-frame">
-          {/* New versions: above the main window and the unlock screen. */}
-          {(screen === "main" || screen === "unlock") && <UpdateBanner />}
-          {/* A new recovery key that was never confirmed as stored (lost to a lock / reload). */}
-          {screen === "main" && vault && <RecoveryReminder key={vault.id} />}
-          <div className="app-frame-body">
-            {screen === "welcome" && <WelcomeScreen />}
-            {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
-            {screen === "main" && vault && (
-              <IconsProvider key={vault.id}>
-                <BreachesProvider key={vault.id}>
-                  <MainScreen key={vault.id} />
-                </BreachesProvider>
-              </IconsProvider>
-            )}
-          </div>
-        </div>
-        {currentPairing && (
-          <PairingModal
-            key={currentPairing.requestId}
-            request={currentPairing}
-            onDone={() => setPairings((list) => list.filter((r) => r.requestId !== currentPairing.requestId))}
-          />
-        )}
-      </FileDropProvider>
+      {mobile ? (
+        frame
+      ) : (
+        // Files dragged onto the window: the import dialog (unlocked) or a hint.
+        <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
+      )}
     </AppContext.Provider>
   );
 }

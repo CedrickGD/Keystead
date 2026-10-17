@@ -21,6 +21,8 @@ import { iconHost } from "../lib/icons";
 import { Button, Checkbox } from "../components/Controls";
 import { Modal } from "../components/Modal";
 import { useBreaches, usePwnedErrorText } from "../state/breaches";
+import { useApp } from "../state/app";
+import { isPhonePlatform } from "../lib/phone";
 
 function ScoreGauge({ score }: { score: number }) {
   const { t } = useT();
@@ -301,8 +303,11 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
   const { t, tp, errorText } = useT();
   const toast = useToast();
   const breaches = useBreaches();
+  const { info } = useApp();
   const [report, setReport] = useState<HealthReport | null>(null);
   const [loading, setLoading] = useState(false);
+  // Have I Been Pwned needs the network: the phone app has no network permission.
+  const pwnedCheck = !isPhonePlatform(info.platform);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -399,7 +404,7 @@ export function HealthPage({ items, onOpenItem }: { items: ItemListEntry[]; onOp
         </section>
 
         <div className="health-grid">
-          <PwnedCard items={items} rows={leakedRows} byId={byId} onOpen={onOpenItem} />
+          {pwnedCheck && <PwnedCard items={items} rows={leakedRows} byId={byId} onOpen={onOpenItem} />}
 
           <HealthCard
             icon={<ShieldAlert />}

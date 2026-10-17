@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The UI's dark background (the bg-app token of the dark theme in tokens.css). -->
+    <color name="keystead_background">#FF131519</color>
+</resources>

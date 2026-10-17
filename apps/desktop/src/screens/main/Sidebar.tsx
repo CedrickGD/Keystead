@@ -120,6 +120,8 @@ export function Sidebar({
   counts,
   folders,
   tags,
+  readOnly,
+  drawerOpen,
   onNavigate,
   onLock,
   onCreateFolder,
@@ -133,6 +135,10 @@ export function Sidebar({
   counts: Counts;
   folders: Folder[];
   tags: TagCount[];
+  /** The vault cannot be changed here (the phone): no folder/tag management, no generator (it keeps a history). */
+  readOnly: boolean;
+  /** Phone layout: the sidebar is a drawer and open (else hidden off-screen). */
+  drawerOpen?: boolean;
   onNavigate: (view: View) => void;
   onLock: () => void;
   onCreateFolder: (name: string) => void;
@@ -156,7 +162,7 @@ export function Sidebar({
   ];
 
   return (
-    <aside className="sidebar" aria-label={t("sidebar.label")}>
+    <aside className={`sidebar ${drawerOpen ? "open" : ""}`} aria-label={t("sidebar.label")}>
       <div className="sidebar-header">
         <Logo size={28} />
         <div className="sidebar-brand">
@@ -164,6 +170,12 @@ export function Sidebar({
           <div className="sidebar-vault-name truncate" title={t("sidebar.vaultTitle", { name: vaultName })}>
             <LockOpen aria-hidden />
             <span className="truncate">{vaultName}</span>
+            {readOnly && (
+              <span className="chip sidebar-readonly" title={t("sidebar.readOnlyHint")}>
+                {t("sidebar.readOnly")}
+                <span className="sr-only">: {t("sidebar.readOnlyHint")}</span>
+              </span>
+            )}
           </div>
         </div>
         <button
@@ -203,18 +215,23 @@ export function Sidebar({
           ))}
         </div>
 
-        <div className="nav-section-title">
-          <span>{t("nav.folders")}</span>
-          <button
-            type="button"
-            className="icon-btn sm nav-section-action"
-            onClick={() => setEditing("new")}
-            title={t("folder.new")}
-            aria-label={t("folder.new")}
-          >
-            <FolderPlus />
-          </button>
-        </div>
+        {/* Read-only: the section only lists folders – none, no section. */}
+        {(!readOnly || folders.length > 0) && (
+          <div className="nav-section-title">
+            <span>{t("nav.folders")}</span>
+            {!readOnly && (
+              <button
+                type="button"
+                className="icon-btn sm nav-section-action"
+                onClick={() => setEditing("new")}
+                title={t("folder.new")}
+                aria-label={t("folder.new")}
+              >
+                <FolderPlus />
+              </button>
+            )}
+          </div>
+        )}
         <div className="nav-group">
           {folders.map((folder) =>
             editing === folder.id ? (
@@ -239,26 +256,28 @@ export function Sidebar({
                   active={isFilter({ kind: "folder", id: folder.id })}
                   onClick={() => go({ kind: "folder", id: folder.id })}
                 />
-                <div className="nav-row-actions">
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    onClick={() => setEditing(folder.id)}
-                    title={t("folder.rename")}
-                    aria-label={t("folder.renameNamed", { name: folder.name })}
-                  >
-                    <Pencil />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm danger"
-                    onClick={() => onDeleteFolder(folder)}
-                    title={t("folder.delete")}
-                    aria-label={t("folder.deleteNamed", { name: folder.name })}
-                  >
-                    <Trash2 />
-                  </button>
-                </div>
+                {!readOnly && (
+                  <div className="nav-row-actions">
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      onClick={() => setEditing(folder.id)}
+                      title={t("folder.rename")}
+                      aria-label={t("folder.renameNamed", { name: folder.name })}
+                    >
+                      <Pencil />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm danger"
+                      onClick={() => onDeleteFolder(folder)}
+                      title={t("folder.delete")}
+                      aria-label={t("folder.deleteNamed", { name: folder.name })}
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                )}
               </div>
             ),
           )}
@@ -275,7 +294,7 @@ export function Sidebar({
               onCancel={() => setEditing(null)}
             />
           )}
-          {folders.length === 0 && editing !== "new" && (
+          {!readOnly && folders.length === 0 && editing !== "new" && (
             <button type="button" className="nav-hint" onClick={() => setEditing("new")}>
               {t("folder.emptyHint")}
             </button>
@@ -283,7 +302,7 @@ export function Sidebar({
         </div>
 
         {/* Tags are created in the item editor; here they are listed, renamed and removed. */}
-        <div className="nav-section-title">{t("tags.title")}</div>
+        {(!readOnly || tags.length > 0) && <div className="nav-section-title">{t("tags.title")}</div>}
         <div className="nav-group">
           {tags.map(({ tag, count }) =>
             editingTag === tag ? (
@@ -308,30 +327,32 @@ export function Sidebar({
                   active={isFilter({ kind: "tag", tag })}
                   onClick={() => go({ kind: "tag", tag })}
                 />
-                <div className="nav-row-actions">
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    onClick={() => setEditingTag(tag)}
-                    title={t("tags.rename")}
-                    aria-label={t("tags.renameNamed", { name: tag })}
-                  >
-                    <Pencil />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm danger"
-                    onClick={() => onDeleteTag(tag)}
-                    title={t("tags.delete")}
-                    aria-label={t("tags.deleteNamed", { name: tag })}
-                  >
-                    <Trash2 />
-                  </button>
-                </div>
+                {!readOnly && (
+                  <div className="nav-row-actions">
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      onClick={() => setEditingTag(tag)}
+                      title={t("tags.rename")}
+                      aria-label={t("tags.renameNamed", { name: tag })}
+                    >
+                      <Pencil />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm danger"
+                      onClick={() => onDeleteTag(tag)}
+                      title={t("tags.delete")}
+                      aria-label={t("tags.deleteNamed", { name: tag })}
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                )}
               </div>
             ),
           )}
-          {tags.length === 0 && <p className="nav-note">{t("tags.emptyHint")}</p>}
+          {!readOnly && tags.length === 0 && <p className="nav-note">{t("tags.emptyHint")}</p>}
         </div>
 
         <div className="nav-group nav-group-spaced">
@@ -340,12 +361,14 @@ export function Sidebar({
 
         <div className="nav-section-title">{t("nav.tools")}</div>
         <div className="nav-group">
-          <NavItem
-            icon={<WandSparkles />}
-            label={t("nav.generator")}
-            active={view.kind === "generator"}
-            onClick={() => onNavigate({ kind: "generator" })}
-          />
+          {!readOnly && (
+            <NavItem
+              icon={<WandSparkles />}
+              label={t("nav.generator")}
+              active={view.kind === "generator"}
+              onClick={() => onNavigate({ kind: "generator" })}
+            />
+          )}
           <NavItem
             icon={<ShieldCheck />}
             label={t("nav.health")}

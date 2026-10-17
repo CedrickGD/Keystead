@@ -1,9 +1,13 @@
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { useEscapeLayer, useOutsideClick } from "../lib/layers";
+
+/** Space a menu keeps from the window's edges. */
+const EDGE = 8;
 
 /**
  * Dropdown menu anchored to its (relatively positioned) parent. Arrow keys
- * move between items, Esc / outside click close it.
+ * move between items, Esc / outside click close it. A menu that would stick
+ * out of the window sideways (narrow windows, the phone) is moved back in.
  */
 export function Menu({
   onClose,
@@ -29,6 +33,17 @@ export function Menu({
 
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>("[role=menuitem], [role=menuitemradio]")?.focus();
+  }, []);
+
+  // `translate` (not `transform`, which the pop-in animation uses).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    let shift = 0;
+    if (rect.right > window.innerWidth - EDGE) shift = window.innerWidth - EDGE - rect.right;
+    if (rect.left + shift < EDGE) shift = EDGE - rect.left;
+    if (shift !== 0) el.style.translate = `${Math.round(shift)}px 0`;
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {

@@ -452,6 +452,66 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
    Bildschirm/Freiform (gleiche Fokus-Lage wie die Benachrichtigungsleiste),
    der Release-Build (R8) mit diesen Änderungen.
 
+7. **Handy-Layout** (`WIP: mobile 1b - phone layout`, Vertrag:
+   ARCHITECTURE „Mobile (Android)“ → „Phone layout“): dieselbe React-App,
+   `data-layout="phone"` auf `<html>` bei `platform` android/ios oder
+   Fenster ≤ 700 px (`src/lib/layout.mjs` + Node-Test
+   `apps/desktop/tests/layout.test.mjs`, Hooks in `src/lib/phone.ts`, Stile
+   nur unter dem Attribut in `src/styles/phone.css`). Einspaltig:
+   Seitenleiste als Schublade (Menü-Knopf vor der Suche bzw. in der Leiste
+   der Seiten, Scrim, schließt bei jeder Auswahl, Escape und Zurück), Detail
+   über der Liste gestapelt (Zurück-Pfeil; die Liste behält ihre
+   Scrollposition), Tippflächen ≥ 44 px, Kopierknöpfe der Liste immer
+   sichtbar, Hover-Hintergründe der gemeinsamen Stylesheets in
+   `@media (hover: hover)` (mit Maus unverändert), Dialoge unten in voller
+   Breite, Menüs bleiben im Fenster, kein Autofokus auf Textfelder.
+   **Zurück-Geste** (`keystead:back`): `lib/layers.ts` behandelt sie wie
+   Escape (Dialog/Menü/Schublade zuerst), dann `useBackHandler` der
+   Hauptansicht: Editor → Detail → Suche leeren → von Seite/Filter zu „Alle
+   Elemente“ → sonst Android (App in den Hintergrund). **Nur lesen**
+   (`readOnly`): kein Neu/Bearbeiten/Favorit-Schalter (stattdessen Chip
+   „Favorit“)/Papierkorb-Aktionen/Ordner- und Tag-Verwaltung/Anhänge
+   ändern/Generator/Import, kein Master-Passwort, Wiederherstellungsschlüssel,
+   Tresor umbenennen/löschen, auf dem Entsperrbildschirm kein „Passwort
+   vergessen?“/„Neuen Tresor erstellen“; Chip „Nur lesen“ in der Schublade;
+   jede Schreibaktion in `MainScreen` kehrt zusätzlich früh zurück.
+   **Nur Desktop** (Plattform): Browser-Integration, Import/Export,
+   Erweitert, Infobereich-Schalter, „Beim Sperren des Computers sperren“,
+   Website-Icons, HIBP-Karte, „Speichern unter …“, Update-Banner/-Prüfung
+   (auch `pending_update` beim Start). „Über Keystead“: „Android · Daten im
+   App-Speicher“ und **„Releases auf GitHub öffnen“** (Entscheidung dieses
+   Laufs: die App bleibt **ohne `INTERNET`-Berechtigung**, also keine
+   Update-Prüfung auf dem Handy; der Link öffnet den Browser, dafür braucht
+   die App keine Berechtigung). Willkommen ohne Tresor: Erklärung plus
+   markierter Platz (`data-slot="vault-source"`) für „Tresor vom PC holen“
+   der nächsten Stufe. **Android-Shell**: `MainActivity` polstert die
+   Content-View um Statusleiste, Gestenleiste, Kamera-Aussparung und
+   Tastatur (Insets-Listener, verbraucht die Insets) – die Webview sah sie
+   nicht (`env()` lieferte nur die Aussparung, 0 für die Gestenleiste) und
+   `adjustResize` wirkt bei Edge-to-Edge nicht; Fensterhintergrund =
+   `--bg-app` hell/dunkel (`res/values*/themes.xml`, `colors.xml`);
+   Guard-Test in `gui.rs`. Mock: `?platform=android` lehnt jedes
+   Nicht-Handy-Kommando ab wie Tauri („Command … not found“, Warnung in der
+   Konsole), `__keysteadMock.simulateBack()`.
+   **Im Emulator geprüft** (MB_S26, Debug-APK x86_64, zweiter Test-Tresor
+   „Handy-Demo“ mit 9 erfundenen Einträgen, Ordnern, Tags und TOTP per
+   `run-as` – Passwort `demo`; „Handy-Test“ ist unverändert da):
+   Kopfzeile unter der Statusleiste, Webview 360×724 CSS-px, mit offener
+   Tastatur 449 px – das Passwortfeld bleibt sichtbar; kein Tastatur-Popup
+   beim Öffnen; Entsperren per Tippen; Liste, Schublade, Detail (Aufdecken,
+   2FA-Code kopieren, Toast), Einstellungen (nur Allgemein, Sicherheit,
+   Über); echte Zurück-Taste: Schublade zu → Detail zu → von den
+   Einstellungen zur Liste → an der Wurzel geht die App in den Hintergrund
+   (Prozess lebt). Screenshots `phone-1b-*.png` im Scratchpad des Laufs.
+   Auffällig: Androids eigene „Kopiert“-Blase (Android 13+) lag über dem
+   Toast – Toasts sitzen auf dem Handy deshalb höher. **Nicht geprüft:**
+   TalkBack (nicht eingeschaltet); `uiautomator dump` zeigte die per echtem
+   Tippen geöffnete Schublade nicht, obwohl Chromiums Accessibility-Baum
+   (DevTools) sie enthält und eine per Skript geöffnete auch im
+   Android-Baum erscheint – vermutlich Chromes automatisches Abschalten der
+   Accessibility bei Touch-Eingaben ohne Screenreader; mit TalkBack
+   gegenprüfen. Querformat, Tablets, iOS.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -503,19 +563,18 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
 8. Logs: `adb logcat -s RustStdoutStderr:* Tauri:*` – erwartet sind nur
    Chromium-Zeilen des WebView, keine Panik.
 
-Erwartete Grenzen in dieser Stufe: Desktop-Layout auf dem Handy, Knöpfe für
-Bearbeiten/Neu/Import (auch Anhang hinzufügen/speichern) sind noch sichtbar,
-laufen aber ins Leere (das Handy kennt diese Befehle nicht).
+Erwartete Grenzen in dieser Stufe: ohne `adb` kommt noch kein Tresor aufs
+Handy (der Willkommensbildschirm erklärt das); bearbeiten geht nur am PC
+(die Handy-Oberfläche zeigt keine Bearbeiten-Knöpfe).
 
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
-1. **Rest von Stufe 1**: Handy-Layout der UI (`data-layout="phone"`,
-   Liste/Detail gestapelt, Seitenleiste als Schublade, große Tippflächen,
-   Listener auf `keystead:back`, alle Bearbeiten-Knöpfe hinter `readOnly`,
-   Desktop-Abschnitte und „Beim Sperren des Computers sperren“ ausblenden)
-   und `import_vault_file` (Tresordatei per System-Auswahl einmalig in den
-   App-Ordner kopieren, `sync::header_of` prüft sie) – erst dann ist die
-   App ohne `adb` benutzbar. Offen dabei: Anhänge liegen neben der
+1. **Rest von Stufe 1**: das Handy-Layout ist fertig (Punkt 7 oben); es
+   fehlt `import_vault_file` (Tresordatei per System-Auswahl einmalig in den
+   App-Ordner kopieren, `sync::header_of` prüft sie; der Eintrag dafür
+   gehört in den markierten Platz des Willkommensbildschirms,
+   `data-slot="vault-source"`) – erst dann ist die App ohne `adb`
+   benutzbar. Offen dabei: Anhänge liegen neben der
    Tresordatei im Ordner `<id>.keystead.attachments` und kämen mit einer
    einzelnen Datei nicht mit (die Bildvorschau wäre dann leer) – mit dem
    Besitzer klären, ob der Import sie mitnimmt oder die Vorschau bis

@@ -574,6 +574,16 @@ mod tests {
         assert!(activity.contains("allowContentAccess = false"));
         assert!(activity.contains("keystead:back"));
         assert!(activity.contains("moveTaskToBack(true)"));
+        // Edge-to-edge: the webview's parent is padded by the system bars,
+        // a display cutout and the keyboard (the phone layout relies on it –
+        // no header under the status bar, no field under the keyboard).
+        assert!(activity.contains("ViewCompat.setOnApplyWindowInsetsListener(content)"));
+        for inset in ["systemBars()", "displayCutout()", "ime()"] {
+            assert!(
+                activity.contains(&format!("WindowInsetsCompat.Type.{inset}")),
+                "{inset}"
+            );
+        }
         // The back callback is moved above Tauri's AppPlugin (which would
         // call `webView.goBack()` first) once the webview exists.
         let on_webview_create = &activity[activity.find("fun onWebViewCreate").unwrap()..];
