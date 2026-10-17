@@ -1,6 +1,9 @@
-//! File attachments of items – the desktop commands on top of
+//! File attachments of items – the commands on top of
 //! `keystead_core::attachments` and `UnlockedVault::{add,remove,read}_attachment`
 //! (storage, limits and blob format are the core's; see its module docs).
+//! The phone (read-only, no file dialogs) has only the image preview,
+//! `reveal_attachment`; everything that takes a dialog path or changes
+//! the vault is `#[cfg(desktop)]`.
 //!
 //! * The file bytes never reach the webview, except through
 //!   `reveal_attachment`: an in-app image preview the user asked for,
@@ -24,17 +27,25 @@
 //!   inside the vaults directory or with the vault extension
 //!   (`save_attachment`, [`check_target`]).
 
+#[cfg(desktop)]
 use std::fs;
+#[cfg(desktop)]
 use std::io::Read as _;
+#[cfg(desktop)]
 use std::path::{Component, Path};
 
+#[cfg(desktop)]
 use keystead_core::attachments::ATTACHMENT_MAX_BYTES;
-use keystead_core::{crypto, format, paths, Error as CoreError};
+use keystead_core::{crypto, Error as CoreError};
+#[cfg(desktop)]
+use keystead_core::{format, paths};
 use zeroize::Zeroizing;
 
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
+#[cfg(desktop)]
 use crate::import_flow::remember_export;
+#[cfg(desktop)]
 use crate::secrets::{self, ItemListEntry};
 use crate::state::Core;
 use crate::wipe::Wiped;
@@ -43,17 +54,20 @@ use crate::wipe::Wiped;
 pub const PREVIEW_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The vault file extension a saved attachment must not carry.
+#[cfg(desktop)]
 const VAULT_EXTENSION: &str = "keystead";
 
 fn not_found(what: &str) -> AppError {
     CoreError::NotFound(what.to_owned()).into()
 }
 
+#[cfg(desktop)]
 fn io_err(path: &Path, e: std::io::Error) -> AppError {
     AppError::io(format!("{}: {e}", path.display()))
 }
 
 /// A path argument of the page: `invalid_input:path_required` if blank.
+#[cfg(desktop)]
 fn path_arg(path: &str) -> AppResult<&Path> {
     if path.trim().is_empty() {
         return Err(AppError::invalid("path_required"));
@@ -66,6 +80,7 @@ fn path_arg(path: &str) -> AppResult<&Path> {
 ///   `io:…`, without opening it;
 /// * larger than the limit → `unsupported:attachment_too_large` from the
 ///   metadata, before reading (also if it grows while being read).
+#[cfg(desktop)]
 fn read_file(path: &Path) -> AppResult<Zeroizing<Vec<u8>>> {
     let open_err = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -103,6 +118,7 @@ fn read_file(path: &Path) -> AppResult<Zeroizing<Vec<u8>>> {
 /// may name a folder that does not exist yet; `write_atomic` creates the
 /// rest below that ancestor). `canonicalize` sees through symlinks and, on
 /// Windows, case and 8.3 variants of the directory names.
+#[cfg(desktop)]
 fn is_inside(path: &Path, dir: &Path) -> bool {
     if path.starts_with(dir) {
         return true;
@@ -124,6 +140,7 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
 /// or `..` components. A `..` behind a folder that does not exist yet is
 /// opaque to `canonicalize`, but `write_atomic`'s `create_dir_all` would
 /// make it resolve – into the vaults directory, if the page chose so.
+#[cfg(desktop)]
 fn is_dialog_path(path: &Path) -> bool {
     path.is_absolute()
         && !path
@@ -136,6 +153,7 @@ fn is_dialog_path(path: &Path) -> bool {
 /// vault file extension, or not of the dialog's shape: a saved attachment
 /// must never overwrite or pose as a vault file. `vaults_dir` is the open
 /// store's; the process's default location is checked as well.
+#[cfg(desktop)]
 fn check_target(path: &Path, vaults_dir: &Path) -> AppResult<()> {
     let is_vault_name = path
         .extension()
@@ -156,6 +174,7 @@ fn check_target(path: &Path, vaults_dir: &Path) -> AppResult<()> {
 /// are the app's own, and attaching one would let a page copy it out
 /// again through `save_attachment` or read it through `reveal_attachment`
 /// without the master password `export_data` demands.
+#[cfg(desktop)]
 fn check_source(path: &Path, data_dir: &Path) -> AppResult<()> {
     if !is_dialog_path(path) || is_inside(path, data_dir) || is_inside(path, &paths::data_dir()) {
         return Err(AppError::invalid("attachment_source"));
@@ -191,6 +210,7 @@ fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 /// `invalid_input:item_trashed`, `invalid_input:attachments_too_many`,
 /// `invalid_input:attachment_name_required` / `attachment_name_too_long`,
 /// `io:…`.
+#[cfg(desktop)]
 pub(crate) fn add(
     c: &Core,
     page_vault_id: Option<&str>,
@@ -222,6 +242,7 @@ pub(crate) fn add(
 
 /// `remove_attachment`: drops the attachment (entry, then blob) and answers
 /// its item's new list entry. `not_found` for an unknown id.
+#[cfg(desktop)]
 pub(crate) fn remove(
     c: &Core,
     page_vault_id: Option<&str>,
@@ -244,6 +265,7 @@ pub(crate) fn remove(
 /// happened since (`locked`). The written file is remembered for
 /// `show_export`. Errors: `locked`, `invalid_input:path_required`,
 /// `invalid_input:attachment_target`, `not_found`, `corrupt:…`, `io:…`.
+#[cfg(desktop)]
 pub(crate) fn save(
     c: &Core,
     page_vault_id: Option<&str>,
@@ -255,6 +277,7 @@ pub(crate) fn save(
 
 /// [`save`] with a hook between reading the bytes and writing them (unit
 /// tests put a lock there).
+#[cfg(desktop)]
 fn save_with(
     c: &Core,
     page_vault_id: Option<&str>,
@@ -315,6 +338,7 @@ pub(crate) fn reveal(
 // ---------------------------------------------------------------------------
 
 /// `add_attachment(itemId, path, pageVaultId)` † → `ItemListEntry`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn add_attachment(
     core: Shared<'_>,
@@ -330,6 +354,7 @@ pub async fn add_attachment(
 
 /// `save_attachment(attachmentId, path, pageVaultId)` → `null`: writes the
 /// decrypted file to `path`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn save_attachment(
     core: Shared<'_>,
@@ -344,6 +369,7 @@ pub async fn save_attachment(
 }
 
 /// `remove_attachment(attachmentId, pageVaultId)` † → `ItemListEntry`.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn remove_attachment(
     core: Shared<'_>,

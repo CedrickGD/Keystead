@@ -77,7 +77,8 @@ pub fn is_web_url(url: &tauri::Url) -> bool {
 
 /// Opens an http(s) URL in the default browser (desktop: the system
 /// handler; phone: `tauri-plugin-opener`, which the Rust side alone may
-/// call). Other schemes are refused (logged).
+/// call, on a thread of its own – see [`open_url_on_phone`]). Other
+/// schemes are refused (logged). Returns at once.
 pub fn open_url(app: &tauri::AppHandle, url: &tauri::Url) {
     if !is_web_url(url) {
         log(format_args!(
@@ -87,18 +88,32 @@ pub fn open_url(app: &tauri::AppHandle, url: &tauri::Url) {
         return;
     }
     #[cfg(desktop)]
-    let opened = {
+    {
         let _ = app;
-        open::that_detached(url.as_str()).map_err(|e| e.to_string())
-    };
+        if let Err(e) = open::that_detached(url.as_str()) {
+            log(format_args!("could not open the browser: {e}"));
+        }
+    }
     #[cfg(mobile)]
-    let opened = {
-        use tauri_plugin_opener::OpenerExt as _;
-        app.opener()
-            .open_url(url.as_str(), None::<&str>)
-            .map_err(|e| e.to_string())
-    };
-    if let Err(e) = opened {
+    open_url_on_phone(app.clone(), url.as_str().to_owned());
+}
+
+/// The phone's [`open_url`]: never on the calling thread. The navigation
+/// hook runs on Android's UI thread (`shouldOverrideUrlLoading`), and the
+/// plugin call (`run_mobile_plugin`) blocks until that very thread's
+/// looper has run the JNI call – called there it would wait forever (the
+/// UI freezes, Android shows "app not responding").
+#[cfg(mobile)]
+fn open_url_on_phone(app: tauri::AppHandle, url: String) {
+    use tauri_plugin_opener::OpenerExt as _;
+    let spawned = std::thread::Builder::new()
+        .name("keystead-open-url".into())
+        .spawn(move || {
+            if let Err(e) = app.opener().open_url(url, None::<&str>) {
+                log(format_args!("could not open the browser: {e}"));
+            }
+        });
+    if let Err(e) = spawned {
         log(format_args!("could not open the browser: {e}"));
     }
 }

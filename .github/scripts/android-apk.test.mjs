@@ -93,6 +93,20 @@ test("badging fields", () => {
   assert.ok(debug.permissions.includes("android.permission.INTERNET"));
   assert.equal(debug.debuggable, true);
   assert.deepEqual(debug.nativeCode, ["arm64-v8a", "x86_64"]);
+  // A library's `<uses-permission-sdk-23>` (merged into the APK) counts too.
+  const sdk23 = parseBadging(
+    BADGING.replace("application-label", "uses-permission-sdk-23: name='android.permission.INTERNET'\napplication-label"),
+  );
+  assert.deepEqual(sdk23.permissions, [
+    "io.github.cedrickgd.keystead.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+    "android.permission.INTERNET",
+  ]);
+  assert.match(apkProblems({ badging: sdk23, signers: [DEBUG_HEX], expect })[0], /INTERNET/);
+  // `maxSdkVersion` after the name does not hide a permission either.
+  assert.deepEqual(
+    parseBadging("uses-permission: name='android.permission.INTERNET' maxSdkVersion='32'\n").permissions,
+    ["android.permission.INTERNET"],
+  );
   assert.deepEqual(parseBadging(""), {
     packageName: null,
     versionCode: null,

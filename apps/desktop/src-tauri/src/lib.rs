@@ -7,9 +7,9 @@
 //!   (`tauri::mobile_entry_point`), which starts the same Tauri app without
 //!   the desktop-only parts – tray, single instance, updater, browser
 //!   bridge, extension, portable mode, website-icon fetcher, leaked-password
-//!   check, the file-dialog based attachment and import/export commands. In
-//!   this stage the phone is **read-only**: only the read commands are
-//!   registered (`gui.rs`).
+//!   check, the file-dialog based attachment commands (the image preview
+//!   stays) and import/export. In this stage the phone is **read-only**:
+//!   only the read commands are registered (`gui.rs`).
 //!
 //! `#[cfg(desktop)]` / `#[cfg(mobile)]` are the aliases `tauri_build` sets
 //! from the target OS.
@@ -23,7 +23,6 @@
 #[link(name = "resource", kind = "static")]
 extern "C" {}
 
-#[cfg(desktop)]
 mod attachments;
 #[cfg(desktop)]
 mod bridge;

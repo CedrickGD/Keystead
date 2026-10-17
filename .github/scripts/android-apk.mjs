@@ -74,7 +74,9 @@ export function parseBadging(output) {
     versionName: attr("versionName"),
     minSdk: sdk("sdkVersion") ?? sdk("minSdkVersion"),
     targetSdk: sdk("targetSdkVersion"),
-    permissions: [...text.matchAll(/^uses-permission: name='([^']+)'/gm)].map((m) => m[1]),
+    // `<uses-permission-sdk-23>` (granted on API 23+, i.e. on every device
+    // the app supports) is printed as `uses-permission-sdk-23:`.
+    permissions: [...text.matchAll(/^uses-permission(?:-sdk-23)?: name='([^']+)'/gm)].map((m) => m[1]),
     debuggable: /^application-debuggable\s*$/m.test(text),
     nativeCode: [...nativeLine.matchAll(/'([^']+)'/g)].map((m) => m[1]),
   };

@@ -84,9 +84,17 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
     #[cfg(mobile)]
     let builder = builder
         // Called from Rust only (`mobile::PluginClipboard`, `platform::open_url`);
-        // the webview gets no permission for them either.
+        // the webview gets no permission for them either. The opener's own
+        // click hook stays out: it would swallow every `target="_blank"`
+        // link and send it to `plugin:opener|open_url`, which the webview
+        // may not call – links take the navigation hook in
+        // `build_main_window` instead.
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        );
     builder
         .plugin(tauri_plugin_dialog::init())
         // `#[cfg(desktop)]`: not registered on the phone (read-only, or the
@@ -120,7 +128,6 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::attachments::save_attachment,
             #[cfg(desktop)]
             crate::attachments::remove_attachment,
-            #[cfg(desktop)]
             crate::attachments::reveal_attachment,
             #[cfg(desktop)]
             commands::trash_item,
@@ -217,8 +224,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
 
 /// Desktop: closing the window hides it when "minimize to tray" is on.
 /// Phone: `Suspended`/`Resumed` (the activity's `onPause`/`onResume`)
-/// drive the background lock in the monitor, the clipboard backend's
-/// notion of "in the background" and the UI's `app://suspended`.
+/// drive the background lock in the monitor and the UI's
+/// `app://suspended`.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     if window.label() != MAIN_WINDOW {
         return;
@@ -241,14 +248,12 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         };
         match event {
             WindowEvent::Suspended => {
-                crate::mobile::set_in_background(true);
                 // The page first (it may be paused any moment), then the
                 // monitor's clock.
                 core.emit_suspended();
                 core.signal_monitor(MonitorSignal::Background);
             }
             WindowEvent::Resumed => {
-                crate::mobile::set_in_background(false);
                 core.signal_monitor(MonitorSignal::Foreground);
             }
             _ => {}
@@ -491,6 +496,12 @@ mod tests {
                 }
             }
         }
+        // The opener's injected click hook would send `target="_blank"`
+        // links to its (forbidden) JS command instead of the navigation
+        // hook, so it stays off.
+        let source = include_str!("gui.rs");
+        assert!(source.contains(concat!(".open_js_links_on_click", "(false)")));
+        assert!(!source.contains(concat!("tauri_plugin_opener", "::init()")));
     }
 
     #[test]
@@ -563,6 +574,14 @@ mod tests {
         assert!(activity.contains("allowContentAccess = false"));
         assert!(activity.contains("keystead:back"));
         assert!(activity.contains("moveTaskToBack(true)"));
+        // The back callback is moved above Tauri's AppPlugin (which would
+        // call `webView.goBack()` first) once the webview exists.
+        let on_webview_create = &activity[activity.find("fun onWebViewCreate").unwrap()..];
+        let on_webview_create = &on_webview_create[..on_webview_create.find("\n  }").unwrap()];
+        assert!(on_webview_create.contains("backCallback.remove()"));
+        assert!(
+            on_webview_create.contains("onBackPressedDispatcher.addCallback(this, backCallback)")
+        );
 
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains(r#"android:allowBackup="false""#));
@@ -582,33 +601,53 @@ mod tests {
         assert!(rules.contains("<cloud-backup"));
         assert!(rules.contains("<device-transfer>"));
         assert!(!rules.contains("<include"));
-        // Every domain excluded in both sections.
-        for domain in [
+        // Every domain excluded in both sections – only names Android
+        // knows (an unknown one is skipped silently): the credential-
+        // encrypted storage and the device-protected (`device_*`) one.
+        let domains = [
             "root",
             "file",
             "database",
             "sharedpref",
             "external",
-            "device",
-        ] {
+            "device_root",
+            "device_file",
+            "device_database",
+            "device_sharedpref",
+        ];
+        for domain in domains {
             let needle = format!(r#"<exclude domain="{domain}" />"#);
             assert_eq!(rules.matches(&needle).count(), 2, "{domain}");
         }
+        assert_eq!(
+            rules.matches("<exclude domain=").count(),
+            2 * domains.len(),
+            "no other domain"
+        );
 
         let gradle = include_str!("../gen/android/app/build.gradle.kts");
         assert!(gradle.contains("minSdk = 29"));
         assert!(gradle.contains(r#"applicationId = "io.github.cedrickgd.keystead""#));
         assert!(gradle.contains(r#"namespace = "io.github.cedrickgd.keystead""#));
         assert!(gradle.contains(r#"rootProject.file("keystore.properties")"#));
-        // The keystore never enters the repository.
+        // The keystore never enters the repository: refused inside the
+        // checkout, and ignored here and in the root .gitignore.
+        assert!(gradle.contains("storeFile must lie outside the repository"));
         let ignored = include_str!("../gen/android/.gitignore");
+        let root_ignored = include_str!("../../../../.gitignore");
         for entry in [
             "keystore.properties",
             "local.properties",
             "build",
             ".gradle",
+            "*.jks",
+            "*.keystore",
+            "*.p12",
         ] {
             assert!(ignored.lines().any(|line| line == entry), "{entry}");
+        }
+        for entry in ["*.jks", "*.keystore", "*.p12"] {
+            assert!(root_ignored.lines().any(|line| line == entry), "{entry}");
         }
         let app_ignored = include_str!("../gen/android/app/.gitignore");
         assert!(app_ignored.lines().any(|line| line == "/tauri.properties"));

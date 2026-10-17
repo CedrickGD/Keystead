@@ -4,6 +4,9 @@ target/
 node_modules/
 apps/desktop/dist/
 *.pem
+*.jks
+*.keystore
+*.p12
 .DS_Store
 .claude/settings.local.json
 .claude/launch.json

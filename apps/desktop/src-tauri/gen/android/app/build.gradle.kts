@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -16,8 +17,9 @@ val tauriProperties = Properties().apply {
 
 // Release signing: `gen/android/keystore.properties` (gitignored, never
 // committed; CI writes it from the secrets – see "Build, CI and signing"
-// under "Mobile (Android)" in docs/ARCHITECTURE.md) with `storeFile` (absolute, or
-// relative to gen/android), `password` (keystore, and the key unless
+// under "Mobile (Android)" in docs/ARCHITECTURE.md) with `storeFile` (the
+// keystore, outside the repository – an absolute path is best; a relative
+// one counts from gen/android), `password` (keystore, and the key unless
 // `keyPassword` is set) and `keyAlias`. Without the file a release build
 // is signed with the debug key, so local release builds still install –
 // such an APK can never update an app signed with the release key.
@@ -27,7 +29,22 @@ val keystoreProperties = Properties().apply {
         propFile.inputStream().use { load(it) }
     }
 }
-val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
+val releaseStoreFile: File? =
+    keystoreProperties.getProperty("storeFile")?.let { rootProject.file(it).canonicalFile }
+val hasReleaseKeystore = releaseStoreFile != null
+// The repository is public: a keystore inside the checkout (the nearest
+// folder above gen/android with a `.git`) is refused, not merely
+// gitignored – one `git add -A` would publish the key that can never be
+// replaced for installed apps.
+releaseStoreFile?.let { store ->
+    val repository = generateSequence(rootProject.rootDir.canonicalFile) { it.parentFile }
+        .firstOrNull { File(it, ".git").exists() }
+    if (repository != null && store.startsWith(repository)) {
+        throw GradleException(
+            "keystore.properties: storeFile must lie outside the repository ($repository)"
+        )
+    }
+}
 
 android {
     compileSdk = 37
@@ -43,7 +60,7 @@ android {
     signingConfigs {
         if (hasReleaseKeystore) {
             create("release") {
-                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storeFile = releaseStoreFile
                 storePassword = keystoreProperties.getProperty("password")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")

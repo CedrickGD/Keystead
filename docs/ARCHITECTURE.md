@@ -55,12 +55,13 @@ Keystead`). The library holds the whole app; `#[cfg(desktop)]` /
 what only one side has. Desktop-only: the browser bridge and extension, the
 terminal UI, tray, single instance, in-app updates, portable mode, the
 website-icon fetcher (`icons/fetch.rs`), the leaked-password check, the
-file-dialog based attachment, import and export commands, Windows session
-lock detection and the suspend (clock-jump) detection. Phone-only
+file-dialog based attachment, import and export commands (the attachment
+image preview, `reveal_attachment`, is on both), Windows session lock
+detection and the suspend (clock-jump) detection. Phone-only
 (`src/mobile.rs`, Android and iOS): the data directory override, the
 clipboard backend on `tauri-plugin-clipboard-manager` and links through
 `tauri-plugin-opener` – both plugins are called from Rust only, the webview
-gets no permission for them. Dependencies follow the same split
+gets no permission for them (and the opener's injected click hook is off). Dependencies follow the same split
 (`[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.
 dependencies]` and its mobile counterpart; the `tauri` crate's `tray-icon`
 feature exists only on the desktop). `build.rs` embeds the browser extension
@@ -148,7 +149,10 @@ folder – lists, searches, reveals and copies, shows TOTP codes and the
 security report – and locks when it stays in the background. Not yet: a way
 to bring a vault onto the phone (next stage: a `.keystead` file picked in
 the system file picker, later a copy in the user's own cloud folder,
-`docs/BLOCK5-DESIGN.md` "Stufe 2"), the phone layout of the UI (it still
+`docs/BLOCK5-DESIGN.md` "Stufe 2"; creating one there is a write and not
+registered either) – so a published APK on its own can only be installed
+and started, and the release notes and README say so plainly (an "early
+preview") –, the phone layout of the UI (it still
 shows the desktop layout) and fingerprint unlock (stage 1b). There is no
 Keystead server, and the app has no network permission at all.
 
@@ -204,7 +208,11 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
   dev` loads the UI from the Vite dev server on the PC. `allowBackup=
   "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
-  excludes every domain for cloud backup and device-to-device transfer),
+  excludes every domain for cloud backup and device-to-device transfer:
+  `root`, `file`, `database`, `sharedpref`, `external` and the
+  device-protected storage's `device_root`, `device_file`,
+  `device_database`, `device_sharedpref` – Android skips a rule with an
+  unknown domain name silently),
   `windowSoftInputMode="adjustResize"`, WebView Safe Browsing off
   (`android.webkit.WebView.EnableSafeBrowsing` = false), no `debuggable`.
 * `MainActivity.kt`: `FLAG_SECURE` on the window (no screenshots,
@@ -216,19 +224,30 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   `preventDefault()` has consumed it (close a dialog, leave the detail
   view), otherwise the activity calls `moveTaskToBack(true)` – the app goes
   to the background without finishing, so an open vault stays open until
-  the background lock applies. (Tauri's own back handling is off:
-  `TauriActivity.handleBackNavigation = false`.)
+  the background lock applies. The gesture never becomes a WebView history
+  step: `TauriActivity.handleBackNavigation = false` turns off wry's
+  handler, but Tauri's core `AppPlugin` adds an `OnBackPressedCallback` of
+  its own (`webView.goBack()` whenever `canGoBack()`, unless a JS
+  `back-button` listener exists). The dispatcher asks the most recently
+  added callback first, and the Rust side registers every plugin before it
+  builds the webview – so the activity registers its callback in
+  `onCreate` and moves it on top in `onWebViewCreate` (`remove()`, then
+  `addCallback` again). The UI may therefore use history (`pushState`,
+  `#anchors`) without changing what back does.
 * `app/build.gradle.kts`: release signing from `gen/android/keystore.
   properties` (gitignored; keys `storeFile`, `password`, `keyAlias`,
   optional `keyPassword`; CI writes it from the secrets) – without the file
   a release build is signed with the debug key so it still installs
-  locally, but such an APK can never update a release-signed app.
+  locally, but such an APK can never update a release-signed app. The
+  keystore itself must lie **outside the repository**: a `storeFile` inside
+  the checkout (the nearest folder above `gen/android` with a `.git`) fails
+  the build, and `*.jks`, `*.keystore`, `*.p12` are gitignored (root and
+  `gen/android`) as a second line.
 * **Lifecycle**: `WindowEvent::Suspended`/`Resumed` (tauri's mapping of the
   activity's `onPause`/`onResume`; the first `onResume` is swallowed by
-  tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`,
-  tells the clipboard backend it is in the background and starts the
-  monitor's background clock (`MonitorSignal::Background`); `Resumed` ends
-  both (`MonitorSignal::Foreground`) – see "Background lock (phone)" under
+  tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`
+  and starts the monitor's background clock (`MonitorSignal::Background`);
+  `Resumed` stops it (`MonitorSignal::Foreground`) – see "Background lock (phone)" under
   "Desktop backend behaviour details". `RunEvent::Exit`/`Core::shutdown` practically never
   run on Android (the process is killed, not quit): nothing
   security-relevant depends on them. tao ignores the first `onResume` of
@@ -243,14 +262,20 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
 * **Clipboard** (`mobile::PluginClipboard`, installed before anything
   else in `setup`): sensitive text goes through the plugin's `write_secret`
   (`EXTRA_IS_SENSITIVE`: Android 13+ shows no preview); the backend never
-  reads (Android ≥ 10 refuses reads without focus), so clearing "our"
-  secret is unconditional. From the background – the normal case, the timer
-  fires while the user pastes in the other app – the plugin's `clear` would
-  do nothing (it calls `clearPrimaryClip()` only after `hasPrimaryClip()`,
-  which is false without focus), so the backend first overwrites the clip
-  with an empty text (writes are allowed without focus) and clears
-  afterwards; in the foreground the plain clear (both verified in the
-  emulator: a timed clear from the background empties the clipboard).
+  reads (Android ≥ 10 refuses reads without window focus), so clearing
+  "our" secret is unconditional. Every clear first overwrites the clip with
+  an empty text (writes are allowed without focus), then calls the plugin's
+  `clear`, which calls `clearPrimaryClip()` only after `hasPrimaryClip()` –
+  false without window focus, so on its own it would silently do nothing
+  while the core has already dropped the pending secret. Window focus is
+  not the lifecycle: besides the background (the usual case – the timer
+  fires while the user pastes in the other app) the app is unfocused while
+  resumed right after `Resumed` (before the window gets focus – when the
+  monitor's catch-up clear runs), in split screen or freeform with the
+  other app focused, and under the notification shade. The price: Android
+  13+ may show its "copied" bubble for the empty write while Keystead is
+  in front. (Verified in the emulator: a timed clear from the background
+  empties the clipboard.)
   Known limits: Android freezes the process of an app that stays in the
   background (cached-apps freezer; emulator API 36: frozen after about
   60–70 s away, not within the first ~45 s) – the clear timer and the
@@ -264,7 +289,17 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   `capabilities/default.json` (windows, linux, macOS) and
   `capabilities/mobile.json` (android, iOS – `core:default` and
   `core:event:default` only). Neither grants the clipboard-manager or
-  opener plugin to the webview.
+  opener plugin to the webview, and the opener is registered with
+  `open_js_links_on_click(false)` (its injected script would turn every
+  `target="_blank"` click into a call of its forbidden JS command – the
+  link would do nothing).
+* **Links**: Android's WebView has no new-window handler, so a link or
+  `window.open(url, "_blank")` navigates in place; the navigation hook
+  (`build_main_window`) refuses it and hands it to `platform::open_url`,
+  which opens it with the opener plugin **on a thread of its own**. The
+  hook runs on Android's UI thread (`shouldOverrideUrlLoading`), and a
+  plugin call blocks until that thread's looper has run it – called there
+  it would freeze the app ("app not responding").
 * Builds on the PC (the environment needs `JAVA_HOME` = JDK 17,
   `ANDROID_HOME` and `NDK_HOME` = NDK 28.2.13676358): `npx tauri android
   build --apk --debug --target x86_64` for the emulator, `npx tauri android
@@ -335,7 +370,8 @@ updates"):
   libraries aligned for devices with 16 KB memory pages), `aapt2 dump
   badging` (package `io.github.cedrickgd.keystead`, the expected
   versionName and versionCode, minSdk 29, no `android.permission.INTERNET`,
-  not debuggable, `arm64-v8a` code). The step summary shows the APK's
+  also not as `<uses-permission-sdk-23>`, not debuggable, `arm64-v8a`
+  code). The step summary shows the APK's
   SHA-256 and the signer certificate. The artifact `Keystead-<version>-
   android` holds `Keystead-<version>-android.apk`; the release job
   attaches it to the release.
@@ -356,7 +392,7 @@ updates"):
 | In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no network (above) |
 | Website-icon fetcher, leaked-password check | need the network; reqwest's platform TLS verifier would need JNI set-up; permanently off on the phone (E6) – stored icons are shown (`get_icons`) |
 | Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
-| Attachments, import, export, `show_export` | the commands take file-dialog paths; Android hands out `content://` URIs (next stages) |
+| Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs (next stages). The read-only image preview `reveal_attachment` is on the phone |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
 
 **iOS** is not built. The code stays iOS-compatible (gates on
@@ -1093,7 +1129,7 @@ history. The bridge's own writes are not affected.
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
 
-**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`. (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`. (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
 `PairedClient { id, name, createdAt, lastSeenAt }`,
@@ -1906,7 +1942,8 @@ are not involved (`ItemSummary` is unchanged).
   (`invalid_input:target_exists`).
 * **Desktop commands** (all take `pageVaultId` – another open vault or
   none → `locked` –, all count as user activity, results wiped after
-  serialization like `list_items`):
+  serialization like `list_items`; the phone registers only the read-only
+  `reveal_attachment`, the rest is `#[cfg(desktop)]`):
   * `add_attachment(itemId, path)` † → `ItemListEntry`: the page passes the
     path the native open dialog chose (a blank one →
     `invalid_input:path_required`); the backend checks the page's vault

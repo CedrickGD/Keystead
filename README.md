@@ -105,10 +105,12 @@ Regel schon installiert).
 
 ### Android-App (Vorschau)
 
-Jedes Release enthält auch die Android-App – vorerst als **Vorschau zum
-Nachschlagen**: Sie öffnet Tresore, zeigt und kopiert Benutzernamen,
-Passwörter und 2FA-Codes und zeigt den Sicherheitsbericht, ändert aber noch
-nichts.
+Jedes Release enthält auch die Android-App – vorerst als **frühe
+Vorschau**: **Sie kann noch keinen Tresor anlegen und noch keinen vom PC
+übernehmen.** Das kommt mit einer der nächsten Versionen; bis dahin lässt sie
+sich nur installieren und starten. Danach wird sie zum Nachschlagen dienen:
+Tresore öffnen, Benutzernamen, Passwörter und 2FA-Codes zeigen und kopieren,
+den Sicherheitsbericht zeigen – ändern wird sie noch nichts.
 
 1. Auf dem Handy unter [Releases](../../releases) `Keystead-<version>-android.apk`
    herunterladen (Android 10 oder neuer, 64-Bit-ARM – praktisch jedes Handy ab 2019).
@@ -129,19 +131,20 @@ nichts.
    installieren – deine Daten bleiben. Die App meldet neue Versionen noch nicht
    selbst.
 
-Was schon geht: Tresor entsperren, Einträge suchen und ansehen, Passwörter
-aufdecken und kopieren (die Zwischenablage wird wie am PC wieder geleert),
-2FA-Codes, Sicherheitsbericht, automatische Sperre. Verlässt du die App, sperrt
-sie sich nach 1 Minute (einstellbar: sofort, 1 min, 5 min, nie). Sie hat
-keinerlei Internetzugriff, verhindert Screenshots und wird von Android nicht
-in die Cloud gesichert.
+Was noch fehlt: **einen Tresor aufs Handy bringen** – neu anlegen geht dort
+noch nicht, und die Übernahme vom PC kommt mit der nächsten Stufe
+(Tresordatei auswählen, später über deinen eigenen Cloud-Ordner); bis dahin
+ist die App nur eine Vorschau. Außerdem Bearbeiten, ein eigenes Handy-Layout
+(die Oberfläche ist noch die vom PC), Entsperren per Fingerabdruck und
+Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
+App – auch die Tresore auf dem Handy.
 
-Was noch fehlt: **einen Tresor vom PC aufs Handy bringen** – das kommt mit der
-nächsten Stufe (Tresordatei auswählen, später über deinen eigenen
-Cloud-Ordner); bis dahin ist die App nur eine Vorschau. Außerdem Bearbeiten,
-ein eigenes Handy-Layout (die Oberfläche ist noch die vom PC), Entsperren per
-Fingerabdruck und Ausfüllen in anderen Apps. Beim Deinstallieren löscht
-Android die Daten der App – auch die Tresore auf dem Handy.
+Sobald ein Tresor auf dem Handy liegt: Tresor entsperren, Einträge suchen und
+ansehen, Passwörter aufdecken und kopieren (die Zwischenablage wird wie am PC
+wieder geleert), 2FA-Codes, Sicherheitsbericht, automatische Sperre. Verlässt
+du die App, sperrt sie sich nach 1 Minute (einstellbar: sofort, 1 min, 5 min,
+nie). Schon jetzt gilt: Die App hat keinerlei Internetzugriff, verhindert
+Screenshots und wird von Android nicht in die Cloud gesichert.
 
 ### Browser-Erweiterung einrichten
 
@@ -365,9 +368,12 @@ Requires Windows 10 or 11 (the WebView2 runtime they need is normally already in
 
 ### Android app (preview)
 
-Every release also carries the Android app – for now a **read-only
-preview**: it opens vaults, shows and copies usernames, passwords and 2FA
-codes and shows the security report, but changes nothing yet.
+Every release also carries the Android app – for now an **early
+preview**: **it cannot create a vault yet, nor take one over from the PC.**
+That comes with one of the next versions; until then you can only install and
+start it. After that it will be for looking things up: open vaults, show and
+copy usernames, passwords and 2FA codes, show the security report – it will
+not change anything yet.
 
 1. On the phone, download `Keystead-<version>-android.apk` from
    [Releases](../../releases) (Android 10 or later, 64-bit ARM – practically
@@ -388,18 +394,19 @@ codes and shows the security report, but changes nothing yet.
 4. **Updates:** download the newer APK and install it over the old one – your
    data stays. The app does not announce new versions itself yet.
 
-What works: unlock a vault, search and view items, reveal and copy passwords
-(the clipboard is cleared again as on the PC), 2FA codes, the security
-report, auto-lock. When you leave the app it locks after 1 minute (adjustable:
-immediately, 1 min, 5 min, never). It has no internet access at all, blocks
-screenshots and is not backed up to the cloud by Android.
+Not yet: **getting a vault onto the phone** – creating one there does not
+work yet, and taking one over from the PC comes with the next stage (pick the
+vault file, later through your own cloud folder); until then the app is only a
+preview. Also missing: editing, a phone layout (the UI is still the desktop
+one), fingerprint unlock and filling in other apps. Uninstalling the app makes
+Android delete its data – including the vaults on the phone.
 
-Not yet: **getting a vault from the PC onto the phone** – that comes with the
-next stage (pick the vault file, later through your own cloud folder); until
-then the app is only a preview. Also missing: editing, a phone layout (the UI
-is still the desktop one), fingerprint unlock and filling in other apps.
-Uninstalling the app makes Android delete its data – including the vaults on
-the phone.
+Once a vault is on the phone: unlock it, search and view items, reveal and
+copy passwords (the clipboard is cleared again as on the PC), 2FA codes, the
+security report, auto-lock. When you leave the app it locks after 1 minute
+(adjustable: immediately, 1 min, 5 min, never). Already now: the app has no
+internet access at all, blocks screenshots and is not backed up to the cloud
+by Android.
 
 ### Browser extension setup
 

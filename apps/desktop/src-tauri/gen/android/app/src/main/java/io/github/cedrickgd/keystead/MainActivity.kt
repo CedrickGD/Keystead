@@ -14,6 +14,16 @@ import androidx.activity.enableEdgeToEdge
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
 
+  // The back gesture / button (see onBack). TauriActivity leaves it
+  // unhandled (`handleBackNavigation = false`), but Tauri's own AppPlugin
+  // adds a callback of its own that calls `webView.goBack()` whenever the
+  // page has history – so ours is moved on top in onWebViewCreate.
+  private val backCallback = object : OnBackPressedCallback(true) {
+    override fun handleOnBackPressed() {
+      onBack()
+    }
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
@@ -25,13 +35,10 @@ class MainActivity : TauriActivity() {
       WindowManager.LayoutParams.FLAG_SECURE,
       WindowManager.LayoutParams.FLAG_SECURE
     )
-    // The back gesture / button: TauriActivity leaves it unhandled
-    // (`handleBackNavigation = false`), so the page gets it first.
-    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-      override fun handleOnBackPressed() {
-        onBack()
-      }
-    })
+    // Registered now so the gesture is ours before the webview exists too
+    // (AppPlugin's callback, added after this, hands it on while there is
+    // no page history); moved on top in onWebViewCreate.
+    onBackPressedDispatcher.addCallback(this, backCallback)
   }
 
   // Called by the runtime once the webview exists (before the UI loads).
@@ -46,6 +53,13 @@ class MainActivity : TauriActivity() {
       setGeolocationEnabled(false)
       safeBrowsingEnabled = false
     }
+    // The dispatcher asks the most recently added callback first. The Rust
+    // side registers every plugin – AppPlugin with its back callback –
+    // before it builds the webview, so re-adding ours here puts it above
+    // all of them: the page always gets the gesture as `keystead:back`,
+    // never as a history step.
+    backCallback.remove()
+    onBackPressedDispatcher.addCallback(this, backCallback)
   }
 
   // Dispatches `keystead:back` on `window`. A listener that calls

@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { IS_MOCK, api } from "../../lib/api";
 import type {
+  AppInfo,
   BrowserInfo,
   BrowserStatus,
   ItemListEntry,
@@ -780,6 +781,15 @@ function UpdateCheckResult({ result }: { result: CheckResult }) {
   );
 }
 
+/** The system names in "Über Keystead" (product names, the same in every language). */
+const PLATFORM_NAMES: Record<AppInfo["platform"], string> = {
+  windows: "Windows",
+  macos: "macOS",
+  linux: "Linux",
+  android: "Android",
+  ios: "iOS",
+};
+
 function AboutSection() {
   const { t } = useT();
   const { info, settings, updateSettings } = useApp();
@@ -788,7 +798,7 @@ function AboutSection() {
   const channelId = useId();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
-  const platform = info.platform === "windows" ? "Windows" : info.platform === "macos" ? "macOS" : "Linux";
+  const platform = PLATFORM_NAMES[info.platform] ?? PLATFORM_NAMES.linux;
 
   const check = async () => {
     setChecking(true);

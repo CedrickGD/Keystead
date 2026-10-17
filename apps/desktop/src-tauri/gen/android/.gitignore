@@ -15,6 +15,11 @@ build
 local.properties
 key.properties
 keystore.properties
+# The release keystore never enters the (public) repository – it belongs
+# outside the checkout anyway (app/build.gradle.kts refuses it inside).
+*.jks
+*.keystore
+*.p12
 
 /.tauri
 /tauri.settings.gradle

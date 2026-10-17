@@ -38,7 +38,10 @@ WebView2 (ist auf Win 10/11 vorhanden).
   signiert; CI bricht ab, wenn das Zertifikat nicht
   `B7:3D:75:…:3C:AA` ist). `versionCode` = Run-Nummer – deshalb
   `.github/workflows/build.yml` **nie umbenennen**. Die Android-App
-  aktualisiert sich nicht selbst; neue APK über die alte installieren.
+  aktualisiert sich nicht selbst; neue APK über die alte installieren. Bis
+  `import_vault_file` da ist, kann die veröffentlichte APK keinen Tresor
+  anlegen oder übernehmen – Release-Notes und README nennen sie deshalb
+  „frühe Vorschau“, die sich nur installieren und starten lässt.
 - **`[skip ci]`** für Zwischenstände (kein Build, keine Discord-Meldung).
 - Stabile Version: Tag `vX.Y.Z` → Release als „Latest“. Danach `version` in
   `apps/desktop/src-tauri/tauri.conf.json` hochzählen (sonst sortieren spätere
@@ -268,8 +271,11 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 Entwurf und Entscheidungen des Besitzers: [`BLOCK5-DESIGN.md`](BLOCK5-DESIGN.md)
 (Paketname `io.github.cedrickgd.keystead`, minSdk 29, Stufe 1 ohne Netz und
 nur lesend, Sperre im Hintergrund, `allowBackup=false`). **Stufe 1a ist
-fertig** (fünf Commits `WIP: mobile 1a – … [skip ci]`, nicht gepusht; der
-Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile (Android)“):
+fertig** (Commits `WIP: mobile 1a – … [skip ci]`; bis `97a389b` liegen sie
+auf `origin/claude/mobile-android`, die späteren nur lokal – vor jedem
+Umschreiben der Historie `git status -sb` prüfen, gepushte Commits nicht
+umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
+(Android)“):
 
 1. **Core** (Commit `80ff650`): Clipboard-Backend-Trait (arboard nur auf dem
    Desktop), `paths::set_data_dir_override`, Settings-Felder für das Handy.
@@ -314,6 +320,8 @@ Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile (Android)“):
    Einstellungszeile „Sperren im Hintergrund“ (Sofort / 1 min / 5 min /
    Nie) nur auf dem Handy; Mock: `?platform=android` (Sichtbarkeit der
    Seite = Vorder-/Hintergrund, `__keysteadMock.simulateBackgroundLock()`).
+   (Das Leeren der Zwischenablage wurde in Punkt 6 geändert: jetzt immer
+   erst Leertext, nicht nur im Hintergrund.)
    **Im Emulator geprüft** (MB_S26, Debug-APK, Test-Tresor per `run-as` in
    `/data/user/0/io.github.cedrickgd.keystead/vaults/` gelegt, Befehle per
    WebView-DevTools): Home → `app://suspended` sofort, `vault://locked
@@ -326,7 +334,7 @@ Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile (Android)“):
    Toast „Vault locked because Keystead was in the background“ (Englisch
    nach Systemsprache) sichtbar. Desktop-Kette grün, APK baut.
 
-5. **CI + Doku** (dieser Stand): neuer Job `android` in
+5. **CI + Doku** (`e9c9a06`): neuer Job `android` in
    `.github/workflows/build.yml` (ubuntu-latest, bei jedem Push und PR wie
    `windows`): dieselbe Version wie der Windows-Job (`release-version.mjs
    --write`, neu `android_version_code` = Run-Nummer →
@@ -388,6 +396,62 @@ Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile (Android)“):
    mit den echten Secrets – das zeigt der erste Push ohne `[skip ci]` bzw.
    der erste `[release]`-Commit.
 
+6. **Review-Fixes** (dieser Stand, `WIP: mobile 1a - review fixes`):
+   * Zwischenablage: `PluginClipboard::clear` schreibt **immer** erst einen
+     Leertext und ruft dann `clear` – nicht mehr nur im Hintergrund.
+     Android erlaubt den Zugriff nach **Fensterfokus**, nicht nach
+     Pause/Resume: gleich nach `Resumed` (vor dem Fokus – genau dann holt
+     der Monitor ein verschlafenes Leeren nach), im geteilten Bildschirm
+     mit der anderen App im Fokus und unter der Benachrichtigungsleiste
+     ist die App „resumed“, aber ohne Fokus, und das Plugin-`clear` täte
+     still nichts (das Geheimnis wäre danach nie mehr geleert worden).
+     Preis: Android 13+ zeigt im Vordergrund evtl. seine „Kopiert“-Blase
+     für den Leertext. `mobile::set_in_background` ist weg.
+   * Links auf dem Handy: `platform::open_url` ruft das Opener-Plugin in
+     einem eigenen Thread – der Navigations-Hook läuft auf dem UI-Thread,
+     und der Plugin-Aufruf wartet auf genau diesen Thread (Deadlock/ANR
+     beim Antippen einer Website). Der JS-Klick-Hook des Opener-Plugins ist
+     aus (`open_js_links_on_click(false)`), sonst liefen
+     `target="_blank"`-Links ins Leere (die Webview darf das Plugin nicht
+     aufrufen).
+   * Zurück-Geste: `MainActivity` setzt ihren Callback in
+     `onWebViewCreate` erneut ganz nach oben – Tauris `AppPlugin` hat einen
+     eigenen, der sonst zuerst liefe und bei vorhandener WebView-Historie
+     `goBack()` machte statt `keystead:back` zu schicken.
+   * `data_extraction_rules.xml`: statt der ungültigen Domain `device`
+     jetzt `device_root`, `device_file`, `device_database`,
+     `device_sharedpref` (Liste aus AGP-Lint `FullBackupContentDetector`).
+   * Keystore: `*.jks`, `*.keystore`, `*.p12` in `.gitignore` (Wurzel und
+     `gen/android`); `app/build.gradle.kts` bricht ab, wenn `storeFile`
+     im Repository liegt.
+   * APK-Gate: `android-apk.mjs` erkennt auch `uses-permission-sdk-23`
+     (z. B. `INTERNET` aus einer Bibliothek) – mit Test.
+   * `reveal_attachment` (Bildvorschau, nur lesend) ist jetzt auch auf dem
+     Handy registriert (`attachments.rs` ist pro Funktion gegatet; Design
+     „Stufe 1 – Drin“).
+   * „Über Keystead“ zeigt „Android“/„iOS“ statt „Linux“.
+   * Release-Notes und README de/en: die APK heißt „frühe Vorschau“ und
+     sagt klar, dass sie noch keinen Tresor anlegen oder übernehmen kann;
+     „Was schon geht“ steht jetzt unter „Sobald ein Tresor auf dem Handy
+     liegt“.
+
+   **Im Emulator geprüft** (MB_S26, API 36, Debug-APK x86_64, Test-Tresor
+   mit Website und PNG-Anhang per `run-as`, Befehle per WebView-DevTools):
+   Benachrichtigungsleiste heruntergezogen (Fokus bei `NotificationShade`,
+   Keystead bleibt `topResumedActivity`), Passwort mit 8-s-Timer kopiert →
+   danach ist die Zwischenablage leer; ebenso im Vordergrund und nach der
+   Home-Taste (Gegenprobe: direkt nach dem Kopieren liefert Einfügen das
+   Geheimnis). Website-Knopf und ein `<a target="_blank">` öffnen Chrome,
+   Keystead reagiert weiter, kein ANR. Zurück-Geste mit WebView-Historie
+   (`pushState`): mit Listener kommt sie als `keystead:back` an, die
+   Historie bleibt unberührt; ohne Listener geht die App in den
+   Hintergrund, der Prozess lebt, der Tresor ist bei der Rückkehr offen.
+   Bildvorschau des Anhangs erscheint (`data:image/png`). „Über Keystead“
+   zeigt „Android · …“. Gradle: `storeFile` im Repository → Abbruch mit
+   Meldung, außerhalb → Konfiguration läuft. Nicht geprüft: geteilter
+   Bildschirm/Freiform (gleiche Fokus-Lage wie die Benachrichtigungsleiste),
+   der Release-Build (R8) mit diesen Änderungen.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -419,13 +483,18 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
    **Test-Tresor**, nicht deinen echten: `adb push <id>.keystead
    /data/local/tmp/` und `adb shell run-as io.github.cedrickgd.keystead sh
    -c 'mkdir -p vaults && cp /data/local/tmp/<id>.keystead vaults/'`, danach
-   die Datei in `/data/local/tmp` löschen. Mit der Release-APK lässt sich
-   bisher nur der Start prüfen.
+   die Datei in `/data/local/tmp` löschen. Hat der Tresor Anhänge, den
+   Ordner `<id>.keystead.attachments` genauso pushen und mit `cp -r` nach
+   `vaults/` kopieren. Mit der Release-APK lässt sich bisher nur der Start
+   prüfen.
 6. Durchklicken: Start → Willkommen/Entsperren → Liste und Suche →
    Passwort aufdecken (nach 30 s wieder verborgen) → kopieren (die
    Zwischenablage des PCs spiegelt die des Emulators; nach 30 s leer) →
-   2FA-Code → Sicherheitsbericht → Einstellungen → „Sperren im
-   Hintergrund“ (Sofort / 1 min / 5 min / Nie).
+   2FA-Code → Website eines Eintrags antippen (der Browser öffnet sich,
+   Keystead friert nicht ein) → Bildanhang ansehen (nur wenn der Ordner
+   `<id>.keystead.attachments` mitkopiert wurde) → Sicherheitsbericht →
+   Einstellungen → „Sperren im Hintergrund“ (Sofort / 1 min / 5 min / Nie)
+   → „Über Keystead“ zeigt „Android“.
 7. Home-Taste: nach 1 Minute ist der Tresor gesperrt (Toast beim
    Zurückkehren); die Zurück-Geste schickt die App in den Hintergrund, statt
    sie zu schließen; die Vorschau in „Zuletzt verwendet“ und ein Screenshot
@@ -435,8 +504,8 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
    Chromium-Zeilen des WebView, keine Panik.
 
 Erwartete Grenzen in dieser Stufe: Desktop-Layout auf dem Handy, Knöpfe für
-Bearbeiten/Neu/Import sind noch sichtbar, laufen aber ins Leere (das Handy
-kennt diese Befehle nicht).
+Bearbeiten/Neu/Import (auch Anhang hinzufügen/speichern) sind noch sichtbar,
+laufen aber ins Leere (das Handy kennt diese Befehle nicht).
 
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
@@ -446,7 +515,11 @@ kennt diese Befehle nicht).
    Desktop-Abschnitte und „Beim Sperren des Computers sperren“ ausblenden)
    und `import_vault_file` (Tresordatei per System-Auswahl einmalig in den
    App-Ordner kopieren, `sync::header_of` prüft sie) – erst dann ist die
-   App ohne `adb` benutzbar.
+   App ohne `adb` benutzbar. Offen dabei: Anhänge liegen neben der
+   Tresordatei im Ordner `<id>.keystead.attachments` und kämen mit einer
+   einzelnen Datei nicht mit (die Bildvorschau wäre dann leer) – mit dem
+   Besitzer klären, ob der Import sie mitnimmt oder die Vorschau bis
+   Stufe 2 wartet.
 2. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
    KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5).
 3. **Stufe 2a**: Einweg-Sync PC → Handy über den eigenen Cloud-Ordner
