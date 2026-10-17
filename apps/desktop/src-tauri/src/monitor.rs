@@ -1,6 +1,7 @@
 //! Background thread: auto-lock after inactivity, lock when the computer is
-//! locked or goes to sleep, and pick up vault changes made by other
-//! processes (TUI, second device on a USB stick, a synced vault file).
+//! locked or goes to sleep (desktop) or when the app stayed in the
+//! background (phone), and pick up vault changes made by other processes
+//! (TUI, second device on a USB stick, a synced vault file).
 //!
 //! System lock detection (desktop):
 //! * Windows: real session notifications (`WM_WTSSESSION_CHANGE` with
@@ -11,15 +12,28 @@
 //!   or hibernated – the vault is locked with reason `system`. A plain
 //!   screen lock without suspend is not detected there.
 //!
-//! The phone has neither: a phone sleeps all the time, so a clock jump
-//! means nothing there. Its lock on leaving the app (`Settings.
-//! lockInBackgroundSeconds`) is the lifecycle stage's job.
+//! Background lock (phone): the activity's `onPause`/`onResume` arrive as
+//! [`MonitorSignal::Background`]/[`MonitorSignal::Foreground`] (from
+//! `gui::on_window_event`, `WindowEvent::Suspended`/`Resumed`). After
+//! `Settings.lockInBackgroundSeconds` away from the foreground the vault is
+//! locked with reason `background` – but never while a copied secret still
+//! waits for its clipboard-clear timer, because locking clears the
+//! clipboard and the secret was copied to be pasted into the other app
+//! ([`background_lock_due`]). Time in the background is measured like idle
+//! time, on both clocks: a phone sleeps all the time and its monotonic
+//! clock stands still meanwhile. Every tick, and first thing when the app
+//! comes back to the foreground, catches up on a clipboard clear the timer
+//! thread slept through (wall clock); coming back then gives the lock a
+//! last check – a long absence locks even if Android froze the cached
+//! process the whole time and no tick ran – and resets. The desktop
+//! ignores the setting; a clock jump means nothing on a phone.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Weak;
-#[cfg(desktop)]
-use std::time::SystemTime;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+#[cfg(mobile)]
+use keystead_core::clipboard;
 
 use crate::state::{log, Core, LockReason};
 
@@ -36,8 +50,17 @@ const SLEEP_JUMP: Duration = Duration::from_secs(120);
 /// Messages to the monitor thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorSignal {
-    /// The user locked the session or the computer is about to sleep.
+    /// Desktop: the user locked the session or the computer is about to
+    /// sleep (sent on Windows only; Linux/macOS rely on the clock jump).
+    #[cfg(desktop)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     SystemLock,
+    /// Phone: the app left the foreground (Android `onPause`).
+    #[cfg(mobile)]
+    Background,
+    /// Phone: the app is back in the foreground (Android `onResume`).
+    #[cfg(mobile)]
+    Foreground,
 }
 
 /// Starts the monitor thread. It ends when the core is dropped or the app
@@ -54,6 +77,8 @@ pub fn spawn(core: Weak<Core>, signals: Receiver<MonitorSignal>) {
 fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
     #[cfg(desktop)]
     let mut last_tick = (Instant::now(), SystemTime::now());
+    #[cfg(mobile)]
+    let mut background = BackgroundTimer::default();
     let mut last_auto_lock_check = Instant::now();
     let mut last_reload_check = Instant::now();
     let mut last_reload_error: Option<String> = None;
@@ -80,8 +105,14 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
             return;
         }
 
-        if signal == Some(MonitorSignal::SystemLock) {
-            lock_for_system(&core);
+        match signal {
+            #[cfg(desktop)]
+            Some(MonitorSignal::SystemLock) => lock_for_system(&core),
+            #[cfg(mobile)]
+            Some(MonitorSignal::Background) => background.enter(),
+            #[cfg(mobile)]
+            Some(MonitorSignal::Foreground) => background.leave(&core),
+            None => {}
         }
 
         // Suspend/hibernate detection via clock jumps (desktop).
@@ -93,6 +124,14 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
             if slept {
                 lock_for_system(&core);
             }
+        }
+
+        // Phone, every tick: a clipboard clear the timer thread slept
+        // through (deep sleep), then the background lock.
+        #[cfg(mobile)]
+        {
+            catch_up_clipboard_clear();
+            background.check(&core);
         }
 
         if last_auto_lock_check.elapsed() >= AUTO_LOCK_INTERVAL {
@@ -124,11 +163,114 @@ fn slept_between(previous: (Instant, SystemTime), now: (Instant, SystemTime)) ->
 /// vault is open: `Core::lock` then only starts a new lock epoch, so an
 /// unlock whose key derivation is running (the user pressed Win+L right
 /// after entering the password) does not open the vault afterwards.
+#[cfg(desktop)]
 fn lock_for_system(core: &Core) {
     let enabled = core.state().settings.lock_on_system_lock;
     if enabled {
         core.lock(Some(LockReason::System));
     }
+}
+
+/// Whether the phone's vault is to be locked after `in_background` away
+/// from the foreground (pure; the policy of the background lock).
+///
+/// * `lock_in_background_seconds`: `Settings.lockInBackgroundSeconds` –
+///   `None` = never, `0` = as soon as the app leaves the foreground.
+/// * `clipboard_clear_pending_for`: how long until a copied secret's timed
+///   clipboard clear fires (`None` = nothing pending, `Some(0)` = overdue).
+///   The lock waits for it: locking clears the clipboard, and the secret
+///   was copied to be pasted into the other app. A secret copied without a
+///   timer (`clipboardClearSeconds` = 0) does not count – there is nothing
+///   to wait for, the lock clears it as documented.
+#[cfg(any(mobile, test))]
+fn background_lock_due(
+    in_background: Duration,
+    lock_in_background_seconds: Option<u32>,
+    clipboard_clear_pending_for: Option<Duration>,
+) -> bool {
+    let Some(seconds) = lock_in_background_seconds else {
+        return false;
+    };
+    if in_background < Duration::from_secs(u64::from(seconds)) {
+        return false;
+    }
+    !clipboard_clear_pending_for.is_some_and(|remaining| !remaining.is_zero())
+}
+
+/// Phone: time since the app left the foreground, on both clocks (like
+/// `AppState::idle_for`: the monotonic clock stands still while the phone
+/// sleeps), and the lock it leads to.
+#[cfg(mobile)]
+#[derive(Default)]
+struct BackgroundTimer {
+    since: Option<(Instant, SystemTime)>,
+}
+
+#[cfg(mobile)]
+impl BackgroundTimer {
+    /// `Suspended`: starts the clock (a repeated signal keeps the first).
+    fn enter(&mut self) {
+        if self.since.is_none() {
+            self.since = Some((Instant::now(), SystemTime::now()));
+        }
+    }
+
+    /// Time in the background so far; `None` in the foreground.
+    fn elapsed(&self) -> Option<Duration> {
+        self.since.map(|(instant, wall)| {
+            let monotonic = instant.elapsed();
+            let wall = SystemTime::now().duration_since(wall).unwrap_or_default();
+            monotonic.max(wall)
+        })
+    }
+
+    /// Every tick: locks once the policy says so, then stops the clock (one
+    /// lock per stay in the background).
+    fn check(&mut self, core: &Core) {
+        let Some(in_background) = self.elapsed() else {
+            return;
+        };
+        let seconds = core.state().settings.lock_in_background_seconds;
+        if background_lock_due(in_background, seconds, clipboard_clear_pending_for()) {
+            lock_for_background(core);
+            self.since = None;
+        }
+    }
+
+    /// `Resumed`: a clipboard clear the timer thread slept through runs now
+    /// (the wall clock decides), then the lock gets its last check – a long
+    /// absence locks even if the process was frozen meanwhile and no tick
+    /// ran –, then the clock stops.
+    fn leave(&mut self, core: &Core) {
+        catch_up_clipboard_clear();
+        self.check(core);
+        self.since = None;
+    }
+}
+
+/// Clears a copied secret whose timed clear is overdue by the wall clock:
+/// the timer thread sleeps on the monotonic clock, which stands still while
+/// the phone is in deep sleep (see `clipboard::clear_overdue_secret`).
+#[cfg(mobile)]
+fn catch_up_clipboard_clear() {
+    if let Err(e) = clipboard::clear_overdue_secret(SystemTime::now()) {
+        log(format_args!("could not clear the clipboard: {}", e.code()));
+    }
+}
+
+/// How long until the pending clipboard clear fires (`Some(0)` = overdue).
+#[cfg(mobile)]
+fn clipboard_clear_pending_for() -> Option<Duration> {
+    clipboard::pending_clear_due().map(|due| due.saturating_duration_since(Instant::now()))
+}
+
+/// Locks with reason `background` – also while no vault is open (a new
+/// lock epoch, like `lock_for_system`: an unlock whose key derivation was
+/// still running when the app was put away must not open the vault in the
+/// background).
+#[cfg(mobile)]
+fn lock_for_background(core: &Core) {
+    core.lock(Some(LockReason::Background));
 }
 
 /// Locks with reason `timeout` after `autoLockMinutes` without activity.
@@ -184,6 +326,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(desktop)]
     fn clock_jumps() {
         let i = Instant::now();
         let w = SystemTime::now();
@@ -209,5 +352,50 @@ mod tests {
             (i, w),
             (i + Duration::from_secs(5), w + Duration::from_secs(5))
         ));
+    }
+
+    const S: fn(u64) -> Duration = Duration::from_secs;
+
+    #[test]
+    fn background_lock_never() {
+        // `null` in the settings: no lock, however long, pending clear or not.
+        assert!(!background_lock_due(S(0), None, None));
+        assert!(!background_lock_due(S(24 * 3600), None, None));
+        assert!(!background_lock_due(S(24 * 3600), None, Some(S(0))));
+        assert!(!background_lock_due(S(24 * 3600), None, Some(S(10))));
+    }
+
+    #[test]
+    fn background_lock_immediately() {
+        // 0 s: due as soon as the app is in the background ...
+        assert!(background_lock_due(S(0), Some(0), None));
+        assert!(background_lock_due(Duration::from_millis(1), Some(0), None));
+        // ... unless a copied secret still waits for its clear timer.
+        assert!(!background_lock_due(S(0), Some(0), Some(S(25))));
+        assert!(!background_lock_due(S(20), Some(0), Some(S(5))));
+        // The timer has fired (or is overdue): nothing holds the lock back.
+        assert!(background_lock_due(S(25), Some(0), Some(S(0))));
+        assert!(background_lock_due(S(25), Some(0), None));
+    }
+
+    #[test]
+    fn background_lock_after_a_delay() {
+        let one_minute = Some(60);
+        assert!(!background_lock_due(S(0), one_minute, None));
+        assert!(!background_lock_due(S(59), one_minute, None));
+        assert!(background_lock_due(S(60), one_minute, None));
+        assert!(background_lock_due(S(3600), one_minute, None));
+        // A pending clear postpones the lock past the delay ...
+        assert!(!background_lock_due(S(60), one_minute, Some(S(5))));
+        assert!(!background_lock_due(S(90), one_minute, Some(S(1))));
+        // ... until it has fired.
+        assert!(background_lock_due(S(65), one_minute, Some(S(0))));
+        assert!(background_lock_due(S(65), one_minute, None));
+        // Before the delay a pending clear changes nothing.
+        assert!(!background_lock_due(S(10), one_minute, Some(S(20))));
+        assert!(!background_lock_due(S(10), one_minute, Some(S(0))));
+        // Five minutes.
+        assert!(!background_lock_due(S(299), Some(300), None));
+        assert!(background_lock_due(S(300), Some(300), None));
     }
 }

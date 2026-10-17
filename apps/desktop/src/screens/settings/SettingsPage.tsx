@@ -161,19 +161,34 @@ function SecuritySection() {
   const { t, errorText } = useT();
   const toast = useToast();
   const confirm = useConfirm();
-  const { settings, updateSettings, vault, setVault } = useApp();
+  const { info, settings, updateSettings, vault, setVault } = useApp();
   const autoLockId = useId();
+  const backgroundId = useId();
   const clipboardId = useId();
   const [dialog, setDialog] = useState<"password" | "recovery" | null>(null);
   const hasKey = vault?.hasRecoveryKey ?? false;
+  // The background lock exists on the phone only (the desktop ignores the setting).
+  const phone = info.platform === "android" || info.platform === "ios";
 
   const autoLockOptions = [1, 5, 15, 30, 60, 240, 0];
   if (!autoLockOptions.includes(settings.autoLockMinutes)) autoLockOptions.unshift(settings.autoLockMinutes);
   const clipboardOptions = [10, 20, 30, 60, 120, 0];
   if (!clipboardOptions.includes(settings.clipboardClearSeconds)) clipboardOptions.unshift(settings.clipboardClearSeconds);
+  // Seconds; null = never.
+  const backgroundOptions: (number | null)[] = [0, 60, 300, null];
+  if (!backgroundOptions.includes(settings.lockInBackgroundSeconds)) backgroundOptions.unshift(settings.lockInBackgroundSeconds);
 
   const minutesLabel = (m: number) =>
     m === 0 ? t("settings.never") : m >= 60 && m % 60 === 0 ? t("settings.hours", { n: m / 60 }) : t("settings.minutes", { n: m });
+  const backgroundValue = (s: number | null) => (s === null ? "never" : String(s));
+  const backgroundLabel = (s: number | null) =>
+    s === null
+      ? t("settings.never")
+      : s === 0
+        ? t("settings.immediately")
+        : s % 60 === 0
+          ? minutesLabel(s / 60)
+          : t("settings.seconds", { n: s });
 
   const removeKey = async () => {
     const ok = await confirm({
@@ -205,6 +220,17 @@ function SecuritySection() {
           className="setting-select"
         />
       </SettingRow>
+      {phone && (
+        <SettingRow title={t("settings.lockInBackground")} description={t("settings.lockInBackgroundDesc")} htmlFor={backgroundId}>
+          <Select
+            id={backgroundId}
+            value={backgroundValue(settings.lockInBackgroundSeconds)}
+            onChange={(v) => void updateSettings({ lockInBackgroundSeconds: v === "never" ? null : Number(v) })}
+            options={backgroundOptions.map((s) => ({ value: backgroundValue(s), label: backgroundLabel(s) }))}
+            className="setting-select"
+          />
+        </SettingRow>
+      )}
       <SettingRow title={t("settings.lockOnSystemLock")} description={t("settings.lockOnSystemLockDesc")}>
         <Switch
           checked={settings.lockOnSystemLock}

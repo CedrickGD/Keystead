@@ -1,13 +1,15 @@
-//! The clipboard policy (generation counter, timed clear, clear on lock)
-//! on a mock `ClipboardBackend` – no real clipboard needed. The backend is
+//! The clipboard policy (generation counter, timed clear, clear on lock,
+//! the pending deadline and the catch-up clear) on a mock
+//! `ClipboardBackend` – no real clipboard needed. The backend is
 //! process-wide, so everything runs in one test, step by step.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use keystead_core::clipboard::{
-    self, clear_pending_secret, copy_secret, copy_text, read_text, ClipboardBackend,
+    self, clear_overdue_secret, clear_pending_secret, copy_secret, copy_text, pending_clear_due,
+    read_text, ClipboardBackend,
 };
 use keystead_core::Error;
 
@@ -192,6 +194,52 @@ fn policy_on_a_mock_backend() {
     assert!(!clipboard::clear_if_equals("s7").unwrap());
     assert!(clipboard::clear_if_equals("theirs-2").unwrap());
     assert_eq!(text(), None);
+
+    // --- the pending deadline (the phone's background lock waits for it) ---
+    assert_eq!(pending_clear_due(), None);
+    copy_secret("s7a", None).unwrap();
+    // No timer: nothing to wait for (lock/quit clears it).
+    assert_eq!(pending_clear_due(), None);
+    let before = Instant::now();
+    copy_secret("s7b", Some(long)).unwrap();
+    let due = pending_clear_due().expect("a timed clear is pending");
+    assert!(due >= before + long && due <= Instant::now() + long);
+    copy_text("plain-7").unwrap();
+    // Plain text forgets the secret, and with it the deadline.
+    assert_eq!(pending_clear_due(), None);
+    copy_secret("s7c", Some(TIMER)).unwrap();
+    assert!(pending_clear_due().is_some());
+    assert!(wait_until(|| text().is_none()), "timer clears the secret");
+    assert_eq!(pending_clear_due(), None);
+
+    // --- catch-up: the timer thread slept through the deadline ------------
+    // (the phone was in deep sleep: the monotonic clock stood still, the
+    // wall clock did not)
+    copy_secret("s7d", Some(long)).unwrap();
+    let wall_now = SystemTime::now();
+    // Not due yet by the wall clock: nothing happens.
+    assert!(!clear_overdue_secret(wall_now).unwrap());
+    assert_eq!(text().as_deref(), Some("s7d"));
+    assert!(pending_clear_due().is_some());
+    // Overdue by the wall clock: cleared now, and nothing is pending.
+    assert!(clear_overdue_secret(wall_now + long + Duration::from_secs(1)).unwrap());
+    assert_eq!(text(), None);
+    assert_eq!(pending_clear_due(), None);
+    assert!(!clear_overdue_secret(wall_now + long + Duration::from_secs(1)).unwrap());
+    // The late timer finds nothing of its own: what was copied afterwards
+    // survives it.
+    copy_text("plain-7d").unwrap();
+    assert!(holds_for(long + TIMER, || text().as_deref() == Some("plain-7d")));
+    // An untimed secret is never overdue; something another app copied
+    // over an overdue secret is left alone.
+    copy_secret("s7e", None).unwrap();
+    assert!(!clear_overdue_secret(SystemTime::now() + Duration::from_secs(3600)).unwrap());
+    assert_eq!(text().as_deref(), Some("s7e"));
+    copy_secret("s7f", Some(long)).unwrap();
+    other_app_copies("theirs-7");
+    assert!(!clear_overdue_secret(SystemTime::now() + long + Duration::from_secs(1)).unwrap());
+    assert_eq!(text().as_deref(), Some("theirs-7"));
+    assert_eq!(pending_clear_due(), None);
 
     // --- backend errors: nothing pending from a failed copy ----------------
     copy_text("before").unwrap();

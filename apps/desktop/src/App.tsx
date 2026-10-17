@@ -153,6 +153,7 @@ function AppRoot({
           const minutes = settingsRef.current?.autoLockMinutes ?? 0;
           if (reason === "timeout") toast.show({ kind: "info", message: t("lock.timeoutToast", { minutes }), carry: true });
           if (reason === "system") toast.show({ kind: "info", message: t("lock.systemToast"), carry: true });
+          if (reason === "background") toast.show({ kind: "info", message: t("lock.backgroundToast"), carry: true });
         }),
       ),
     [t, toast, toUnlockOrWelcome],

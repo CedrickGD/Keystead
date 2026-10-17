@@ -113,6 +113,43 @@ committed files):
   optional `keyPassword`; CI writes it from the secrets) – without the file
   a release build is signed with the debug key so it still installs
   locally, but such an APK can never update a release-signed app.
+* **Lifecycle**: `WindowEvent::Suspended`/`Resumed` (tauri's mapping of the
+  activity's `onPause`/`onResume`; the first `onResume` is swallowed by
+  tauri) reach `gui::on_window_event`. `Suspended` emits `app://suspended`,
+  tells the clipboard backend it is in the background and starts the
+  monitor's background clock (`MonitorSignal::Background`); `Resumed` ends
+  both (`MonitorSignal::Foreground`) – see "Background lock" under
+  "Auto-lock, locking". `RunEvent::Exit`/`Core::shutdown` practically never
+  run on Android (the process is killed, not quit): nothing
+  security-relevant depends on them. tao ignores the first `onResume` of
+  every activity: an activity the system recreates (rare with the
+  manifest's `configChanges`) comes back without `Resumed`, so the
+  background clock keeps running and the lock fires – the safe side.
+  iOS (not built yet): tauri maps `Suspended` to
+  `applicationWillResignActive` but `Resumed` to
+  `applicationWillEnterForeground`, which is asymmetric (a Control Center
+  pull-down resigns without a matching resume) – to revisit before an iOS
+  release.
+* **Clipboard** (`mobile::PluginClipboard`, installed before anything
+  else in `setup`): sensitive text goes through the plugin's `write_secret`
+  (`EXTRA_IS_SENSITIVE`: Android 13+ shows no preview); the backend never
+  reads (Android ≥ 10 refuses reads without focus), so clearing "our"
+  secret is unconditional. From the background – the normal case, the timer
+  fires while the user pastes in the other app – the plugin's `clear` would
+  do nothing (it calls `clearPrimaryClip()` only after `hasPrimaryClip()`,
+  which is false without focus), so the backend first overwrites the clip
+  with an empty text (writes are allowed without focus) and clears
+  afterwards; in the foreground the plain clear (both verified in the
+  emulator: a timed clear from the background empties the clipboard).
+  Known limits: Android freezes the process of an app that stays in the
+  background (cached-apps freezer; emulator API 36: frozen after about
+  60–70 s away, not within the first ~45 s) – the clear timer and the
+  monitor then only run again when the app returns, and a process the
+  system kills takes its clear timer with it; a secret whose timer is
+  that long then stays until the next copy, the return to the app, or
+  Android's own clipboard expiry (Android 13+: after an hour). The default
+  of 30 s is not affected. A Kotlin `AlarmManager` receiver would be the
+  hardening (it thaws the process).
 * Capabilities are split by platform (`platforms` in the capability file):
   `capabilities/default.json` (windows, linux, macOS) and
   `capabilities/mobile.json` (android, iOS – `core:default` and
@@ -552,6 +589,8 @@ pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()>; // 
                                                                              // remembered as the pending secret; with a delay a thread calls clear_if_equals(secret) after it, unless something newer was copied through this module (generation counter)
 pub fn copy_text(text: &str) -> Result<()>;            // non-secret, no auto-clear; forgets a pending secret
 pub fn clear_pending_secret() -> Result<bool>;         // e.g. on lock/quit: clear_if_equals(pending secret) now; false if nothing is pending
+pub fn pending_clear_due() -> Option<Instant>;         // when the pending secret's timed clear fires (None: nothing pending, or copied without a timer) – the phone's background lock waits for it
+pub fn clear_overdue_secret(now: SystemTime) -> Result<bool>; // catch-up: clears the pending secret if its timer is overdue by the wall clock (the timer thread sleeps on the monotonic clock, which stops while a phone is in deep sleep); the late timer then finds nothing to do
 pub fn clear_if_equals(expected: &str) -> Result<bool>; pub fn read_text() -> Result<Option<String>>; // the backend's, see above
 // sync (vault files as bytes, no password needed)
 pub struct VaultHeader { pub id: String, pub name: String, pub revision: u64, pub updated_at: i64, pub version: u32 } // camelCase
@@ -917,7 +956,7 @@ portable build and Linux/macOS except an AppImage: the UI links to
 or `…/releases` without a version).
 
 **Events** (backend → frontend, `app.emit`):
-* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system" }`
+* `vault://locked` – payload `{ reason: "manual"|"timeout"|"system"|"background" }` (`background` only on the phone, see "Background lock" under "Auto-lock, locking" below; the UI shows a carried info toast for `timeout`, `system` and `background`)
 * `vault://changed` – payload `{}` – items changed outside the UI (extension saved a login, file changed by TUI → reloaded). UI re-fetches.
 * `vault://icons` – payload `{}` – the icon fetcher stored new website icons; the UI calls `get_icons` again.
 * `bridge://pairing-request` – payload `{ requestId, clientName, code }` – UI shows a modal with the 6-digit code; user approves/denies → `respond_pairing`.
@@ -941,6 +980,11 @@ or `…/releases` without a version).
   toast `lock.switchedToast` is carried over) and the boot shows the new one.
   Until then the old view's commands marked † answer `locked`.
   Not sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
+* `app://suspended` – payload `{}` – phone only: the app left the
+  foreground (`WindowEvent::Suspended`, the activity's `onPause`).
+  `useRevealedValue` hides revealed secrets and attachment previews on it,
+  as it does on `blur`/`visibilitychange` (the webview fires those too; this
+  is the second net).
 
 The frontend's `src/lib/api.ts` wraps every command with typed functions and
 falls back to an in-memory **mock backend** (`src/lib/mock.ts`, realistic
@@ -1079,7 +1123,8 @@ item; copying never sends it there.
 * **UI.** The item list (`MainScreen`) holds only `ItemListEntry`s. Eye
   toggles (`SecretFieldRow`, `useRevealedSecret`) call `reveal_secret` and
   hide the value again after 30 s, when the item or its `updatedAt` changes,
-  when the window loses focus or is hidden, on lock and on unmount; the value
+  when the window loses focus or is hidden (on the phone also on
+  `app://suspended`), on lock and on unmount; the value
   lives only in that component's state. Copy buttons (password, TOTP code,
   card number/code, hidden fields, old passwords), the list rows' password
   button and Ctrl+Shift+C call `copy_secret_field`. The TOTP row polls
@@ -1212,6 +1257,25 @@ vault without recovery key is dropped silently.
   hibernate) locks with reason `system` (also while no vault is open, see
   "Lock epoch"). Linux/macOS do not detect a plain
   screen lock without suspend.
+* **Background lock (phone)**: `lockInBackgroundSeconds` after
+  `WindowEvent::Suspended` (the activity's `onPause`) the monitor locks with
+  reason `background` – `null` = never, `0` = at once, default 60 s. Time in
+  the background is measured on both clocks like idle time (the phone's
+  monotonic clock stops in deep sleep). **Never before a copied secret's
+  clipboard-clear timer has fired**: the lock would clear the clipboard and
+  spoil the paste into the other app (`monitor::background_lock_due` is the
+  pure policy, unit-tested; a secret copied with `clipboardClearSeconds` = 0
+  has no timer and does not postpone the lock). Every monitor tick and
+  `Resumed` first catch up on a clipboard clear the timer thread slept
+  through (`clipboard::clear_overdue_secret`, wall clock); `Resumed` then
+  checks the lock a last time – a long absence locks even if Android froze
+  the process meanwhile and no tick ran (emulator: frozen after about a
+  minute away, see "Android project"; with a longer delay the lock then
+  lands right on the return) –, then resets the clock; so a return before
+  the delay
+  (or, with "at once", before the clipboard clear) finds the vault still
+  open. Locks also while no vault is open (lock epoch). The desktop ignores
+  the setting; the phone has no `lockOnSystemLock`/clock-jump detection.
 * The vault file is checked every 2 s (`reload_if_changed`) → `vault://changed`.
 * Locking (any reason) also clears a secret copied through the app
   (`copy_text` with `sensitive`, the bridge's `copy_field`/`copy_secret`) if

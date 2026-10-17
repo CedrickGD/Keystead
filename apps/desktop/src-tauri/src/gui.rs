@@ -15,6 +15,8 @@ use keystead_core::{paths, VaultStore};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
+#[cfg(mobile)]
+use crate::monitor::MonitorSignal;
 #[cfg(desktop)]
 use crate::state::show_main_window;
 use crate::state::{log, Core, MAIN_WINDOW};
@@ -214,7 +216,9 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
 }
 
 /// Desktop: closing the window hides it when "minimize to tray" is on.
-/// Phone: nothing yet (the lifecycle stage adds `Suspended`/`Resumed`).
+/// Phone: `Suspended`/`Resumed` (the activity's `onPause`/`onResume`)
+/// drive the background lock in the monitor, the clipboard backend's
+/// notion of "in the background" and the UI's `app://suspended`.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     if window.label() != MAIN_WINDOW {
         return;
@@ -231,7 +235,25 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
     }
     #[cfg(mobile)]
-    let _ = event;
+    {
+        let Some(core) = window.app_handle().try_state::<Arc<Core>>() else {
+            return;
+        };
+        match event {
+            WindowEvent::Suspended => {
+                crate::mobile::set_in_background(true);
+                // The page first (it may be paused any moment), then the
+                // monitor's clock.
+                core.emit_suspended();
+                core.signal_monitor(MonitorSignal::Background);
+            }
+            WindowEvent::Resumed => {
+                crate::mobile::set_in_background(false);
+                core.signal_monitor(MonitorSignal::Foreground);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Creates the state, window, tray and background services. Errors are

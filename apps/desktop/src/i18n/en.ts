@@ -110,6 +110,7 @@ export const en: Record<MessageKey, string> = {
 
   "lock.timeoutToast": "Vault locked after {minutes} min of inactivity",
   "lock.systemToast": "Vault locked because the computer was locked",
+  "lock.backgroundToast": "Vault locked because Keystead was in the background",
   "lock.switchedToast": "Another vault was opened from the browser extension",
 
   "welcome.title": "Welcome to Keystead",
@@ -723,6 +724,10 @@ export const en: Record<MessageKey, string> = {
   "settings.securityDesc": "Auto-lock, clipboard, master password and recovery.",
   "settings.autoLock": "Lock automatically",
   "settings.autoLockDesc": "The vault locks after this much time without activity.",
+  "settings.lockInBackground": "Lock in the background",
+  "settings.lockInBackgroundDesc":
+    "When you leave Keystead, the vault locks after this time. A password you just copied can still be pasted until the clipboard is cleared.",
+  "settings.immediately": "Immediately",
   "settings.lockOnSystemLock": "Lock when the computer locks",
   "settings.lockOnSystemLockDesc": "Locks Keystead as soon as you lock your computer (on Windows: Win + L).",
   "settings.clipboard": "Clear clipboard",

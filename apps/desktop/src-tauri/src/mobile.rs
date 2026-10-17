@@ -14,7 +14,12 @@
 //!   (arboard is desktop-only); [`PluginClipboard`] provides one through
 //!   `tauri-plugin-clipboard-manager`, called from Rust only – the webview
 //!   gets no permission for the plugin. The core keeps the whole policy
-//!   (sensitive copies, timed clear, clear on lock).
+//!   (sensitive copies, timed clear, clear on lock); the backend only
+//!   knows whether the app is in the background ([`set_in_background`]),
+//!   because Android lets a background app write the clipboard but not
+//!   read or query it.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use keystead_core::clipboard::{self, ClipboardBackend};
 use keystead_core::{paths, Error as CoreError};
@@ -41,6 +46,15 @@ pub fn prepare(app: &AppHandle) {
     }
 }
 
+/// Whether the app is in the background (`WindowEvent::Suspended` until
+/// `Resumed`, set by `gui::on_window_event`).
+static IN_BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// Tells the clipboard backend whether the app is in the background.
+pub fn set_in_background(background: bool) {
+    IN_BACKGROUND.store(background, Ordering::SeqCst);
+}
+
 /// The phone's clipboard through `tauri-plugin-clipboard-manager`.
 ///
 /// * A sensitive text goes through `write_secret`: Android 13+ marks the
@@ -52,6 +66,14 @@ pub fn prepare(app: &AppHandle) {
 ///   itself (its timer ran out, or the vault was locked); at worst something
 ///   the user copied in the meantime is lost – better than a secret that
 ///   stays.
+/// * Clearing from the background (the usual case: the timer fires while
+///   the user pastes in the other app): Android allows `setPrimaryClip`
+///   without focus but answers `hasPrimaryClip()` with false – and the
+///   plugin's `clear` only calls `clearPrimaryClip()` after that check, so
+///   from the background it would do nothing. The backend therefore
+///   overwrites the clip with an empty text first (which always works) and
+///   clears afterwards; in the foreground the plain clear suffices and
+///   avoids the system's "copied" bubble for the empty write.
 struct PluginClipboard {
     app: AppHandle,
 }
@@ -78,7 +100,12 @@ impl ClipboardBackend for PluginClipboard {
     }
 
     fn clear(&self) -> keystead_core::Result<()> {
-        self.app.clipboard().clear().map_err(plugin_error)
+        let clipboard = self.app.clipboard();
+        if IN_BACKGROUND.load(Ordering::SeqCst) {
+            // See the type's docs: the real removal from the background.
+            clipboard.write_text("").map_err(plugin_error)?;
+        }
+        clipboard.clear().map_err(plugin_error)
     }
 
     fn clear_if_equals(&self, _expected: &str) -> keystead_core::Result<bool> {

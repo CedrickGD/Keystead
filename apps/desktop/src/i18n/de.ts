@@ -114,6 +114,7 @@ export const de = {
   // Lock
   "lock.timeoutToast": "Tresor nach {minutes} min Inaktivität gesperrt",
   "lock.systemToast": "Tresor gesperrt, weil der Computer gesperrt wurde",
+  "lock.backgroundToast": "Tresor gesperrt, weil Keystead im Hintergrund war",
   "lock.switchedToast": "In der Browser-Erweiterung wurde ein anderer Tresor geöffnet",
 
   // Welcome & wizard
@@ -742,6 +743,10 @@ export const de = {
   "settings.securityDesc": "Automatisches Sperren, Zwischenablage, Master-Passwort und Wiederherstellung.",
   "settings.autoLock": "Automatisch sperren",
   "settings.autoLockDesc": "Nach dieser Zeit ohne Aktivität wird der Tresor gesperrt.",
+  "settings.lockInBackground": "Sperren im Hintergrund",
+  "settings.lockInBackgroundDesc":
+    "Wenn du Keystead verlässt, wird der Tresor nach dieser Zeit gesperrt. Ein gerade kopiertes Passwort bleibt einfügbar, bis die Zwischenablage geleert wird.",
+  "settings.immediately": "Sofort",
   "settings.lockOnSystemLock": "Beim Sperren des Computers sperren",
   "settings.lockOnSystemLockDesc": "Sperrt Keystead, sobald du deinen Computer sperrst (unter Windows: Win + L).",
   "settings.clipboard": "Zwischenablage leeren",

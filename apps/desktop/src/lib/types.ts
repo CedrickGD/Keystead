@@ -483,7 +483,8 @@ export interface PairingRequest {
   code: string;
 }
 
-export type LockReason = "manual" | "timeout" | "system";
+/** Payload of `vault://locked`; `background` only on the phone (`lockInBackgroundSeconds`). */
+export type LockReason = "manual" | "timeout" | "system" | "background";
 
 /** Stable error codes returned by the backend (see ARCHITECTURE.md). */
 export type ErrorCode =

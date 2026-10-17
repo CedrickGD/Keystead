@@ -4,6 +4,11 @@
 //
 // Two demo vaults ("Privat", "Arbeit"), master password "demo" for both.
 // URL parameters: `?mock=empty` starts without any vault (first-run screen).
+// `?platform=android` (or `ios`) pretends to be the phone app: `AppInfo`
+// says so (`readOnly`, no extension id) and the background lock
+// (`lockInBackgroundSeconds`) runs on the page's visibility – switch tabs
+// or minimise the browser to leave the app (the backend's wait for a
+// pending clipboard clear is not simulated).
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -27,6 +32,7 @@ import type {
   ImportFormat,
   ImportReport,
   LegacyVaultInfo,
+  LockReason,
   PairedClient,
   PairingRequest,
   SecretField,
@@ -192,6 +198,8 @@ function initState(): MockState {
     vaults.set(work.info.id, work);
   }
   const lang = params.get("lang") === "en" ? "en" : "de";
+  const platform = params.get("platform");
+  const phone = platform === "android" || platform === "ios";
   return {
     vaults,
     unlockedId: null,
@@ -216,9 +224,9 @@ function initState(): MockState {
       version: installedMockVersion(),
       dataDir: dataDir(false),
       portable: false,
-      platform: "windows",
-      extensionId: EXTENSION_ID,
-      readOnly: false,
+      platform: phone ? platform : "windows",
+      extensionId: phone ? null : EXTENSION_ID,
+      readOnly: phone,
     },
     browsers: [
       { id: "chrome", name: "Google Chrome", detected: true, registered: true },
@@ -239,6 +247,7 @@ function getState(): MockState {
   if (!state) {
     state = initState();
     startAutoLockTimer();
+    if (state.appInfo.platform === "android" || state.appInfo.platform === "ios") startBackgroundLockTimer();
     installDevHelpers();
     scheduleMockUpdateAnnouncement();
   }
@@ -378,7 +387,7 @@ function emit(event: string, payload: unknown): void {
   });
 }
 
-function lock(reason: "manual" | "timeout" | "system"): void {
+function lock(reason: LockReason): void {
   const s = getState();
   if (!s.unlockedId) return;
   s.unlockedId = null;
@@ -395,6 +404,34 @@ function startAutoLockTimer(): void {
   }, 5_000);
 }
 
+/**
+ * Phone mock: the page's visibility stands in for the activity's
+ * onPause/onResume – hidden emits `app://suspended` and starts the clock;
+ * `lockInBackgroundSeconds` later (or on return, if that is later) the vault
+ * locks with reason `background`; null = never.
+ */
+function startBackgroundLockTimer(): void {
+  let since: number | null = null;
+  const check = () => {
+    const seconds = state?.settings.lockInBackgroundSeconds ?? null;
+    if (since === null || seconds === null) return;
+    if (Date.now() - since >= seconds * 1000) {
+      since = null;
+      lock("background");
+    }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      if (since === null) since = Date.now();
+      emit("app://suspended", {});
+    } else {
+      check();
+      since = null;
+    }
+  });
+  window.setInterval(check, 1_000);
+}
+
 function requestPairing(clientName = "Microsoft Edge – DESKTOP-4F2K9"): PairingRequest {
   const s = getState();
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] ?? 0).padStart(6, "0").slice(-6);
@@ -409,6 +446,8 @@ function requestPairing(clientName = "Microsoft Edge – DESKTOP-4F2K9"): Pairin
 export interface MockDevHelpers {
   triggerPairing: (clientName?: string) => PairingRequest;
   simulateTimeoutLock: () => void;
+  /** The phone's lock after `lockInBackgroundSeconds` in the background (`vault://locked {background}`). */
+  simulateBackgroundLock: () => void;
   simulateExternalChange: () => void;
   simulateUnlockRequest: () => void;
   /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
@@ -430,6 +469,7 @@ function installDevHelpers(): void {
   window.__keysteadMock = {
     triggerPairing: (clientName?: string) => requestPairing(clientName),
     simulateTimeoutLock: () => lock("timeout"),
+    simulateBackgroundLock: () => lock("background"),
     simulateExternalChange: () => emit("vault://changed", {}),
     simulateUnlockRequest: () => emit("bridge://unlock-request", {}),
     simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),

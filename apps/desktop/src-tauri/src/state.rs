@@ -49,6 +49,10 @@ pub const EVENT_PAIRING_CLOSED: &str = "bridge://pairing-closed";
 /// `bridge://unlock-request` – payload `{}`.
 #[cfg(desktop)]
 pub const EVENT_UNLOCK_REQUEST: &str = "bridge://unlock-request";
+/// `app://suspended` – payload `{}`: the phone app left the foreground
+/// (Android `onPause`); the UI hides revealed values.
+#[cfg(mobile)]
+pub const EVENT_SUSPENDED: &str = "app://suspended";
 
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
@@ -59,7 +63,13 @@ pub const MAIN_WINDOW: &str = "main";
 pub enum LockReason {
     Manual,
     Timeout,
+    /// Desktop: the computer was locked or went to sleep.
+    #[cfg_attr(mobile, allow(dead_code))]
     System,
+    /// Phone: the app stayed in the background for
+    /// `lockInBackgroundSeconds` (see `monitor`).
+    #[cfg_attr(desktop, allow(dead_code))]
+    Background,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -382,7 +392,8 @@ impl Core {
     }
 
     /// Sends a signal to the monitor thread (ignored if it is gone).
-    #[cfg_attr(not(windows), allow(dead_code))]
+    /// Senders: the Windows session watcher and the phone's lifecycle hook.
+    #[cfg_attr(not(any(windows, mobile)), allow(dead_code))]
     pub fn signal_monitor(&self, signal: MonitorSignal) {
         if let Some(tx) = lock_mutex(&self.monitor).as_ref() {
             let _ = tx.send(signal);
@@ -414,6 +425,14 @@ impl Core {
 
     pub fn emit_changed(&self) {
         self.emit(EVENT_CHANGED, EmptyPayload {});
+    }
+
+    /// Phone: the app left the foreground. The UI drops revealed values on
+    /// it, as it does on `blur`/`visibilitychange` (a second net in case
+    /// the webview is paused before its own events run).
+    #[cfg(mobile)]
+    pub fn emit_suspended(&self) {
+        self.emit(EVENT_SUSPENDED, EmptyPayload {});
     }
 
     pub fn emit_unlocked(&self, info: &VaultInfo) {
@@ -897,6 +916,25 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, EVENT_LOCKED);
         assert_eq!(events[0].1, serde_json::json!({ "reason": "timeout" }));
+    }
+
+    #[test]
+    fn lock_reasons_are_the_documented_lowercase_names() {
+        // The payload of `vault://locked`, see "Events" in docs/ARCHITECTURE.md.
+        for (reason, name) in [
+            (LockReason::Manual, "manual"),
+            (LockReason::Timeout, "timeout"),
+            (LockReason::System, "system"),
+            (LockReason::Background, "background"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), name);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let core = core_with_open_vault(dir.path(), Settings::default());
+        assert!(core.lock(Some(LockReason::Background)));
+        let events = core.emitted();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, serde_json::json!({ "reason": "background" }));
     }
 
     fn update(version: &str, available: bool) -> UpdateInfo {

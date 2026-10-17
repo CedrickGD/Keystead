@@ -293,6 +293,8 @@ export const events = {
   onIconsChanged: (handler: () => void) => subscribe<Record<string, never>>("vault://icons", () => handler()),
   /** The vault was unlocked outside the UI (browser extension). */
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
+  /** Phone: the app left the foreground (Android `onPause`); revealed values are hidden. */
+  onSuspended: (handler: () => void) => subscribe<Record<string, never>>("app://suspended", () => handler()),
   onPairingRequest: (handler: (payload: PairingRequest) => void) =>
     subscribe<PairingRequest>("bridge://pairing-request", handler),
   /** A pending pairing request ended without an answer from the UI (cancelled in the browser, timed out). */

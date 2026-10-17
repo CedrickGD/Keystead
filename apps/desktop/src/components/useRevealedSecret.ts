@@ -21,7 +21,8 @@ export interface RevealedSecret {
  * previews: `fetch` runs on demand, its answer lives only in this component's
  * state – never in the item list or another store – and is dropped again
  * after 30 s, when `key` changes (another item, field or version of the
- * item), when the window loses focus or is hidden, on lock and on unmount.
+ * item), when the window loses focus or is hidden (on the phone also on the
+ * backend's `app://suspended`), on lock and on unmount.
  */
 export function useRevealedValue(key: string, fetch: () => Promise<string>): RevealedSecret {
   const { errorText } = useT();
@@ -46,20 +47,25 @@ export function useRevealedValue(key: string, fetch: () => Promise<string>): Rev
   useEffect(() => hide, [key, hide]);
 
   const shown = value !== null;
+  // Also while the reveal is running: its answer must not show up after the
+  // window was left in the meantime.
+  const active = shown || loading;
   useEffect(() => {
-    if (!shown) return undefined;
+    if (!active) return undefined;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") hide();
     };
     window.addEventListener("blur", hide);
     document.addEventListener("visibilitychange", onVisibility);
-    const unsubscribe = subscribeEffect(events.onVaultLocked(hide));
+    const unsubscribeLocked = subscribeEffect(events.onVaultLocked(hide));
+    const unsubscribeSuspended = subscribeEffect(events.onSuspended(hide));
     return () => {
       window.removeEventListener("blur", hide);
       document.removeEventListener("visibilitychange", onVisibility);
-      unsubscribe();
+      unsubscribeLocked();
+      unsubscribeSuspended();
     };
-  }, [shown, hide]);
+  }, [active, hide]);
 
   const reveal = useCallback(async () => {
     const mine = ++generation.current;

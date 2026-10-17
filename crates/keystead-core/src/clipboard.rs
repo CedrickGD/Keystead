@@ -5,7 +5,13 @@
 //! copied secret is remembered until it is cleared, a timed clear only runs
 //! if the clipboard still holds that secret and nothing newer was copied
 //! through this module, and lock/quit clear it via
-//! [`clear_pending_secret`]. The platform access itself is behind the
+//! [`clear_pending_secret`]. The deadline of a pending timed clear is
+//! readable ([`pending_clear_due`] – the phone's background lock waits for
+//! it) and can be caught up on ([`clear_overdue_secret`] – the timer thread
+//! sleeps on the monotonic clock, which stops while a phone is in deep
+//! sleep, so the phone app checks against the wall clock every second and
+//! when it comes back to the foreground). The platform access itself is
+//! behind the
 //! [`ClipboardBackend`] trait:
 //!
 //! * Desktop (Windows, Linux, macOS): the [`arboard`] backend is installed
@@ -22,7 +28,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use zeroize::Zeroizing;
 
@@ -72,8 +78,20 @@ static BACKEND: OnceLock<Box<dyn ClipboardBackend + Send + Sync>> = OnceLock::ne
 /// Incremented on every copy; a pending clear only runs if no newer copy
 /// happened in between.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
-/// The secret awaiting its delayed clear (with its generation).
-static PENDING: Mutex<Option<(u64, Zeroizing<String>)>> = Mutex::new(None);
+/// The secret awaiting its clear (on its timer, or on lock/quit).
+static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+
+/// A copied secret that is still to be cleared.
+struct Pending {
+    /// The copy's generation: a timer only clears its own copy.
+    generation: u64,
+    secret: Zeroizing<String>,
+    /// When the timed clear is due, on both clocks (`None` = no timer: the
+    /// secret waits for lock/quit). The timer thread sleeps on the
+    /// monotonic clock; the wall clock keeps running while the device
+    /// sleeps, see [`clear_overdue_secret`].
+    due: Option<(Instant, SystemTime)>,
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // A panic while holding the lock cannot leave the data inconsistent.
@@ -123,10 +141,21 @@ pub fn copy_text(text: &str) -> Result<()> {
 pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()> {
     backend()?.write_text(text, true)?;
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let delay = clear_after.filter(|d| !d.is_zero());
     // Always remember the secret so lock/quit can clear it via
     // clear_pending_secret(), even when no timed clear is configured.
-    *lock(&PENDING) = Some((generation, Zeroizing::new(text.to_owned())));
-    let Some(delay) = clear_after.filter(|d| !d.is_zero()) else {
+    *lock(&PENDING) = Some(Pending {
+        generation,
+        secret: Zeroizing::new(text.to_owned()),
+        // (An absurd delay that overflows a clock just has no deadline.)
+        due: delay.and_then(|d| {
+            Some((
+                Instant::now().checked_add(d)?,
+                SystemTime::now().checked_add(d)?,
+            ))
+        }),
+    });
+    let Some(delay) = delay else {
         return Ok(());
     };
     std::thread::Builder::new()
@@ -136,17 +165,45 @@ pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()> {
             let pending = {
                 let mut p = lock(&PENDING);
                 match p.as_ref() {
-                    Some((g, _)) if *g == generation => p.take(),
+                    Some(pending) if pending.generation == generation => p.take(),
                     _ => None,
                 }
             };
-            if let Some((_, secret)) = pending {
+            if let Some(pending) = pending {
                 // Nothing useful can be done with an error in the background.
-                let _ = clear_if_equals(&secret);
+                let _ = clear_if_equals(&pending.secret);
             }
         })
         .map_err(|e| Error::Io(std::io::Error::other(format!("clipboard timer: {e}"))))?;
     Ok(())
+}
+
+/// When the pending timed clear is due (monotonic clock); `None` if no
+/// secret is waiting for a timer – nothing copied, already cleared, or
+/// copied without a delay. The phone's background lock waits for this
+/// moment so the copied secret can still be pasted into the other app.
+pub fn pending_clear_due() -> Option<Instant> {
+    lock(&PENDING).as_ref().and_then(|p| p.due.map(|d| d.0))
+}
+
+/// Clears the pending secret now if its timed clear is overdue by the wall
+/// clock `now` (the timer thread sleeps on the monotonic clock, which stops
+/// while a phone is in deep sleep: a secret copied right before the screen
+/// went off would otherwise survive the whole night). The late timer then
+/// finds nothing to do. Returns true if cleared; false if nothing is
+/// pending, the secret has no timer, or the timer is not due yet.
+pub fn clear_overdue_secret(now: SystemTime) -> Result<bool> {
+    let pending = {
+        let mut p = lock(&PENDING);
+        match p.as_ref() {
+            Some(pending) if pending.due.is_some_and(|d| d.1 <= now) => p.take(),
+            _ => None,
+        }
+    };
+    match pending {
+        Some(pending) => clear_if_equals(&pending.secret),
+        None => Ok(false),
+    }
 }
 
 /// Clears the clipboard now if it still holds the secret whose delayed clear
@@ -154,7 +211,7 @@ pub fn copy_secret(text: &str, clear_after: Option<Duration>) -> Result<()> {
 pub fn clear_pending_secret() -> Result<bool> {
     let pending = lock(&PENDING).take();
     match pending {
-        Some((_, secret)) => clear_if_equals(&secret),
+        Some(pending) => clear_if_equals(&pending.secret),
         None => Ok(false),
     }
 }

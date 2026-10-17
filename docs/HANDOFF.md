@@ -276,7 +276,7 @@ nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
    `cfg(mobile)`-Gates, Handy-Kommandoliste (read-only), `src/mobile.rs`
    (Datenordner, Clipboard über `tauri-plugin-clipboard-manager`, Links
    über `tauri-plugin-opener`).
-3. **Android-Projekt** (dieser Stand): `tauri.android.conf.json`,
+3. **Android-Projekt** (`97a389b`): `tauri.android.conf.json`,
    `gen/android` aus `npx tauri android init` (Gradle 9.6.1, AGP 9.3.1,
    Kotlin 2.2.10, SDK 37) committet und gehärtet – kein `INTERNET` im
    Hauptmanifest (nur `src/debug/` für `tauri android dev`),
@@ -295,12 +295,50 @@ nur lesend, Sperre im Hintergrund, `allowBackup=false`). Stand der Stufe 1a
    zeigt den Willkommensbildschirm (noch Desktop-Layout, Englisch nach
    Systemsprache); `adb screencap` liefert wegen `FLAG_SECURE` schwarz,
    `adb emu screenrecord screenshot <Ordner>` zeigt das Bild.
+4. **Lebenszyklus** (dieser Stand): `WindowEvent::Suspended`/`Resumed`
+   (`onPause`/`onResume`) → `MonitorSignal::Background`/`Foreground`;
+   Sperre nach `lockInBackgroundSeconds` (Standard 60 s, 0 = sofort,
+   null = nie) mit Grund `background` (Toast „Tresor gesperrt, weil
+   Keystead im Hintergrund war“), aber nie bevor der Clear-Timer eines
+   kopierten Geheimnisses abgelaufen ist (`monitor::background_lock_due`,
+   reine Funktion mit Tests; Hintergrundzeit wie `idle_for` auf beiden
+   Uhren); `Resumed` holt zuerst ein verschlafenes Leeren nach
+   (`clipboard::clear_overdue_secret`, Wanduhr), prüft die Sperre ein
+   letztes Mal und setzt dann zurück; jeder Monitor-Tick holt ein
+   überfälliges Leeren ebenfalls nach. Event `app://suspended` blendet
+   aufgedeckte Werte aus (`useRevealedValue`, jetzt auch während ein
+   Aufdecken noch lädt). Android-Clipboard-Backend: im Hintergrund erst
+   Leertext schreiben, dann `clear` (das Plugin-`clear` prüft
+   `hasPrimaryClip()`, das ohne Fokus false ist, und täte sonst nichts).
+   Einstellungszeile „Sperren im Hintergrund“ (Sofort / 1 min / 5 min /
+   Nie) nur auf dem Handy; Mock: `?platform=android` (Sichtbarkeit der
+   Seite = Vorder-/Hintergrund, `__keysteadMock.simulateBackgroundLock()`).
+   **Im Emulator geprüft** (MB_S26, Debug-APK, Test-Tresor per `run-as` in
+   `/data/user/0/io.github.cedrickgd.keystead/vaults/` gelegt, Befehle per
+   WebView-DevTools): Home → `app://suspended` sofort, `vault://locked
+   {background}` nach der eingestellten Zeit (10 s bzw. 30 s, auch mit
+   anderen Apps im Vordergrund); „Sofort“ + kopiertes Passwort mit 20 s
+   Timer → Sperre erst nach 20,8 s, die Zwischenablage ist dann leer (das
+   Leeren aus dem Hintergrund wirkt); Rückkehr vor Ablauf → keine Sperre;
+   nach ~60–70 s im Hintergrund friert Android den Prozess ein
+   (`isFrozen=true`), die Sperre (150 s) kam dann direkt bei der Rückkehr;
+   Toast „Vault locked because Keystead was in the background“ (Englisch
+   nach Systemsprache) sichtbar. Desktop-Kette grün, APK baut.
 
-Offen (nächste Stufen laut Design): Lebenszyklus (`Suspended`/`Resumed` →
-Sperre im Hintergrund), Handy-Layout der UI (inkl. Listener auf
-`keystead:back`), `import_vault_file`, CI-Job `android` mit Keystore aus den
-Secrets und `versionCode` = Run-Nummer, Biometrie (1b), Doku (README,
-CLAUDE.md-Regeln).
+Offen (nächste Stufen laut Design): Handy-Layout der UI (inkl. Listener auf
+`keystead:back`, Ausblenden von „Beim Sperren des Computers sperren“ und
+der Desktop-Abschnitte), `import_vault_file`, CI-Job `android` mit Keystore
+aus den Secrets und `versionCode` = Run-Nummer, Biometrie (1b), Doku
+(README, CLAUDE.md-Regeln). Bekannte Grenze der Zwischenablage auf dem
+Handy: wird der Prozess eingefroren (nach ~1 min im Hintergrund) oder vom
+System beendet, läuft der Clear-Timer nicht – ein Geheimnis mit langem
+Timer bleibt bis zur Rückkehr, zum nächsten Kopieren oder bis Android es
+selbst verwirft (ab Android 13 nach einer Stunde); der Standard (30 s) ist
+nicht betroffen (Härtung: Kotlin-`AlarmManager`-Receiver). Die Tests des
+App-Crates kompilieren für Android noch nicht (`cargo clippy --target
+aarch64-linux-android --all-targets` scheitert an Desktop-Tests in
+`update.rs`, `commands.rs`, `secrets.rs`, `state.rs`, `error.rs`); ohne
+`--all-targets` ist Clippy für Android grün – für den CI-Job beachten.
 
 ## Bekannte Grenzen / offene Punkte
 
