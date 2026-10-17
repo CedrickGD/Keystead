@@ -867,11 +867,12 @@ fn offline_runs_record_nothing() {
     let core = core_with_open_vault(dir.path(), Settings::default());
     core.mutate(|v| v.save_item(login("A", "https://a.example.com")))
         .unwrap();
-    // A port nobody listens on: connection refused for every request.
-    let closed = {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap()
-    };
+    // A port that never answers: the listener stays bound (so no other test
+    // running in parallel can be handed the same port – dropping it made
+    // this test flaky) but never accepts, so every request times out, which
+    // counts as a network error just like a refused connection.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = Url::parse(&format!("http://{}/", silent.local_addr().unwrap())).unwrap();
     let fetcher = Fetcher::build(
         Allow::Local { origin: closed },
         Duration::from_millis(500),
@@ -881,6 +882,7 @@ fn offline_runs_record_nothing() {
     assert_eq!(run_once(&core, &fetcher), RunOutcome::Offline);
     let st = core.state();
     assert!(st.vault.as_ref().unwrap().data().icons.is_empty());
+    drop(silent);
 }
 
 #[test]
