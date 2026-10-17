@@ -277,10 +277,44 @@ pub struct Folder {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// An entry of the generator history ([`VaultData::generator_history`]).
+/// `Debug` prints only the password's length.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneratedPassword {
+    /// UUID v4, the stable address of the entry (reveal/copy by id). Empty
+    /// in payloads written before ids existed: opening the vault assigns
+    /// one (see `UnlockedVault`), the next save persists it.
+    pub id: String,
     pub password: String,
+    pub created_at: i64,
+}
+
+impl GeneratedPassword {
+    /// The secret-free view (id and time only).
+    pub fn info(&self) -> GeneratedPasswordInfo {
+        GeneratedPasswordInfo {
+            id: self.id.clone(),
+            created_at: self.created_at,
+        }
+    }
+}
+
+impl std::fmt::Debug for GeneratedPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedPassword")
+            .field("id", &self.id)
+            .field("password_len", &self.password.chars().count())
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+/// A generator history entry without its password – what lists show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedPasswordInfo {
+    pub id: String,
     pub created_at: i64,
 }
 
@@ -646,5 +680,30 @@ mod tests {
             failed_at: None,
         };
         assert!(!format!("{entry:?}").contains("iVBORw0KGgo"));
+    }
+
+    /// History entries of older payloads have no id; the view and `Debug`
+    /// carry no password.
+    #[test]
+    fn generated_password_shape() {
+        let old: VaultData =
+            serde_json::from_str(r#"{"generatorHistory":[{"password":"s3cret","createdAt":7}]}"#)
+                .unwrap();
+        assert_eq!(old.generator_history[0].id, "");
+        assert_eq!(old.generator_history[0].password, "s3cret");
+        let entry = GeneratedPassword {
+            id: "g1".into(),
+            password: "s3cret".into(),
+            created_at: 7,
+        };
+        let v = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"id":"g1","password":"s3cret","createdAt":7})
+        );
+        let info = serde_json::to_value(entry.info()).unwrap();
+        assert_eq!(info, serde_json::json!({"id":"g1","createdAt":7}));
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("s3cret") && debug.contains("g1"), "{debug}");
     }
 }

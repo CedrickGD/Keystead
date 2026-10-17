@@ -54,7 +54,8 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Website-Icons**: Logins zeigen automatisch das Icon ihrer Website – die App
   lädt es selbst direkt von der Website (kein Icon-Dienst) und speichert es
   verschlüsselt im Tresor; abschaltbar unter Einstellungen → Allgemein.
-- **Generator** für Passwörter und Passphrasen (EFF-Wortliste) mit Verlauf.
+- **Generator** für Passwörter und Passphrasen (englische EFF- oder deutsche
+  Wortliste) mit Verlauf.
 - **Einmalcodes (TOTP/2FA)** direkt im Eintrag, kompatibel mit Google Authenticator & Co.
 - **Sicherheitsbericht**: schwache, mehrfach verwendete und alte Passwörter.
 - **Geleakte Passwörter**: auf Knopfdruck prüft der Sicherheitsbericht alle
@@ -280,7 +281,8 @@ and also available in English.
 - **Website icons**: logins show their website's icon automatically – the app loads
   it itself, directly from the website (no icon service), and stores it encrypted in
   the vault; can be switched off in Settings → General.
-- **Generator** for passwords and passphrases (EFF word list), with history.
+- **Generator** for passwords and passphrases (English EFF or German word
+  list), with history.
 - **One-time codes (TOTP/2FA)** inside items, compatible with Google Authenticator & co.
 - **Security report**: weak, reused and old passwords.
 - **Leaked passwords**: at the press of a button the security report checks all
@@ -529,3 +531,16 @@ two-factor secret is not imported.
 
 Proprietary – free for personal, educational and non-commercial use; see
 [LICENSE](LICENSE). © 2026 Cedrick Grabe.
+
+### Credits – passphrase word lists
+
+- English: the [EFF large word list](https://www.eff.org/dice) © Electronic
+  Frontier Foundation, licensed under Creative Commons Attribution
+  ([eff.org/copyright](https://www.eff.org/copyright)).
+- German: based on `de-7776` from
+  [dys2p/wordlists-de](https://github.com/dys2p/wordlists-de) by dys2p,
+  used under CC0 1.0 (the list is offered under Unlicense, CC0 or BSD-3);
+  Keystead removed 52 words to keep passphrases family-friendly.
+
+Details, checksums and the removed words:
+[crates/keystead-core/src/wordlist/README.md](crates/keystead-core/src/wordlist/README.md).

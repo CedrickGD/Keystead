@@ -246,7 +246,7 @@ pub mod format;   // VaultFile (serde of the JSON above), read/write atomic
 pub mod paths;    // data_dir(), vaults_dir(), settings_path(), legacy_dir(), is_portable()
 pub mod store;    // VaultStore
 pub mod vault;    // UnlockedVault
-pub mod generator;// GeneratorOptions, generate()
+pub mod generator;// GeneratorOptions, generate(), Wordlist (en/de), presets (built-in + GeneratorPreset)
 pub mod totp;     // parse + code generation
 pub mod matching; // URL matching for autofill
 pub mod health;   // HealthReport, strength()
@@ -298,8 +298,13 @@ impl UnlockedVault {
     pub fn delete_folder(&mut self, id: &str) -> Result<()>;   // items in it get folder_id = None
     pub fn rename_tag(&mut self, from: &str, to: &str) -> Result<usize>; // on every item incl. trash, one save; case-insensitive; `to` validated like a tag; merges into an existing spelling; returns changed items, 0 = nothing written
     pub fn delete_tag(&mut self, tag: &str) -> Result<usize>;            // same matching and return; both: Conflict → reload_if_changed + retry (memory unchanged)
-    pub fn add_generated_password(&mut self, password: &str) -> Result<()>; // history max 50, persists
+    pub fn add_generated_password(&mut self, password: &str) -> Result<()>; // newest first with a fresh id (UUID v4), history max 50, persists
     pub fn clear_generator_history(&mut self) -> Result<()>;
+    pub fn generator_history_info(&self) -> Vec<GeneratedPasswordInfo>;  // { id, createdAt } per entry, newest first – no passwords
+    pub fn generated_password(&self, id: &str) -> Option<&GeneratedPassword>; // one entry by id
+        // GeneratedPassword { id, password, createdAt } (camelCase; Debug without the password). Entries of older payloads have no id
+        // (serde default ""): every load into an UnlockedVault (unlock, create, reload_if_changed) gives entries without an id – or with
+        // the id of an earlier entry – a fresh UUID in memory; the next save persists them.
     pub fn icon_hosts_needing_fetch(&self, now: i64) -> Vec<String>; // website icons due (see "Website icons"): none yet, 30 days old, failure 7 days old; fetchable hosts only
     pub fn set_icons(&mut self, results: &[(String, Option<Vec<u8>>)], now: i64) -> Result<usize>; // one save; None = failed; hosts of no login ignored; Conflict → reload + retry
     pub fn icon_for_host(&self, host: &str) -> Option<&str>;      // base64 PNG
@@ -335,18 +340,45 @@ impl UnlockedVault {
 ### Other core modules
 ```rust
 // generator
-#[serde(rename_all = "camelCase")] pub struct GeneratorOptions {
+#[serde(default, rename_all = "camelCase")] pub struct GeneratorOptions {   // every field optional in JSON (older clients send fewer)
     pub kind: GeneratorKind,          // "password" | "passphrase"
-    pub length: u32,                  // password: 5..=128, default 20
+    pub length: u32,                  // password: 4..=128 (PASSWORD_MIN_LEN/MAX_LEN), default 20
     pub uppercase: bool, pub lowercase: bool, pub digits: bool, pub symbols: bool, // defaults true,true,true,true
-    pub min_digits: u32, pub min_symbols: u32,   // default 1, 1
-    pub avoid_ambiguous: bool,        // default false (excludes Il1O0)
+    pub min_uppercase: u32, pub min_lowercase: u32, pub min_digits: u32, pub min_symbols: u32, // default 1 each; each 0..=length, sum ≤ length;
+                                      // a minimum only counts while its class is on (older clients send minSymbols: 1 with symbols: false)
+    pub symbol_set: String,           // "symbolSet", default DEFAULT_SYMBOLS "!#$%&*+-=?@^_"; printable ASCII, no letter/digit/space,
+                                      // duplicates ignored, input ≤ 256 chars; must not be empty while symbols is on
+    pub exclude: String,              // characters removed from every class (any chars, input ≤ 256), default ""
+    pub avoid_ambiguous: bool,        // default false (excludes Il1O0, on top of exclude)
+    pub start_with_letter: bool,      // "startWithLetter", default false
     pub words: u32,                   // passphrase: 3..=20, default 5
-    pub separator: String,            // default "-"
+    pub separator: String,            // default "-", ≤ 8 chars
     pub capitalize: bool,             // default true
     pub include_number: bool,         // default true
+    pub wordlist: Wordlist,           // passphrase word list "en" (EFF large, 7776 words, default) | "de" (dys2p de-7776 minus 52 words, 7724 words)
 }
-pub fn generate(opts: &GeneratorOptions) -> Result<String>;   // OsRng, unbiased; passphrase uses the embedded EFF large wordlist
+pub fn generate(opts: &GeneratorOptions) -> Result<String>;   // OsRng, rejection sampling (no modulo bias); see "Generator" below
+impl GeneratorOptions {
+    pub fn validate(&self) -> Result<()>;                     // exactly the checks of generate(), no randomness
+    pub fn normalized(&self) -> Result<GeneratorOptions>;     // validated copy; password: symbol_set/exclude without duplicates (first kept)
+    pub fn from_json_lenient(v: &serde_json::Value) -> GeneratorOptions; // field by field: missing/invalid → default, unknown keys ignored; not validated
+}
+pub fn normalize_symbol_set(input: &str) -> Result<String>;  // invalid_input:symbol_set, or the set without duplicates
+pub const DEFAULT_SYMBOLS: &str; pub const PASSWORD_MIN_LEN: u32 = 4; pub const PASSWORD_MAX_LEN: u32 = 128;
+pub const PASSPHRASE_MIN_WORDS: u32 = 3; pub const PASSPHRASE_MAX_WORDS: u32 = 20; pub const CHARSET_INPUT_MAX_CHARS: usize = 256;
+pub enum Wordlist { En, De }                                  // serde "en" | "de"; Wordlist::ALL
+impl Wordlist { pub fn words(self) -> &'static [&'static str]; pub fn bits_per_word(self) -> f64 /* log2(real list size) */ }
+pub fn wordlist() -> &'static [&'static str];                 // = Wordlist::En.words()
+pub fn passphrase_entropy_bits(opts: &GeneratorOptions) -> Result<f64>; // words × log2(list size) + log2(10 × words) with include_number
+// generator presets
+pub struct GeneratorPreset { pub id: String, pub name: String, pub options: GeneratorOptions } // camelCase, serde(default)
+impl GeneratorPreset { pub fn normalized(&self) -> Result<GeneratorPreset> } // id trimmed, 1..=64 of [A-Za-z0-9_-] and no built-in id (preset_id);
+                                                                            // name via validate_preset_name; options normalized()
+pub fn validate_preset_name(name: &str) -> Result<String>;    // trimmed; "" → preset_name_required, > 40 chars → preset_name_too_long
+pub const BUILTIN_PRESET_IDS: [&str; 5] = ["standard", "alnum", "pin", "long", "passphrase"]; // PRESET_STANDARD … PRESET_PASSPHRASE
+pub fn builtin_presets() -> Vec<GeneratorPreset>;            // in that order; `name` is an English fallback – UIs translate by id
+pub fn builtin_preset(id: &str) -> Option<GeneratorPreset>; pub fn is_builtin_preset(id: &str) -> bool;
+pub fn preset_options(id: &str, user: &[GeneratorPreset]) -> Option<GeneratorOptions>; // built-in or user preset
 // totp
 pub struct TotpCode { pub code: String, pub period: u32, pub remaining: u32 }  // serde camelCase
 pub fn totp_now(seed: &str) -> Result<TotpCode>;  // seed = base32 secret or otpauth:// URI (supports SHA1/SHA256/SHA512, digits 6-8, period)
@@ -515,13 +547,35 @@ Behaviour notes:
   "Attachments"); the Keystead, CSV and Bitwarden exports
   carry no attachments (`export.rs` builds the exported `VaultData` with an
   empty map) and no import brings any.
+* **Generator** (`generator.rs`): passwords meet their minimums by
+  construction – each class's minimum is drawn from that class, the rest
+  from the union of the enabled classes, then a Fisher–Yates shuffle
+  (`random_below`) mixes them. With `startWithLetter` and no letter minimum
+  one extra letter (from the enabled letter classes) is drawn and counts
+  against the length; after the shuffle a first character that is not a
+  letter is swapped with a uniformly chosen letter position (every
+  arrangement of the drawn characters that starts with a letter stays
+  equally likely). `exclude` and `avoidAmbiguous` remove characters from
+  every class; an enabled class left empty → `no_character_set`. Checks of a
+  password, in this order: `length` (4..=128) → `symbol_set` (bad
+  character, input over 256 characters, empty while symbols is on) →
+  `exclude` (input over 256 characters) → `no_character_set` (no class on,
+  or an enabled class excluded entirely) → `start_with_letter` (no letter
+  class on) → `minimums_exceed_length` (sum of the minimums of the enabled
+  classes, plus the extra letter, above the length). A passphrase checks
+  `words` and `separator` only; the password fields are ignored (and kept
+  by `normalized`). The word lists, their sources and licences (EFF: CC BY;
+  dys2p: CC0, 52 words removed to keep passphrases family-friendly) are
+  documented in `crates/keystead-core/src/wordlist/README.md`.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
   `tag_required`, `tag_too_long`, `tags_too_many`, `item_trashed`,
   `attachments_too_many`, `attachment_name_required`,
   `attachment_name_too_long`,
   `password_empty`, `password_required`, `kdf_params`, `recovery_key_format`,
   `length`, `words`, `separator`, `no_character_set`,
-  `minimums_exceed_length`, `totp_secret`, `totp_secret_empty`, `totp_uri`,
+  `minimums_exceed_length`, `symbol_set`, `exclude`, `start_with_letter`,
+  `preset_id`, `preset_name_required`, `preset_name_too_long`,
+  `totp_secret`, `totp_secret_empty`, `totp_uri`,
   `totp_digits`, `totp_period`, `csv_empty`, `csv_unknown_columns`,
   `bitwarden_json`, `json: …`, `csv: …`, `format <x>`.
 * `unsupported` details of the import meant for the UI: `unknown_format`,
@@ -701,10 +755,25 @@ interface Settings {
                                              // false = no icon requests (stored icons stay visible). The old `showIcons` (never in the UI) is ignored.
   updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
   updateChannel: "beta" | "stable";          // default "stable" (stable releases only); "beta" = betas + stable releases
+  generatorPresets: GeneratorPreset[];       // the user's presets { id, name, options: GeneratorOptions }; default []; built-ins are not stored
+  generatorDefault: string;                  // id of the default preset (built-in or user); default "standard"
 }
 ```
 Loading is lenient: missing fields (settings files of older versions) and
 invalid values get their defaults; unknown keys are ignored.
+`generatorPresets` is parsed preset by preset (`id` and `name` must be
+strings; `options` field by field via `GeneratorOptions::from_json_lenient`,
+so a value of a later version costs only that field). Loading and saving
+(`Settings::normalized`) keep only presets that pass
+`GeneratorPreset::normalized` (name 1–40 characters after trimming, id
+1–64 of `[A-Za-z0-9_-]` and not a built-in id, valid options), the first of
+each id, at most `settings::GENERATOR_PRESETS_MAX` (50); an unknown
+`generatorDefault` (e.g. a deleted preset) becomes `"standard"`.
+`Settings::default_generator_options()` returns the options of the default
+preset. Built-in presets (`generator::builtin_presets`, ids in this order):
+`standard` (the `GeneratorOptions` defaults), `alnum` (letters and digits
+only), `pin` (6 digits), `long` (32 characters, at least 2 of each class),
+`passphrase` (5 English words) – their names are translated by the UIs.
 
 ## Desktop backend ↔ frontend (Tauri commands)
 
@@ -757,7 +826,7 @@ history. The bridge's own writes are not affected.
 | `remove_attachment` † | `attachmentId` | `ItemListEntry` – deletes the attachment (entry, then blob) and answers its item's new entry; `not_found` |
 | `reveal_attachment` | `attachmentId, pageVaultId` | `string` – a `data:image/…;base64,…` URL for the in-app preview: only PNG, JPEG, GIF and WebP recognised by their magic bytes and at most 8 MiB, anything else `unsupported:attachment_preview` (a too large file without reading it); `not_found`, `corrupt:…`. The only command that brings attachment bytes into the webview; wiped after serialization |
 | `generate_password` † | `options: GeneratorOptions, remember: boolean` | `string` (adds to history if remember) |
-| `generator_history` | – | `GeneratedPassword[]` |
+| `generator_history` | – | `GeneratedPassword[]` (`{ id, password, createdAt }`) |
 | `clear_generator_history` † | – | `null` |
 | `password_strength` | `password` | `Strength` |
 | `totp_code` | `seed` | `TotpCode` (kept for compatibility; the item view has no keys and uses `totp_for_item`) |
