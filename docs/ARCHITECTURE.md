@@ -151,7 +151,7 @@ returned code: `0` success, `1` error, `2` invalid usage.
 ## Mobile (Android)
 
 Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
-**Stages 1a and 2a – the state described here – are a read-only, offline
+**Stages 1a, 1b and 2a – the state described here – are a read-only, offline
 Android app**: the same Rust crate and the same React UI as the desktop,
 built by CI as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 /
 API 29 and later) that every release carries. It opens the vaults in its own
@@ -162,8 +162,10 @@ user links the folder of their own cloud the PC keeps its vault copies in,
 and the phone copies them in – one way, it never writes there (creating or
 editing a vault on the phone is a write and not registered); the PC keeps
 the copies there up to date ("Kopie im Cloud-Ordner aktuell halten",
-decision E7, see "Cloud-folder mirror (desktop) and phone link"). Not yet:
-fingerprint unlock (stage 1b). The UI has its **phone layout** (below).
+decision E7, see "Cloud-folder mirror (desktop) and phone link"). A vault
+can be opened with the **fingerprint** (stage 1b, opt-in: the master KEK
+sealed by the Android Keystore, below). The UI has its **phone layout**
+(below).
 There is no Keystead server, and the app has no network permission at
 all – so no update check either: About links to the releases page instead.
 
@@ -179,7 +181,8 @@ all – so no update check either: About links to the releases page instead.
   app's private internal storage `/data/user/0/io.github.cedrickgd.keystead/`
   (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
   and `settings.json`, plus `sync/link.json` (the linked cloud folder,
-  below); nothing of the bridge (`bridge-clients.json`), no
+  below) and `device-unlock/<vault-id>.json` (fingerprint unlock, below);
+  nothing of the bridge (`bridge-clients.json`), no
   `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
   "Data locations"). Other apps cannot read the folder, Android's cloud
   backup and device-to-device transfer skip it (manifest below), and
@@ -193,8 +196,9 @@ all – so no update check either: About links to the releases page instead.
 * **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
   (default 60, `0` = at once, `null` = never; Settings → "Sperren im
   Hintergrund": Sofort / 1 min / 5 min / Nie, a row shown only on
-  `android`/`ios`) and `deviceUnlock` (fingerprint unlock, stage 1b – not
-  used yet). `autoLockMinutes` and `clipboardClearSeconds` work as on the
+  `android`/`ios`) and `deviceUnlock` (fingerprint unlock, below – changed
+  only by the device-unlock commands, `save_settings` keeps the stored
+  value). `autoLockMinutes` and `clipboardClearSeconds` work as on the
   desktop; the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
   `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
   `updateChannel`, `mirrorFolder`) are kept in the file but do nothing on
@@ -279,6 +283,113 @@ all – so no update check either: About links to the releases page instead.
     "Jetzt synchronisieren", "Ordner ändern", "Verbindung trennen" (the
     copies stay). The mock (`?platform=android`) simulates it (see "Mock"
     below).
+* **Fingerprint unlock (phone)** – stage 1b, decision E5, opt-in
+  (`Settings.deviceUnlock`, default off; `src-tauri/src/device_unlock.rs`:
+  blobs and flows, platform-neutral and unit-tested on the desktop host;
+  `src/mobile/biometric.rs`: the keystore binding and the commands;
+  `src/state/deviceUnlock.tsx` in the UI):
+  * **Keystore**: the official `tauri-plugin-biometric` 2.5 (Android only,
+    `[target.'cfg(target_os = "android")'.dependencies]`), called from Rust
+    through its `biometric_cipher` – verified in its sources: AES-256-GCM
+    with the key `tauri-plugin-biometric-key` in the `AndroidKeyStore`,
+    `setUserAuthenticationRequired(true)` without a validity period, so
+    every use needs a **strong biometric** through a `BiometricPrompt` with
+    a `CryptoObject` (`BIOMETRIC_STRONG` on Android 11+; Android 10's prompt
+    asks for strong biometrics for a crypto operation as well). The key is
+    invalidated by a newly enrolled fingerprint (Android's default
+    `setInvalidatedByBiometricEnrollment(true)`) and by removing the screen
+    lock. Keystead always passes `allowDeviceCredential = false`: no PIN,
+    pattern or password instead of the finger. The plugin's pass/fail
+    `authenticate` is never used (it would unlock nothing). Not offered by
+    the plugin: StrongBox, `setUnlockedDeviceRequired`, a key of Keystead's
+    own (one key for the whole app) – an own Kotlin plugin (E5 option b)
+    remains possible as hardening, e.g. together with the Autofill service.
+  * **Stored**: `<data>/device-unlock/<vault-id>.json` = `{ version: 1,
+    vaultId, kdfSalt, sealed, createdAt }` (written atomically). `sealed` is
+    the keystore's output (`base64(ciphertext);base64(iv)`) of the text
+    `keystead-device-unlock:1:<vault-id>:<base64 master KEK>` – the KEK is
+    `UnlockedVault::master_kek` (what the master password derives; it opens
+    the header's wrapped vault key, see "Core API"), and the vault id inside
+    binds it to its vault (the keystore's AES-GCM has no associated data, so
+    a blob copied to another vault's name opens nothing). `kdfSalt` is the
+    header salt the KEK belongs to (`UnlockedVault::kdf_salt`): every new
+    master password has a fresh salt. The KEK is never on disk in the clear
+    and never reaches the webview; Rust's copies are `Zeroizing`. What
+    cannot be wiped: the plugin takes and returns text, so the base64 KEK
+    passes as JSON over JNI into Kotlin strings and, as an intent extra,
+    into the plugin's `BiometricActivity` (in the app's process, but intents
+    and activity results travel through Android's activity manager in
+    `system_server`) – memory of the device's own trusted system, never a
+    file or a log.
+  * **Set up** (`enable_device_unlock`, Settings → Sicherheit → "Mit
+    Fingerabdruck entsperren" for the open vault): only for the open vault
+    the page shows (`pageVaultId`, else `locked`); the sensor must be usable
+    (else no prompt: `unsupported:device_unlock_unavailable` /
+    `device_unlock_not_enrolled`); the system prompt seals the KEK, the blob
+    is stored and `deviceUnlock` turned on. **Off** (`disable_device_unlock`)
+    removes the blob of one vault (or all: `null`); the setting goes off
+    with the last one. Off means no blob anywhere (`device_unlock_status`
+    removes leftovers); the keystore key itself stays – without a blob it
+    opens nothing.
+  * **Unlock** (`unlock_with_device`): blob → the vault file still has the
+    blob's salt (else reset **without** a prompt) → the system prompt opens
+    the sealed text → the KEK of this vault → `VaultStore::unlock_with_master_kek`
+    (no Argon2) → `Core::install_vault_since`, the same end as the master
+    password. The lock epoch is read **after** the prompt: the user has just
+    proven presence, so a lock while the prompt was open does not cancel it.
+  * **Reset** (blob removed, the vault remembered in memory as reset –
+    `DeviceUnlockStatus.invalidated` –, error
+    `unsupported:device_unlock_invalid`): a damaged or foreign blob; a new
+    master password – another salt in the vault file (changed on the PC and
+    synced: `folder_sync` checks after storing a copy, the monitor on
+    `Error::KeyChanged` of the open vault, the status and the unlock before
+    any prompt; a recovery-key unlock on the PC sets a new master password
+    too – on the phone it does not exist); the keystore cannot open it (the
+    plugin's "Failed to initialize the cipher …" – a new fingerprint, the
+    screen lock removed – or "Failed to decrypt the data …";
+    `device_unlock::plugin_cipher_error`); a KEK that does not open the
+    vault. A vault that is gone just loses its blob. Kept: a cancelled
+    prompt (`device_unlock_cancelled`), an unrecognised finger
+    (`device_unlock_failed`; the system prompt itself allows retries), a
+    lockout (`device_unlock_lockout`), another prompt open
+    (`device_unlock_busy`), anything else (`io:device_unlock: …`).
+  * **The prompt and the background lock**: the plugin shows the prompt in
+    an activity of its own, which pauses `MainActivity` (`Suspended`). While
+    a prompt of the app's own is open (`Core::begin_own_prompt` until the
+    plugin call returns; at most 120 s) and for 2 s after it closed
+    (`monitor::prompt_covers_pause`, pure and tested), a `Background` signal
+    does not start the background clock; if the activity is still paused
+    once the prompt has closed (the user left the app from the prompt), the
+    clock starts then. Verified in the emulator with "Sofort": setting up
+    and unlocking leave the vault open. `app://suspended` still hides
+    revealed values. One prompt at a time; the plugin call blocks the
+    command's worker thread, never Android's UI thread.
+  * **Webview**: no capability grants `biometric:*` (guard test), so the
+    page can neither prompt nor encrypt or decrypt; the commands take only
+    the prompt's texts (`{ title, reason, cancel }`, translated by the UI)
+    and answer `DeviceUnlockStatus` / `VaultInfo`.
+  * **UI**: Settings → Sicherheit: the switch for the open vault (disabled
+    without a usable sensor, with the reason). Unlock screen: "Mit
+    Fingerabdruck entsperren" when the selected vault is set up, and the
+    prompt opens **on its own** once per unlock screen as soon as the app
+    is visible (start, return after a background lock) – not after the user
+    locked by hand (a `sessionStorage` note that survives the lock's page
+    reload). Closing the prompt is no error (the password field is right
+    there). A reset vault shows a note; after the next password unlock a
+    dialog offers to set it up again ("Nicht jetzt" forgets the note).
+  * **Manifest**: the plugin's library adds its `BiometricActivity` and
+    androidx.biometric's `USE_BIOMETRIC` / `USE_FINGERPRINT` (normal
+    permissions, granted at install) to the **merged** manifest; the app's
+    own `AndroidManifest.xml` still declares none, and nothing adds
+    `INTERNET` (the APK gate checks the merged result).
+  * **Known limits**: the "reset" note lives in memory (after the process
+    ends the vault just has no fingerprint unlock any more – the switch
+    shows it off); the plugin's `status` asks Android about *weak*
+    biometrics, so a device with only weak ones (some face unlocks) offers
+    the switch and then fails at the prompt (`device_unlock_not_enrolled`);
+    the system prompt shows the app's launcher icon. iOS has no keystore
+    cipher in the plugin (pass/fail only): fingerprint unlock is Android
+    only.
 * **Phone layout** (the same React app; `src/lib/layout.mjs` decides,
   `src/lib/phone.ts` holds the hooks, `src/styles/phone.css` the styles):
   App.tsx sets `data-layout="phone"` on `<html>` when `AppInfo.platform` is
@@ -351,7 +462,13 @@ all – so no update check either: About links to the releases page instead.
     a newer revision of the open vault (`vault://changed`),
     `simulatePcPasswordChange()` one with a new master password (lock reason
     `keyChanged`), `simulateFolderLost()` lets the next sync fail with
-    `unsupported:folder_access_lost`. Narrow the
+    `unsupported:folder_access_lost`. Fingerprint unlock: the "system
+    prompt" answers after ~0.9 s with success unless
+    `setFingerprintResult("cancel" | "fail" | "lockout")` makes the next one
+    fail; `simulateNewFingerprint()` invalidates every setup (reset at its
+    next use), a synced password change resets that vault's setup;
+    `?fingerprint=on` starts with "Privat" set up, `?fingerprint=none` /
+    `?fingerprint=notEnrolled` without a usable sensor. Narrow the
     browser to phone width to see the layout; a narrow window without
     `?platform` shows the phone layout with editing (the editor is stacked
     like the detail).
@@ -370,7 +487,11 @@ CSP and everything else are inherited unchanged. CI adds
 guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
 * `AndroidManifest.xml`: **no permission at all** – in particular no
   `INTERNET` (the phone is offline by design; website icons, the leaked-
-  password check and update checks do not exist there). Only
+  password check and update checks do not exist there). The merged
+  manifest of the APK gets `USE_BIOMETRIC` and `USE_FINGERPRINT` from the
+  biometric plugin's androidx.biometric (fingerprint unlock, above) and
+  androidx.core's signature-protected `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`
+  – never `INTERNET`. Only
   `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
   dev` loads the UI from the Vite dev server on the PC. `allowBackup=
   "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
@@ -450,7 +571,9 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   and starts the monitor's background clock (`MonitorSignal::Background`);
   `Resumed` stops it (`MonitorSignal::Foreground`) and starts the throttled
   cloud-folder sync (above) – see "Background lock (phone)" under
-  "Desktop backend behaviour details". `RunEvent::Exit`/`Core::shutdown` practically never
+  "Desktop backend behaviour details". The fingerprint prompt is an
+  activity of the app's own and does not start the background clock (see
+  "Fingerprint unlock (phone)"). `RunEvent::Exit`/`Core::shutdown` practically never
   run on Android (the process is killed, not quit): nothing
   security-relevant depends on them. tao ignores the first `onResume` of
   every activity: an activity the system recreates (rare with the
@@ -490,8 +613,8 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
 * Capabilities are split by platform (`platforms` in the capability file):
   `capabilities/default.json` (windows, linux, macOS) and
   `capabilities/mobile.json` (android, iOS – `core:default` and
-  `core:event:default` only). Neither grants the clipboard-manager or
-  opener plugin to the webview, and the opener is registered with
+  `core:event:default` only). Neither grants the clipboard-manager,
+  opener or biometric plugin to the webview, and the opener is registered with
   `open_js_links_on_click(false)` (its injected script would turn every
   `target="_blank"` click into a call of its forbidden JS command – the
   link would do nothing).
@@ -734,7 +857,10 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Phone only: `<data_dir>/sync/link.json` – the linked cloud folder and the
   last sync's results (no secrets, see "Cloud-folder sync (phone)");
-  `<data_dir>/sync/incoming/` holds a file only while the sync copies it in.
+  `<data_dir>/sync/incoming/` holds a file only while the sync copies it in;
+  `<data_dir>/device-unlock/<vault-id>.json` – a vault's master KEK sealed
+  by the Android Keystore, only while fingerprint unlock is on for it (see
+  "Fingerprint unlock (phone)").
 * Desktop, when turned on: the copies in `Settings.mirrorFolder` (outside
   the data directory; `<id>.keystead` and `<id>.keystead.attachments/`, see
   "Cloud-folder mirror (desktop) and phone link") – the app keeps working on
@@ -949,6 +1075,7 @@ impl UnlockedVault {
     pub fn path(&self) -> &Path;
     pub fn master_kek(&self) -> SecretKey;                    // copy of this session's master key-encryption key (opens the current header's wrapped_key): what device unlock stores wrapped in the platform keystore for VaultStore::unlock_with_master_kek;
                                                                // invalid after any master-password change (fresh salt; also change elsewhere → reload_if_changed = KeyChanged), unchanged by recovery-key changes; never reaches the UI layer
+    pub fn kdf_salt(&self) -> &str;                            // the header's base64 KDF salt this session's master KEK was derived with (not secret); a stored KEK whose salt differs from the file's (VaultFile::kdf.salt) is known to be stale without trying it
 }
 ```
 
@@ -1333,7 +1460,8 @@ interface Settings {
   updateCheck: boolean;                      // background update check (15 s after start, every 6 h); default true
   updateChannel: "beta" | "stable";          // default "stable" (stable releases only); "beta" = betas + stable releases
   lockInBackgroundSeconds: number | null;    // mobile: lock the open vault this many seconds after the app went to the background; null = never, 0 = immediately; default 60, clamped to 24 h. The desktop ignores it
-  deviceUnlock: boolean;                     // mobile: unlock with the device's biometrics (opt-in); default false. The desktop ignores it
+  deviceUnlock: boolean;                     // mobile: fingerprint unlock (opt-in); default false. Only the device-unlock commands change it – save_settings keeps the stored value
+                                             // (see "Fingerprint unlock (phone)"). The desktop ignores it
   mirrorFolder: string | null;               // desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (absolute path) with the encrypted copies of the vaults
                                              // opened in the app, for the phone; null = off (default). A changed value is checked before saving
                                              // (see "Cloud-folder mirror (desktop) and phone link"). The phone ignores it
@@ -1441,8 +1569,12 @@ history. The bridge's own writes are not affected.
 | `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read access to the choice, links it in place of the previous one (whose permission is given back) and syncs; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
 | `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's read permission back and removes `link.json`; the vault copies stay on the phone (and are no longer updated) |
+| `device_unlock_status` | – | **Phone only** (see "Fingerprint unlock (phone)"). `DeviceUnlockStatus { available: boolean, unavailableReason: "noHardware"\|"notEnrolled"\|"other"\|null, enabled: boolean, vaults: string[], invalidated: string[] }` – whether the fingerprint can be used now, `Settings.deviceUnlock`, the vaults set up and the ones reset since the start; removes blobs that no longer fit (feature off, vault gone, another salt). No prompt, not user activity |
+| `enable_device_unlock` | `prompt: { title, reason, cancel }, pageVaultId` | **Phone only.** `DeviceUnlockStatus` – the system prompt seals the open vault's master KEK, stores the blob and turns `deviceUnlock` on. `locked` (not the page's vault), `unsupported:device_unlock_unavailable` / `device_unlock_not_enrolled` (no prompt), `unsupported:device_unlock_cancelled` / `_failed` / `_lockout` / `_busy` (nothing stored) |
+| `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
+| `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
 `PairedClient { id, name, createdAt, lastSeenAt }`,
@@ -1787,7 +1919,9 @@ vault without recovery key is dropped silently.
   lands right on the return) –, then resets the clock; so a return before
   the delay
   (or, with "at once", before the clipboard clear) finds the vault still
-  open. Locks also while no vault is open (lock epoch). The desktop ignores
+  open. Locks also while no vault is open (lock epoch). The app's own
+  fingerprint prompt pauses the activity without starting the clock (see
+  "Fingerprint unlock (phone)"). The desktop ignores
   the setting; the phone has no `lockOnSystemLock`/clock-jump detection.
 * The vault file is checked every 2 s (`reload_if_changed`) → `vault://changed`.
 * Locking (any reason) also clears a secret copied through the app

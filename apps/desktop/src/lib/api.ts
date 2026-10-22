@@ -14,6 +14,8 @@ import type {
   GeneratorOptions,
   HealthReport,
   ConflictMode,
+  DeviceUnlockPrompt,
+  DeviceUnlockStatus,
   ImportAnalysis,
   ImportFormat,
   ImportReport,
@@ -276,6 +278,20 @@ export const api = {
   syncNow: () => call<FolderStatus>("sync_now"),
   /** Forgets the folder; the vault copies stay on the phone. */
   unlinkFolder: () => call<FolderStatus>("unlink_folder"),
+
+  // Fingerprint unlock – phone only (see "Fingerprint unlock (phone)" in
+  // ARCHITECTURE.md). The master KEK is sealed by the Android Keystore; the
+  // page only ever sees this status.
+  /** Whether the device can use the fingerprint and which vaults open with it (no prompt). */
+  deviceUnlockStatus: () => call<DeviceUnlockStatus>("device_unlock_status"),
+  /** Sets up fingerprint unlock for the open vault (the system prompt confirms it). */
+  enableDeviceUnlock: (prompt: DeviceUnlockPrompt) =>
+    call<DeviceUnlockStatus>("enable_device_unlock", { prompt, pageVaultId }),
+  /** Removes it for one vault, or for all (`null`); the setting goes off with the last one. */
+  disableDeviceUnlock: (vaultId: string | null) => call<DeviceUnlockStatus>("disable_device_unlock", { vaultId }),
+  /** Unlocks with the fingerprint (the system prompt); errors `unsupported:device_unlock_*`. */
+  unlockWithDevice: (vaultId: string, prompt: DeviceUnlockPrompt) =>
+    opened(call<VaultInfo>("unlock_with_device", { vaultId, prompt })),
 
   /** Checks the configured update channel now (network errors → `io:<detail>`). */
   checkUpdate: () => call<UpdateInfo>("check_update"),

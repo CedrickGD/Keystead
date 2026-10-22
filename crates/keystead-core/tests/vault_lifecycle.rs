@@ -1340,10 +1340,16 @@ fn master_kek_survives_recovery_key_changes_but_not_password_changes() {
     v.save_item(login("A", "a", "secret-a", "")).unwrap();
     let kek = v.master_kek();
     let id = v.id().to_owned();
+    // The salt the KEK belongs to is the file header's.
+    let salt = v.kdf_salt().to_owned();
+    let on_disk = |store: &VaultStore| VaultFile::read(&store.vault_path(&id)).unwrap().kdf.salt;
+    assert_eq!(on_disk(&store), salt);
 
     // Recovery-key operations rotate the vault key but keep the master KEK.
     v.create_recovery_key().unwrap();
     assert_eq!(v.master_kek(), kek);
+    assert_eq!(v.kdf_salt(), salt);
+    assert_eq!(on_disk(&store), salt);
     assert_eq!(
         store
             .unlock_with_master_kek(&id, &kek)
@@ -1370,6 +1376,9 @@ fn master_kek_survives_recovery_key_changes_but_not_password_changes() {
     let code = v.change_master_password(PW, "new-pw").unwrap().unwrap();
     let kek2 = v.master_kek();
     assert_ne!(kek2, kek);
+    // ... with a fresh salt, in the session and in the file.
+    assert_ne!(v.kdf_salt(), salt);
+    assert_eq!(on_disk(&store), v.kdf_salt());
     assert!(matches!(
         store.unlock_with_master_kek(&id, &kek),
         Err(Error::WrongPassword)

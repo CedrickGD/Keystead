@@ -7,6 +7,7 @@ import {
   ExternalLink,
   FileDown,
   FileUp,
+  FingerprintPattern,
   FolderOpen,
   FolderSync,
   RefreshCw,
@@ -41,6 +42,7 @@ import type {
   ThemeSetting,
   UpdateChannel,
   UpdateInfo,
+  VaultInfo,
 } from "../../lib/types";
 import { formatBytes } from "../../lib/utils";
 import { useT } from "../../i18n";
@@ -58,6 +60,7 @@ import { useUpdate } from "../../state/update";
 import { ChangeMasterPasswordDialog, DeleteVaultDialog, ExportDialog, RecoveryKeyDialog } from "./dialogs";
 import { WebsiteIconsSetting } from "./WebsiteIconsSetting";
 import { useFolderSync } from "../../state/sync";
+import { useDeviceUnlock } from "../../state/deviceUnlock";
 import { useMirror } from "../../state/mirror";
 import {
   SyncFileList,
@@ -259,6 +262,7 @@ function SecuritySection() {
           />
         </SettingRow>
       )}
+      {phone && vault && <FingerprintSetting vault={vault} />}
       {!phone && (
         <SettingRow title={t("settings.lockOnSystemLock")} description={t("settings.lockOnSystemLockDesc")}>
           <Switch
@@ -321,6 +325,63 @@ function SecuritySection() {
         />
       )}
     </SettingsSection>
+  );
+}
+
+/**
+ * Phone: "Mit Fingerabdruck entsperren" for the open vault – sets it up (the
+ * system prompt confirms it) or removes it. See state/deviceUnlock.tsx.
+ */
+function FingerprintSetting({ vault }: { vault: VaultInfo }) {
+  const { t } = useT();
+  const deviceUnlock = useDeviceUnlock();
+  const [busy, setBusy] = useState(false);
+  if (!deviceUnlock) return null;
+  const { status } = deviceUnlock;
+  const setUp = Boolean(status?.enabled && status.vaults.includes(vault.id));
+  const unavailable = status && !status.available ? (status.unavailableReason ?? "other") : null;
+  const unavailableText = {
+    noHardware: t("deviceUnlock.unavailableNoHardware"),
+    notEnrolled: t("deviceUnlock.unavailableNotEnrolled"),
+    other: t("deviceUnlock.unavailableOther"),
+  };
+  const change = async (on: boolean) => {
+    setBusy(true);
+    try {
+      if (on) await deviceUnlock.enable(vault.name);
+      else await deviceUnlock.disable(vault.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingRow
+      title={
+        <span className="setting-title-with-chip">
+          <FingerprintPattern size={16} aria-hidden />
+          {t("settings.deviceUnlock")}
+        </span>
+      }
+      description={
+        <>
+          {t("settings.deviceUnlockDesc")}
+          {unavailable && (
+            <>
+              {" "}
+              <strong>{unavailableText[unavailable]}</strong>
+            </>
+          )}
+        </>
+      }
+    >
+      <Switch
+        checked={setUp}
+        // Turning it off always works; on needs a usable sensor.
+        disabled={busy || !status || (!setUp && Boolean(unavailable))}
+        onChange={(on) => void change(on)}
+        label={t("settings.deviceUnlock")}
+      />
+    </SettingRow>
   );
 }
 

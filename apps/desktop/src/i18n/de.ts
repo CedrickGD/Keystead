@@ -69,6 +69,17 @@ export const de = {
   "error.unsupported.folder_picker": "Auf diesem Gerät gibt es keine Ordnerauswahl.",
   "error.unsupported.sync_file_too_large": "Die Datei ist zu groß (höchstens 64 MB).",
   "error.unsupported.platform": "Auf diesem Gerät nicht verfügbar.",
+  "error.unsupported.device_unlock_cancelled": "Abgebrochen.",
+  "error.unsupported.device_unlock_failed": "Fingerabdruck nicht erkannt. Versuche es noch einmal oder nutze dein Master-Passwort.",
+  "error.unsupported.device_unlock_lockout":
+    "Zu viele Versuche – der Fingerabdrucksensor ist vorübergehend gesperrt. Entsperre mit deinem Master-Passwort.",
+  "error.unsupported.device_unlock_unavailable": "Der Fingerabdrucksensor ist gerade nicht verfügbar.",
+  "error.unsupported.device_unlock_not_enrolled":
+    "Auf diesem Gerät ist kein Fingerabdruck eingerichtet. Richte ihn in den Android-Einstellungen ein.",
+  "error.unsupported.device_unlock_invalid":
+    "Entsperren mit Fingerabdruck wurde zurückgesetzt, weil es den Tresor nicht mehr öffnet (neuer Fingerabdruck oder neues Master-Passwort). Entsperre mit deinem Master-Passwort – danach kannst du es wieder einrichten.",
+  "error.unsupported.device_unlock_not_set": "Für diesen Tresor ist kein Entsperren mit Fingerabdruck eingerichtet.",
+  "error.unsupported.device_unlock_busy": "Die Abfrage des Fingerabdrucks ist schon offen.",
   "error.input.mirror_folder": "Das ist kein gültiger Ordner. Wähle den Ordner über „Ordner ändern“ aus.",
   "error.input.mirror_folder_data_dir":
     "Dieser Ordner gehört zu Keystead selbst (Datenordner oder Tresor-Ordner einer Installation). Wähle einen Ordner in deiner Cloud, z. B. „Nextcloud\\Keystead“.",
@@ -218,6 +229,26 @@ export const de = {
   "unlock.forgot": "Passwort vergessen?",
   "unlock.createNew": "Neuen Tresor erstellen",
   "unlock.footer": "Lokal verschlüsselt, ohne Cloud",
+
+  // Fingerprint unlock (phone)
+  "deviceUnlock.button": "Mit Fingerabdruck entsperren",
+  "deviceUnlock.promptTitle": "Keystead entsperren",
+  "deviceUnlock.promptReason": "Öffne den Tresor „{name}“ mit deinem Fingerabdruck.",
+  "deviceUnlock.promptCancel": "Passwort eingeben",
+  "deviceUnlock.setupPromptTitle": "Fingerabdruck einrichten",
+  "deviceUnlock.setupPromptReason": "Bestätige mit deinem Fingerabdruck, damit sich „{name}“ künftig damit öffnen lässt.",
+  "deviceUnlock.enabled": "„{name}“ lässt sich jetzt mit deinem Fingerabdruck entsperren",
+  "deviceUnlock.disabled": "Entsperren mit Fingerabdruck ist für diesen Tresor aus",
+  "deviceUnlock.resetHint":
+    "Entsperren mit Fingerabdruck wurde für diesen Tresor zurückgesetzt – zum Beispiel, weil ein neuer Fingerabdruck eingerichtet oder das Master-Passwort am PC geändert wurde. Entsperre mit deinem Master-Passwort; danach kannst du es wieder einrichten.",
+  "deviceUnlock.offerTitle": "Fingerabdruck wieder einrichten?",
+  "deviceUnlock.offerText":
+    "Das Entsperren mit Fingerabdruck für „{name}“ wurde zurückgesetzt. Möchtest du es jetzt wieder einrichten? Du kannst es auch später unter Einstellungen → Sicherheit einschalten.",
+  "deviceUnlock.offerConfirm": "Einrichten",
+  "deviceUnlock.offerLater": "Nicht jetzt",
+  "deviceUnlock.unavailableNoHardware": "Dieses Gerät hat keinen Fingerabdrucksensor.",
+  "deviceUnlock.unavailableNotEnrolled": "Richte zuerst in den Android-Einstellungen eine Displaysperre und einen Fingerabdruck ein.",
+  "deviceUnlock.unavailableOther": "Der Fingerabdrucksensor ist gerade nicht verfügbar.",
 
   // Import
   "import.title": "Importieren",
@@ -765,7 +796,7 @@ export const de = {
   "settings.iconsClearedReload": "Icons gelöscht – sie werden gleich neu geladen",
   "settings.security": "Sicherheit",
   "settings.securityDesc": "Automatisches Sperren, Zwischenablage, Master-Passwort und Wiederherstellung.",
-  "settings.securityDescPhone": "Automatisches Sperren und Zwischenablage. Master-Passwort und Wiederherstellung änderst du am PC.",
+  "settings.securityDescPhone": "Automatisches Sperren, Fingerabdruck und Zwischenablage. Master-Passwort und Wiederherstellung änderst du am PC.",
   "settings.sync": "Synchronisierung",
   "settings.syncShort": "Sync",
   "settings.syncDesc": "Deine Tresore kommen aus einem Ordner deiner eigenen Cloud aufs Handy – nur in diese Richtung. Keystead ändert dort nichts.",
@@ -849,6 +880,9 @@ export const de = {
   "settings.lockInBackgroundDesc":
     "Wenn du Keystead verlässt, wird der Tresor nach dieser Zeit gesperrt. Ein gerade kopiertes Passwort bleibt einfügbar, bis die Zwischenablage geleert wird.",
   "settings.immediately": "Sofort",
+  "settings.deviceUnlock": "Mit Fingerabdruck entsperren",
+  "settings.deviceUnlockDesc":
+    "Öffnet diesen Tresor mit deinem Fingerabdruck statt mit dem Master-Passwort – ohne PIN oder Muster als Ersatz. Dein Master-Passwort bleibt der Schlüssel: Nach einem neuen Fingerabdruck oder einem am PC geänderten Passwort fragt Keystead wieder danach.",
   "settings.lockOnSystemLock": "Beim Sperren des Computers sperren",
   "settings.lockOnSystemLockDesc": "Sperrt Keystead, sobald du deinen Computer sperrst (unter Windows: Win + L).",
   "settings.clipboard": "Zwischenablage leeren",

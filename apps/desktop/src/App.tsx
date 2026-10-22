@@ -19,6 +19,7 @@ import { MainScreen } from "./screens/main/MainScreen";
 import { IconsProvider } from "./state/icons";
 import { BreachesProvider } from "./state/breaches";
 import { FolderSyncProvider } from "./state/sync";
+import { DeviceUnlockProvider, skipNextAutoPrompt } from "./state/deviceUnlock";
 import { MirrorProvider } from "./state/mirror";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
@@ -277,13 +278,15 @@ function AppRoot({
   );
 
   const lock = useCallback(async () => {
+    // Phone, locked by hand: the unlock screen does not open the fingerprint prompt on its own.
+    if (mobile) skipNextAutoPrompt();
     try {
       await api.lockVault();
     } catch (err) {
       toast.error(errorText(err));
     }
     await toUnlockOrWelcome();
-  }, [errorText, toUnlockOrWelcome, toast]);
+  }, [errorText, mobile, toUnlockOrWelcome, toast]);
 
   const ctx = useMemo<AppContextValue | null>(() => {
     if (!boot || !settings) return null;
@@ -367,14 +370,17 @@ function AppRoot({
       {/* The phone's cloud-folder sync (no such commands on the desktop) and the
           desktop's copies for it ("Kopie im Cloud-Ordner aktuell halten"). */}
       <FolderSyncProvider enabled={mobile} onStatus={onSyncStatus}>
-        <MirrorProvider enabled={!mobile}>
-          {mobile ? (
-            frame
-          ) : (
-            // Files dragged onto the window: the import dialog (unlocked) or a hint.
-            <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
-          )}
-        </MirrorProvider>
+        {/* The phone's fingerprint unlock (no such commands on the desktop). */}
+        <DeviceUnlockProvider enabled={mobile}>
+          <MirrorProvider enabled={!mobile}>
+            {mobile ? (
+              frame
+            ) : (
+              // Files dragged onto the window: the import dialog (unlocked) or a hint.
+              <FileDropProvider noTarget={ctx.vaults.length === 0 ? "create" : "unlock"}>{frame}</FileDropProvider>
+            )}
+          </MirrorProvider>
+        </DeviceUnlockProvider>
       </FolderSyncProvider>
     </AppContext.Provider>
   );

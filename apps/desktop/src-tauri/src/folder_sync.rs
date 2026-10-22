@@ -488,6 +488,10 @@ fn sync_vault_file(
                 result.outcome = Outcome::Failed;
                 result.error = Some(e.code());
                 result.password_changed = false;
+            } else {
+                // A new master password (another salt): the fingerprint
+                // unlock's sealed KEK opens nothing any more.
+                crate::device_unlock::forget_if_stale(&core.data_dir(), id, &remote_file.kdf.salt);
             }
         }
         // Still the revision whose new password the last sync reported.
@@ -960,12 +964,29 @@ mod tests {
         let mut link = link();
         sync_folder(&core, &folder, &mut link, 1).unwrap();
         core.unlock(v.id(), "pc-pw").unwrap();
+        // Fingerprint unlock set up on the phone (its sealed KEK belongs
+        // to this salt).
+        let fingerprint = crate::device_unlock::Blob {
+            version: 1,
+            vault_id: v.id().to_owned(),
+            kdf_salt: core.read(|o| o.kdf_salt().to_owned()).unwrap(),
+            sealed: "sealed".into(),
+            created_at: 1,
+        };
+        crate::device_unlock::store_blob(&core.data_dir(), &fingerprint).unwrap();
+        let vault_id = v.id().to_owned();
+        let fingerprint_set_up = || {
+            crate::device_unlock::load_blob(&core.data_dir(), &vault_id)
+                .unwrap()
+                .is_some()
+        };
 
         // A new item on the PC: the open vault shows it at once.
         note(&mut v, "neu am PC");
         pc.mirror(&v);
         sync_folder(&core, &folder, &mut link, 2).unwrap();
         assert_eq!(core.read(|o| o.items().len()).unwrap(), 1);
+        assert!(fingerprint_set_up(), "same master password");
         assert_eq!(
             core.emitted(),
             [(EVENT_CHANGED.to_owned(), serde_json::json!({}))]
@@ -988,6 +1009,8 @@ mod tests {
         let result = outcome_of(&link, v.id());
         assert_eq!(result.outcome, Outcome::Updated);
         assert!(result.password_changed);
+        // The fingerprint's KEK opens nothing any more: reset.
+        assert!(!fingerprint_set_up());
         assert_eq!(
             core.unlock(v.id(), "pc-pw").unwrap_err().code(),
             "wrong_password"

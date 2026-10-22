@@ -13,6 +13,9 @@
 //! * **Cloud-folder sync** (`sync`): the Kotlin folder plugin, the sync
 //!   commands and the automatic sync at start and resume (copy-in only, see
 //!   `crate::folder_sync`).
+//! * **Fingerprint unlock** (`biometric`): the Android Keystore through
+//!   `tauri-plugin-biometric` and the device-unlock commands (see
+//!   `crate::device_unlock`).
 //! * **Clipboard**: `keystead-core` has no clipboard backend on the phone
 //!   (arboard is desktop-only); [`PluginClipboard`] provides one through
 //!   `tauri-plugin-clipboard-manager`, called from Rust only – the webview
@@ -28,6 +31,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt as _;
 
 use crate::state::log;
 
+pub mod biometric;
 pub mod sync;
 
 /// Sets the data directory and installs the clipboard backend. Must run

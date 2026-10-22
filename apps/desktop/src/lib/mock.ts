@@ -28,6 +28,14 @@
 // starts with the folder set, and `simulateMirrorFolderLost(lost?)` lets
 // the copies fail with `unsupported:mirror_folder_missing` (a cloud drive
 // that is not there) until it is called with `false`.
+// The phone's fingerprint unlock (`device_unlock_status` & co.) is simulated
+// as well: the "system prompt" answers after ~0.9 s with success, unless
+// `__keysteadMock.setFingerprintResult("cancel" | "fail" | "lockout")` makes
+// the next one fail; `simulateNewFingerprint()` invalidates every setup (the
+// next fingerprint unlock resets it, like a new enrollment), a synced master
+// password change (`simulatePcPasswordChange()`) resets that vault's setup.
+// `?fingerprint=on` starts with "Privat" set up, `?fingerprint=none` /
+// `?fingerprint=notEnrolled` without a usable sensor.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -43,6 +51,7 @@ import type {
   BrowserId,
   BrowserInfo,
   BrowserStatus,
+  DeviceUnlockStatus,
   ExportFormat,
   Folder,
   FolderStatus,
@@ -119,7 +128,23 @@ interface MockState {
   lastActivity: number;
   sync: MockSync;
   mirror: MockMirror;
+  deviceUnlock: MockDeviceUnlock;
 }
+
+/** The phone's fingerprint unlock (see the header comment). */
+interface MockDeviceUnlock {
+  unavailable: DeviceUnlockStatus["unavailableReason"];
+  /** Set-up vaults → the master password at setup (stands in for the KDF salt of the sealed KEK). */
+  sealed: Map<string, string>;
+  /** Setups removed because they no longer opened their vault. */
+  invalidated: Set<string>;
+  /** Setups whose keystore key is gone (a new fingerprint): reset at their next use. */
+  stale: Set<string>;
+  /** What the next prompt does. */
+  next: MockFingerprintResult;
+}
+
+export type MockFingerprintResult = "ok" | "cancel" | "fail" | "lockout";
 
 /** The desktop's cloud-folder mirror (see the header comment). */
 interface MockMirror {
@@ -271,7 +296,7 @@ function initState(): MockState {
       // The app's default is "stable"; the mock starts on "beta" so the fake update flows (?update=…) show.
       updateChannel: "beta",
       lockInBackgroundSeconds: 60,
-      deviceUnlock: false,
+      deviceUnlock: phone && params.get("fingerprint") === "on" && !empty,
       mirrorFolder: !phone && params.get("mirror") === "on" ? MOCK_MIRROR_FOLDER : null,
     },
     appInfo: {
@@ -296,6 +321,17 @@ function initState(): MockState {
     lastActivity: now,
     sync: initSync(phone && params.get("sync") === "linked", empty, now),
     mirror: { lastMirroredAt: null, lastError: null, lost: false },
+    deviceUnlock: initDeviceUnlock(phone ? params.get("fingerprint") : null, empty),
+  };
+}
+
+function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock {
+  return {
+    unavailable: mode === "none" ? "noHardware" : mode === "notEnrolled" ? "notEnrolled" : null,
+    sealed: new Map(mode === "on" && !empty ? [[PRIVATE_VAULT_ID, DEMO_PASSWORD]] : []),
+    invalidated: new Set(),
+    stale: new Set(),
+    next: "ok",
   };
 }
 
@@ -543,6 +579,10 @@ export interface MockDevHelpers {
   simulateFolderLost: () => void;
   /** Desktop mirror: the copies fail as if the cloud folder were gone (`false`: it is back). */
   simulateMirrorFolderLost: (lost?: boolean) => void;
+  /** Fingerprint unlock: what the next "system prompt" does (default "ok"). */
+  setFingerprintResult: (result: MockFingerprintResult) => void;
+  /** Fingerprint unlock: a new fingerprint was enrolled – every setup is reset at its next use. */
+  simulateNewFingerprint: () => void;
   /** Announces the fake update (`update://available`); `portable` → download link instead of install. */
   simulateUpdate: (portable?: boolean) => void;
   /** Drags a file over the window (the drop overlay stays until `dropFile` / `cancelDrag`). Default: a Chrome CSV export. */
@@ -578,6 +618,13 @@ function installDevHelpers(): void {
     simulateMirrorFolderLost: (lost = true) => {
       getState().mirror.lost = lost;
       scheduleMirrorPass();
+    },
+    setFingerprintResult: (result: MockFingerprintResult) => {
+      getState().deviceUnlock.next = result;
+    },
+    simulateNewFingerprint: () => {
+      const du = getState().deviceUnlock;
+      du.stale = new Set(du.sealed.keys());
     },
     simulateUpdate: (portable?: boolean) => announceMockUpdate(portable),
     dragFile: (path?: string | string[]) => emit("mock://drag-drop", { type: "enter", paths: dropPaths(path) }),
@@ -1126,6 +1173,8 @@ async function mockSyncFolder(): Promise<FolderStatus> {
       if (vault) {
         passwordChanged = vault.password !== copy.password;
         vault.password = copy.password;
+        // Like `device_unlock::forget_if_stale`: the sealed KEK opens nothing any more.
+        if (passwordChanged) mockInvalidateDeviceUnlock(id);
         for (let n = 0; n < copy.newNotes; n += 1) {
           vault.data.items.push({
             id: uuid(),
@@ -1180,6 +1229,48 @@ function mockAttachmentsOfVault(id: string): number {
 
 function getStateOrNull(): MockState | null {
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Fingerprint unlock (phone, see the header comment)
+// ---------------------------------------------------------------------------
+
+/** Like `device_unlock::status`: off → no setup kept; setups that no longer fit are reset. */
+function deviceUnlockStatus(): DeviceUnlockStatus {
+  const s = getState();
+  const du = s.deviceUnlock;
+  if (!s.settings.deviceUnlock) du.sealed.clear();
+  for (const [id, password] of [...du.sealed]) {
+    const vault = s.vaults.get(id);
+    if (!vault) du.sealed.delete(id);
+    else if (vault.password !== password) mockInvalidateDeviceUnlock(id);
+  }
+  return {
+    available: du.unavailable === null,
+    unavailableReason: du.unavailable,
+    enabled: s.settings.deviceUnlock,
+    vaults: [...du.sealed.keys()].sort(),
+    invalidated: [...du.invalidated].sort(),
+  };
+}
+
+/** The setup of `id` no longer opens its vault: removed and remembered as reset. */
+function mockInvalidateDeviceUnlock(id: string): void {
+  const du = getState().deviceUnlock;
+  if (!du.sealed.delete(id)) return;
+  du.stale.delete(id);
+  du.invalidated.add(id);
+}
+
+/** The system's fingerprint prompt: the user "touches the sensor" after ~0.9 s (see `setFingerprintResult`). */
+async function mockFingerprintPrompt(): Promise<void> {
+  await sleep(900);
+  const du = getState().deviceUnlock;
+  const result = du.next;
+  du.next = "ok";
+  if (result === "cancel") fail("unsupported:device_unlock_cancelled");
+  if (result === "fail") fail("unsupported:device_unlock_failed");
+  if (result === "lockout") fail("unsupported:device_unlock_lockout");
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,7 +1710,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return clone(s.settings);
 
     case "save_settings": {
-      const next = validateSettings(args.settings);
+      // Only the device-unlock commands change `deviceUnlock` (like `from_the_page`).
+      const next = { ...validateSettings(args.settings), deviceUnlock: s.settings.deviceUnlock };
       const folderChanged = next.mirrorFolder !== s.settings.mirrorFolder;
       // The phone ignores the field (no mirror there).
       if (folderChanged && next.mirrorFolder && !s.appInfo.readOnly) checkMirrorFolder(next.mirrorFolder);
@@ -1735,6 +1827,63 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       emitSyncStatus();
       return folderStatus();
 
+    case "device_unlock_status":
+      return deviceUnlockStatus();
+
+    case "enable_device_unlock": {
+      const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+      if (!vault || optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      const du = s.deviceUnlock;
+      if (du.unavailable === "notEnrolled") fail("unsupported:device_unlock_not_enrolled");
+      if (du.unavailable) fail("unsupported:device_unlock_unavailable");
+      s.lastActivity = Date.now();
+      await mockFingerprintPrompt();
+      du.sealed.set(vault.info.id, vault.password);
+      du.invalidated.delete(vault.info.id);
+      du.stale.delete(vault.info.id);
+      s.settings.deviceUnlock = true;
+      return deviceUnlockStatus();
+    }
+
+    case "disable_device_unlock": {
+      const du = s.deviceUnlock;
+      const id = optStr(args, "vaultId");
+      if (id) {
+        du.sealed.delete(id);
+        du.invalidated.delete(id);
+      } else {
+        du.sealed.clear();
+        du.invalidated.clear();
+      }
+      if (du.sealed.size === 0) s.settings.deviceUnlock = false;
+      s.lastActivity = Date.now();
+      return deviceUnlockStatus();
+    }
+
+    case "unlock_with_device": {
+      const id = str(args, "vaultId");
+      const du = s.deviceUnlock;
+      if (!s.settings.deviceUnlock || !du.sealed.has(id)) fail("unsupported:device_unlock_not_set");
+      const vault = s.vaults.get(id);
+      if (!vault) {
+        du.sealed.delete(id);
+        fail("not_found");
+      }
+      // A new master password: no prompt for a KEK that cannot open the vault.
+      if (du.sealed.get(id) !== vault.password) {
+        mockInvalidateDeviceUnlock(id);
+        fail("unsupported:device_unlock_invalid");
+      }
+      await mockFingerprintPrompt();
+      if (du.stale.has(id)) {
+        mockInvalidateDeviceUnlock(id);
+        fail("unsupported:device_unlock_invalid");
+      }
+      s.unlockedId = id;
+      s.lastActivity = Date.now();
+      return clone(vault.info);
+    }
+
     default:
       fail(`unsupported:unknown command ${command}`);
   }
@@ -1768,6 +1917,10 @@ const PHONE_COMMANDS = new Set([
   "link_folder",
   "sync_now",
   "unlink_folder",
+  "device_unlock_status",
+  "enable_device_unlock",
+  "disable_device_unlock",
+  "unlock_with_device",
 ]);
 
 export async function mockInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {

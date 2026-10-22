@@ -27,6 +27,12 @@
 //! last check – a long absence locks even if Android froze the cached
 //! process the whole time and no tick ran – and resets. The desktop
 //! ignores the setting; a clock jump means nothing on a phone.
+//!
+//! The app's own fingerprint prompt (`mobile::biometric`) is an activity
+//! of its own, so it pauses the main activity too: an `onPause` while that
+//! prompt is open ([`prompt_covers_pause`]) does not start the background
+//! clock. If the activity is still paused once the prompt has closed (the
+//! user left the app from the prompt), the clock starts then.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Weak;
@@ -46,6 +52,35 @@ const RELOAD_INTERVAL: Duration = Duration::from_secs(2);
 /// A gap this large between two ticks means the computer was asleep.
 #[cfg(desktop)]
 const SLEEP_JUMP: Duration = Duration::from_secs(120);
+/// Phone: an `onPause` this long after the app's own prompt closed still
+/// belongs to it (the activity result arrives before `onResume`).
+#[cfg(any(mobile, test))]
+const PROMPT_GRACE: Duration = Duration::from_secs(2);
+/// Phone: a prompt open longer than this no longer holds the background
+/// clock back (a prompt that never answers must not keep the vault open).
+#[cfg(any(mobile, test))]
+const PROMPT_MAX: Duration = Duration::from_secs(120);
+
+/// Phone: when the app's own system prompt (fingerprint) was opened and
+/// closed (`Core::begin_own_prompt`).
+#[cfg(any(mobile, test))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PromptSpan {
+    pub opened: Option<Instant>,
+    pub closed: Option<Instant>,
+}
+
+/// Whether an `onPause` at `now` is the app's own prompt rather than the
+/// user leaving the app (pure): the prompt is open (at most
+/// [`PROMPT_MAX`]) or closed less than [`PROMPT_GRACE`] ago.
+#[cfg(any(mobile, test))]
+pub fn prompt_covers_pause(span: PromptSpan, now: Instant) -> bool {
+    match (span.opened, span.closed) {
+        (Some(opened), None) => now.saturating_duration_since(opened) < PROMPT_MAX,
+        (Some(_), Some(closed)) => now.saturating_duration_since(closed) < PROMPT_GRACE,
+        _ => false,
+    }
+}
 
 /// Messages to the monitor thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +144,7 @@ fn run(core: &Weak<Core>, signals: &Receiver<MonitorSignal>) {
             #[cfg(desktop)]
             Some(MonitorSignal::SystemLock) => lock_for_system(&core),
             #[cfg(mobile)]
-            Some(MonitorSignal::Background) => background.enter(),
+            Some(MonitorSignal::Background) => background.enter(core.own_prompt_covers_pause()),
             #[cfg(mobile)]
             Some(MonitorSignal::Foreground) => background.leave(&core),
             None => {}
@@ -204,13 +239,19 @@ fn background_lock_due(
 #[derive(Default)]
 struct BackgroundTimer {
     since: Option<(Instant, SystemTime)>,
+    /// Paused behind the app's own prompt: the clock starts if the
+    /// activity is still paused once the prompt has closed.
+    behind_prompt: bool,
 }
 
 #[cfg(mobile)]
 impl BackgroundTimer {
-    /// `Suspended`: starts the clock (a repeated signal keeps the first).
-    fn enter(&mut self) {
-        if self.since.is_none() {
+    /// `Suspended`: starts the clock (a repeated signal keeps the first) –
+    /// unless the app's own prompt caused it.
+    fn enter(&mut self, behind_own_prompt: bool) {
+        if behind_own_prompt {
+            self.behind_prompt = true;
+        } else if self.since.is_none() {
             self.since = Some((Instant::now(), SystemTime::now()));
         }
     }
@@ -227,6 +268,12 @@ impl BackgroundTimer {
     /// Every tick: locks once the policy says so, then stops the clock (one
     /// lock per stay in the background).
     fn check(&mut self, core: &Core) {
+        // The prompt has closed and the activity did not come back: the
+        // user left the app from the prompt.
+        if self.behind_prompt && !core.own_prompt_covers_pause() {
+            self.behind_prompt = false;
+            self.enter(false);
+        }
         let Some(in_background) = self.elapsed() else {
             return;
         };
@@ -242,6 +289,7 @@ impl BackgroundTimer {
     /// absence locks even if the process was frozen meanwhile and no tick
     /// ran –, then the clock stops.
     fn leave(&mut self, core: &Core) {
+        self.behind_prompt = false;
         catch_up_clipboard_clear();
         self.check(core);
         self.since = None;
@@ -312,6 +360,14 @@ fn check_external_change(core: &Core, last_error: &mut Option<String>) {
             *last_error = None;
             core.lock(Some(LockReason::Manual));
             core.request_mirror(&vault_id);
+            // Phone: the fingerprint unlock's sealed KEK no longer opens
+            // the file either.
+            #[cfg(mobile)]
+            crate::device_unlock::invalidate(
+                &core.data_dir(),
+                &vault_id,
+                "the master password was changed",
+            );
         }
         Err(e) => {
             // Log each distinct problem once, not every 2 s.
@@ -360,6 +416,27 @@ mod tests {
     }
 
     const S: fn(u64) -> Duration = Duration::from_secs;
+
+    #[test]
+    fn the_own_prompt_covers_a_pause_while_open_and_briefly_after() {
+        let t = Instant::now();
+        let span = |opened: Option<u64>, closed: Option<u64>| PromptSpan {
+            opened: opened.map(|s| t + S(s)),
+            closed: closed.map(|s| t + S(s)),
+        };
+        // Never opened: every pause is the user leaving.
+        assert!(!prompt_covers_pause(PromptSpan::default(), t + S(1)));
+        // Open: covered, but not for ever.
+        assert!(prompt_covers_pause(span(Some(0), None), t));
+        assert!(prompt_covers_pause(span(Some(0), None), t + S(119)));
+        assert!(!prompt_covers_pause(span(Some(0), None), t + S(120)));
+        // Closed: the resume follows at once; a pause later is a new one.
+        assert!(prompt_covers_pause(span(Some(0), Some(10)), t + S(11)));
+        assert!(!prompt_covers_pause(span(Some(0), Some(10)), t + S(12)));
+        assert!(!prompt_covers_pause(span(Some(0), Some(10)), t + S(60)));
+        // A clock read before the span (another thread) counts as covered.
+        assert!(prompt_covers_pause(span(Some(5), None), t));
+    }
 
     #[test]
     fn background_lock_never() {

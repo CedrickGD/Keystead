@@ -940,6 +940,15 @@ impl UnlockedVault {
         self.master_kek.clone()
     }
 
+    /// The base64 key-derivation salt of this session's header – the salt
+    /// [`UnlockedVault::master_kek`] was derived with. Not secret (it is in
+    /// the file's plain header); every master-password change picks a
+    /// fresh one, so a stored KEK whose salt no longer matches the file's
+    /// (`VaultFile::kdf.salt`) is known to be worthless without trying it.
+    pub fn kdf_salt(&self) -> &str {
+        &self.file.kdf.salt
+    }
+
     /// Applies `f` to a copy of the data, persists it and commits it to
     /// memory only on success.
     fn mutate<R>(&mut self, f: impl FnOnce(&mut VaultData) -> Result<R>) -> Result<R> {

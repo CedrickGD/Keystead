@@ -160,15 +160,19 @@ verschlüsselten Daten und den unverschlüsselten Dateikopf (Tresorname,
 Revision, Zeiten), nie den Inhalt; Keystead selbst verbindet sich mit keinem
 Cloud-Dienst.
 
-Was noch fehlt: Bearbeiten am Handy, Entsperren per Fingerabdruck und
-Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
+Was noch fehlt: Bearbeiten am Handy und Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
 App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
 
 Sobald ein Tresor auf dem Handy liegt: Tresor entsperren, Einträge suchen und
 ansehen, Passwörter aufdecken und kopieren (die Zwischenablage wird wie am PC
 wieder geleert), 2FA-Codes, Sicherheitsbericht, automatische Sperre. Verlässt
 du die App, sperrt sie sich nach 1 Minute (einstellbar: sofort, 1 min, 5 min,
-nie). Schon jetzt gilt: Die App hat keinerlei Internetzugriff, verhindert
+nie). **Mit Fingerabdruck entsperren** (Einstellungen → Sicherheit, aus, bis
+du es einschaltest): Der Tresorschlüssel liegt dann vom Android-Keystore
+versiegelt auf dem Handy und wird nur nach deinem Fingerabdruck freigegeben –
+ohne PIN oder Muster als Ersatz. Nach einem neu eingerichteten Fingerabdruck
+oder einem am PC geänderten Master-Passwort fragt Keystead wieder nach dem
+Passwort. Schon jetzt gilt: Die App hat keinerlei Internetzugriff, verhindert
 Screenshots und wird von Android nicht in die Cloud gesichert.
 
 ### Browser-Erweiterung einrichten
@@ -235,7 +239,7 @@ keystead-cli generate --length 24 Passwort erzeugen (--passphrase für eine Pass
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portabler Modus | Ordner `Keystead-Data` neben `Keystead.exe` |
-| Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht; dazu `sync/link.json` (der verbundene Cloud-Ordner, ohne Geheimnisse) |
+| Android | App-eigener Ordner `/data/user/0/io.github.cedrickgd.keystead` – nur für die App lesbar, wird beim Deinstallieren gelöscht; dazu `sync/link.json` (der verbundene Cloud-Ordner, ohne Geheimnisse) und, wenn eingeschaltet, `device-unlock/<Tresor-ID>.json` (der vom Android-Keystore versiegelte Schlüssel für das Entsperren per Fingerabdruck) |
 | Cloud-Kopie (wenn eingeschaltet) | der Ordner aus **Einstellungen → Handy**: `<id>.keystead` und `<id>.keystead.attachments\` – verschlüsselte Kopien; gearbeitet wird weiter im Datenordner |
 
 Darin: `vaults\<id>.keystead` (verschlüsselter Tresor, plus `.bak` mit dem vorherigen
@@ -450,14 +454,18 @@ names are vault ids. Your cloud provider sees the encrypted data and the
 unencrypted file header (vault name, revision, times), never the content;
 Keystead itself connects to no cloud service.
 
-Still missing: editing on the phone, fingerprint unlock and filling in other
-apps. Uninstalling the app makes Android delete its data – including the
+Still missing: editing on the phone and filling in other apps. Uninstalling the app makes Android delete its data – including the
 vaults on the phone (the cloud folder is not touched).
 
 Once a vault is on the phone: unlock it, search and view items, reveal and
 copy passwords (the clipboard is cleared again as on the PC), 2FA codes, the
 security report, auto-lock. When you leave the app it locks after 1 minute
-(adjustable: immediately, 1 min, 5 min, never). Already now: the app has no
+(adjustable: immediately, 1 min, 5 min, never). **Unlock with fingerprint**
+(Settings → Security, off until you turn it on): the vault key is then kept on
+the phone sealed by the Android Keystore and released only after your
+fingerprint – no PIN or pattern instead. After a newly added fingerprint or a
+master password changed on the PC, Keystead asks for the password again.
+Already now: the app has no
 internet access at all, blocks screenshots and is not backed up to the cloud
 by Android.
 
@@ -524,7 +532,7 @@ the shell history may see it).
 | Linux | `~/.local/share/keystead` |
 | macOS | `~/Library/Application Support/Keystead` |
 | Portable mode | `Keystead-Data` folder next to `Keystead.exe` |
-| Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled; plus `sync/link.json` (the linked cloud folder, no secrets) |
+| Android | the app's private folder `/data/user/0/io.github.cedrickgd.keystead` – readable by the app only, removed when the app is uninstalled; plus `sync/link.json` (the linked cloud folder, no secrets) and, when turned on, `device-unlock/<vault id>.json` (the key for fingerprint unlock, sealed by the Android Keystore) |
 | Cloud copy (when turned on) | the folder from **Settings → Phone**: `<id>.keystead` and `<id>.keystead.attachments/` – encrypted copies; the app keeps working in the data folder |
 
 It contains `vaults/<id>.keystead` (the encrypted vault, plus a `.bak` with the

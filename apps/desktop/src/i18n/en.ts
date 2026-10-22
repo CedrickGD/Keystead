@@ -69,6 +69,16 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.folder_picker": "This device has no folder picker.",
   "error.unsupported.sync_file_too_large": "The file is too large (64 MB at most).",
   "error.unsupported.platform": "Not available on this device.",
+  "error.unsupported.device_unlock_cancelled": "Cancelled.",
+  "error.unsupported.device_unlock_failed": "Fingerprint not recognised. Try again or use your master password.",
+  "error.unsupported.device_unlock_lockout":
+    "Too many attempts – the fingerprint sensor is locked for a while. Unlock with your master password.",
+  "error.unsupported.device_unlock_unavailable": "The fingerprint sensor is not available right now.",
+  "error.unsupported.device_unlock_not_enrolled": "No fingerprint is set up on this device. Add one in the Android settings.",
+  "error.unsupported.device_unlock_invalid":
+    "Fingerprint unlock was reset because it no longer opens the vault (a new fingerprint or a new master password). Unlock with your master password – you can set it up again afterwards.",
+  "error.unsupported.device_unlock_not_set": "Fingerprint unlock is not set up for this vault.",
+  "error.unsupported.device_unlock_busy": "The fingerprint prompt is already open.",
   "error.input.mirror_folder": "That is not a valid folder. Choose the folder with “Change folder”.",
   "error.input.mirror_folder_data_dir":
     "This folder belongs to Keystead itself (the data folder or the vault folder of an installation). Choose a folder in your cloud, e.g. “Nextcloud\\Keystead”.",
@@ -211,6 +221,26 @@ export const en: Record<MessageKey, string> = {
   "unlock.forgot": "Forgot password?",
   "unlock.createNew": "Create new vault",
   "unlock.footer": "Encrypted locally, no cloud",
+
+  // Fingerprint unlock (phone)
+  "deviceUnlock.button": "Unlock with fingerprint",
+  "deviceUnlock.promptTitle": "Unlock Keystead",
+  "deviceUnlock.promptReason": "Open the vault “{name}” with your fingerprint.",
+  "deviceUnlock.promptCancel": "Use password",
+  "deviceUnlock.setupPromptTitle": "Set up fingerprint",
+  "deviceUnlock.setupPromptReason": "Confirm with your fingerprint so that “{name}” can be opened with it from now on.",
+  "deviceUnlock.enabled": "“{name}” can now be unlocked with your fingerprint",
+  "deviceUnlock.disabled": "Fingerprint unlock is off for this vault",
+  "deviceUnlock.resetHint":
+    "Fingerprint unlock was reset for this vault – for example because a new fingerprint was added or the master password was changed on your PC. Unlock with your master password; you can set it up again afterwards.",
+  "deviceUnlock.offerTitle": "Set up your fingerprint again?",
+  "deviceUnlock.offerText":
+    "Fingerprint unlock for “{name}” was reset. Do you want to set it up again now? You can also turn it on later in Settings → Security.",
+  "deviceUnlock.offerConfirm": "Set up",
+  "deviceUnlock.offerLater": "Not now",
+  "deviceUnlock.unavailableNoHardware": "This device has no fingerprint sensor.",
+  "deviceUnlock.unavailableNotEnrolled": "First set up a screen lock and a fingerprint in the Android settings.",
+  "deviceUnlock.unavailableOther": "The fingerprint sensor is not available right now.",
 
   "import.title": "Import",
   "import.desc": "Bring in passwords from VaultX 1.x, Chrome, Edge, Firefox, Bitwarden or a Keystead export.",
@@ -746,7 +776,7 @@ export const en: Record<MessageKey, string> = {
   "settings.iconsClearedReload": "Icons deleted – they'll be loaded again in a moment",
   "settings.security": "Security",
   "settings.securityDesc": "Auto-lock, clipboard, master password and recovery.",
-  "settings.securityDescPhone": "Auto-lock and clipboard. Change the master password and recovery on your PC.",
+  "settings.securityDescPhone": "Auto-lock, fingerprint and clipboard. Change the master password and recovery on your PC.",
   "settings.sync": "Sync",
   "settings.syncShort": "Sync",
   "settings.syncDesc": "Your vaults come to this phone from a folder of your own cloud – in this direction only. Keystead changes nothing there.",
@@ -830,6 +860,9 @@ export const en: Record<MessageKey, string> = {
   "settings.lockInBackgroundDesc":
     "When you leave Keystead, the vault locks after this time. A password you just copied can still be pasted until the clipboard is cleared.",
   "settings.immediately": "Immediately",
+  "settings.deviceUnlock": "Unlock with fingerprint",
+  "settings.deviceUnlockDesc":
+    "Opens this vault with your fingerprint instead of the master password – no PIN or pattern instead. Your master password stays the key: after a new fingerprint or a password changed on your PC, Keystead asks for it again.",
   "settings.lockOnSystemLock": "Lock when the computer locks",
   "settings.lockOnSystemLockDesc": "Locks Keystead as soon as you lock your computer (on Windows: Win + L).",
   "settings.clipboard": "Clear clipboard",

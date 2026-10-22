@@ -422,7 +422,10 @@ export interface Settings {
   updateChannel: UpdateChannel;
   /** Mobile: lock the open vault this many seconds after the app went to the background. null = never, 0 = immediately; default 60. The desktop ignores it. */
   lockInBackgroundSeconds: number | null;
-  /** Mobile: unlock with the device's biometrics (opt-in). Default false. The desktop ignores it. */
+  /**
+   * Mobile: unlock with the fingerprint (opt-in). Default false. Only the device-unlock commands change it
+   * (`save_settings` keeps the stored value). The desktop ignores it.
+   */
   deviceUnlock: boolean;
   /**
    * Desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (absolute path, from the folder
@@ -544,6 +547,36 @@ export interface MirrorStatus {
   lastMirroredAt: number | null;
   /** Error code of the last attempt (e.g. `unsupported:mirror_folder_missing`), null after a success. */
   lastError: string | null;
+}
+
+/**
+ * The phone's fingerprint unlock (`device_unlock_status`, "Fingerprint unlock
+ * (phone)" in ARCHITECTURE.md). No secrets.
+ */
+export interface DeviceUnlockStatus {
+  /** A strong biometric (fingerprint) can be used on this device right now. */
+  available: boolean;
+  /** Why not; null when available. */
+  unavailableReason: "noHardware" | "notEnrolled" | "other" | null;
+  /** `Settings.deviceUnlock` – changed only by the device-unlock commands. */
+  enabled: boolean;
+  /** The vaults that open with the fingerprint (ids). */
+  vaults: string[];
+  /**
+   * Vaults whose setup was removed since the app started because it no longer
+   * opened them (a new fingerprint, a master password changed on the PC, …):
+   * the UI explains it and offers to set it up again.
+   */
+  invalidated: string[];
+}
+
+/** The texts of the system's fingerprint prompt (translated by the UI). */
+export interface DeviceUnlockPrompt {
+  title: string;
+  /** The line under the title. */
+  reason: string;
+  /** The button that closes the prompt. */
+  cancel: string;
 }
 
 /** Stable error codes returned by the backend (see ARCHITECTURE.md). */

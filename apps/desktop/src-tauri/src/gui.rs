@@ -97,6 +97,10 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
         )
         // The cloud-folder sync's Kotlin plugin (Rust-only as well).
         .plugin(crate::mobile::sync::plugin());
+    // Fingerprint unlock: the Android Keystore behind the system prompt
+    // (`mobile::biometric`; Rust-only as well – no `biometric:` grant).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_biometric::init());
     builder
         .plugin(tauri_plugin_dialog::init())
         // `#[cfg(desktop)]`: not registered on the phone (read-only, or the
@@ -226,6 +230,14 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mobile::sync::sync_now,
             #[cfg(mobile)]
             crate::mobile::sync::unlink_folder,
+            #[cfg(mobile)]
+            crate::mobile::biometric::device_unlock_status,
+            #[cfg(mobile)]
+            crate::mobile::biometric::enable_device_unlock,
+            #[cfg(mobile)]
+            crate::mobile::biometric::disable_device_unlock,
+            #[cfg(mobile)]
+            crate::mobile::biometric::unlock_with_device,
         ])
         .setup(move |app| {
             setup(app.handle(), background);
@@ -518,6 +530,7 @@ mod tests {
                     "clipboard-manager:",
                     "opener:",
                     "keystead-folder:",
+                    "biometric:",
                 ] {
                     assert!(!id.starts_with(plugin), "{file}: {id}");
                 }
@@ -847,7 +860,16 @@ mod tests {
             .collect();
         assert_eq!(
             phone_only,
-            BTreeSet::from(["folder_status", "link_folder", "sync_now", "unlink_folder"])
+            BTreeSet::from([
+                "folder_status",
+                "link_folder",
+                "sync_now",
+                "unlink_folder",
+                "device_unlock_status",
+                "enable_device_unlock",
+                "disable_device_unlock",
+                "unlock_with_device",
+            ])
         );
         // Nothing that writes the vault, opens a dialog path or needs the
         // network is on the phone.

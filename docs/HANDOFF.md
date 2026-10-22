@@ -681,6 +681,99 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
    TUI an einem Tresor macht, den die App gerade nicht offen hat, kommt erst
    beim nächsten Öffnen in der App in den Ordner.
 
+10. **Entsperren per Fingerabdruck** (Stufe 1b, E5, `WIP: mobile 1b -
+    fingerprint unlock`; Vertrag: ARCHITECTURE „Mobile (Android)“ →
+    „Fingerprint unlock (phone)“): Opt-in unter Einstellungen → Sicherheit →
+    **„Mit Fingerabdruck entsperren“** (nur Handy, für den offenen Tresor),
+    Standard aus, **kein PIN/Muster-Ersatz** (`allowDeviceCredential =
+    false`).
+    * **Plugin geprüft** (Quellen von `tauri-plugin-biometric` 2.5.0 in der
+      Cargo-Registry gelesen): `biometric_cipher` verschlüsselt/entschlüsselt
+      mit einem AES-256-GCM-Schlüssel im Android-Keystore
+      (`setUserAuthenticationRequired(true)` ohne Gültigkeitsdauer → jede
+      Nutzung braucht einen **starken** Fingerabdruck über `BiometricPrompt`
+      mit `CryptoObject`; ein neu eingerichteter Fingerabdruck oder eine
+      entfernte Displaysperre machen ihn ungültig). Damit gilt E5 (a): das
+      offizielle Plugin, nur aus Rust gerufen (keine `biometric:`-Berechtigung
+      für die Webview, Guard-Test), nur unter `cfg(target_os = "android")`.
+      Was es **nicht** kann (für eine spätere Härtung mit eigenem
+      Kotlin-Plugin, E5 b – z. B. zusammen mit Autofill): StrongBox,
+      `setUnlockedDeviceRequired`, ein eigener Schlüssel-Alias; es nimmt und
+      liefert Text, deshalb läuft der KEK als Base64 über JSON/JNI in
+      Kotlin-Strings und als Intent-Extra in die Plugin-Activity (über
+      Androids Activity-Manager) – nicht löschbar, aber nie auf der Platte,
+      nie in der Webview.
+    * **Gespeichert**: `<data>/device-unlock/<vault-id>.json` mit dem vom
+      Keystore versiegelten `keystead-device-unlock:1:<id>:<KEK>` (die ID
+      bindet den KEK an seinen Tresor) und dem KDF-Salz des Tresorkopfs
+      (neu: `UnlockedVault::kdf_salt`, Core-Test). Entsperren: Salz prüfen →
+      Prompt → KEK → `unlock_with_master_kek` → `install_vault_since`.
+    * **Zurückgesetzt** (Blob gelöscht, Fehler
+      `unsupported:device_unlock_invalid`, Hinweis auf dem Entsperrbildschirm,
+      nach dem nächsten Passwort-Entsperren das Angebot „Fingerabdruck wieder
+      einrichten?“): anderes Salz in der Tresordatei (Master-Passwort am PC
+      geändert – geprüft nach jeder Sync-Kopie, bei `KeyChanged` im Monitor,
+      im Status und vor jedem Prompt), Keystore-Schlüssel ungültig (neuer
+      Fingerabdruck), beschädigter/fremder Blob, KEK öffnet den Tresor nicht.
+      Abbrechen, nicht erkannter Finger und Sperre des Sensors behalten ihn.
+      Ein gelöschter Tresor verliert seinen Blob. Der Wiederherstellungsweg
+      existiert auf dem Handy nicht (am PC setzt er ein neues Passwort →
+      neues Salz → zurückgesetzt).
+    * **Hintergrund-Sperre**: der Prompt ist eine eigene Activity und
+      pausiert `MainActivity`; solange der eigene Prompt offen ist (max.
+      120 s) und 2 s danach startet das kein Hintergrund-Timer
+      (`monitor::prompt_covers_pause`, getestet). Verlässt man die App aus
+      dem Prompt heraus, läuft der Timer ab dessen Schließen.
+    * **UI**: Entsperrbildschirm mit „Mit Fingerabdruck entsperren“ und
+      automatischem Prompt (einmal je Entsperrbildschirm, sobald die App
+      sichtbar ist – beim Start und bei der Rückkehr nach der
+      Hintergrund-Sperre; **nicht** nach „Sperren“ von Hand); Schließen des
+      Prompts ist kein Fehler. Texte de/en (Du-Form), Prompt-Texte aus der UI.
+    * **Mock**: `?platform=android&fingerprint=on` (bzw. `none` /
+      `notEnrolled`), `__keysteadMock.setFingerprintResult("cancel" | "fail" |
+      "lockout")`, `simulateNewFingerprint()`, `simulatePcPasswordChange()`
+      setzt die Einrichtung des Tresors zurück.
+    * **Tests**: 10 Rust-Tests in `device_unlock.rs` (Blob-Dateien inkl.
+      manipulierter/fremder/beschädigter Blobs, Bindung an die Tresor-ID,
+      Einrichten + Entsperren, abgebrochener Prompt behält alles, neuer
+      Fingerabdruck/manipulierte Daten/falscher KEK setzen zurück, am PC
+      geändertes Passwort ohne Prompt, Ausschalten, gelöschter Tresor,
+      Sperre während des Prompts, Einordnung der Plugin-Antworten), dazu
+      `folder_sync` (Sync mit neuem Passwort löscht den Blob), `monitor`
+      (Prompt-Fenster), `commands` (`save_settings` ändert `deviceUnlock`
+      nicht), Core-Test für `kdf_salt`, Guard-Tests (Kommandoliste,
+      keine `biometric:`-Berechtigung).
+    **Im Emulator geprüft** (MB_S26, API 36, Debug-APK x86_64, Test-Tresor
+    „Handy-Test“, Passwort `demo`): Displaysperre per `locksettings set-pin
+    1234`, Fingerabdruck über `am start -a android.settings.FINGERPRINT_ENROLL`
+    + PIN + `adb -e emu finger touch 1` (automatisierbar, ~6 Berührungen);
+    Einstellungen → Sicherheit → Schalter → System-Prompt „Fingerabdruck
+    einrichten“ → Finger → Toast, Blob liegt in `device-unlock/` (Salz und
+    versiegelter Text, kein KEK im Klartext), `deviceUnlock: true`; `force-stop` + Start →
+    Prompt öffnet sich von selbst → Finger → Tresor offen; „Sperren“ von
+    Hand → kein Prompt, Knopf da → Knopf → Prompt → Abbrechen ohne
+    Fehlermeldung; Ausschalten löscht Blob und Ordner; mit „Sperren im
+    Hintergrund: Sofort“ bleibt der Tresor beim Einrichten (Prompt 5 s
+    offen) offen, Home → gesperrt, zurück → Prompt → Finger → offen; zweiten
+    Fingerabdruck eingerichtet → zurück in Keystead → Hinweis „…
+    zurückgesetzt“, Blob weg → Passwort → „Fingerabdruck wieder
+    einrichten?“ → Einrichten → Finger 2 → wieder aktiv. Screenshots
+    `phone-1b-bio-*.png` im Scratchpad. Danach „Sperren im Hintergrund“
+    wieder 1 min, Fingerabdruck an (PIN des Emulators: 1234).
+    **Gefunden und behoben**: nach „Sperren“ von Hand öffnete sich der
+    Prompt doch (die Notiz wurde vom Entsperrbildschirm vor dem Neuladen der
+    Seite verbraucht) – jetzt trägt sie die Seitenladung, die sie schrieb.
+    **Nicht geprüft**: ein echtes Gerät (Sensor, StrongBox-lose Geräte mit
+    nur schwacher Gesichtserkennung), Android 10, der R8-Release-Build mit
+    dem Plugin (seine Activity steht im Manifest, R8 behält sie), ein am PC
+    geändertes Passwort Ende-zu-Ende (Unit-Tests decken es ab), TalkBack.
+    **Auffällig**: der System-Prompt zeigt das Launcher-Icon der App – das
+    ist noch Tauris Standard-Icon (`gen/android/app/src/main/res/mipmap-*`),
+    nicht das Keystead-Logo. Während des Tests kamen zusätzliche Eingaben
+    auf den Emulator, die nicht von mir stammten (Ordnerdialog geöffnet,
+    Zurück-Wischen, Theme auf Dunkel) – ich habe jeden Schritt per Screenshot
+    gegengeprüft.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -730,6 +823,15 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
    `<id>.keystead.attachments` mitkopiert wurde) → Sicherheitsbericht →
    Einstellungen → „Sperren im Hintergrund“ (Sofort / 1 min / 5 min / Nie)
    → „Über Keystead“ zeigt „Android“.
+   Fingerabdruck: Displaysperre (`adb shell locksettings set-pin 1234`) und
+   Fingerabdruck einrichten (Android-Einstellungen → Sicherheit, oder `adb
+   shell am start -a android.settings.FINGERPRINT_ENROLL`; der Emulator
+   „berührt“ den Sensor mit `adb -e emu finger touch 1`, mehrmals) → in
+   Keystead Einstellungen → Sicherheit → „Mit Fingerabdruck entsperren“ →
+   `adb -e emu finger touch 1` → App beenden und starten: der Prompt kommt
+   von selbst, `finger touch 1` entsperrt. Ein zweiter Fingerabdruck setzt
+   das Entsperren zurück (Hinweis, danach Passwort und Angebot zum neuen
+   Einrichten).
 7. Home-Taste: nach 1 Minute ist der Tresor gesperrt (Toast beim
    Zurückkehren); die Zurück-Geste schickt die App in den Hintergrund, statt
    sie zu schließen; die Vorschau in „Zuletzt verwendet“ und ein Screenshot
@@ -746,12 +848,14 @@ oder OneDrive-App den Ordner, den der PC füllt).
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
 Stufe 2a ist mit Punkt 9 auf beiden Seiten fertig (ein eigener
-Einzeldatei-Import `import_vault_file` ist damit überflüssig).
+Einzeldatei-Import `import_vault_file` ist damit überflüssig), Stufe 1b mit
+Punkt 10.
 
-1. **Stufe 1b**: Entsperren per Fingerabdruck (Opt-in, `deviceUnlock`,
-   KEK-Wrap im Android-Keystore über `unlock_with_master_kek`; E5). Ein
-   gespeicherter KEK wird nach `keyChanged` (Sync) wertlos – dann löschen
-   (die Sperre passiert in `folder_sync::install_copy`).
+1. Fingerabdruck härten (optional, E5 b): eigenes Kotlin-Plugin mit
+   StrongBox, eigenem Alias und `ByteArray` statt Text – lohnt sich
+   zusammen mit Autofill, das denselben Keystore-KEK braucht. Dazu: das
+   Launcher-Icon von `gen/android` (noch Tauris Standard) durch das
+   Keystead-Logo ersetzen.
 2. Update-Hinweis auf dem Handy: nach der Entscheidung dieses Laufs **nicht**
    (keine `INTERNET`-Berechtigung, siehe Punkte 8 und 9); nur wieder
    aufnehmen, wenn der Besitzer das will.

@@ -27,6 +27,10 @@ mod attachments;
 #[cfg(desktop)]
 mod bridge;
 mod commands;
+// The phone's fingerprint unlock (blobs and flows); platform-neutral, so
+// its unit tests run on the desktop host too.
+#[cfg(any(mobile, test))]
+mod device_unlock;
 mod error;
 #[cfg(desktop)]
 mod extension;

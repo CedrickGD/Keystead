@@ -86,6 +86,14 @@ tauri-plugin-clipboard-manager = "2"
 # Opens links in the phone's browser (`platform::open_url`).
 tauri-plugin-opener = "2"
 
+# Android only: fingerprint unlock (`src/mobile/biometric.rs`). Its Rust API
+# `biometric_cipher` encrypts / decrypts with an AES-GCM key in the Android
+# Keystore that only a strong biometric (BiometricPrompt with a
+# CryptoObject) releases – the vault's master KEK is stored wrapped by it.
+# (Its iOS side has no cipher, only pass/fail: not used there.)
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-biometric = "2.5"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Probe for the AppIndicator library before creating the tray icon.
 libloading = "0.7"

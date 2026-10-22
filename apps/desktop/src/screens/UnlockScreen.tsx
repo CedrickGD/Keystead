@@ -1,11 +1,19 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, LifeBuoy, Lock, Plus, Vault } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { ArrowLeft, FingerprintPattern, LifeBuoy, Lock, Plus, Vault } from "lucide-react";
 import { ApiError, api } from "../lib/api";
 import { useT } from "../i18n";
 import { useApp } from "../state/app";
 import { useToast } from "../components/Toasts";
+import { useConfirm } from "../components/Confirm";
 import { SyncStatusLine } from "../components/FolderSync";
 import { useFolderSync } from "../state/sync";
+import {
+  autoPromptAllowed,
+  clearAutoPromptNote,
+  deviceUnlockError,
+  forgetAutoPromptNote,
+  useDeviceUnlock,
+} from "../state/deviceUnlock";
 import { Logo } from "../components/Logo";
 import { Button, Field, PasswordInput, Select } from "../components/Controls";
 import {
@@ -40,6 +48,50 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const passwordChangedOnPc = Boolean(
     folderSync?.status?.files.some((f) => f.vaultId === vault?.id && f.passwordChanged),
   );
+  // Phone: the fingerprint unlock (null on the desktop).
+  const deviceUnlock = useDeviceUnlock();
+  const confirm = useConfirm();
+  const fingerprintReady = deviceUnlock?.readyFor(vault?.id) ?? false;
+  const fingerprintReset = deviceUnlock?.wasReset(vault?.id) ?? false;
+  const [fingerprintBusy, setFingerprintBusy] = useState(false);
+  // The prompt opens on its own once per unlock screen – not after the user
+  // locked the vault by hand.
+  const [mayAutoPrompt] = useState(autoPromptAllowed);
+  useEffect(clearAutoPromptNote, []);
+  const autoPrompted = useRef(false);
+
+  const unlockWithFingerprint = useCallback(async () => {
+    if (!vault || !deviceUnlock || busy || fingerprintBusy) return;
+    setFingerprintBusy(true);
+    setError(null);
+    try {
+      const info = await deviceUnlock.unlock(vault);
+      setPassword("");
+      forgetAutoPromptNote();
+      enterVault(info);
+    } catch (err) {
+      // Closing the prompt is an answer, not an error: the password field is right
+      // here. A reset setup is explained by the note below the buttons.
+      const detail = deviceUnlockError(err);
+      if (detail !== "device_unlock_cancelled" && detail !== "device_unlock_invalid") setError(errorText(err));
+    } finally {
+      setFingerprintBusy(false);
+    }
+  }, [busy, deviceUnlock, enterVault, errorText, fingerprintBusy, vault]);
+
+  // The automatic prompt waits until the app is visible (a vault locked in the
+  // background shows this screen before the user is back).
+  useEffect(() => {
+    if (!fingerprintReady || !mayAutoPrompt || autoPrompted.current || mode !== "password") return;
+    const open = () => {
+      if (autoPrompted.current || document.visibilityState !== "visible") return;
+      autoPrompted.current = true;
+      void unlockWithFingerprint();
+    };
+    open();
+    document.addEventListener("visibilitychange", open);
+    return () => document.removeEventListener("visibilitychange", open);
+  }, [fingerprintReady, mayAutoPrompt, mode, unlockWithFingerprint]);
 
   // Phone: no focus on its own – it would pop the on-screen keyboard over
   // the form before the user even looked at it.
@@ -60,6 +112,19 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
     try {
       const info = await api.unlockVault(vault.id, password);
       setPassword("");
+      forgetAutoPromptNote();
+      // Its fingerprint setup was reset (it no longer opened the vault): offer it again.
+      if (deviceUnlock && fingerprintReset && deviceUnlock.status?.available) {
+        const again = await confirm({
+          title: t("deviceUnlock.offerTitle"),
+          message: t("deviceUnlock.offerText", { name: vault.name }),
+          confirmLabel: t("deviceUnlock.offerConfirm"),
+          cancelLabel: t("deviceUnlock.offerLater"),
+        });
+        // "Nicht jetzt" forgets the note (Settings → Sicherheit sets it up any time).
+        if (again) await deviceUnlock.enable(vault.name);
+        else await deviceUnlock.disable(vault.id, true);
+      }
       enterVault(info);
     } catch (err) {
       const wrong = err instanceof ApiError && err.code === "wrong_password";
@@ -121,9 +186,30 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
               </div>
             </Field>
 
-            <Button type="submit" variant="primary" size="lg" block loading={busy} icon={<Lock />}>
+            <Button type="submit" variant="primary" size="lg" block loading={busy} icon={<Lock />} disabled={fingerprintBusy}>
               {t("unlock.button")}
             </Button>
+
+            {/* Phone: the fingerprint, once set up for this vault (Settings → Sicherheit). */}
+            {fingerprintReady && (
+              <Button
+                variant="secondary"
+                size="lg"
+                block
+                loading={fingerprintBusy}
+                disabled={busy}
+                icon={<FingerprintPattern />}
+                onClick={() => void unlockWithFingerprint()}
+              >
+                {t("deviceUnlock.button")}
+              </Button>
+            )}
+            {fingerprintReset && (
+              <div className="callout callout-info">
+                <FingerprintPattern />
+                <span>{t("deviceUnlock.resetHint")}</span>
+              </div>
+            )}
 
             {/* Both set a new master password or create a vault: not on the read-only phone. */}
             {!info.readOnly && (

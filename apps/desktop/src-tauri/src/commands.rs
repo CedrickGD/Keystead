@@ -726,11 +726,12 @@ pub async fn save_settings(core: Shared<'_>, settings: Value) -> CmdResult<Setti
 /// mirror – a new folder is checked before anything is saved; the phone has
 /// none of these, its background-lock setting is read by the monitor).
 fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
-    let settings = settings.normalized();
+    let mut settings = settings.normalized();
     #[cfg(desktop)]
     crate::mirror::check_setting(core, &settings)?;
     let old = {
         let mut st = core.state();
+        settings = from_the_page(settings, &st.settings);
         settings.save()?;
         std::mem::replace(&mut st.settings, settings.clone())
     };
@@ -764,6 +765,15 @@ fn apply_settings(core: &Arc<Core>, settings: Settings) -> AppResult<Settings> {
         }
     }
     Ok(settings)
+}
+
+/// Settings the page sent, with what only the backend changes taken from
+/// the stored ones: `deviceUnlock` belongs to the fingerprint-unlock
+/// commands (they set the unlock up and remove it – the page cannot turn
+/// it on without the prompt, nor off without removing the setup).
+fn from_the_page(mut page: Settings, stored: &Settings) -> Settings {
+    page.device_unlock = stored.device_unlock;
+    page
 }
 
 // ---------------------------------------------------------------------------
@@ -960,6 +970,27 @@ mod tests {
             .filter(|(name, _)| name == EVENT_LOCKED)
             .map(|(_, payload)| payload)
             .collect()
+    }
+
+    #[test]
+    fn the_page_cannot_change_the_fingerprint_unlock_setting() {
+        let stored = Settings {
+            device_unlock: true,
+            ..Settings::default()
+        };
+        let page = Settings {
+            device_unlock: false,
+            auto_lock_minutes: 5,
+            ..Settings::default()
+        };
+        let saved = from_the_page(page, &stored);
+        assert!(saved.device_unlock);
+        assert_eq!(saved.auto_lock_minutes, 5);
+        let page = Settings {
+            device_unlock: true,
+            ..Settings::default()
+        };
+        assert!(!from_the_page(page, &Settings::default()).device_unlock);
     }
 
     #[test]

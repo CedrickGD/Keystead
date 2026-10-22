@@ -185,6 +185,20 @@ impl AppState {
     }
 }
 
+/// The app's own prompt is open until this is dropped
+/// ([`Core::begin_own_prompt`]).
+#[cfg(mobile)]
+pub struct OwnPrompt<'a> {
+    core: &'a Core,
+}
+
+#[cfg(mobile)]
+impl Drop for OwnPrompt<'_> {
+    fn drop(&mut self) {
+        lock_mutex(&self.core.own_prompt).closed = Some(Instant::now());
+    }
+}
+
 /// Where events and window requests go.
 enum Frontend {
     /// The app's webview (the only variant outside unit tests).
@@ -230,6 +244,11 @@ pub struct Core {
     tray: Mutex<Option<TrayMenu>>,
     /// Wakes the monitor thread (e.g. the Windows session was locked).
     monitor: Mutex<Option<Sender<MonitorSignal>>>,
+    /// Phone: when the app's own fingerprint prompt was opened and closed –
+    /// the `onPause` it causes is not the user leaving the app (see
+    /// `monitor::prompt_covers_pause`).
+    #[cfg(mobile)]
+    own_prompt: Mutex<crate::monitor::PromptSpan>,
     /// A secret copied with `clipboardClearSeconds` = 0. The core only
     /// remembers secrets that have a clear timer running, so this one is
     /// cleared here on lock and quit (if the clipboard still holds it).
@@ -314,6 +333,8 @@ impl Core {
             #[cfg(desktop)]
             tray: Mutex::new(None),
             monitor: Mutex::new(None),
+            #[cfg(mobile)]
+            own_prompt: Mutex::new(crate::monitor::PromptSpan::default()),
             untimed_secret: Mutex::new(None),
             #[cfg(desktop)]
             updates: Mutex::new(UpdateMemory::default()),
@@ -428,6 +449,24 @@ impl Core {
         if let Some(tx) = lock_mutex(&self.monitor).as_ref() {
             let _ = tx.send(signal);
         }
+    }
+
+    /// Phone: the app's own system prompt (the fingerprint's activity) opens
+    /// now; it counts as closed when the guard is dropped. The monitor does
+    /// not take the `onPause` it causes for the user leaving the app.
+    #[cfg(mobile)]
+    pub fn begin_own_prompt(&self) -> OwnPrompt<'_> {
+        *lock_mutex(&self.own_prompt) = crate::monitor::PromptSpan {
+            opened: Some(Instant::now()),
+            closed: None,
+        };
+        OwnPrompt { core: self }
+    }
+
+    /// Phone: whether an `onPause` now belongs to the app's own prompt.
+    #[cfg(mobile)]
+    pub fn own_prompt_covers_pause(&self) -> bool {
+        crate::monitor::prompt_covers_pause(*lock_mutex(&self.own_prompt), Instant::now())
     }
 
     // -----------------------------------------------------------------
