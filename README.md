@@ -5,8 +5,8 @@
 <h1 align="center">Keystead</h1>
 
 <p align="center">
-  Lokaler Passwort-Manager für Windows – mit Browser-Erweiterung und Terminal-Version.<br>
-  <em>A local password manager for Windows – with a browser extension and a terminal version.</em>
+  Lokaler Passwort-Manager für Windows – mit Browser-Erweiterung, Terminal-Version und Android-App (Vorschau).<br>
+  <em>A local password manager for Windows – with a browser extension, a terminal version and an Android app (preview).</em>
 </p>
 
 <p align="center">
@@ -118,6 +118,8 @@ nichts. Ihre Tresore holt sie **nur lesend aus einem Ordner deiner eigenen
 Cloud** (über die Nextcloud- oder OneDrive-App auf dem Handy); einen Tresor neu
 anlegen kann sie nicht.
 
+**Installieren:**
+
 1. Auf dem Handy unter [Releases](../../releases) `Keystead-<version>-android.apk`
    herunterladen (Android 10 oder neuer, 64-Bit-ARM – praktisch jedes Handy ab 2019).
 2. Die Datei öffnen. Beim ersten Mal fragt Android, ob der Browser bzw. die
@@ -134,8 +136,9 @@ anlegen kann sie nicht.
    Jede echte Keystead-APK trägt dieses Zertifikat, und Android installiert ein
    Update nur, wenn es mit demselben Zertifikat signiert ist.
 4. **Updates:** die neuere APK herunterladen und über die vorhandene
-   installieren – deine Daten bleiben. Die App meldet neue Versionen noch nicht
-   selbst.
+   installieren – deine Daten bleiben. Die App sucht nicht selbst nach neuen
+   Versionen, weil sie keinen Internetzugriff hat; unter **Einstellungen → Über
+   Keystead** öffnet „Releases auf GitHub öffnen“ die Releases-Seite im Browser.
 
 **Tresor aufs Handy holen:**
 
@@ -150,30 +153,45 @@ anlegen kann sie nicht.
    Einstellungen → Synchronisierung) und im Android-Dialog über die Cloud-App
    denselben Ordner wählen – „Diesen Ordner verwenden“, „Zulassen“.
 
-Das Handy behält nur Lesezugriff auf den Ordner und gleicht beim Start, beim
-Zurückkehren in die App und auf Knopfdruck ab: Eine neuere Version vom PC
-ersetzt die Kopie auf dem Handy, eine ältere nie; in den Ordner schreibt die
-App nichts. Im Ordner liegen nur verschlüsselte Dateien: `<Tresor-ID>.keystead`
-und der Ordner `<Tresor-ID>.keystead.attachments` mit den verschlüsselten
-Anhängen – die Dateinamen sind Tresor-IDs. Dein Cloud-Anbieter sieht die
-verschlüsselten Daten und den unverschlüsselten Dateikopf (Tresorname,
-Revision, Zeiten), nie den Inhalt; Keystead selbst verbindet sich mit keinem
-Cloud-Dienst.
+Weitere Tresore kommen von selbst mit: Öffne sie einmal am PC, dann liegen sie
+im selben Ordner. Das Handy behält nur Lesezugriff auf den Ordner und gleicht
+beim Start, beim Zurückkehren in die App (höchstens einmal pro Minute) und auf
+Knopfdruck ab: Eine neuere Version vom PC ersetzt die Kopie auf dem Handy, eine
+ältere nie; in den Ordner schreibt die App nichts. Hast du am PC das
+Master-Passwort geändert, sperrt sich der Tresor auf dem Handy beim nächsten
+Abgleich, und ab dann gilt das neue Passwort. Im Ordner liegen nur
+verschlüsselte Dateien: `<Tresor-ID>.keystead` und der Ordner
+`<Tresor-ID>.keystead.attachments` mit den verschlüsselten Anhängen – die
+Dateinamen sind Tresor-IDs. Dein Cloud-Anbieter sieht die verschlüsselten Daten
+und den unverschlüsselten Dateikopf (Tresorname, Revision, Zeiten), nie den
+Inhalt; Keystead selbst verbindet sich mit keinem Cloud-Dienst.
 
-Was noch fehlt: Bearbeiten am Handy und Ausfüllen in anderen Apps. Beim Deinstallieren löscht Android die Daten der
-App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
+**Was die App kann:** Tresor entsperren, Einträge suchen und nach Ordnern,
+Tags und Typen filtern, Passwörter aufdecken und kopieren (die Zwischenablage
+wird wie am PC wieder geleert), 2FA-Codes, Bildvorschau von Anhängen,
+Sicherheitsbericht (ohne Prüfung auf geleakte Passwörter), automatische Sperre.
+Verlässt du die App, sperrt sie sich nach 1 Minute (einstellbar unter
+Einstellungen → Sicherheit: sofort, 1 min, 5 min, nie). Die App hat keinerlei
+Internetzugriff (nicht einmal die Berechtigung dafür), verhindert Screenshots
+und wird von Android nicht in die Cloud gesichert.
 
-Sobald ein Tresor auf dem Handy liegt: Tresor entsperren, Einträge suchen und
-ansehen, Passwörter aufdecken und kopieren (die Zwischenablage wird wie am PC
-wieder geleert), 2FA-Codes, Sicherheitsbericht, automatische Sperre. Verlässt
-du die App, sperrt sie sich nach 1 Minute (einstellbar: sofort, 1 min, 5 min,
-nie). **Mit Fingerabdruck entsperren** (Einstellungen → Sicherheit, aus, bis
-du es einschaltest): Der Tresorschlüssel liegt dann vom Android-Keystore
-versiegelt auf dem Handy und wird nur nach deinem Fingerabdruck freigegeben –
-ohne PIN oder Muster als Ersatz. Nach einem neu eingerichteten Fingerabdruck
+**Mit Fingerabdruck entsperren** (Einstellungen → Sicherheit; aus, bis du es
+einschaltest – dafür braucht das Handy eine Displaysperre und einen
+eingerichteten Fingerabdruck): Der Schlüssel aus deinem Master-Passwort liegt
+dann vom Android-Keystore versiegelt auf dem Handy und wird nur nach deinem
+Fingerabdruck freigegeben – ohne PIN oder Muster als Ersatz. Beim Start und
+nach der Sperre im Hintergrund fragt Keystead von selbst nach dem Finger, das
+Master-Passwort geht immer auch. Nach einem neu eingerichteten Fingerabdruck
 oder einem am PC geänderten Master-Passwort fragt Keystead wieder nach dem
-Passwort. Schon jetzt gilt: Die App hat keinerlei Internetzugriff, verhindert
-Screenshots und wird von Android nicht in die Cloud gesichert.
+Passwort und bietet danach an, den Fingerabdruck neu einzurichten.
+
+**Was noch fehlt:** Bearbeiten am Handy (Einträge, Ordner, Tags, neue Tresore
+– das geht nur am PC), Ausfüllen in anderen Apps (Android-Autofill, als
+Nächstes geplant), Website-Icons laden und die Prüfung auf geleakte Passwörter
+(nur am PC; Icons, die der PC geladen hat, zeigt das Handy), Dateien anhängen
+oder speichern, einen Tresor vom Handy entfernen (auch einer, den du am PC
+löschst, bleibt auf dem Handy). Beim Deinstallieren löscht Android die Daten
+der App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
 
 ### Browser-Erweiterung einrichten
 
@@ -213,6 +231,8 @@ den Hinweis bis zum nächsten Start aus.
   (enthält auch stabile Versionen).
 - Die **portable ZIP-Version** aktualisiert sich nicht selbst; sie meldet neue
   Versionen mit einem Link zum Download.
+- Die **Android-App** sucht nicht nach Updates (sie hat keinen Internetzugriff);
+  die neuere APK installierst du über die alte, siehe [Android-App](#android-app-vorschau).
 - Bei der Prüfung wird nur eine Versionsdatei (`latest.json`) von GitHub abgerufen –
   keine Tresordaten, keine Kennungen.
 
@@ -413,6 +433,8 @@ anything. It takes its vaults **read-only from a folder of your own cloud**
 (through the Nextcloud or OneDrive app on the phone); it cannot create a
 vault.
 
+**Installing:**
+
 1. On the phone, download `Keystead-<version>-android.apk` from
    [Releases](../../releases) (Android 10 or later, 64-bit ARM – practically
    every phone since 2019).
@@ -430,7 +452,9 @@ vault.
    Every genuine Keystead APK carries this certificate, and Android installs
    an update only if it is signed with the same one.
 4. **Updates:** download the newer APK and install it over the old one – your
-   data stays. The app does not announce new versions itself yet.
+   data stays. The app does not look for new versions itself, because it has
+   no internet access; under **Settings → About Keystead**, “Open releases on
+   GitHub” opens the releases page in the browser.
 
 **Getting a vault onto the phone:**
 
@@ -445,29 +469,42 @@ vault.
    Sync) and, in Android's dialog, pick the same folder through the cloud app –
    “Use this folder”, “Allow”.
 
-The phone keeps read access to the folder only and syncs at start, when you
-return to the app and on request: a newer version from the PC replaces the copy
-on the phone, an older one never does; the app writes nothing to the folder.
-The folder holds encrypted files only: `<vault id>.keystead` and the folder
-`<vault id>.keystead.attachments` with the encrypted attachments – the file
-names are vault ids. Your cloud provider sees the encrypted data and the
-unencrypted file header (vault name, revision, times), never the content;
-Keystead itself connects to no cloud service.
+More vaults come along by themselves: open them once on the PC and they are in
+the same folder. The phone keeps read access to the folder only and syncs at
+start, when you return to the app (at most once a minute) and on request: a
+newer version from the PC replaces the copy on the phone, an older one never
+does; the app writes nothing to the folder. If you changed the master password
+on the PC, the vault on the phone locks at the next sync, and from then on the
+new password applies. The folder holds encrypted files only:
+`<vault id>.keystead` and the folder `<vault id>.keystead.attachments` with the
+encrypted attachments – the file names are vault ids. Your cloud provider sees
+the encrypted data and the unencrypted file header (vault name, revision,
+times), never the content; Keystead itself connects to no cloud service.
 
-Still missing: editing on the phone and filling in other apps. Uninstalling the app makes Android delete its data – including the
-vaults on the phone (the cloud folder is not touched).
+**What the app does:** unlock a vault, search items and filter by folders,
+tags and types, reveal and copy passwords (the clipboard is cleared again as on
+the PC), 2FA codes, image previews of attachments, the security report (without
+the leaked-password check), auto-lock. When you leave the app it locks after
+1 minute (adjustable under Settings → Security: immediately, 1 min, 5 min,
+never). The app has no internet access at all (not even the permission for
+it), blocks screenshots and is not backed up to the cloud by Android.
 
-Once a vault is on the phone: unlock it, search and view items, reveal and
-copy passwords (the clipboard is cleared again as on the PC), 2FA codes, the
-security report, auto-lock. When you leave the app it locks after 1 minute
-(adjustable: immediately, 1 min, 5 min, never). **Unlock with fingerprint**
-(Settings → Security, off until you turn it on): the vault key is then kept on
-the phone sealed by the Android Keystore and released only after your
-fingerprint – no PIN or pattern instead. After a newly added fingerprint or a
-master password changed on the PC, Keystead asks for the password again.
-Already now: the app has no
-internet access at all, blocks screenshots and is not backed up to the cloud
-by Android.
+**Unlock with fingerprint** (Settings → Security; off until you turn it on –
+the phone needs a screen lock and an enrolled fingerprint for it): the key
+derived from your master password is then kept on the phone sealed by the
+Android Keystore and released only after your fingerprint – no PIN or pattern
+instead. At start and after the background lock Keystead asks for the finger
+by itself; the master password always works too. After a newly added
+fingerprint or a master password changed on the PC, Keystead asks for the
+password again and then offers to set up the fingerprint once more.
+
+**Still missing:** editing on the phone (items, folders, tags, new vaults –
+only on the PC), filling in other apps (Android autofill, planned next),
+loading website icons and the leaked-password check (PC only; the phone shows
+the icons the PC loaded), attaching or saving files, removing a vault from the
+phone (one you delete on the PC stays on the phone too). Uninstalling the app
+makes Android delete its data – including the vaults on the phone (the cloud
+folder is not touched).
 
 ### Browser extension setup
 
@@ -504,6 +541,8 @@ restarts. **Later** hides the banner until the next start.
   stable releases).
 - The **portable ZIP version** does not update itself; it announces new versions with
   a download link.
+- The **Android app** does not look for updates (it has no internet access); install
+  the newer APK over the old one, see [Android app](#android-app-preview).
 - The check only fetches a version file (`latest.json`) from GitHub – no vault data,
   no identifiers.
 

@@ -1,4 +1,4 @@
-<!-- Arbeitsdokument, Stand 2026-10-16. Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
+<!-- Arbeitsdokument, Stand 2026-10-16 (Entscheidungstabelle und Stand-Vermerke 2026-10-17). Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
 
 # Block 5 „Mobile“ – Entwurf und Entscheidungen
 
@@ -7,14 +7,14 @@
 | Nr. | Frage | Entscheidung |
 |---|---|---|
 | – | Plattformen | **Android voll** (Emulator auf dem PC, APK über die GitHub-Releases); **iOS nur als CI-Build** auf dem kostenlosen macOS-Runner (Simulator + Screenshots) – kein Mac, kein Apple-Konto, nichts Kostenpflichtiges; der Besitzer hat kein Handy zum Testen, nur Emulatoren |
-| – | Sync | Tresor über den **eigenen Cloud-Ordner** (Nextcloud/OneDrive-App am Handy, Storage Access Framework); kein Keystead-Server, kein Heimnetz-Sync |
+| – | Sync | Tresor über den **eigenen Cloud-Ordner** (Nextcloud/OneDrive-App am Handy, Storage Access Framework); kein Keystead-Server, kein Heimnetz-Sync. **Stand 2026-10-17 (umgesetzt in 2a, Verfeinerung zur Bestätigung):** das Handy verknüpft einen **Ordner** statt einer Datei (`ACTION_OPEN_DOCUMENT_TREE`, dauerhafte Freigabe nur zum Lesen), damit der Anhang-Ordner `<id>.keystead.attachments/` mitkommt; Zustand in `<data>/sync/link.json`; der Einzeldatei-Import `import_vault_file` entfällt |
 | E1 | Paketname | `io.github.cedrickgd.keystead` nur für Android (`tauri.android.conf.json`); Desktop behält `com.keystead.desktop` |
 | E2 | Mindest-Android | API 29 (Android 10) |
 | E3 | Sperre im Hintergrund | Standard 1 Minute, einstellbar (Sofort / 1 min / 5 min / Nie) |
 | E4 | Stufe 1 und 2a | Handy nur lesend |
-| E5 | Fingerabdruck | Opt-in, Standard aus; Plugin-Rust-API wenn verifiziert, sonst eigenes Kotlin-Plugin |
-| E6 | Netz | Stufe 1 ohne INTERNET-Berechtigung; ab Stufe 2 Update-Hinweis über das Mini-Kotlin-Plugin; Website-Icons und HIBP auf Android dauerhaft aus |
-| E7 | Desktop-Seite des Syncs | neue Einstellung „Kopie im Cloud-Ordner aktuell halten“ |
+| E5 | Fingerabdruck | Opt-in, Standard aus; Plugin-Rust-API wenn verifiziert, sonst eigenes Kotlin-Plugin. **Stand 2026-10-17:** umgesetzt mit (a), `tauri-plugin-biometric` 2.5 (`biometric_cipher`), `allowDeviceCredential = false` |
+| E6 | Netz | Stufe 1 ohne INTERNET-Berechtigung; ab Stufe 2 Update-Hinweis über das Mini-Kotlin-Plugin; Website-Icons und HIBP auf Android dauerhaft aus. **Stand 2026-10-17 (Entscheidung der Umsetzungsläufe, zur Bestätigung):** die App bleibt auch ab Stufe 2 **ohne INTERNET** – kein Update-Hinweis, kein `fetchText` im Kotlin-Plugin; „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Opener gibt den Link an den Browser, dafür braucht die App keine Berechtigung); das Hauptmanifest deklariert keine Berechtigung, das APK-Gate prüft das gemergte Manifest |
+| E7 | Desktop-Seite des Syncs | neue Einstellung „Kopie im Cloud-Ordner aktuell halten“. **Stand 2026-10-17:** umgesetzt (`mirrorFolder`, Einstellungen → Handy), samt Anhang-Ordner |
 | E8 | Backup | `allowBackup="false"` + dataExtractionRules |
 | E9 | CI | Android bei jedem Push mitbauen |
 | E10 | Keystore | vom Assistenten auf dem PC des Besitzers erzeugt, im privaten Repo `CedrickGD/keys/keystead/` abgelegt, Secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` gesetzt (2026-10-16) |
@@ -56,6 +56,8 @@ Drei Grundsätze, die alle drei Entwürfe teilen und die ich übernehme:
 **Bewusst nicht drin (Stufe 1):** Bearbeiten/Neu/Papierkorb/Tag-Verwaltung (Handy **read-only**, siehe Entscheidung E4), Datei anhängen/„Speichern unter“ (pfadbasiert, `attachments.rs` `is_dialog_path` lehnt `content://` ab), Import mit Vorschau/Export, Website-Icon-Abruf, HIBP, Update-Prüfung (alle drei brauchen TLS – siehe Netz), Browser-Integration/Pairing, Tray, portabler Modus, Terminal, Drag & Drop.
 
 **Stufe 1b (zweite APK):** biometrisches Entsperren + „Sperren beim Verlassen der App“.
+
+> **Stand 2026-10-17 – Umfang der Stufen 1a/1b** (Vertrag: ARCHITECTURE „Mobile (Android)“, Kommandoliste „On the phone“): strenger als „Drin“ oben, weil jede dieser Aktionen den Tresor schreibt (E4) – **kein** Tresor anlegen, Wiederherstellungsschlüssel-Entsperren (setzt ein neues Master-Passwort), Favorit setzen, Tresor umbenennen/löschen; **kein** `import_vault_file` – der Ordner-Sync der Stufe 2a ersetzt ihn. Die „Sperren beim Verlassen der App“ kam schon mit 1a (Lebenszyklus), dazu in 1b das Handy-Layout (`data-layout="phone"`, eine React-App).
 
 > **Stand 2026-10-17 – Fingerabdruck (E5) umgesetzt** (Vertrag: ARCHITECTURE „Fingerprint unlock (phone)“, `src-tauri/src/device_unlock.rs`, `src/mobile/biometric.rs`): Variante **(a)** – die Quellen von `tauri-plugin-biometric` 2.5.0 bestätigen `biometric_cipher` (AES-256-GCM im Android-Keystore, `setUserAuthenticationRequired(true)` je Nutzung, `BiometricPrompt` mit `CryptoObject`, starke Biometrie, ungültig nach neuem Fingerabdruck). Abweichungen vom Text unten: der Blob speichert zusätzlich das KDF-Salz des Tresorkopfs (ein am PC geändertes Passwort wird ohne Prompt erkannt) und versiegelt die Tresor-ID mit dem KEK; ein ungültiger Blob wird gelöscht und der Entsperrbildschirm bietet nach dem Passwort an, ihn neu einzurichten; der Prompt der App startet die Hintergrund-Sperre nicht (eigene Activity des Plugins). Was (a) nicht hat: StrongBox, `setUnlockedDeviceRequired`, eigener Alias, Daten als `ByteArray` – (b) bleibt als Härtung, sinnvoll zusammen mit Autofill.
 

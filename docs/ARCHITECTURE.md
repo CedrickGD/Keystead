@@ -155,19 +155,46 @@ Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
 Android app**: the same Rust crate and the same React UI as the desktop,
 built by CI as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 /
 API 29 and later) that every release carries. It opens the vaults in its own
-app folder – lists, searches, reveals and copies, shows TOTP codes and the
-security report – and locks when it stays in the background. The vaults
-reach the phone through the **cloud-folder sync** (stage 2a, below): the
-user links the folder of their own cloud the PC keeps its vault copies in,
-and the phone copies them in – one way, it never writes there (creating or
-editing a vault on the phone is a write and not registered); the PC keeps
-the copies there up to date ("Kopie im Cloud-Ordner aktuell halten",
-decision E7, see "Cloud-folder mirror (desktop) and phone link"). A vault
-can be opened with the **fingerprint** (stage 1b, opt-in: the master KEK
-sealed by the Android Keystore, below). The UI has its **phone layout**
-(below).
-There is no Keystead server, and the app has no network permission at
-all – so no update check either: About links to the releases page instead.
+app folder – lists, searches, reveals and copies, shows TOTP codes, image
+previews of attachments and the security report – and locks when it stays
+in the background. The vaults reach the phone through the user's **own
+cloud folder**: the PC keeps encrypted copies there, the phone links that
+folder and copies them in – one way, it never writes there (creating or
+editing a vault on the phone is a write and not registered).
+
+| Part | Stage | In short | Contract |
+|---|---|---|---|
+| Read-only app | 1a (E4) | only the read commands and the phone's own are registered; `AppInfo.readOnly` | "Commands" below; "On the phone" under "Desktop backend ↔ frontend" |
+| Background lock, clipboard | 1a (E3) | lock after `lockInBackgroundSeconds` away (default 60 s); copied secrets cleared without reading the clipboard | "Lifecycle", "Clipboard" under "Android project"; "Background lock (phone)" |
+| Android project, APK | 1a (E1, E2, E8–E10) | committed `gen/android`, no permission, no backup, `FLAG_SECURE`, back gesture; signed APK and gates in CI | "Android project", "Build, CI and signing" |
+| Phone layout | 1b | one column, drawer, detail stacked over the list, back gesture, read-only and desktop-only gates | "Phone layout" |
+| Fingerprint unlock | 1b (E5) | opt-in, default off; the master KEK sealed by the Android Keystore, no PIN/pattern fallback | "Fingerprint unlock (phone)" |
+| Cloud-folder link and copy-in | 2a | the phone links one folder (read permission only) and copies vault files and attachments in | "Cloud-folder sync (phone)" |
+| Desktop mirror | 2a (E7) | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder | "Cloud-folder mirror (desktop) and phone link" |
+| No network | 1a–2a (E6) | no `INTERNET` permission, no update check | "No network, and why" below |
+
+* **No network, and why**: the APK requests **no `INTERNET` permission**,
+  in every stage so far – also not from stage 2 on, as decision E6 had
+  planned for a "new version" hint through a small Kotlin plugin (dropped
+  by the implementation run of 2026-10-17; for the owner to confirm). Why:
+  the phone needs no network for its job – the user's cloud app moves the
+  files and Keystead only reads its folder through the system's document
+  provider, with no Keystead server anywhere; without the permission
+  Android gives the app no network socket at all, so no bug in the page or
+  in a dependency can send anything over the network by itself; the
+  promise is checkable – the merged manifest of every CI build is gated on
+  it (`android-apk.mjs verify`), and anyone can read it with `aapt2 dump
+  badging`; and the app's own network code (the website-icon fetcher, the
+  leaked-password check and the update check on reqwest, whose platform
+  TLS verifier would panic on Android without JNI set-up) is not built for
+  the phone, so there are no TLS or proxy settings that could be wrong.
+  The price: no update check – About offers "Releases auf GitHub
+  öffnen" (`openExternal`: the opener plugin hands the link to the
+  browser, which needs no permission of Keystead's) and the user installs
+  the newer APK over the old one ("Build, CI and signing" → Updates); no
+  website-icon fetcher (the icons the PC stored in the vault are shown);
+  no leaked-password check. Only the debug manifest adds `INTERNET`, for
+  `tauri android dev` (below).
 
 * **Entry point and gates**: the Android shell (`MainActivity`, a
   `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
@@ -188,11 +215,16 @@ all – so no update check either: About links to the releases page instead.
   backup and device-to-device transfer skip it (manifest below), and
   **uninstalling the app deletes it** – in this stage the phone only ever
   holds copies of vaults made elsewhere (the linked folder is untouched).
-* **Commands**: only the read commands and the phone's own sync commands
-  are registered ("**On the phone**" under "Desktop backend ↔ frontend");
-  every other command is unknown to the phone's invoke handler. `app_info` answers `platform: "android"`,
-  `readOnly: true`, `extensionId: null`, `portable: false`; the UI is to
-  hide every editing control on `readOnly` (part of the phone layout).
+* **Commands**: only the read commands and the phone's own (`#[cfg(mobile)]`:
+  `folder_status`, `link_folder`, `sync_now`, `unlink_folder` for the
+  cloud-folder sync; `device_unlock_status`, `enable_device_unlock`,
+  `disable_device_unlock`, `unlock_with_device` for the fingerprint) are
+  registered ("**On the phone**" under "Desktop backend ↔ frontend", where
+  the table has their arguments and answers; a unit test in `gui.rs` keeps
+  the lists and that paragraph in step); every other command is unknown to
+  the phone's invoke handler. `app_info` answers `platform: "android"`,
+  `readOnly: true`, `extensionId: null`, `portable: false`; the UI hides
+  every editing control on `readOnly` (part of the phone layout).
 * **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
   (default 60, `0` = at once, `null` = never; Settings → "Sperren im
   Hintergrund": Sofort / 1 min / 5 min / Nie, a row shown only on
@@ -203,6 +235,34 @@ all – so no update check either: About links to the releases page instead.
   `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
   `updateChannel`, `mirrorFolder`) are kept in the file but do nothing on
   the phone.
+* **Error codes** of the phone's own commands (stable codes the UI
+  translates: `error.unsupported.<detail>` / `error.input.<detail>` in
+  `de.ts`/`en.ts`):
+  * cloud-folder sync – `unsupported:folder_access_lost` (the folder can no
+    longer be read: permission revoked, cloud app removed or signed out,
+    folder deleted or moved – pick it again; also kept as `lastError`),
+    `unsupported:folder_not_linked` (`sync_now` without a folder),
+    `unsupported:folder_picker` (the device has no folder picker),
+    `unsupported:sync_file_too_large` (a file above its limit – a vault
+    file 64 MiB, a blob 20 MiB + 45 bytes; per file reported as `tooLarge`),
+    `unsupported:platform` (iOS: no folder plugin yet), `not_found` and
+    `io:<detail>` (the plugin's other rejections); a single file's problem
+    is no error but its `outcome` in `files`;
+  * fingerprint – `unsupported:device_unlock_unavailable` /
+    `device_unlock_not_enrolled` (no prompt shown), `device_unlock_cancelled`,
+    `device_unlock_failed` (finger not recognised), `device_unlock_lockout`,
+    `device_unlock_busy` (another prompt open), `io:device_unlock: <detail>`
+    (anything else) – these keep the setup; `device_unlock_invalid` (reset,
+    the blob is removed), `device_unlock_not_set` (none set up, or the
+    feature off), `locked` (`enable_device_unlock` for a vault that is not
+    the page's);
+  * lock reasons only the phone sends (`vault://locked`): `background`
+    (the background lock) and `keyChanged` (a synced copy of the open vault
+    has a new master password);
+  * the desktop mirror's codes (`invalid_input:mirror_folder`,
+    `invalid_input:mirror_folder_data_dir`,
+    `unsupported:mirror_folder_missing`, `unsupported:mirror_newer`) are in
+    "Cloud-folder mirror (desktop) and phone link".
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
@@ -438,10 +498,10 @@ all – so no update check either: About links to the releases page instead.
     on the phone), import (also no drop target), master password, recovery
     key, rename / delete vault, the recovery reminder, "Passwort vergessen?"
     and "Neuen Tresor erstellen" on the unlock screen; the welcome screen
-    without a vault shows what the app is and a marked slot
-    (`data-slot="vault-source"`) for the next stage's "Tresor vom PC
-    holen". Every write action in `MainScreen.tsx` also returns early on
-    `readOnly`.
+    without a vault (`PhoneWelcome`) shows what the app is and, in its slot
+    `data-slot="vault-source"`, the way to a vault: "Tresor aus
+    Cloud-Ordner holen" ("Cloud-folder sync (phone)" → UI). Every write
+    action in `MainScreen.tsx` also returns early on `readOnly`.
   * **Desktop-only on the phone platform**: browser integration (settings
     section, pairing dialog), file drop (no `FileDropProvider`), import /
     export and advanced sections (data folder, portable mode, terminal),

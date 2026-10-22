@@ -38,10 +38,12 @@ WebView2 (ist auf Win 10/11 vorhanden).
   signiert; CI bricht ab, wenn das Zertifikat nicht
   `B7:3D:75:…:3C:AA` ist). `versionCode` = Run-Nummer – deshalb
   `.github/workflows/build.yml` **nie umbenennen**. Die Android-App
-  aktualisiert sich nicht selbst; neue APK über die alte installieren. Bis
-  `import_vault_file` da ist, kann die veröffentlichte APK keinen Tresor
-  anlegen oder übernehmen – Release-Notes und README nennen sie deshalb
-  „frühe Vorschau“, die sich nur installieren und starten lässt.
+  aktualisiert sich nicht selbst und sucht auch nicht nach Updates (keine
+  `INTERNET`-Berechtigung); neue APK über die alte installieren, „Über
+  Keystead“ verlinkt die Releases. Release-Notes und README nennen sie
+  „frühe Vorschau“: nur lesen, die Tresore kommen über den Cloud-Ordner
+  (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“), einen Tresor
+  anlegen kann sie nicht.
 - **`[skip ci]`** für Zwischenstände (kein Build, keine Discord-Meldung).
 - Stabile Version: Tag `vX.Y.Z` → Release als „Latest“. Danach `version` in
   `apps/desktop/src-tauri/tauri.conf.json` hochzählen (sonst sortieren spätere
@@ -269,13 +271,43 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 ## In Arbeit: Block 5 „Mobile“ (Branch `claude/mobile-android`)
 
 Entwurf und Entscheidungen des Besitzers: [`BLOCK5-DESIGN.md`](BLOCK5-DESIGN.md)
-(Paketname `io.github.cedrickgd.keystead`, minSdk 29, Stufe 1 ohne Netz und
-nur lesend, Sperre im Hintergrund, `allowBackup=false`). **Stufe 1a ist
-fertig** (Commits `WIP: mobile 1a – … [skip ci]`; bis `97a389b` liegen sie
-auf `origin/claude/mobile-android`, die späteren nur lokal – vor jedem
-Umschreiben der Historie `git status -sb` prüfen, gepushte Commits nicht
-umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
-(Android)“):
+(Paketname `io.github.cedrickgd.keystead`, minSdk 29, Handy nur lesend,
+Sperre im Hintergrund, `allowBackup=false`, Sync nur über den eigenen
+Cloud-Ordner). **Stufen 1a, 1b und 2a sind fertig** (Commits `WIP: mobile
+1a/1b/2a – … [skip ci]`, Stand 2026-10-17: bis `47e9aab` auf
+`origin/claude/mobile-android`, `02005c3` und die Doku nur lokal – vor
+jedem Umschreiben der Historie `git status -sb` prüfen, gepushte Commits
+nicht umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt
+„Mobile (Android)“, mit einer Übersichtstabelle am Anfang).
+
+**Was die Handy-App jetzt kann** (Android 10+; ab dem nächsten
+veröffentlichten Build hängt die APK an jedem Release – bisher hat noch
+kein Release sie):
+Tresore aus einem Ordner der eigenen Cloud übernehmen (nur lesend, nur in
+Richtung Handy; der PC füllt den Ordner mit „Kopie im Cloud-Ordner aktuell
+halten“), entsperren per Master-Passwort oder – opt-in – per Fingerabdruck,
+suchen und filtern, aufdecken und kopieren, 2FA-Codes, Bildvorschau von
+Anhängen, Sicherheitsbericht, Sperre im Hintergrund; eigenes Handy-Layout
+mit Zurück-Geste. Ohne `INTERNET`-Berechtigung, ohne Android-Backup, mit
+`FLAG_SECURE`. **Nicht**: bearbeiten (Stufe 2b), Autofill (Stufe 3, als
+Nächstes), Update-Prüfung, Icons laden, Leak-Prüfung.
+
+**Bitte bestätigen** (in den Läufen so entschieden bzw. umgesetzt, in
+`BLOCK5-DESIGN.md` vermerkt):
+* Die Handy-App bleibt **ohne `INTERNET`-Berechtigung** – auch keine
+  Update-Prüfung über ein Kotlin-Plugin, wie E6 sie für Stufe 2 vorsah;
+  „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Browser öffnet
+  sich, dafür braucht Keystead keine Berechtigung).
+* Das Handy verknüpft einen **Ordner** statt einer einzelnen Datei (damit
+  die Anhänge mitkommen); der geplante Einzeldatei-Import
+  `import_vault_file` entfällt.
+* PC-Spiegel: nur Tresore, die in der App geöffnet werden, kommen in den
+  Ordner; Löschen eines Tresors entfernt seine Kopie dort (das Handy behält
+  seine); Ausschalten oder ein Ordnerwechsel lässt die bisherigen Kopien
+  liegen; eine höhere Revision im Ordner wird nie überschrieben.
+
+Die Stufen im Einzelnen (Stufe 1a in Punkt 1–6, Stufe 1b in 7 und 10,
+Stufe 2a in 8 und 9):
 
 1. **Core** (Commit `80ff650`): Clipboard-Backend-Trait (arboard nur auf dem
    Desktop), `paths::set_data_dir_override`, Settings-Felder für das Handy.
@@ -484,7 +516,8 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
    Update-Prüfung auf dem Handy; der Link öffnet den Browser, dafür braucht
    die App keine Berechtigung). Willkommen ohne Tresor: Erklärung plus
    markierter Platz (`data-slot="vault-source"`) für „Tresor vom PC holen“
-   der nächsten Stufe. **Android-Shell**: `MainActivity` polstert die
+   der nächsten Stufe (seit Punkt 8 steht dort „Tresor aus Cloud-Ordner
+   holen“). **Android-Shell**: `MainActivity` polstert die
    Content-View um Statusleiste, Gestenleiste, Kamera-Aussparung und
    Tastatur (Insets-Listener, verbraucht die Insets) – die Webview sah sie
    nicht (`env()` lieferte nur die Aussparung, 0 für die Gestenleiste) und
@@ -778,7 +811,17 @@ umschreiben; der Vertrag steht in `ARCHITECTURE.md`, Abschnitt „Mobile
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
 in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
-`adb` liegt in `$ANDROID_HOME/platform-tools`.
+`adb` liegt in `$ANDROID_HOME/platform-tools`. Befehle mit Pfaden auf dem
+Gerät (`/data/…`, `/sdcard/…`) brauchen in Git Bash `MSYS_NO_PATHCONV=1`
+davor.
+
+Stand des Emulators nach den Läufen vom 2026-10-17 (laut deren Berichten):
+in der App liegen die Test-Tresore „Handy-Test“ und „Handy-Demo“ (Passwort
+`demo`) und „Cloud-Test“ (Passwort `demo2`, aus dem Ordner
+`/sdcard/Download/KeysteadSync`); Displaysperre-PIN `1234`, Fingerabdrücke
+1 und 2 eingerichtet, Entsperren per Fingerabdruck für „Handy-Test“ an,
+„Sperren im Hintergrund“ 1 min, Sprache Deutsch, Design dunkel. Ob der
+Cloud-Ordner gerade verbunden ist, zeigt Einstellungen → Synchronisierung.
 
 1. Emulator starten: `"$ANDROID_HOME/emulator/emulator.exe" -avd MB_S26
    -no-snapshot-load` – der Kaltstart dauert hier mehrere Minuten; fertig,
@@ -815,14 +858,21 @@ in Git Bash; vorher `ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"` setzen,
    synchronisieren“) – die App übernimmt sie. Geht mit Debug- und
    Release-APK; den Ordner `Download` selbst lässt Android nicht freigeben,
    nur einen Unterordner.
-6. Durchklicken: Start → Willkommen/Entsperren → Liste und Suche →
-   Passwort aufdecken (nach 30 s wieder verborgen) → kopieren (die
-   Zwischenablage des PCs spiegelt die des Emulators; nach 30 s leer) →
-   2FA-Code → Website eines Eintrags antippen (der Browser öffnet sich,
-   Keystead friert nicht ein) → Bildanhang ansehen (nur wenn der Ordner
-   `<id>.keystead.attachments` mitkopiert wurde) → Sicherheitsbericht →
-   Einstellungen → „Sperren im Hintergrund“ (Sofort / 1 min / 5 min / Nie)
-   → „Über Keystead“ zeigt „Android“.
+6. Durchklicken: Start → Willkommen/Entsperren (die Tastatur springt nicht
+   von selbst auf) → Liste und Suche → Menü-Knopf öffnet die Seitenleiste
+   als Schublade (Ordner, Tags, Typen; Chip „Nur lesen“) → Eintrag antippen
+   (Detail über der Liste, Zurück-Pfeil) → Passwort aufdecken (nach 30 s
+   wieder verborgen) → kopieren (die Zwischenablage des PCs spiegelt die des
+   Emulators; nach 30 s leer) → 2FA-Code → Website eines Eintrags antippen
+   (der Browser öffnet sich, Keystead friert nicht ein) → Bildanhang ansehen
+   (nur wenn der Ordner `<id>.keystead.attachments` mitkopiert wurde) →
+   Sicherheitsbericht → Einstellungen (nur Allgemein, Sicherheit,
+   Synchronisierung, Über; nirgends ein Bearbeiten-Knopf) → „Sperren im
+   Hintergrund“ (Sofort / 1 min / 5 min / Nie) → „Über Keystead“ zeigt
+   „Android · Daten im App-Speicher“, „Releases auf GitHub öffnen“ öffnet
+   den Browser. Zurück-Taste (`adb shell input keyevent 4`): schließt
+   Dialog/Schublade, dann das Detail, geht von den Einstellungen zur Liste,
+   an der Wurzel in den Hintergrund.
    Fingerabdruck: Displaysperre (`adb shell locksettings set-pin 1234`) und
    Fingerabdruck einrichten (Android-Einstellungen → Sicherheit, oder `adb
    shell am start -a android.settings.FINGERPRINT_ENROLL`; der Emulator
@@ -847,22 +897,35 @@ oder OneDrive-App den Ordner, den der PC füllt).
 
 ### Nächste Schritte (laut Design, Reihenfolge des Besitzers)
 
-Stufe 2a ist mit Punkt 9 auf beiden Seiten fertig (ein eigener
-Einzeldatei-Import `import_vault_file` ist damit überflüssig), Stufe 1b mit
-Punkt 10.
+Stufe 1a ist mit Punkt 6 fertig, 1b mit den Punkten 7 und 10, 2a mit den
+Punkten 8 (Handy) und 9 (PC) – ein eigener Einzeldatei-Import
+`import_vault_file` ist damit überflüssig. Vorher: die Punkte unter „Bitte
+bestätigen“ oben mit dem Besitzer klären, und einmal Ende-zu-Ende mit der
+echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
 
-1. Fingerabdruck härten (optional, E5 b): eigenes Kotlin-Plugin mit
-   StrongBox, eigenem Alias und `ByteArray` statt Text – lohnt sich
-   zusammen mit Autofill, das denselben Keystore-KEK braucht. Dazu: das
-   Launcher-Icon von `gen/android` (noch Tauris Standard) durch das
-   Keystead-Logo ersetzen.
-2. Update-Hinweis auf dem Handy: nach der Entscheidung dieses Laufs **nicht**
-   (keine `INTERNET`-Berechtigung, siehe Punkte 8 und 9); nur wieder
+1. **Autofill** (Stufe 3, E11 – der Besitzer will es vor dem Bearbeiten):
+   ein Android-`AutofillService` in Kotlin (gleicher Prozess wie die
+   Rust-Bibliothek, JNI), zuerst die Minimalvariante – nur Browser/Domain,
+   Benutzername + Passwort, kein Speichern; ohne offene App entsperrt eine
+   eigene Activity per Fingerabdruck (Keystore-KEK aus Stufe 1b) – siehe
+   `BLOCK5-DESIGN.md`, „Stufe 3“. Dabei sinnvoll: der Fingerabdruck als
+   eigenes Kotlin-Plugin (E5 b: StrongBox, eigener Alias, `ByteArray` statt
+   Text), weil Autofill denselben Keystore-KEK braucht.
+2. **2b** Bearbeiten am Handy + Zwei-Wege-Sync mit Konfliktdialog
+   (Schreibkommandos registrieren, Editor im Handy-Layout, Copy-out in den
+   Ordner – dafür braucht das Handy dann eine Schreibfreigabe –, Konflikt-
+   erkennung `sync::decide` mit Digest und Basis-Revision; der PC-Spiegel
+   ersetzt bisher nie eine höhere Revision im Ordner – 2b braucht dort
+   dieselbe Konfliktlogik).
+3. Kleinere offene Punkte: das Launcher-Icon von `gen/android` (noch
+   Tauris Standard, auch im Fingerabdruck-Prompt sichtbar) durch das
+   Keystead-Logo ersetzen; Zwischenablage mit langem Timer härten
+   (Kotlin-`AlarmManager`, siehe „Bekannte Grenzen“ unten); TalkBack und
+   der R8-Release-Build mit Ordner- und Biometrie-Plugin im Emulator.
+4. Update-Hinweis auf dem Handy: nach der Entscheidung der Läufe **nicht**
+   (keine `INTERNET`-Berechtigung, siehe „Bitte bestätigen“); nur wieder
    aufnehmen, wenn der Besitzer das will.
-3. Danach **Autofill** (E11), dann **2b** Bearbeiten am Handy +
-   Zwei-Wege-Sync mit Konfliktdialog (der PC-Spiegel ersetzt bisher nie eine
-   höhere Revision im Ordner – 2b braucht dort die Konfliktlogik).
-4. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
+5. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
    Signatur, nur Screenshots).
 
 Bekannte Grenzen: Zwischenablage auf dem Handy – wird der Prozess
