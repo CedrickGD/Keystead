@@ -17,7 +17,7 @@ import * as store from "./lib/store.js";
 import { parseWebUrl, siteKey, displayHost } from "./lib/sites.js";
 import { extensionUpdateAction, parseVersion } from "./lib/version.js";
 import { openVaultId, pendingVaultState } from "./lib/pending.js";
-import { GENERATED_MAX_CHARS, requestOptions } from "./lib/generator.js";
+import { GENERATED_MAX_CHARS, olderAppIssue, requestOptions, storedOptions } from "./lib/generator.js";
 
 const bridge = new NativeBridge();
 // "chrome-extension://<id>" – the root URL without its slash (the same as its
@@ -79,6 +79,9 @@ async function updateStatus(patch) {
     vaultName: null,
     vaultId: null,
     appVersion: "",
+    // The app's generator interface (lib/generator.js GENERATOR_VERSION);
+    // null until a `status` answer told it.
+    generatorVersion: null,
     extensionVersion: null,
     extensionDir: null,
     error: null,
@@ -214,6 +217,8 @@ async function refreshStatus() {
       vaultName: state === "unlocked" && typeof data.vaultName === "string" ? data.vaultName : null,
       vaultId: state === "unlocked" && typeof data.vaultId === "string" ? data.vaultId : null,
       appVersion: typeof data?.appVersion === "string" ? data.appVersion : "",
+      // Absent in apps before the generator rework: version 1.
+      generatorVersion: Number.isInteger(data?.generatorVersion) && data.generatorVersion > 0 ? data.generatorVersion : 1,
       // Only paired clients get these (older apps: absent).
       extensionVersion: paired && parseVersion(data.extensionVersion) ? data.extensionVersion : null,
       extensionDir: paired && typeof data.extensionDir === "string" ? data.extensionDir.slice(0, 1024) : null,
@@ -232,6 +237,7 @@ function publicStatus(status) {
     vaultName: status?.vaultName ?? null,
     vaultId: status?.vaultId ?? null,
     appVersion: status?.appVersion ?? "",
+    generatorVersion: Number.isInteger(status?.generatorVersion) ? status.generatorVersion : null,
     error: status?.error ?? null,
   };
 }
@@ -633,17 +639,24 @@ async function fillGenerated(tabId, frameId, password, target) {
 // the user used it – copied it from the popup, filled it into a page (popup
 // "Ausfüllen", context menu, shortcut, a suggestion's "Verwenden") or saved
 // it in a new login – does `remember_generated` put it into the open vault's
-// generator history. Older apps ignore `remember: false` (they stored the
-// preview already) and answer `remember_generated` with `invalid_request`.
+// generator history. Apps before 2.0.0 ignore `remember: false` (they stored
+// the preview already) and answer `remember_generated` with
+// `invalid_request`; 2.0.0 knows both but stores every `remember_generated`,
+// also the same password twice – the popup therefore reports each preview
+// once (`remember: false` on its later copy / fill messages).
 
 /**
  * The `generate_password` payload of a preview: the generator options given
- * (`rawOptions`, the popup's own options; `null`: those the popup stored) –
- * only fields the app accepts (lib/generator.js) – or none, so the app
- * generates with its default generator preset.
+ * (`rawOptions`, the popup's own options; `null`: those the popup stored,
+ * completed over the defaults like the popup reads them) – only fields the
+ * app accepts (lib/generator.js) – or none, so the app generates with its
+ * default generator preset. Options an older app would not honour (status
+ * `generatorVersion` below 2: exclusions, an own symbol set, …) are refused
+ * with `app_outdated` instead of being ignored there.
  */
 async function previewPayload(rawOptions) {
-  const options = requestOptions(rawOptions ?? (await store.getGeneratorOptions()));
+  const options = requestOptions(rawOptions ?? storedOptions(await store.getGeneratorOptions()));
+  if (options && olderAppIssue(options, (await store.getStatus())?.generatorVersion)) throw new BridgeError("app_outdated");
   return options ? { options, remember: false } : { remember: false };
 }
 
@@ -981,24 +994,26 @@ const popupHandlers = {
     return timers;
   },
   // The user copied the generator's preview: the app copies it (like
-  // copy_field) and keeps it in the generator history.
+  // copy_field) and keeps it in the generator history – unless the popup
+  // says it reported this preview already (`remember: false`).
   "popup:copy-generated": async (msg) => {
     const password = requireString(msg.password, GENERATED_MAX_CHARS);
     if (!password) throw new BridgeError("invalid_request");
     await call("copy_secret", { text: password });
-    return { remembered: await rememberGenerated(password) };
+    return { remembered: msg.remember === false ? true : await rememberGenerated(password) };
   },
   // The user picked the login in the popup: explicit (see fillTab).
   "popup:fill": (msg) => fillTab(requireTabId(msg.tabId), requireString(msg.itemId, 200), { explicit: true }),
   // A preview only. `options`: the popup's own options; `null`: those it
   // stored – without any, the app's default generator preset.
   "popup:generate": (msg) => generatePreview(msg.options ?? null),
-  // The user filled the preview into the page: into the history once it is in a field.
+  // The user filled the preview into the page: into the history once it is
+  // in a field (not again after a copy: `remember: false`).
   "popup:fill-generated": async (msg) => {
     const tabId = requireTabId(msg.tabId);
     const password = requireString(msg.password, GENERATED_MAX_CHARS);
     const result = await fillGenerated(tabId, await focusedFrameId(tabId), password, "focused");
-    return { ...result, remembered: await rememberGenerated(password) };
+    return { ...result, remembered: msg.remember === false ? true : await rememberGenerated(password) };
   },
   "popup:save-login": async (msg) => {
     const name = requireString(msg.name, 200).trim();
@@ -1154,7 +1169,8 @@ async function generateInto(tab, frameId, target) {
     password = await generatePreview(null);
   } catch (err) {
     const code = errorCode(err);
-    toast(tab.id, code === "invalid_request" || code === "internal" ? "csGenerateFailed" : "csNotConnected");
+    if (code === "app_outdated") toast(tab.id, "csGenerateOutdated");
+    else toast(tab.id, code === "invalid_request" || code === "internal" ? "csGenerateFailed" : "csNotConnected");
     return;
   }
   try {

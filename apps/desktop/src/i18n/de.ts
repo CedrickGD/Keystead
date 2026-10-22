@@ -686,7 +686,7 @@ export const de = {
   "generator.presetActions": "Vorlagen-Aktionen",
   "generator.presetMakeDefault": "Als Standard verwenden",
   "generator.presetIsDefault": "Standard für den Editor und die Browser-Erweiterung",
-  "generator.presetDefaultHint": "Die Standard-Vorlage nutzen der Generator im Editor und die Passwortvorschläge der Browser-Erweiterung.",
+  "generator.presetDefaultHint": "Die Standard-Vorlage nutzen der Generator im Editor und die Passwortvorschläge der Browser-Erweiterung – dort nur, solange im Popup keine eigenen Einstellungen gelten.",
   "generator.presetSaveTitle": "Als Vorlage speichern",
   "generator.presetSaveText": "Speichert die aktuellen Optionen unter einem Namen.",
   "generator.presetRenameTitle": "Vorlage umbenennen",
@@ -917,6 +917,9 @@ export const de = {
   "about.tagline": "Lokaler Passwort-Manager. Deine Daten verlassen nie dieses Gerät.",
   "about.portable": "Portable Version",
   "about.installed": "Daten im Benutzerprofil",
+  "about.wordlists": "Wortlisten für Passphrasen",
+  "about.wordlistEn": "Englisch: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), Lizenz CC BY 4.0 (creativecommons.org/licenses/by/4.0), ohne die Würfelnummern.",
+  "about.wordlistDe": "Deutsch: de-7776 von dys2p (github.com/dys2p/wordlists-de), CC0 1.0, 52 Wörter entfernt.",
 
   "update.regionLabel": "Update verfügbar",
   "update.available": "Keystead {version} ist verfügbar",

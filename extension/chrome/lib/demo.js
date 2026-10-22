@@ -128,7 +128,7 @@ export function createDemoApi(state) {
         ext === "notice" || ext === "reloading"
           ? { version: "2.0.0.42", dir: "C:\\Users\\Max\\AppData\\Local\\Keystead\\browser-extension", reloading: ext === "reloading" }
           : null;
-      return { state: shown, vaultName: vaultName(open), vaultId: open, appVersion: "2.0.0", error: null, extensionUpdate };
+      return { state: shown, vaultName: vaultName(open), vaultId: open, appVersion: "2.0.1", generatorVersion: 2, error: null, extensionUpdate };
     },
     async listVaults() {
       await delay(60);

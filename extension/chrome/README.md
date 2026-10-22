@@ -142,15 +142,29 @@ into a field goes into the vault's generator history once the field took it
   uses it: *Kopieren* (the app copies it, `copy_secret`, then
   `remember_generated`), *Ausfüllen* into the page, the context menu or
   `Ctrl+Shift+9` once a field took it, a suggestion's *Verwenden*, or
-  *Login hinzufügen* saved with the password its wand generated. Older apps
-  ignore `remember: false` (they store each preview, as before) and answer
+  *Login hinzufügen* saved with the password its wand generated. Each
+  preview is reported once: after a *Kopieren* the popup's next *Kopieren*
+  or *Ausfüllen* of the same preview does not send `remember_generated`
+  again (the app 2.0.0 would store it twice). Apps before 2.0.0 ignore
+  `remember: false` (they store each preview, as before) and answer
   `remember_generated` with `invalid_request`, which the extension takes as
   "already stored". Options: by default the app's **default generator
   preset** applies (picked in the app: Generator → *Als Standard
   verwenden*) – the tab says *Standard-Vorlage der App*. *Anpassen* gives
   this browser **own options** (start: the generator defaults), used by the
   popup, the suggestions, the context menu / shortcut and *Login
-  hinzufügen*; *App-Vorlage nutzen* drops them again. Own options: length
+  hinzufügen*; *App-Vorlage nutzen* drops them again. Options the popup of
+  an extension up to 2.0.0 saved (it stored every change, without
+  *Anpassen*) count as own options after the update – the tab shows
+  *Eigene Einstellungen*, and they win over the app's default preset until
+  *App-Vorlage nutzen*. Stored options are always completed over the
+  generator defaults, in the popup and in every background request alike.
+  Against an app before the generator rework (its `status` has no
+  `generatorVersion`), own options it would ignore or reject (length below
+  5, own symbols, excluded characters, a first letter, more than one upper-
+  or lower-case letter at least, the German word list) are not sent: the
+  popup explains it and disables *Generieren*, the context menu and
+  suggestions say the app is too old. Own options: length
   4–128, the four character groups, *Verwechselbare Zeichen vermeiden*, and
   under *Weitere Optionen* a minimum per group, the allowed symbols, the
   characters never to use and *Mit einem Buchstaben beginnen*; passphrases:
@@ -182,8 +196,8 @@ accepted (*Zurück* returns to it).
 | `lib/version.js` | Extension version compare and the self-update decision (`extensionUpdateAction`); tested by `extension/tests/version.test.mjs` (`node --test extension/tests/*.test.mjs`). |
 | `lib/pending.js` | Whether a save/update prompt still belongs to the open vault (`pendingVaultState`); tested by `extension/tests/pending.test.mjs`. |
 | `lib/settings.js` | Extension settings and their defaults (`autoCopyTotp`, `suggestPasswords`); tested by `extension/tests/settings.test.mjs`. |
-| `lib/generator.js` | Generator options (pure): the core's defaults and checks mirrored (`generatorIssue`, entropy), stored options read field by field (`lenientOptions`), what a `generate_password` request may carry (`requestOptions`); tested by `extension/tests/generator.test.mjs`. The service worker's generator traffic (previews only, `remember_generated` on use) is tested by `extension/tests/background-generator.test.mjs`, which loads `background.js` on a fake `chrome` (`extension/tests/helpers/fake-chrome.mjs`). |
-| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, the popup's own generator options (`generatorOptions`, only after *Anpassen*), extension settings, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the extension version and folder the app delivers), pairing progress, pending save prompts, 2FA offers (`totp:<tabId>`: item id, site, vault, expiry – no code). |
+| `lib/generator.js` | Generator options (pure): the core's defaults and checks mirrored (`generatorIssue`, entropy), stored options read field by field (`storedOptions` / `lenientOptions`), what a `generate_password` request may carry (`requestOptions`), what an app before the generator rework would ignore (`olderAppIssue`, `GENERATOR_VERSION`); tested by `extension/tests/generator.test.mjs`. The service worker's generator traffic (previews only, `remember_generated` on use) is tested by `extension/tests/background-generator.test.mjs`, which loads `background.js` on a fake `chrome` (`extension/tests/helpers/fake-chrome.mjs`). |
+| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, the popup's own generator options (`generatorOptions`: written by *Anpassen* and later changes – or, from before an update, by the popup of an extension up to 2.0.0 on every option change), extension settings, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the app's `generatorVersion`, the extension version and folder the app delivers), pairing progress, pending save prompts, 2FA offers (`totp:<tabId>`: item id, site, vault, expiry – no code). |
 | `content.js` | Inline icons + dropdown, password suggestion bubble, 2FA toast and *2FA-Code einfügen*, dwell feedback, autofill, capture of submitted logins, save bar – UI in a closed shadow root; open shadow roots of the page are discovered and observed. |
 | `lib/forms.js` | Pure DOM helpers (`globalThis.KeysteadForms`): login/signup/change classification (`passwordRole`, `suggestionTargets`), one-time code fields (`findOtpFields`, `fillOtp`), composed-tree helpers for open shadow roots, filling. Loadable on its own in a test page; tested by `extension/tests/forms.test.mjs` on a small fake DOM (`extension/tests/helpers/mini-dom.mjs`). |
 | `popup.html/.css/.js` | Popup (setup guide, pairing, unlock, *Diese Seite* / *Suche* / *Generator*, add login). `popup.html?demo=<state>` renders fake data only (no storage, no native host) for design work and screenshots; states: `host_missing`, `app_unavailable`, `not_paired`, `pairing`, `paired`, `denied`, `locked`, `locked_single`, `unlocked`, `unlocked_single`, `unlocked_empty`, `not_web`, `insecure` (`_single`: one vault, else three; password `demo`). |

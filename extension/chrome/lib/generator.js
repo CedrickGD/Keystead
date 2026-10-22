@@ -4,11 +4,15 @@
 //
 // The app generates; the extension only decides what to send. The popup keeps
 // *own* options in chrome.storage.local "generatorOptions" once the user chose
-// to customise them there ("Anpassen"). Without own options a request carries
-// no `options` and the app uses its default generator preset (the desktop
+// to customise them there ("Anpassen") – or, from an update, the options the
+// popup of an extension up to 2.0.0 stored on every change. Stored options are
+// always read field by field over the defaults (storedOptions), by the popup
+// and the service worker alike. Without own options a request carries no
+// `options` and the app uses its default generator preset (the desktop
 // generator page's "Als Standard verwenden"). The popup checks own options
 // with generatorIssue() before it stores or sends them – the bridge only
-// answers `invalid_request` for options the generator rejects.
+// answers `invalid_request` for options the generator rejects – and with
+// olderAppIssue() against what an older app would ignore.
 
 export const PASSWORD_MIN_LEN = 4;
 export const PASSWORD_MAX_LEN = 128;
@@ -23,6 +27,15 @@ export const GENERATED_MAX_CHARS = 1024;
 export const DEFAULT_SYMBOLS = "!#$%&*+-=?@^_";
 /** Real sizes of the app's embedded word lists (the core's tests pin them). */
 export const WORDLIST_SIZES = Object.freeze({ en: 7776, de: 7724 });
+/**
+ * The app's generator interface this extension is written for: `status`
+ * reports it as `generatorVersion` (the bridge's GENERATOR_VERSION). Apps
+ * before the generator rework (up to 2.0.0) report none – version 1: they
+ * ignore the newer option fields and reject lengths below 5.
+ */
+export const GENERATOR_VERSION = 2;
+/** Shortest password an app before GENERATOR_VERSION 2 generates. */
+const OLDER_APP_MIN_LEN = 5;
 
 const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const LOWER = "abcdefghijklmnopqrstuvwxyz";
@@ -127,6 +140,17 @@ export function lenientOptions(raw) {
   return { ...GENERATOR_DEFAULTS, ...(requestOptions(raw) ?? {}) };
 }
 
+/**
+ * The own options in storage ("generatorOptions") as the popup shows them and
+ * every request sends them – complete, via lenientOptions – or null if there
+ * are none (the app's default preset applies). A partial object an older
+ * popup stored must not leave its missing fields to the app's default preset
+ * in some requests and to the defaults in others.
+ */
+export function storedOptions(raw) {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? lenientOptions(raw) : null;
+}
+
 /** True if both have the same value in every option field. */
 export function sameOptions(a, b) {
   return Object.keys(GENERATOR_DEFAULTS).every((key) => a?.[key] === b?.[key]);
@@ -204,6 +228,43 @@ export function generatorIssue(o) {
   const plan = passwordPlan(o);
   if (plan.ok) return null;
   return plan.emptied ? { code: plan.code, emptied: plan.emptied } : { code: plan.code };
+}
+
+/**
+ * `{ code: "app_outdated", field }` if an app with this `generatorVersion` (from
+ * `status`; 1 for apps that report none) would not generate what the options
+ * `o` (request options, possibly partial: a missing field is the app's own)
+ * ask for (`field`: the first option it would not honour), else null – also
+ * while the version is unknown (null). Apps before
+ * GENERATOR_VERSION 2 silently ignore `symbolSet`, `exclude`,
+ * `startWithLetter`, `wordlist` and minimums of upper- and lower-case
+ * letters (they always put in one of each), and reject lengths below 5. What
+ * they do produce for the remaining options still meets them (a minimum of 0
+ * or 1 letters, the default symbols, the English list).
+ */
+export function olderAppIssue(o, generatorVersion) {
+  if (!Number.isInteger(generatorVersion) || generatorVersion >= GENERATOR_VERSION) return null;
+  if (!o || typeof o !== "object") return null;
+  const outdated = (field) => ({ code: "app_outdated", field });
+  if (o.kind === "passphrase") return o.wordlist !== undefined && o.wordlist !== "en" ? outdated("wordlist") : null;
+  if (o.length !== undefined && o.length < OLDER_APP_MIN_LEN) return outdated("length");
+  const enabled = (cls) => o[cls] !== false;
+  if (enabled("uppercase") && (o.minUppercase ?? 1) > 1) return outdated("minUppercase");
+  if (enabled("lowercase") && (o.minLowercase ?? 1) > 1) return outdated("minLowercase");
+  const sameSet = (a, b) => {
+    const x = new Set(chars(a));
+    const y = new Set(chars(b));
+    return x.size === y.size && [...x].every((c) => y.has(c));
+  };
+  if (enabled("symbols") && o.symbolSet !== undefined && !sameSet(String(o.symbolSet), DEFAULT_SYMBOLS)) return outdated("symbolSet");
+  if (o.exclude !== undefined) {
+    // Only characters the password could contain matter.
+    const sets = { uppercase: UPPER, lowercase: LOWER, digits: DIGITS, symbols: DEFAULT_SYMBOLS };
+    const pool = CHAR_CLASSES.filter(enabled).map((cls) => sets[cls]).join("");
+    if (chars(String(o.exclude)).some((c) => pool.includes(c) && !(o.avoidAmbiguous && AMBIGUOUS.includes(c)))) return outdated("exclude");
+  }
+  if (o.startWithLetter === true) return outdated("startWithLetter");
+  return null;
 }
 
 /** Sum of the minimums of the enabled classes (plus the extra first letter of `startWithLetter`). */

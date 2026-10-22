@@ -11,7 +11,7 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
 | `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
 | Entwicklung | Feature-Branches (`claude/…`), Merge per PR mit Merge-Commit nach `main`. Der alte Branch `claude/quirky-archimedes-i4qa3j` ist gemergt und kann gelöscht werden. |
-| Generator | `claude/generator` (abgezweigt vom Stand 2.0.0, lokal im eigenen Worktree `Keystead-generator`): Überarbeitung des Generators, siehe „Was fertig ist“. Stand 2026-10-17: WIP-Commits mit `[skip ci]`, nicht gepusht, nicht gemergt, nicht veröffentlicht. |
+| Generator | `claude/generator` (abgezweigt vom Stand 2.0.0, lokal im eigenen Worktree `Keystead-generator`): Überarbeitung des Generators, siehe „Was fertig ist“. Stand 2026-10-17: WIP-Commits mit `[skip ci]`; die ersten drei (core, backend, UI) sind schon auf `origin/claude/generator` gepusht (öffentliches Repo), die späteren (extension, docs, review fixes) nur lokal. Bereits gepushte Commits nicht umschreiben (kein squash/amend/rebase – sonst Force-Push auf einen öffentlichen Branch). Nicht gemergt, nicht veröffentlicht. |
 | Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, README) |
 | GitHub-Secret | `TAURI_SIGNING_PRIVATE_KEY` im Keystead-Repo ist gesetzt (Inhalt von `keys/keystead/tauri-updater.key`) |
 
@@ -229,13 +229,22 @@ In-App-Update (sein Kanal: wie in den Einstellungen gespeichert).
     Klick, Vorschau-Hinweis, Kopieren/Ausfüllen). Ohne eigene Optionen gilt
     die Standard-Vorlage der App; „Anpassen“ legt eigene Optionen für diesen
     Browser an (`chrome.storage.local` `generatorOptions`, nur solange
-    gültig), „App-Vorlage nutzen“ entfernt sie.
+    gültig), „App-Vorlage nutzen“ entfernt sie. Gespeicherte Optionen werden
+    überall gleich über die Generator-Standards ergänzt (Popup und
+    Hintergrund-Anfragen). Jede Vorschau kommt nur einmal in den Verlauf
+    (Kopieren und danach Ausfüllen meldet sie nicht noch einmal).
   - **Kompatibilität**: Die neuen `GeneratorOptions`-Felder haben
     Serde-Standardwerte. `generate_password` der Bridge ohne Optionen nimmt
     die Standard-Vorlage, gesendete Felder gelten darüber; vollständige
     Optionen älterer Erweiterungen funktionieren weiter (notfalls über die
     Generator-Standards). `remember_generated` und `generate_password` mit
-    `remember: true` bleiben.
+    `remember: true` bleiben. `status` meldet jetzt `generatorVersion: 2`;
+    gegen eine ältere App (z. B. 2.0.0, ohne das Feld) schickt die neue
+    Erweiterung keine Optionen, die jene übergehen oder ablehnen würde (Länge
+    unter 5, eigene Sonderzeichen, ausgeschlossene Zeichen, Buchstabe am
+    Anfang, mehr als 1 Groß-/Kleinbuchstabe, deutsche Wortliste): Das Popup
+    erklärt es und sperrt „Generieren“, Kontextmenü und Vorschläge sagen,
+    dass die App zu alt ist.
   - **Deutsche Wortliste – gefunden und eingebettet**: `de-7776-v1.txt` aus
     <https://github.com/dys2p/wordlists-de>. Lizenz an der Quelle geprüft:
     Unlicense, CC0 oder BSD-3 nach Wahl; Keystead nutzt CC0 1.0, das passt
@@ -255,6 +264,18 @@ In-App-Update (sein Kanal: wie in den Einstellungen gespeichert).
     (Core-API „generator“, „Settings“, Command-Tabelle, „Secrets and the
     webview → Generator“, Bridge `generate_password` / `remember_generated`,
     Erweiterung „Password suggestion“ / „Generator“, UI/UX „Generator“).
+  - Review-Fixes (2026-10-17): Sperren zählt die Sperr-Epoche jetzt unter dem
+    State-Lock hoch (vorher konnte ein Kopieren, das genau beim Sperren lief –
+    `copy_generated`, ebenso `copy_secret_field` und `copy_field` –, das
+    Passwort nach dem Sperren in der Zwischenablage hinterlassen; Test mit
+    zwei Threads); Erweiterung wie oben (vollständige gespeicherte Optionen,
+    `generatorVersion`, jede Vorschau einmal); ein selten (≈ 0,2 %) roter
+    Bridge-Test wegen EFF-Wörtern mit Bindestrich („drop-down“) zählt jetzt
+    Großbuchstaben; das Menü überspringt deaktivierte Einträge (die
+    Vorlagen-Aktionen sind wieder per Tastatur erreichbar, auch wenn „Als
+    Vorlage speichern“ gesperrt ist); EFF-Namensnennung (CC BY 4.0) jetzt auch
+    in den ausgelieferten Dateien: Einstellungen → Über Keystead und
+    `docs/LIESMICH.txt` im ZIP.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -408,6 +429,20 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
   - Die Erweiterung bekommt keine Vorlagenliste (die Bridge hat keine
     Nachricht dafür): Das Popup nennt nur „Standard-Vorlage der App“, eigene
     Optionen gelten je Browser.
+  - Erweiterungen, deren 2.0.0-Popup Generator-Optionen gespeichert hat (das
+    alte Popup speicherte jede Änderung, ohne „Anpassen“), gelten nach dem
+    Update als „Eigene Einstellungen“ und gehen der Standard-Vorlage der App
+    vor – für Vorschläge, Kontextmenü/Kürzel und „Login hinzufügen“, wie
+    schon in 2.0.0. „App-Vorlage nutzen“ im Popup setzt zurück. So
+    entschieden statt die alten Optionen still zu verwerfen; der Hinweis zur
+    Standard-Vorlage in der App sagt es.
+  - Gegen eine App vor der Überarbeitung (kein `generatorVersion` im
+    `status`) sind die neuen Optionen in der Erweiterung gesperrt, nicht
+    nachgebildet.
+  - `LICENSE` beansprucht „the Software“ ohne Ausnahme für Fremdbestandteile
+    (EFF-Wortliste CC BY 4.0, dys2p CC0); die Namensnennung steht in der App
+    (Über Keystead), in `docs/LIESMICH.txt` und im README. Ob `LICENSE` einen
+    Satz zu Drittanbieter-Inhalten bekommt, entscheidet der Besitzer.
   - Die deutsche Wortliste hat 7724 statt 7776 Wörter (52 entfernt) – pro
     Wort 0,01 Bit weniger als die EFF-Liste; die Anzeige rechnet mit der
     echten Größe.

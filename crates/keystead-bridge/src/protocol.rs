@@ -685,11 +685,26 @@ impl Response {
 // Response data
 // ---------------------------------------------------------------------------
 
+/// The generator interface this bridge offers, reported in `status`
+/// (`generatorVersion`) so the extension can tell which generator options
+/// the app understands. 2: the generator rework – `GeneratorOptions` with
+/// `minUppercase`, `minLowercase`, `symbolSet`, `exclude`,
+/// `startWithLetter` and `wordlist`, passwords from 4 characters, the
+/// default preset for missing fields, and `remember_generated` not adding
+/// the newest history entry twice. Apps before it send no
+/// `generatorVersion` (the extension treats that as 1): they ignore the
+/// newer fields and reject lengths below 5.
+pub const GENERATOR_VERSION: u32 = 2;
+
 /// `data` of `status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusData {
     pub app_version: String,
+    /// [`GENERATOR_VERSION`] (also for unpaired clients: it reveals nothing
+    /// the version does not). Absent in older apps: reads as 0.
+    #[serde(default)]
+    pub generator_version: u32,
     pub paired: bool,
     pub unlocked: bool,
     /// Name of the unlocked vault; only revealed to paired clients.

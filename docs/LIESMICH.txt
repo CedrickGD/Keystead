@@ -72,3 +72,19 @@ Tresordaten.
 -------------------
 In der App: Einstellungen → Erweitert → „Terminal öffnen“.
 Oder in einer Konsole: keystead-cli.exe  (Hilfe: keystead-cli.exe --help)
+
+4. Inhalte Dritter
+------------------
+Keystead.exe und keystead-cli.exe enthalten zwei Wortlisten für Passphrasen.
+Sie stehen nicht unter der Keystead-Lizenz (LICENSE), sondern unter ihren
+eigenen Lizenzen:
+- Englisch: "EFF Large Wordlist" (https://www.eff.org/dice),
+  © Electronic Frontier Foundation, lizenziert unter Creative Commons
+  Namensnennung 4.0 International (CC BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/). Geändert: die
+  Würfelnummern wurden entfernt.
+- Deutsch: "de-7776" aus "Mnemonische deutsche Wortlisten" von dys2p
+  (https://github.com/dys2p/wordlists-de), genutzt unter CC0 1.0
+  (https://creativecommons.org/publicdomain/zero/1.0/). Geändert: 52 Wörter
+  wurden entfernt, damit Passphrasen familientauglich bleiben.
+Dasselbe steht in der App unter Einstellungen → Über Keystead.

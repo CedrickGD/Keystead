@@ -15,6 +15,7 @@ use keystead_bridge::framing::{
     read_frame, write_frame, MAX_BROWSER_MESSAGE_SIZE, MAX_MESSAGE_SIZE,
 };
 use keystead_bridge::host::{self, LocalSocketConnector};
+use keystead_bridge::protocol::GENERATOR_VERSION;
 use keystead_bridge::{
     start_server, BridgeError, ClientStore, Dispatcher, ExtensionInfo, LoginSecret, Response,
     VaultBackend, VaultSummary,
@@ -320,7 +321,7 @@ fn browser_to_vault_through_host_and_socket() {
     assert_eq!(r.len(), 6);
     assert_eq!(
         r[0].data,
-        json!({"appVersion": "2.0.0", "paired": false, "unlocked": false, "vaultName": null,
+        json!({"appVersion": "2.0.0", "generatorVersion": GENERATOR_VERSION, "paired": false, "unlocked": false, "vaultName": null,
             "vaultId": null, "extensionVersion": null, "extensionDir": null})
     );
     assert_eq!(r[1], Response::null("a2"));
@@ -374,7 +375,7 @@ fn browser_to_vault_through_host_and_socket() {
     let r = browser.send(auth(json!({"id": "b4", "type": "status"})));
     assert_eq!(
         r.data,
-        json!({"appVersion": "2.0.0", "paired": true, "unlocked": true, "vaultName": "Privat",
+        json!({"appVersion": "2.0.0", "generatorVersion": GENERATOR_VERSION, "paired": true, "unlocked": true, "vaultName": "Privat",
             "vaultId": vault_id, "extensionVersion": "2.0.0.12",
             "extensionDir": backend.store.root().join("browser-extension").display().to_string()})
     );

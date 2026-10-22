@@ -7,14 +7,17 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_SYMBOLS,
   GENERATOR_DEFAULTS,
+  GENERATOR_VERSION,
   WORDLIST_SIZES,
   entropyBits,
   entropyScore,
   generatorIssue,
   lenientOptions,
+  olderAppIssue,
   requestOptions,
   requiredCharacters,
   sameOptions,
+  storedOptions,
   symbolSetProblem,
 } from "../chrome/lib/generator.js";
 
@@ -160,4 +163,47 @@ test("entropy uses the real pool and word list sizes", () => {
   assert.ok(Math.abs(entropyBits(withNumber) - (5 * Math.log2(7776) + Math.log2(50))) < 1e-9);
   assert.equal(entropyBits(options({ length: 3 })), null);
   assert.deepEqual([27, 28, 36, 60, 80].map(entropyScore), [0, 1, 2, 3, 4]);
+});
+
+test("stored options are complete wherever they are used; none stay none", () => {
+  const old = { kind: "password", length: 16, uppercase: true, lowercase: true, digits: true, symbols: false, minDigits: 2, minSymbols: 0, avoidAmbiguous: true, words: 5, separator: "-", capitalize: true, includeNumber: true };
+  assert.deepEqual(storedOptions(old), { ...GENERATOR_DEFAULTS, ...old });
+  assert.deepEqual(requestOptions(storedOptions(old)), { ...GENERATOR_DEFAULTS, ...old });
+  for (const none of [null, undefined, "x", 5, []]) assert.equal(storedOptions(none), null);
+});
+
+test("options an app before the generator rework would ignore are told", () => {
+  assert.equal(GENERATOR_VERSION, 2);
+  // Current or unknown app: never.
+  for (const version of [2, 3, null, undefined]) assert.equal(olderAppIssue(options({ exclude: "0O" }), version), null);
+  for (const [field, o] of [
+    ["length", options({ length: 4 })],
+    ["exclude", options({ exclude: "0O" })],
+    ["symbolSet", options({ symbolSet: "!?" })],
+    ["startWithLetter", options({ startWithLetter: true })],
+    ["minUppercase", options({ minUppercase: 2 })],
+    ["minLowercase", options({ minLowercase: 3 })],
+    ["wordlist", options({ kind: "passphrase", wordlist: "de" })],
+    // The first one in the generator's order.
+    ["length", options({ length: 4, exclude: "0O", startWithLetter: true })],
+  ]) {
+    assert.deepEqual(olderAppIssue(o, 1), { code: "app_outdated", field }, JSON.stringify(o));
+  }
+  // What such an app produces meets these anyway.
+  for (const o of [
+    GENERATOR_DEFAULTS,
+    options({ length: 5, minUppercase: 0, minLowercase: 0, minDigits: 4, avoidAmbiguous: true }),
+    options({ symbolSet: [...DEFAULT_SYMBOLS].reverse().join("") }),
+    options({ symbols: false, symbolSet: "!?" }),
+    options({ uppercase: false, minUppercase: 5 }),
+    // Excluded characters the password could not contain.
+    options({ exclude: "~ " }),
+    options({ digits: false, exclude: "0123" }),
+    options({ avoidAmbiguous: true, exclude: "Il1O0" }),
+    options({ kind: "passphrase", wordlist: "en", startWithLetter: true }),
+    {},
+    { length: 12 },
+  ]) {
+    assert.equal(olderAppIssue(o, 1), null, JSON.stringify(o));
+  }
 });

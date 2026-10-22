@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::protocol::{
     BridgeError, CopyData, CopyField, ExtensionInfo, GeneratorOptionsPatch, IdData, ListVaultsData,
     LoginSecret, PairData, Payload, Request, Response, StatusData, UnlockData, VaultSummary,
-    PAIRING_TIMEOUT, SEARCH_LIMIT,
+    GENERATOR_VERSION, PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;
 use crate::util::{lock, log};
@@ -366,6 +366,7 @@ impl Dispatcher {
                     .unzip();
                 json(&StatusData {
                     app_version: backend.app_version(),
+                    generator_version: GENERATOR_VERSION,
                     paired,
                     unlocked,
                     vault_name,

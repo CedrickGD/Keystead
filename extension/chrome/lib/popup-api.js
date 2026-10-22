@@ -60,8 +60,12 @@ export function createApi() {
      * app's default generator preset.
      */
     generate: (options) => call("popup:generate", { options: options ?? null }),
-    /** Fills a preview into the page's focused field; then it is in the generator history. Resolves to { filled, remembered }. */
-    fillGenerated: (tabId, password) => call("popup:fill-generated", { tabId, password }),
+    /**
+     * Fills a preview into the page's focused field; then it is in the
+     * generator history – unless `remember` is false (the popup reported this
+     * preview already). Resolves to { filled, remembered }.
+     */
+    fillGenerated: (tabId, password, remember = true) => call("popup:fill-generated", { tabId, password, remember }),
     /** Countdown data of 2FA codes: [{ id, period, remaining }] (the codes stay in the service worker). */
     totpTimers: (itemIds) => call("popup:totp-timers", { itemIds }),
     /** `{ name, url, username, password, generated }` – `generated`: the password is a preview taken into this login (it goes into the generator history). */
@@ -128,8 +132,12 @@ export function createApi() {
      * Resolves to { remaining } (seconds a copied TOTP code stays valid, else null).
      */
     copyField: (itemId, field) => call("popup:copy-field", { itemId, field }),
-    /** Copies the generator's preview through the app; then it is in the generator history. Resolves to { remembered }. */
-    copyGenerated: (password) => call("popup:copy-generated", { password }),
+    /**
+     * Copies the generator's preview through the app; then it is in the
+     * generator history – unless `remember` is false (reported already).
+     * Resolves to { remembered }.
+     */
+    copyGenerated: (password, remember = true) => call("popup:copy-generated", { password, remember }),
     /** Non-secret text only (e.g. a username): stays on the clipboard. */
     copy: (text) => navigator.clipboard.writeText(text),
     close: () => window.close(),

@@ -1,9 +1,12 @@
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { useEscapeLayer, useOutsideClick } from "../lib/layers";
 
+/** The items the keyboard can reach: disabled ones (native `disabled`, unfocusable) are skipped. */
+const ENABLED_ITEMS = "[role=menuitem]:not(:disabled), [role=menuitemradio]:not(:disabled)";
+
 /**
  * Dropdown menu anchored to its (relatively positioned) parent. Arrow keys
- * move between items, Esc / outside click close it.
+ * move between the enabled items, Esc / outside click close it.
  */
 export function Menu({
   onClose,
@@ -28,7 +31,10 @@ export function Menu({
   useOutsideClick([ref, anchorRef], onClose);
 
   useEffect(() => {
-    ref.current?.querySelector<HTMLElement>("[role=menuitem], [role=menuitemradio]")?.focus();
+    // The first enabled item; with none the menu itself, so the arrow keys,
+    // Tab and Esc still work inside it.
+    const first = ref.current?.querySelector<HTMLElement>(ENABLED_ITEMS);
+    (first ?? ref.current)?.focus();
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -38,7 +44,7 @@ export function Menu({
       return;
     }
     e.preventDefault();
-    const items = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role=menuitem], [role=menuitemradio]") ?? []);
+    const items = Array.from(ref.current?.querySelectorAll<HTMLElement>(ENABLED_ITEMS) ?? []);
     if (items.length === 0) return;
     const idx = items.indexOf(document.activeElement as HTMLElement);
     let next = 0;
@@ -54,6 +60,7 @@ export function Menu({
       className="menu"
       role="menu"
       aria-label={label}
+      tabIndex={-1}
       onKeyDown={onKeyDown}
       style={{
         top: "calc(100% + 6px)",

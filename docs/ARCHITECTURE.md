@@ -575,9 +575,12 @@ Behaviour notes:
   class on) → `minimums_exceed_length` (sum of the minimums of the enabled
   classes, plus the extra letter, above the length). A passphrase checks
   `words` and `separator` only; the password fields are ignored (and kept
-  by `normalized`). The word lists, their sources and licences (EFF: CC BY;
-  dys2p: CC0, 52 words removed to keep passphrases family-friendly) are
-  documented in `crates/keystead-core/src/wordlist/README.md`.
+  by `normalized`). The word lists, their sources and licences (EFF: CC BY
+  4.0, dice numbers removed; dys2p: CC0, 52 words removed to keep
+  passphrases family-friendly) are documented in
+  `crates/keystead-core/src/wordlist/README.md`. Being compiled into every
+  binary, their attribution ships too: Settings → *Über Keystead*
+  (*Wortlisten für Passphrasen*) and `docs/LIESMICH.txt` in the portable ZIP.
 * `invalid_input` details used by the core: `name_required`, `name_too_long`,
   `tag_required`, `tag_too_long`, `tags_too_many`, `item_trashed`,
   `attachments_too_many`, `attachment_name_required`,
@@ -1265,18 +1268,24 @@ vault without recovery key is dropped silently.
   no vault is open (a system lock or suspend with `lockOnSystemLock` always
   calls `Core::lock`) –, the portable-mode move, `delete_vault` closing the
   open vault, an update (`lock_for_update`) and a vault switch start a new
-  epoch. Every unlock path (UI, extension, recovery key, new vault) reads the
-  epoch together with the store before its key derivation
-  (`Core::unlock_ticket`) and `Core::install_vault_since` refuses the vault
-  (wiped, `locked`; the extension gets `locked`, the UI shows the lock
-  screen) if the epoch changed meanwhile – so a lock that lands during the
-  0.3–1 s derivation is never undone, and nothing opens from the data
-  directory's old location. Copies of a vault secret (`copy_secret_field`,
-  `copy_generated`, the bridge's `copy_field` – read and copied through
-  `VaultBackend::copy_field`) carry the epoch of their read and are dropped
-  (`locked`) if a lock or switch happened before the copy;
-  `clear_copied_secret` and the copy hold the same lock, so a copy is either
-  refused or cleared by the lock.
+  epoch – each under the state lock, in the same step that takes or replaces
+  the vault (`Core::begin_lock`), and readers take the epoch under that lock
+  together with what it protects: an epoch read while a vault was open is
+  always older than the epoch of the lock that closes it. (A lock that
+  started its epoch before waiting for the state lock let a copy holding that
+  lock read the new epoch with the old vault's secret and pass the check
+  below after the lock's clipboard clear.) Every unlock path (UI, extension,
+  recovery key, new vault) reads the epoch together with the store before
+  its key derivation (`Core::unlock_ticket`) and `Core::install_vault_since`
+  refuses the vault (wiped, `locked`; the extension gets `locked`, the UI
+  shows the lock screen) if the epoch changed meanwhile – so a lock that
+  lands during the 0.3–1 s derivation is never undone, and nothing opens
+  from the data directory's old location. Copies of a vault secret
+  (`copy_secret_field`, `copy_generated`, the bridge's `copy_field` – read
+  and copied through `VaultBackend::copy_field`) carry the epoch of their
+  read and are dropped (`locked`) if a lock or switch happened before the
+  copy; `clear_copied_secret` and the copy hold the same lock, so a copy is
+  either refused or cleared by the lock.
 * `import_data` and `commit_import` emit `vault://changed` after a
   successful import.
 * `delete_vault` / `respond_pairing` / `revoke_client`: unknown ids →
@@ -2045,7 +2054,7 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 
 | type | needs pairing | payload | data |
 |---|---|---|---|
-| `status` | no | – | `{ appVersion, paired: bool, unlocked: bool, vaultName: string\|null, vaultId: string\|null, extensionVersion: string\|null, extensionDir: string\|null }` |
+| `status` | no | – | `{ appVersion, generatorVersion: number, paired: bool, unlocked: bool, vaultName: string\|null, vaultId: string\|null, extensionVersion: string\|null, extensionDir: string\|null }` (`generatorVersion`: the generator interface, 2; absent in apps before the generator rework) |
 | `pair` | no | `clientName` (e.g. "Chrome – DESKTOP-1"), `code` (6 digits shown in the popup) | `{ clientId, token }` once the user approved in the app (the request blocks up to 120 s) |
 | `list_vaults` | yes (locked or unlocked) | – | `{ vaults: { id, name }[], currentVaultId: string\|null, lastVaultId: string\|null }` – sorted by name (case-insensitive); `currentVaultId` = the unlocked vault |
 | `unlock` | yes | `password`, `vaultId?` | `{ vaultName, vaultId }` – opens `vaultId` (switching if another vault is open), without it the app's last used vault |
@@ -2150,15 +2159,25 @@ Behaviour (additive to the table above):
 * `generate_password` with `remember: false` calls
   `VaultBackend::preview_password` (default: the core generator, nothing
   stored); absent, `null` or `true` keep the old behaviour
-  (`generate_password`: stored in the history if unlocked). Older apps ignore
-  the field (unknown fields are ignored) and store the preview; they answer
-  `remember_generated` with `invalid_request` (unknown type), which the
-  extension treats as "already stored". `remember_generated` checks the
+  (`generate_password`: stored in the history if unlocked). Apps before 2.0.0
+  ignore the field (unknown fields are ignored) and store the preview; they
+  answer `remember_generated` with `invalid_request` (unknown type), which
+  the extension treats as "already stored". `remember_generated` checks the
   length (empty or > 1024 characters → `invalid_request`) and calls
   `VaultBackend::remember_generated` (default `invalid_request`; the desktop
   app adds it to the open vault's history like the page's
   `remember_generated` – the same password as the newest entry is not added
-  again).
+  again). The app 2.0.0 knows both but adds every `remember_generated`, the
+  same password twice too – the extension's popup therefore reports each
+  preview only once (see "Browser extension behaviour", generator).
+* `status` reports `generatorVersion` = `protocol::GENERATOR_VERSION` (2 since
+  the generator rework: the newer `GeneratorOptions` fields, passwords from 4
+  characters, the default preset for missing fields, the newest-entry check
+  of `remember_generated`), also to unpaired clients. Apps before it send
+  none; the extension counts that as 1 – such an app ignores `minUppercase`,
+  `minLowercase`, `symbolSet`, `exclude`, `startWithLetter` and `wordlist`
+  (unknown fields) and rejects lengths below 5 – and sends it no options
+  that need version 2 (`lib/generator.js` `olderAppIssue`).
 * `generate_password` options: the request's `options` are read as a
   `protocol::GeneratorOptionsPatch` – exactly what `GeneratorOptions`
   accepts (a known field with a value of the wrong type → `invalid_request`,
@@ -2336,14 +2355,18 @@ The extension's security model and file roles are in
 * **Generator** (popup tab *Generator*, *Login hinzufügen*, context menu,
   `Ctrl+Shift+9`): every password is a preview (`generate_password` with
   `remember: false`, `background.js` `generatePreview`); `remember_generated`
-  (`rememberGenerated`, best effort: `locked` or an older app's
-  `invalid_request` – it stored the preview already – are ignored) follows
+  (`rememberGenerated`, best effort: `locked` or the `invalid_request` of an
+  app before 2.0.0 – it stored the preview already – are ignored) follows
   only a use: *Kopieren* in the popup (`popup:copy-generated`: `copy_secret`,
   then `remember_generated`), *Ausfüllen* in the popup and the context menu /
   shortcut once a field took the password (`popup:fill-generated`,
   `generateInto`; nothing is remembered when no field filled), a suggestion's
   *Verwenden*, and *Login hinzufügen* saved with the password its wand put
-  into the field (`popup:save-login` with `generated: true`). The popup tab
+  into the field (`popup:save-login` with `generated: true`). Each preview is
+  reported once: once the app confirmed it, the popup's later *Kopieren* /
+  *Ausfüllen* of the same preview send `remember: false` and the service
+  worker skips `remember_generated` (`remembered: true`) – the app 2.0.0 would
+  store it again, newer apps skip a repeat of the newest entry anyway. The popup tab
   shows no password until *Generieren* (also Enter outside buttons, selects
   and switches, and Ctrl+G); changing an option marks a shown preview as
   outdated ("Die Optionen haben sich geändert …") and never generates.
@@ -2353,7 +2376,11 @@ The extension's security model and file roles are in
   `chrome.storage.local` `generatorOptions` as a full `GeneratorOptions`
   (`lib/generator.js`), and only while they are valid – which the
   suggestions, the context menu / shortcut and *Login hinzufügen* then use
-  too; *App-Vorlage nutzen* removes them. The own options cover everything
+  too; *App-Vorlage nutzen* removes them. The popup of an extension up to
+  2.0.0 stored the same key on every option change, without *Anpassen*:
+  after the update such options count as own options as well (they drove the
+  suggestions in 2.0.0 too) and win over the app's default preset until
+  *App-Vorlage nutzen*. The own options cover everything
   the app's generator page offers except presets: length 4–128, the four
   groups with a minimum each, allowed symbols, excluded characters, first
   letter, look-alikes; words, separator (≤ 8), word list (English /
@@ -2361,11 +2388,21 @@ The extension's security model and file roles are in
   checks (`generatorIssue`, the same `invalid_input` codes in the same
   order – the bridge only says `invalid_request`), shows them inline and
   disables *Generieren* while the options are invalid, and estimates the
-  entropy (real word list sizes 7776 / 7724). Stored options of older
-  extensions are read field by field over the defaults (`lenientOptions`);
+  entropy (real word list sizes 7776 / 7724). Stored options – also the
+  partial ones of older extensions – are read field by field over the
+  defaults (`storedOptions` / `lenientOptions`) by the popup and the service
+  worker alike, so every request for the same own options sends the same
+  complete set (a missing field is never left to the app's default preset);
   each request sends only known fields with acceptable values
-  (`requestOptions`). The bridge has no preset list, so the popup can name
-  the app's default preset only as such.
+  (`requestOptions`). Against an app whose `status` has no
+  `generatorVersion` ≥ 2 (`olderAppIssue`), own options it would ignore or
+  reject – length below 5, an own symbol set, excluded characters it could
+  draw, a first letter, minimums above 1 for upper- or lower-case letters,
+  the German word list – are kept but not sent: the popup names the problem
+  and disables *Generieren*, the service worker answers `app_outdated` (the
+  context menu / shortcut toast *csGenerateOutdated*, the suggestion bubble
+  says so). The bridge has no preset list, so the popup can name the app's
+  default preset only as such.
 * **2FA after a fill**: when a login with a TOTP seed is filled (popup,
   dropdown, `Ctrl+Shift+L`) the service worker stores a 2FA offer for the tab
   (`chrome.storage.session` `totp:<tabId>` = item id, site, vault id, expiry

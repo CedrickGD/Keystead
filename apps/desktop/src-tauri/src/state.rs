@@ -223,7 +223,8 @@ pub struct Core {
     /// the open one. An unlock whose key derivation started before such a
     /// step must not open its vault afterwards ([`Core::install_vault_since`]),
     /// and a secret read before it is not copied afterwards
-    /// ([`Core::copy_to_clipboard_since`]).
+    /// ([`Core::copy_to_clipboard_since`]). Incremented only under the
+    /// `state` lock ([`Core::begin_lock`]).
     lock_epoch: AtomicU64,
 }
 
@@ -424,8 +425,14 @@ impl Core {
     }
 
     /// Starts a new lock epoch: unlocks in flight will not open their vault,
-    /// secrets read before are not copied. Call it before (or while, under
-    /// the state lock) taking the vault.
+    /// secrets read before are not copied. Call it while holding the state
+    /// lock, in the same critical section that takes the vault: then an
+    /// epoch read under that lock together with a secret is always older
+    /// than the epoch of the lock that closes the secret's vault. (Started
+    /// before waiting for the state lock, a copy holding it could read the
+    /// new epoch with the old vault's secret, pass
+    /// [`Core::copy_to_clipboard_since`] after the lock's clipboard clear
+    /// and leave the secret on the clipboard.)
     pub fn begin_lock(&self) {
         self.lock_epoch.fetch_add(1, Ordering::SeqCst);
     }
@@ -437,8 +444,12 @@ impl Core {
     /// no vault is open, so an unlock whose key derivation is running right
     /// now does not open its vault afterwards.
     pub fn lock(&self, reason: Option<LockReason>) -> bool {
-        self.begin_lock();
-        let vault = self.state().vault.take();
+        let vault = {
+            let mut st = self.state();
+            // Under the state lock, see `begin_lock`.
+            self.begin_lock();
+            st.vault.take()
+        };
         self.finish_lock(vault, reason)
     }
 

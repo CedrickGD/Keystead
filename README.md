@@ -260,6 +260,22 @@ Tresors wird nicht übernommen.
 
 Aus dem Quellcode bauen: siehe [Build from source](#build-from-source).
 
+### Wortlisten für Passphrasen
+
+Keystead enthält zwei Wortlisten, die unter ihren eigenen Lizenzen stehen:
+
+- Englisch: die [EFF Large Wordlist](https://www.eff.org/dice) © Electronic
+  Frontier Foundation, lizenziert unter
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); Keystead hat die
+  Würfelnummern entfernt.
+- Deutsch: `de-7776` aus [dys2p/wordlists-de](https://github.com/dys2p/wordlists-de)
+  von dys2p, genutzt unter CC0 1.0; Keystead hat 52 Wörter entfernt, damit
+  Passphrasen familientauglich bleiben.
+
+Dasselbe steht in der App unter **Einstellungen → Über Keystead** und in der
+`LIESMICH.txt` der ZIP-Version; Details in
+[crates/keystead-core/src/wordlist/README.md](crates/keystead-core/src/wordlist/README.md).
+
 ---
 
 <a id="english"></a>
@@ -552,12 +568,15 @@ Proprietary – free for personal, educational and non-commercial use; see
 ### Credits – passphrase word lists
 
 - English: the [EFF large word list](https://www.eff.org/dice) © Electronic
-  Frontier Foundation, licensed under Creative Commons Attribution
-  ([eff.org/copyright](https://www.eff.org/copyright)).
+  Frontier Foundation, licensed under Creative Commons Attribution 4.0
+  International ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/),
+  see [eff.org/copyright](https://www.eff.org/copyright)); Keystead removed
+  the dice numbers.
 - German: based on `de-7776` from
   [dys2p/wordlists-de](https://github.com/dys2p/wordlists-de) by dys2p,
   used under CC0 1.0 (the list is offered under Unlicense, CC0 or BSD-3);
   Keystead removed 52 words to keep passphrases family-friendly.
 
-Details, checksums and the removed words:
+The same credits ship with the app (Settings → *Über Keystead*) and in the
+portable ZIP's `LIESMICH.txt`. Details, checksums and the removed words:
 [crates/keystead-core/src/wordlist/README.md](crates/keystead-core/src/wordlist/README.md).

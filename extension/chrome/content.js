@@ -1449,7 +1449,8 @@
         } else {
           current.secret.classList.remove("masked");
           current.secret.classList.add("error");
-          current.secret.textContent = t("csSuggestFailed");
+          // An older app would ignore the popup's own options (lib/generator.js olderAppIssue).
+          current.secret.textContent = t(err.code === "app_outdated" ? "csSuggestOutdated" : "csSuggestFailed");
         }
         return;
       }

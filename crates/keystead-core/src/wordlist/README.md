@@ -6,6 +6,18 @@ duplicates. The entropy per word shown to users is `log2` of the real list
 size (`Wordlist::bits_per_word`), so a changed list changes the numbers by
 itself; the tests in `generator.rs` pin the sizes.
 
+Both lists end up in every binary that links `keystead-core` (`Keystead.exe`
+and the setup, `keystead-cli`, with Block 5 the Android APK). Their attribution
+ships with them, not only with the source:
+
+- in the app: Settings → *Über Keystead* → *Wortlisten für Passphrasen*
+  (`about.wordlists`, `about.wordlistEn`, `about.wordlistDe` in
+  `apps/desktop/src/i18n`) – the setup and the APK carry nothing else;
+- in the portable ZIP: `docs/LIESMICH.txt`, section "4. Inhalte Dritter";
+- in the repository: here and in the README credits (English and German).
+
+Keep all of them in step when a list changes.
+
 ## `eff_large.txt` – English (`"en"`, the default)
 
 - Source: EFF large word list for five dice,
@@ -13,9 +25,13 @@ itself; the tests in `generator.rs` pin the sizes.
   numbers removed.
 - 7776 words, log2(7776) ≈ 12.92 bit per word.
 - © Electronic Frontier Foundation. Licence: Creative Commons Attribution
-  (CC BY) – EFF's licence for its original material,
-  <https://www.eff.org/copyright> (the page names CC BY 4.0 International;
-  checked 2026-10-17). Attribution: here and in the README credits.
+  4.0 International (CC BY 4.0,
+  <https://creativecommons.org/licenses/by/4.0/>) – EFF's licence for its
+  original material, <https://www.eff.org/copyright> (checked 2026-10-17).
+  CC BY 4.0 §3(a) asks for the creator, a copyright notice, a link to the
+  licence and to the material, and a note that it was changed, with every
+  copy – binaries included; see the list above for where Keystead gives it.
+  Keystead's change: the dice numbers were removed.
 
 ## `de_dys2p.txt` – German (`"de"`)
 

@@ -364,6 +364,7 @@ fn data_shapes() {
     same_json(
         &StatusData {
             app_version: "2.0.0".into(),
+            generator_version: 2,
             paired: true,
             unlocked: false,
             vault_name: None,
@@ -371,12 +372,13 @@ fn data_shapes() {
             extension_version: None,
             extension_dir: None,
         },
-        r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null,"vaultId":null,
-            "extensionVersion":null,"extensionDir":null}"#,
+        r#"{"appVersion":"2.0.0","generatorVersion":2,"paired":true,"unlocked":false,"vaultName":null,
+            "vaultId":null,"extensionVersion":null,"extensionDir":null}"#,
     );
     same_json(
         &StatusData {
             app_version: "2.0.0".into(),
+            generator_version: 2,
             paired: true,
             unlocked: true,
             vault_name: Some("Privat".into()),
@@ -384,17 +386,18 @@ fn data_shapes() {
             extension_version: Some("2.0.0.42".into()),
             extension_dir: Some(r"C:\Users\Ann\AppData\Local\Keystead\browser-extension".into()),
         },
-        r#"{"appVersion":"2.0.0","paired":true,"unlocked":true,"vaultName":"Privat","vaultId":"v-1",
+        r#"{"appVersion":"2.0.0","generatorVersion":2,"paired":true,"unlocked":true,"vaultName":"Privat","vaultId":"v-1",
             "extensionVersion":"2.0.0.42",
             "extensionDir":"C:\\Users\\Ann\\AppData\\Local\\Keystead\\browser-extension"}"#,
     );
-    // Older apps send no extension fields: they read as null.
+    // Older apps send no extension fields (null) and no generatorVersion (0).
     let old: StatusData = serde_json::from_str(
         r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null,"vaultId":null}"#,
     )
     .unwrap();
     assert_eq!(old.extension_version, None);
     assert_eq!(old.extension_dir, None);
+    assert_eq!(old.generator_version, 0);
     same_json(
         &ListVaultsData {
             vaults: vec![

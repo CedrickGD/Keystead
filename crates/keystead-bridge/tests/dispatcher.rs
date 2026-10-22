@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Duration;
 
 use common::*;
-use keystead_bridge::protocol::{ListVaultsData, LoginSecret, PairData, StatusData};
+use keystead_bridge::protocol::{
+    ListVaultsData, LoginSecret, PairData, StatusData, GENERATOR_VERSION,
+};
 use keystead_bridge::{BridgeError, ClientStore, Dispatcher, DispatcherConfig, Response};
 use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::ItemSummary;
@@ -80,6 +82,7 @@ fn status_without_pairing() {
         status,
         StatusData {
             app_version: "2.0.0-test".into(),
+            generator_version: GENERATOR_VERSION,
             paired: false,
             unlocked: true,
             // Not revealed to unpaired callers.
@@ -853,7 +856,15 @@ fn generate_password_uses_the_default_preset() {
             .options,
     );
     let pw = generate(Some(json!({"words": 4})), false);
-    assert_eq!(pw.split('-').count(), 4, "{pw}");
+    // Four capitalised words (the preset's). Counted by their capitals: the
+    // EFF list is lowercase, but a few of its words contain '-' themselves
+    // ("drop-down"), so splitting on the separator could count five.
+    assert_eq!(
+        pw.chars().filter(char::is_ascii_uppercase).count(),
+        4,
+        "{pw}"
+    );
+    assert!(pw.contains('-'), "{pw}");
 }
 
 /// The extension's password suggestion: a preview (`remember: false`) is

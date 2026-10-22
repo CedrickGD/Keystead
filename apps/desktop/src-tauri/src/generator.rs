@@ -584,6 +584,102 @@ mod tests {
         assert_eq!(copied.borrow().len(), 1);
     }
 
+    /// `copy_generated` reads the password and the lock epoch under the
+    /// state lock and copies after releasing it. A lock (auto-lock, Win+L)
+    /// that arrives while the read holds the state lock waits for it – and
+    /// must not have started its epoch yet: otherwise the read gets the new
+    /// epoch with the old vault's password, the lock's clipboard clear runs
+    /// before the copy, and the copy passes `copy_to_clipboard_since`.
+    #[test]
+    fn a_copy_racing_a_lock_is_refused_or_cleared() {
+        use std::sync::Barrier;
+        use std::time::Duration;
+
+        use crate::state::LockReason;
+
+        let dir = tempfile::tempdir().unwrap();
+        let c = core_with_open_vault(dir.path(), Settings::default());
+        let vid = vault_id(&c);
+        let page = Some(vid.as_str());
+        remember_for_page(&c, page, "raced-generated").unwrap();
+        let entry = c.read(UnlockedVault::generator_history_info).unwrap()[0]
+            .id
+            .clone();
+
+        // Deterministic: the read holds the state lock while the lock waits.
+        let before = c.lock_epoch();
+        let (password, epoch) = {
+            let st = c.state();
+            let locker = {
+                let c = Arc::clone(&c);
+                std::thread::spawn(move || c.lock(Some(LockReason::Timeout)))
+            };
+            // Time for the lock to reach the state lock and wait there.
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(!locker.is_finished());
+            let read = (
+                entry_password(st.page_vault(page).unwrap(), &entry).unwrap(),
+                c.lock_epoch(),
+            );
+            drop(st);
+            assert!(locker.join().unwrap(), "the lock closed the vault");
+            read
+        };
+        assert_eq!(*password, "raced-generated");
+        assert_eq!(epoch, before, "the lock started its epoch while waiting");
+        assert_ne!(epoch, c.lock_epoch());
+        // Refused before the clipboard is touched.
+        assert_eq!(
+            c.copy_to_clipboard_since(&password, true, Some(epoch))
+                .unwrap_err()
+                .code(),
+            "locked"
+        );
+
+        // Racing for real: every password copy_generated read while the
+        // vault was open carries an epoch older than the lock's – the copy
+        // is refused if it comes after the lock, and cleared by the lock if
+        // it came before.
+        for _ in 0..40 {
+            c.unlock(&vid, "master").unwrap();
+            let start = Arc::new(Barrier::new(2));
+            let copier = {
+                let (c, start, vid, entry) = (
+                    Arc::clone(&c),
+                    Arc::clone(&start),
+                    vid.clone(),
+                    entry.clone(),
+                );
+                std::thread::spawn(move || {
+                    let mut epochs = Vec::new();
+                    start.wait();
+                    loop {
+                        let copied = copy_generated_with(&c, Some(&vid), &entry, |text, epoch| {
+                            assert_eq!(text, "raced-generated");
+                            epochs.push(epoch);
+                            Ok(())
+                        });
+                        match copied {
+                            Ok(()) => {}
+                            Err(e) => {
+                                assert_eq!(e.code(), "locked");
+                                return epochs;
+                            }
+                        }
+                    }
+                })
+            };
+            start.wait();
+            assert!(c.lock(Some(LockReason::Timeout)));
+            let epochs = copier.join().unwrap();
+            let after_lock = c.lock_epoch();
+            assert!(
+                epochs.iter().all(|&e| e < after_lock),
+                "a copy read with the lock's epoch {after_lock}: {epochs:?}"
+            );
+        }
+    }
+
     fn bank_options() -> GeneratorOptions {
         GeneratorOptions {
             length: 24,

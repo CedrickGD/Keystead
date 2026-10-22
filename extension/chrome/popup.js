@@ -22,8 +22,10 @@ import {
   entropyBits,
   entropyScore,
   generatorIssue,
-  lenientOptions,
+  olderAppIssue,
+  requestOptions,
   requiredCharacters,
+  storedOptions,
   symbolSetProblem,
 } from "./lib/generator.js";
 
@@ -40,6 +42,16 @@ const CHARSET_LABELS = { uppercase: "A–Z", lowercase: "a–z", digits: "0–9"
 const MIN_LABEL_KEYS = { uppercase: "genMinUppercase", lowercase: "genMinLowercase", digits: "genMinDigits", symbols: "genMinSymbols" };
 /** Generator: the fields under "Weitere Optionen". */
 const MORE_KEYS = ["minUppercase", "minLowercase", "minDigits", "minSymbols", "symbolSet", "exclude", "startWithLetter"];
+/** Generator: the label of an option an older app would not honour (olderAppIssue `field`). */
+const OUTDATED_LABEL_KEYS = {
+  length: "length",
+  minUppercase: "genMinUppercase",
+  minLowercase: "genMinLowercase",
+  symbolSet: "genSymbolSet",
+  exclude: "genExclude",
+  startWithLetter: "genStartWithLetter",
+  wordlist: "genWordlist",
+};
 const EMPTIED_KEYS = {
   uppercase: "genIssueEmptiedUppercase",
   lowercase: "genIssueEmptiedLowercase",
@@ -204,6 +216,8 @@ function errorText(code) {
       return t("errorInsecure");
     case "not_found":
       return t("errorNotFound");
+    case "app_outdated":
+      return t("genAppOutdated");
     default:
       return t("errorGeneric", code || "internal");
   }
@@ -332,7 +346,11 @@ function setExtensionUpdate(update) {
   );
 }
 
+/** The app's generator interface from the last status (`generatorVersion`; null: not known yet). */
+let appGeneratorVersion = null;
+
 function route(status) {
+  if (Number.isInteger(status?.generatorVersion)) appGeneratorVersion = status.generatorVersion;
   switch (status?.state) {
     case "host_missing":
       return showHostMissing();
@@ -1154,16 +1172,23 @@ function showUnlocked(status, initialTab = "page") {
   // it into the vault's generator history (the service worker then sends
   // remember_generated). Without own options the app's default generator
   // preset applies; "Anpassen" starts own options for this browser, which the
-  // page suggestions and the context menu then use as well. Own options are
-  // stored only while they are valid (lib/generator.js generatorIssue), so a
-  // half-edited form never breaks the suggestions.
+  // page suggestions and the context menu then use as well (so do options an
+  // extension up to 2.0.0 stored – "App-Vorlage nutzen" drops them). Own
+  // options are stored only while they are valid (lib/generator.js
+  // generatorIssue), so a half-edited form never breaks the suggestions.
+  // Against an app before the generator rework, options it would ignore
+  // (olderAppIssue) are stored but not sent. Each preview goes into the
+  // history once: a second copy or a fill after a copy does not report it
+  // again (an app 2.0.0 would store it twice).
 
   async function renderGenerator() {
     const stored = await api.loadGeneratorOptions();
     if (ctx.tab !== "generator") return;
     /** The own options, or null: the app's default preset. */
-    let own = stored ? lenientOptions(stored) : null;
+    let own = storedOptions(stored);
     let preview = "";
+    /** The shown preview is in the vault's generator history already (copied once). */
+    let previewRemembered = false;
     /** What the preview was generated with: "preset" or the own options as JSON. */
     let previewSource = "";
     let previewKind = "password";
@@ -1199,8 +1224,13 @@ function showUnlocked(status, initialTab = "page") {
     function currentSource() {
       return own ? JSON.stringify(own) : "preset";
     }
+    /** Why the own options are invalid (not stored then), or null. */
     function problem() {
       return own ? generatorIssue(own) : null;
+    }
+    /** Why nothing can be generated: invalid own options, or ones the app is too old for. */
+    function blocker() {
+      return problem() ?? (own ? olderAppIssue(requestOptions(own), appGeneratorVersion) : null);
     }
 
     function renderSource() {
@@ -1460,7 +1490,7 @@ function showUnlocked(status, initialTab = "page") {
 
     /** Problem text, entropy, outdated preview, enabled buttons – after every change. */
     function refreshState() {
-      const issue = problem();
+      const issue = blocker();
       issueNode.hidden = !issue;
       issueNode.textContent = issue ? generatorIssueText(issue, own) : "";
       for (const cls of CHAR_CLASSES) if (minInputs[cls]) minInputs[cls].disabled = !own[cls];
@@ -1469,7 +1499,7 @@ function showUnlocked(status, initialTab = "page") {
         moreDetails.open = true;
         moreOpen = true;
       }
-      const bits = own && !issue ? entropyBits(own) : null;
+      const bits = own && !problem() ? entropyBits(own) : null;
       meta.hidden = bits === null;
       if (bits !== null) meta.textContent = t("genEntropy", [String(Math.round(bits)), t(`genStrength${entropyScore(bits)}`)]);
       staleNote.hidden = !preview || previewSource === currentSource();
@@ -1503,7 +1533,7 @@ function showUnlocked(status, initialTab = "page") {
     }
 
     async function generate() {
-      if (generating || problem()) return;
+      if (generating || blocker()) return;
       const mine = ++seq;
       const sourceKey = currentSource();
       const kind = own ? own.kind : "preset";
@@ -1518,6 +1548,7 @@ function showUnlocked(status, initialTab = "page") {
         const next = await api.generate(own ? { ...own } : {});
         if (mine !== seq || !box.isConnected) return;
         preview = next;
+        previewRemembered = false;
         previewSource = sourceKey;
         previewKind = kind;
         renderBox();
@@ -1538,7 +1569,8 @@ function showUnlocked(status, initialTab = "page") {
       if (!preview) return undefined;
       const password = preview;
       return guarded(async () => {
-        const result = await api.copyGenerated(password);
+        const result = await api.copyGenerated(password, !previewRemembered);
+        if (result?.remembered && preview === password) previewRemembered = true;
         toast(t(result?.remembered ? "genCopiedRemembered" : "copied"));
       });
     }
@@ -1548,7 +1580,7 @@ function showUnlocked(status, initialTab = "page") {
       setBusy(btn, true);
       try {
         if (!ctx.tabInfo?.web) throw Object.assign(new Error("no_field"), { code: "no_field" });
-        await api.fillGenerated(ctx.tabInfo.tabId, preview);
+        await api.fillGenerated(ctx.tabInfo.tabId, preview, !previewRemembered);
         if (api.demo) toast(t("insertedPassword"));
         else api.close();
       } catch (err) {
@@ -1738,6 +1770,7 @@ function clamp(value, min, max) {
 function concernsMore(issue) {
   if (!issue) return false;
   if (issue.code === "no_character_set") return issue.emptied !== undefined;
+  if (issue.code === "app_outdated") return MORE_KEYS.includes(issue.field);
   return ["symbol_set", "exclude", "start_with_letter", "minimums_exceed_length"].includes(issue.code);
 }
 
@@ -1762,6 +1795,8 @@ function generatorIssueText(issue, options) {
       return t("genIssueStartWithLetter");
     case "minimums_exceed_length":
       return t("genIssueMinimums", [String(requiredCharacters(options)), String(options.length)]);
+    case "app_outdated":
+      return OUTDATED_LABEL_KEYS[issue.field] ? t("genIssueAppOutdated", t(OUTDATED_LABEL_KEYS[issue.field])) : t("genAppOutdated");
     default:
       return t("genIssueOptions");
   }

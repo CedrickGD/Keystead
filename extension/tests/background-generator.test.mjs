@@ -3,12 +3,15 @@
 // helpers/fake-chrome.mjs): every password is a preview the app does not
 // store (`generate_password` with `remember: false`); only one the user used –
 // copied, filled into a page, taken from a suggestion or saved in a new
-// login – is reported with `remember_generated`. Older apps answer that with
-// `invalid_request`, which counts as "already stored".
+// login – is reported with `remember_generated`, each preview once. Apps before
+// 2.0.0 answer that with `invalid_request`, which counts as "already stored";
+// apps before the generator rework (no `generatorVersion` in `status`) get no
+// options they would ignore.
 
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeChrome } from "./helpers/fake-chrome.mjs";
+import { GENERATOR_DEFAULTS } from "../chrome/lib/generator.js";
 
 const fake = installFakeChrome();
 const PAGE = "https://example.com/signup";
@@ -19,7 +22,7 @@ function appWith(overrides = {}) {
     if (overrides[request.type]) return overrides[request.type](request);
     switch (request.type) {
       case "status":
-        return { appVersion: "2.0.1", paired: true, unlocked: true, vaultName: "Privat", vaultId: "v1", extensionVersion: null, extensionDir: null };
+        return { appVersion: "2.0.1", generatorVersion: 2, paired: true, unlocked: true, vaultName: "Privat", vaultId: "v1", extensionVersion: null, extensionDir: null };
       case "generate_password":
         return "Preview-1";
       case "remember_generated":
@@ -66,14 +69,16 @@ test("the popup's generator only asks for previews", async () => {
   await fake.fromPopup({ type: "popup:generate", options: {} });
   // `null` without stored options: no options at all.
   await fake.fromPopup({ type: "popup:generate", options: null });
-  // `null` with options the popup stored: those.
+  // `null` with options the popup stored: those, completed over the defaults
+  // like the popup reads them – a partial object (stored by a 2.0.0 popup)
+  // leaves nothing to the app's default preset.
   await chrome.storage.local.set({ generatorOptions: { length: 12, symbolSet: "!?", extra: true } });
   await fake.fromPopup({ type: "popup:generate", options: null });
   assert.deepEqual(sent(), [
     { type: "generate_password", options: { kind: "password", length: 30, wordlist: "de" }, remember: false },
     { type: "generate_password", options: {}, remember: false },
     { type: "generate_password", remember: false },
-    { type: "generate_password", options: { length: 12, symbolSet: "!?" }, remember: false },
+    { type: "generate_password", options: { ...GENERATOR_DEFAULTS, length: 12, symbolSet: "!?" }, remember: false },
   ]);
 });
 
@@ -134,7 +139,7 @@ test("the shortcut uses the popup's own options when it has some", async () => {
   fake.tabMessage = () => ({ filled: 1 });
   for (const fn of chrome.commands.onCommand.listeners) fn("generate", fake.tabs[0]);
   await idle();
-  assert.deepEqual(sent()[0], { type: "generate_password", options: { kind: "passphrase", words: 6 }, remember: false });
+  assert.deepEqual(sent()[0], { type: "generate_password", options: { ...GENERATOR_DEFAULTS, kind: "passphrase", words: 6 }, remember: false });
 });
 
 test("a page suggestion is a preview; only Verwenden stores it", async () => {
@@ -164,4 +169,61 @@ test("a new login keeps a generated password in the history, a typed one not", a
     sent().map((r) => r.type),
     ["save_login", "remember_generated", "save_login"],
   );
+});
+
+test("a preview the popup reported already is not remembered again", async () => {
+  fake.tabMessage = (_tabId, message) => (message.type === "bg:fill-generated" ? { filled: 1 } : undefined);
+  // Copied twice, then filled: one remember_generated (an app 2.0.0 would store every one).
+  assert.deepEqual(await fake.fromPopup({ type: "popup:copy-generated", password: "Preview-1" }), { ok: true, data: { remembered: true } });
+  assert.deepEqual(await fake.fromPopup({ type: "popup:copy-generated", password: "Preview-1", remember: false }), { ok: true, data: { remembered: true } });
+  assert.deepEqual(await fake.fromPopup({ type: "popup:fill-generated", tabId: 7, password: "Preview-1", remember: false }), {
+    ok: true,
+    data: { filled: 1, remembered: true },
+  });
+  assert.deepEqual(sent(), [
+    { type: "copy_secret", text: "Preview-1" },
+    { type: "remember_generated", password: "Preview-1" },
+    { type: "copy_secret", text: "Preview-1" },
+  ]);
+});
+
+test("the status tells the app's generator version; apps without one count as 1", async () => {
+  const status = await fake.fromPopup({ type: "popup:status", fresh: true });
+  assert.equal(status.data.generatorVersion, 2);
+  fake.app = appWith({
+    status: () => ({ appVersion: "2.0.0", paired: true, unlocked: true, vaultName: "Privat", vaultId: "v1", extensionVersion: null, extensionDir: null }),
+  });
+  assert.equal((await fake.fromPopup({ type: "popup:status", fresh: true })).data.generatorVersion, 1);
+  assert.equal((await chrome.storage.session.get("status")).status.generatorVersion, 1);
+});
+
+test("an app before the generator rework gets no options it would ignore", async () => {
+  await chrome.storage.session.set({ status: { state: "unlocked", vaultName: "Privat", vaultId: "v1", generatorVersion: 1, error: null, ts: Date.now() } });
+  fake.tabMessage = (_tabId, message) => (message.type === "bg:fill-generated" ? { filled: 1 } : undefined);
+  for (const options of [
+    { ...GENERATOR_DEFAULTS, exclude: "0O" },
+    { ...GENERATOR_DEFAULTS, symbolSet: "!?" },
+    { ...GENERATOR_DEFAULTS, length: 4 },
+    { ...GENERATOR_DEFAULTS, startWithLetter: true },
+    { ...GENERATOR_DEFAULTS, minUppercase: 2 },
+    { ...GENERATOR_DEFAULTS, kind: "passphrase", wordlist: "de" },
+  ]) {
+    assert.deepEqual(await fake.fromPopup({ type: "popup:generate", options }), { ok: false, error: "app_outdated" }, JSON.stringify(options));
+  }
+  assert.deepEqual(sent(), []);
+
+  // What such an app honours goes out as before: the defaults, no own options, the same symbols in another order.
+  await fake.fromPopup({ type: "popup:generate", options: { ...GENERATOR_DEFAULTS, length: 16, minUppercase: 0 } });
+  await fake.fromPopup({ type: "popup:generate", options: {} });
+  await fake.fromPopup({ type: "popup:generate", options: { ...GENERATOR_DEFAULTS, symbolSet: "_^@?=-+*&%$#!" } });
+  assert.equal(sent().length, 3);
+
+  // The stored own options drive the background paths: refused there too.
+  fake.requests.length = 0;
+  await chrome.storage.local.set({ generatorOptions: { ...GENERATOR_DEFAULTS, exclude: "lI1" } });
+  for (const fn of chrome.contextMenus.onClicked.listeners) fn({ menuItemId: "keystead-generate", frameId: 0 }, fake.tabs[0]);
+  await idle();
+  assert.ok(fake.tabMessages.some((m) => m.message.type === "bg:toast" && m.message.key === "csGenerateOutdated"));
+  assert.deepEqual(await fake.fromPage({ type: "cs:suggest-password" }, PAGE), { ok: false, error: "app_outdated" });
+  assert.deepEqual(sent(), []);
 });

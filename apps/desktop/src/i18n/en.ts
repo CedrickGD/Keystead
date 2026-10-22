@@ -670,7 +670,7 @@ export const en: Record<MessageKey, string> = {
   "generator.presetActions": "Preset actions",
   "generator.presetMakeDefault": "Use as default",
   "generator.presetIsDefault": "Default for the editor and the browser extension",
-  "generator.presetDefaultHint": "The editor's generator and the browser extension's password suggestions use the default preset.",
+  "generator.presetDefaultHint": "The editor's generator and the browser extension's password suggestions use the default preset – the extension only while no own settings apply in its popup.",
   "generator.presetSaveTitle": "Save as preset",
   "generator.presetSaveText": "Saves the current options under a name.",
   "generator.presetRenameTitle": "Rename preset",
@@ -898,6 +898,9 @@ export const en: Record<MessageKey, string> = {
   "about.tagline": "Local password manager. Your data never leaves this device.",
   "about.portable": "Portable version",
   "about.installed": "Data in user profile",
+  "about.wordlists": "Passphrase word lists",
+  "about.wordlistEn": "English: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), licensed under CC BY 4.0 (creativecommons.org/licenses/by/4.0), without the dice numbers.",
+  "about.wordlistDe": "German: de-7776 by dys2p (github.com/dys2p/wordlists-de), CC0 1.0, 52 words removed.",
 
   "update.regionLabel": "Update available",
   "update.available": "Keystead {version} is available",
