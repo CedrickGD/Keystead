@@ -824,10 +824,33 @@ Stufe 2a in 8 und 9):
     über die behaltene Kopie erkannt (`kept_copy_opens`), und die Sperre
     einer abgelehnten Kopie wird vor dem Speichern noch einmal geprüft.
     **Geprüft** (Windows): fmt, clippy `-D warnings`, `cargo test
-    --workspace`, `node --test` (70/70), `npm run build`. **Nicht geprüft**:
-    Android-Build/Lint, Emulator (auf dem neuen PC fehlen JDK 17, Android
-    SDK und NDK), der Android-only-Code in `mobile/biometric.rs` wurde
-    nicht kompiliert.
+    --workspace`, `node --test` (70/70), `npm run build`, `cargo clippy -p
+    keystead-core -p keystead-desktop --target aarch64-linux-android -D
+    warnings`, Debug-APK x86_64.
+    **Im Emulator geprüft** (2026-10-22, neu angelegtes AVD `MB_S26`:
+    Pixel-9-Profil, API 36 google_apis x86_64, Sprache Englisch; Test-Tresor
+    „Cloud-Test“, Passwort `demo2`, mit einem Hilfsprogramm über
+    `keystead-core` erzeugt, Fälschungen per Header-Änderung): Willkommen →
+    Ordner verbinden → Import → Entsperrbildschirm erscheint von selbst;
+    Passwort → Kopie bestätigt (`sync/trial/` leer). Gefälschte Revision
+    (50) bei gesperrtem Tresor → auf Probe, behaltene Rev. 3 → Passwort →
+    „the previous copy is back“, Rev. 50 `rejected`. Gefälschte
+    Schlüsselhülle bei gleichem Salz (60): falsches Passwort bleibt falsch
+    (nichts ändert sich), richtiges öffnet die behaltene Kopie, Rev. 60
+    `rejected`, `sync/probe` wieder weg. Echte Rev. 4 bei offenem Tresor →
+    sofort in der Liste, kein Probe-Eintrag. Fingerabdruck eingerichtet
+    (Prompt, Blob, kein Log „may not be cleared“ → Scrub des Plugins wirkt),
+    Neustart → Prompt von selbst → Finger → offen. Gefälschte Schlüsselhülle
+    (70) + Finger → behaltene Kopie offen, Einrichtung bleibt. Gefälschtes
+    Salz (80) → Hinweis `device_unlock_needs_password`, Einrichtung bleibt;
+    das Passwort öffnet diese Kopie nicht („am PC geändert“ – bekannte
+    Grenze); die nächste echte Speicherung des PCs (Rev. 5) → „Jetzt
+    synchronisieren“ → Finger → offen, bestätigt, Einrichtung weiter da.
+    Keine Panik im Log. **Nicht geprüft**: Release-APK (R8), echtes Gerät,
+    echte Nextcloud-/OneDrive-App, PC-Spiegel gegen einen echten
+    Cloud-Ordner. **Auffällig**: Einstellungen → Synchronisierung zeigt
+    nach einer beim Entsperren abgelehnten Kopie bis zum nächsten Sync
+    weiter „Updated“ (das Ergebnis des Syncs, nicht des Entsperrens).
 
 ### Emulator-Checkliste für den Besitzer
 
