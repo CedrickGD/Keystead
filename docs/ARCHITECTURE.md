@@ -43,11 +43,11 @@ an interface here, change every side.
 | Path | What |
 |------|------|
 | `Cargo.toml` | Cargo workspace |
-| `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report, the offline half of the leaked-password check (hashing, answer parsing). No UI, no IPC, no networking. |
+| `crates/keystead-core` | Crypto, vault file format, storage, model, generator, TOTP, import/export, URL matching, health report, the offline half of the leaked-password check (hashing, answer parsing), the header-only half of the cloud-folder sync (`sync`: copy-in decision, file-name rule, size limit). No UI, no IPC, no networking. |
 | `crates/keystead-bridge` | Browser bridge: protocol types, framing, local socket server (used by the app) & client, native-messaging host runner, host-manifest registration for Chrome/Edge/Brave/Chromium. |
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend: the library `keystead_lib` (`src/lib.rs`, the whole app – also the phone's entry point) and the desktop binary `Keystead` (`src/main.rs`). `src-tauri/tauri.android.conf.json` = the Android overrides of `tauri.conf.json` (merged by Tauri). |
-| `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening – see "Mobile (Android)". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
+| `apps/desktop/src-tauri/gen/android` | The Android Studio project from `npx tauri android init` (Gradle, manifest, `MainActivity.kt`), **committed** with its hardening and the app's own folder plugin `KeysteadFolderPlugin.kt` – see "Mobile (Android)". Build output, `keystore.properties`, `tauri.properties` and the files the CLI regenerates are gitignored. |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
 | `apps/desktop/tests` | `node --test` tests of the UI's dependency-free modules (`src/lib/layout.mjs`: phone-layout decision and back-gesture order). |
 | `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
@@ -68,13 +68,24 @@ cloud-folder mirror (`mirror.rs`), the file-dialog based attachment, import
 and export commands (the attachment
 image preview, `reveal_attachment`, is on both), Windows session lock
 detection and the suspend (clock-jump) detection. Phone-only
-(`src/mobile.rs`, Android and iOS): the data directory override, the
-clipboard backend on `tauri-plugin-clipboard-manager` and links through
-`tauri-plugin-opener` – both plugins are called from Rust only, the webview
-gets no permission for them (and the opener's injected click hook is off). Dependencies follow the same split
-(`[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.
-dependencies]` and its mobile counterpart; the `tauri` crate's `tray-icon`
-feature exists only on the desktop). `build.rs` embeds the browser extension
+(`#[cfg(mobile)]`, Android and iOS): `src/mobile.rs` – the data directory
+override, the clipboard backend on `tauri-plugin-clipboard-manager` and
+links through `tauri-plugin-opener` (both plugins are called from Rust only,
+the webview gets no permission for them, and the opener's injected click
+hook is off) –, `src/mobile/sync.rs` (the cloud-folder sync: the binding of
+the Kotlin plugin `KeysteadFolderPlugin.kt` in `gen/android`, its commands,
+the automatic sync) and `src/mobile/biometric.rs` (fingerprint unlock on
+`tauri-plugin-biometric`); their platform-neutral engines `folder_sync.rs`
+and `device_unlock.rs` are compiled on the desktop only for their unit
+tests. What only the Android build has – the plugin bindings, the biometric
+plugin, the fingerprint prompt's guard `Core::begin_own_prompt` – is gated
+on `target_os = "android"`. Dependencies follow the same split, in three
+tables: `[target.'cfg(not(any(target_os = "android", target_os =
+"ios")))'.dependencies]` (desktop), `[target.'cfg(any(target_os =
+"android", target_os = "ios"))'.dependencies]` (both phones: clipboard
+manager, opener) and `[target.'cfg(target_os = "android")'.dependencies]`
+(`tauri-plugin-biometric`, whose keystore cipher exists on Android only); the
+`tauri` crate's `tray-icon` feature exists only on the desktop. `build.rs` embeds the browser extension
 on the desktop only (the phone gets an empty table). Windows detail: the
 library's unit-test executable links the app's resource file (icon, version
 info, manifest with the Common Controls v6 dependency the dialog plugin's
@@ -87,8 +98,12 @@ only and Cargo has no instruction for a library's unit tests.
   `keystead_lib::run()` (`#[tauri::mobile_entry_point]`), which builds the
   same Tauri app without the desktop-only plugins, services and commands;
   the binary has no role there (`fn main() {}`). The phone is **read-only**
-  in this stage: only the read commands are registered, see "Desktop
-  backend ↔ frontend". Everything Android-specific – the committed Android
+  for vault data in this stage: the read commands plus the phone's own are
+  registered – the cloud-folder sync (it stores the folder's vault copies
+  and blobs, `sync/link.json` and `sync/trial/`) and the fingerprint unlock
+  (it stores the device-unlock blobs and `Settings.deviceUnlock`) –, see
+  "On the phone" under "Desktop backend ↔ frontend". Everything
+  Android-specific – the committed Android
   project, its hardening, lifecycle, clipboard, build, CI and signing – is
   in "Mobile (Android)".
 
@@ -169,7 +184,7 @@ editing a vault on the phone is a write and not registered).
 | Android project, APK | 1a (E1, E2, E8–E10) | committed `gen/android`, no permission, no backup, `FLAG_SECURE`, back gesture; signed APK and gates in CI | "Android project", "Build, CI and signing" |
 | Phone layout | 1b | one column, drawer, detail stacked over the list, back gesture, read-only and desktop-only gates | "Phone layout" |
 | Fingerprint unlock | 1b (E5) | opt-in, default off; the master KEK sealed by the Android Keystore, no PIN/pattern fallback | "Fingerprint unlock (phone)" |
-| Cloud-folder link and copy-in | 2a | the phone links one folder (read permission only) and copies vault files and attachments in | "Cloud-folder sync (phone)" |
+| Cloud-folder link and copy-in | 2a | the phone links one folder (read permission only) and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Desktop mirror | 2a (E7) | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder | "Cloud-folder mirror (desktop) and phone link" |
 | No network | 1a–2a (E6) | no `INTERNET` permission, no update check | "No network, and why" below |
 
@@ -200,15 +215,18 @@ editing a vault on the phone is a write and not registered).
   `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
   (`#[tauri::mobile_entry_point]`) – see "Executable modes" for the crate
   layout and the `cfg(desktop)`/`cfg(mobile)` split. Rust code is gated on
-  `mobile`/`desktop` (so an iOS build compiles the same paths), only
-  Android APIs on `target_os = "android"`; the Kotlin side lives in
-  `gen/android` (below).
+  `mobile`/`desktop` (so an iOS build compiles the same paths), Android
+  APIs – and what only the Android build calls (the plugin bindings, the
+  prompt guard; `folder_sync.rs` and `device_unlock.rs` allow dead code
+  outside Android) – on `target_os = "android"`; the Kotlin side lives in
+  `gen/android` (below). No CI job compiles the iOS branches yet.
 * **Data location**: `mobile::prepare`, the first thing in `setup`, sets
   `paths::set_data_dir_override(app_local_data_dir())` – on Android the
   app's private internal storage `/data/user/0/io.github.cedrickgd.keystead/`
   (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
   and `settings.json`, plus `sync/link.json` (the linked cloud folder,
-  below) and `device-unlock/<vault-id>.json` (fingerprint unlock, below);
+  below), `sync/trial/` (copies on trial, below) and
+  `device-unlock/<vault-id>.json` (fingerprint unlock, below);
   nothing of the bridge (`bridge-clients.json`), no
   `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
   "Data locations"). Other apps cannot read the folder, Android's cloud
@@ -247,7 +265,10 @@ editing a vault on the phone is a write and not registered).
     file 64 MiB, a blob 20 MiB + 45 bytes; per file reported as `tooLarge`),
     `unsupported:platform` (iOS: no folder plugin yet), `not_found` and
     `io:<detail>` (the plugin's other rejections); a single file's problem
-    is no error but its `outcome` in `files`;
+    is no error but its `outcome` in `files`; `unsupported:sync_copy_rejected`
+    (an unlock – password or fingerprint – found a synced copy forged or
+    damaged and there was no earlier copy to go back to: removed, see
+    "Copies on trial");
   * fingerprint – `unsupported:device_unlock_unavailable` /
     `device_unlock_not_enrolled` (no prompt shown), `device_unlock_cancelled`,
     `device_unlock_failed` (finger not recognised), `device_unlock_lockout`,
@@ -261,8 +282,9 @@ editing a vault on the phone is a write and not registered).
     has a new master password);
   * the desktop mirror's codes (`invalid_input:mirror_folder`,
     `invalid_input:mirror_folder_data_dir`,
-    `unsupported:mirror_folder_missing`, `unsupported:mirror_newer`) are in
-    "Cloud-folder mirror (desktop) and phone link".
+    `unsupported:mirror_folder_missing`, `unsupported:mirror_newer`,
+    `unsupported:mirror_diverged`) are in "Cloud-folder mirror (desktop) and
+    phone link".
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
@@ -296,22 +318,69 @@ editing a vault on the phone is a write and not registered).
     against the phone's copy `<data>/vaults/<id>.keystead`: no copy →
     **import** (a new vault on the phone), higher revision → **update**
     (replaced atomically with `format::write_atomic`, no `.bak` – an older
-    copy would still open with an old master password), equal → nothing,
+    copy would still open with an old master password; only the copy on
+    trial below, until the new one opened), equal → nothing,
     lower → the phone keeps its copy and reports "the PC's copy is older" (a
     rollback is never copied in, nothing is ever written back), another
     vault at that place (other id) → never touched. A damaged copy on the
     phone is replaced. **Attachments**: the vault file is read first, then
     its blob folder listed (every blob that copy references is already
-    there); blobs the phone lacks or whose size differs (a blob never
+    there; the folder's top level was listed before the vault file was
+    read, so for a copy with attachments – format version 2 – a blob folder
+    missing from that listing is looked up in a fresh one: the PC may have
+    added the vault's first attachment meanwhile); blobs the phone lacks or whose size differs (a blob never
     changes under its id) are copied – only names `<id>.bin` with a blob's
     shape (`attachments::looks_like_blob`: magic bytes, size; nothing is
     decrypted) – and stored **before** the phone's vault file is replaced.
     Blobs the vault no longer references are left to the core's sweep (on
     unlock, and after a reload of the open vault: an hour after they
     arrived). Vaults the folder no longer has stay on the phone ("missing").
-  * **The open vault**: its file is replaced and reloaded
-    (`reload_if_changed`) under the same state lock, so the monitor's own
-    2-s change check never sees it first → `vault://changed`. A new master
+  * **Copies on trial** (`folder_sync::Trial`, `<data>/sync/trial/`): the
+    folder's plain header – the revision included – is not authenticated
+    without the keys, so anyone who can write the folder (a shared folder, a
+    compromised cloud account, a misbehaving sync client) could raise it. A
+    copy the sync stores is therefore **unconfirmed** until it opens on the
+    phone: `<id>.json` (`unconfirmed` – that write's revision and payload
+    nonce –, `keptRevision`, `rejected`; camelCase, no secrets, removed once
+    there is nothing to remember) and `<id>.keystead`, the copy it replaced
+    if that one was confirmed (it opened here, or was there before this
+    rule). While a copy is unconfirmed its revision proves nothing: the
+    folder's next copy only has to beat the **kept** revision (the same
+    write again → up to date), so a forged revision never blocks the PC's
+    genuine ones; a copy that never opened on the phone just follows the
+    folder. Every unlock – password or fingerprint – goes through
+    `folder_sync::unlock_copy`: the copy opens → confirmed, the kept copy
+    goes; it does not although its key opened (`corrupt`: the payload's AAD
+    binds the revision, so a raised revision fails here, as do damaged
+    bytes) → **rejected**: the kept copy is put back and opened instead (the
+    same unlock, no second prompt), or – without one – the copy is removed
+    (`unsupported:sync_copy_rejected`; the PC's next copy brings the vault
+    again), and that write (revision and payload nonce) is never taken
+    again (outcome `rejected`; the sync checks that once more under the
+    trial lock right before it stores a copy). A wrong password is not a
+    rejection (it may be the PC's new one) – except when it proves a forged
+    key wrapping: the copy on trial has the kept copy's KDF salt and
+    parameters and the same password (or fingerprint KEK) opens the kept
+    copy (`kept_copy_opens`, from a scratch store `<data>/sync/probe`,
+    removed again; one extra key derivation for a wrong password while a
+    copy is on trial) → rejected as above. A copy with another master
+    password stays on trial until that password opens it. Known limits:
+    `rejected` remembers one write, so a forger who keeps changing the
+    nonce gets each variant on trial again (each costs one fallback at the
+    next unlock, the kept copy survives); a forged copy with another salt
+    cannot be told from a genuine new password – it stays on trial (the
+    unlock screen says "changed on the PC") until the PC's next copy beats
+    the kept revision. The fingerprint setup is never judged by a copy on
+    trial (`folder_sync::on_trial`): the sync, `device_unlock_status` and
+    the unlock leave a setup with another salt alone, the unlock answers
+    `unsupported:device_unlock_needs_password`; once that copy opens with
+    the password (`confirm`), a setup for another salt is reset. With the vault open, its keys check
+    the copy before it is stored (`UnlockedVault::check_copy`): genuine →
+    stored confirmed; forged → refused, nothing written (`rejected`);
+    another master password → stored on trial, then the lock below.
+  * **The open vault**: its file is replaced (after the check above) and
+    reloaded (`reload_if_changed`) under the same state lock, so the
+    monitor's own 2-s change check never sees it first → `vault://changed`. A new master
     password (`Error::KeyChanged`) closes it like a lock with reason
     `keyChanged` (toast: the password was changed on the PC). A copy whose
     key-derivation salt changed (a new master password) is marked
@@ -331,7 +400,7 @@ editing a vault on the phone is a write and not registered).
     again), `files` (per vault file: `fileName`, `vaultId`, `vaultName`,
     `revision`, `outcome` – `imported`, `updated`, `upToDate`, `pcOlder`,
     `otherVault`, `misnamed`, `unreadable`, `tooLarge`, `failed`,
-    `missing` –, `error`, `attachmentsCopied`, `attachmentsFailed`,
+    `missing`, `rejected` –, `error`, `attachmentsCopied`, `attachmentsFailed`,
     `passwordChanged`). No secrets anywhere; the commands answer this
     status (`FolderStatus`).
   * **UI**: the welcome screen without a vault explains the way (on the PC:
@@ -380,7 +449,20 @@ editing a vault on the phone is a write and not registered).
     into the plugin's `BiometricActivity` (in the app's process, but intents
     and activity results travel through Android's activity manager in
     `system_server`) – memory of the device's own trusted system, never a
-    file or a log.
+    file or a log, and garbage once the call returned. One copy would stay
+    **reachable**: the activity keeps the text of its last cipher operation
+    in a static field (`BiometricActivity.encryptDecryptData`, never
+    cleared) – after a setup the plaintext KEK, for the whole process
+    lifetime, also after the vault locked. So every encryption (also a
+    cancelled one: the activity takes the text before its prompt) is
+    followed by a decryption of the malformed text `x`, which overwrites the
+    field and fails in the activity's `getCipher()` ("Failed to initialize
+    the cipher") before any prompt is shown (`PluginKeystore::scrub`, under
+    the same prompt lock and own-prompt guard; the transparent activity
+    pauses `MainActivity` for a moment). A decryption leaves only the sealed
+    text there (its result goes back as an intent extra). An own Kotlin
+    cipher plugin (E5 b: bytes in and out, buffers cleared, no static state)
+    would make this unnecessary.
   * **Set up** (`enable_device_unlock`, Settings → Sicherheit → "Mit
     Fingerabdruck entsperren" for the open vault): only for the open vault
     the page shows (`pageVaultId`, else `locked`); the sensor must be usable
@@ -522,7 +604,10 @@ editing a vault on the phone is a write and not registered).
     a newer revision of the open vault (`vault://changed`),
     `simulatePcPasswordChange()` one with a new master password (lock reason
     `keyChanged`), `simulateFolderLost()` lets the next sync fail with
-    `unsupported:folder_access_lost`. Fingerprint unlock: the "system
+    `unsupported:folder_access_lost`; like the real app, a linked folder is
+    synced on its own at start and whenever the page becomes visible again
+    (the stand-in for `Resumed`), at most every 60 s and never while one
+    runs. Fingerprint unlock: the "system
     prompt" answers after ~0.9 s with success unless
     `setFingerprintResult("cancel" | "fail" | "lockout")` makes the next one
     fail; `simulateNewFingerprint()` invalidates every setup (reset at its
@@ -783,8 +868,10 @@ updates"):
 | The cloud-folder mirror (`mirror_status`, `mirrorFolder`) | the PC writes the folder, the phone only reads it (stage 2a, no write path back) |
 
 **iOS** is not built. The code stays iOS-compatible (gates on
-`mobile`/`desktop`, `capabilities/mobile.json` names `iOS`, only plugins
-with iOS support); planned is an unsigned simulator build on GitHub's free
+`mobile`/`desktop`, Android-only code on `target_os = "android"`,
+`capabilities/mobile.json` names `iOS`, only plugins with iOS support – the
+biometric plugin is an Android-only dependency); no CI job compiles the iOS
+branches yet, so their lints are unchecked. Planned is an unsigned simulator build on GitHub's free
 macOS runner (`npx tauri ios build --debug --target aarch64-sim --no-sign`,
 launch and screenshots; decision E13) – no Apple account, no device build.
 Open before any iOS release: the `Suspended`/`Resumed` asymmetry (above),
@@ -829,6 +916,11 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 * **Layout** – exactly the phone's contract, at the folder's top level:
   `<id>.keystead`, the vault file byte for byte as it is on disk, and
   `<id>.keystead.attachments/<attachment id>.bin`, the blobs byte for byte.
+  The folder is untrusted input here too: its copy of a vault file is read
+  at most up to `sync::VAULT_FILE_MAX_BYTES` (64 MiB) – one whose size is
+  above it is replaced without being read (a cloud drive's placeholder is
+  not downloaded for it), and `delete_vault` leaves it alone like a damaged
+  one.
   Nothing is decrypted or re-encrypted, so the folder never holds plaintext.
   Never a `.bak`, `.lock`, export or other file of the data folder; the only
   temporary files are `format::write_atomic`'s hidden `.<name>.<16 hex>.tmp`
@@ -847,18 +939,28 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   when the folder is set or changed. `delete_vault` removes the vault's copy
   (`<id>.keystead` only if its header has that id, and the `<id>.bin` files
   of its blob folder; nothing while the vault file still exists – the phone
-  then reports it as "missing" and keeps its own copy). Vaults never opened
-  in the app are not copied.
+  then reports it as "missing" and keeps its own copy); a removal that fails
+  (the drive not mounted, the cloud app holding the file) is kept in
+  `MirrorTracker` and tried again with every later pass and when the folder
+  setting changes – while the app runs (an exit forgets it). Vaults never
+  opened in the app are not copied.
 * **A pass** (`mirror::mirror_vault` on the thread `keystead-mirror`; jobs
   queued meanwhile are merged, the last one per vault wins): read the vault
   file (gone → nothing to do), parse it (`VaultFile::parse`; the id must be
   the file's), check the folder, compare with the folder's copy – missing,
-  unreadable (half a download), another vault's or a lower revision →
-  written; the same revision → only the blobs (no needless upload); a
-  **higher** revision in the folder (another PC writing into the same
-  folder, a restored backup here) → `unsupported:mirror_newer` and nothing
-  is touched (only revisions count – the phone would not take an older one
-  either). Then list the data folder's blobs – after reading the vault
+  too large, unreadable (half a download), another vault's or a lower
+  revision → written; the same write (equal bytes) → only the blobs (no
+  needless upload); a **higher** revision in the folder (another PC writing
+  into the same folder, a restored backup here) → `unsupported:mirror_newer`,
+  and another write of the **same** revision (e.g. this PC went back to a
+  backup and saved again) → `unsupported:mirror_diverged` – nothing is
+  touched (the phone would not take an older revision either), until this
+  PC saves a higher one. Except a copy the open vault's keys prove forged
+  or damaged (`UnlockedVault::check_copy`, asked under the state lock when
+  that vault is open: its KDF salt is this session's but the key or payload
+  does not authenticate – e.g. a revision raised by hand in the folder): it
+  is replaced like a damaged one. A copy of another master password cannot
+  be checked and stays. Then list the data folder's blobs – after reading the vault
   file, so every blob that revision references is there –, copy those the
   folder lacks or whose size differs (a blob never changes under its id;
   only `<id>.bin` names with a blob's shape, `attachments::looks_like_blob`,
@@ -918,6 +1020,9 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 * Phone only: `<data_dir>/sync/link.json` – the linked cloud folder and the
   last sync's results (no secrets, see "Cloud-folder sync (phone)");
   `<data_dir>/sync/incoming/` holds a file only while the sync copies it in;
+  `<data_dir>/sync/trial/<vault-id>.json` (+ `<vault-id>.keystead`, the copy
+  that opened before) – a synced copy that has not opened yet, or a
+  rejected write of the folder's copy ("Copies on trial");
   `<data_dir>/device-unlock/<vault-id>.json` – a vault's master KEK sealed
   by the Android Keystore, only while fingerprint unlock is on for it (see
   "Fingerprint unlock (phone)").
@@ -1059,7 +1164,10 @@ pub mod import;   // legacy VaultX 1.x, CSV (Chrome/Edge/Firefox/Bitwarden/gener
 pub mod export;   // encrypted .keystead export, CSV, Bitwarden-compatible JSON
 pub mod settings; // Settings (non-secret app settings) load/save
 pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>), copy_text, clear_pending_secret on a pluggable ClipboardBackend (arboard on desktop, the app's own on mobile; shared by app, TUI & mobile)
-pub mod sync;     // VaultHeader + header_of(bytes): id/name/revision of a .keystead file without the password (file import, cloud-folder sync)
+pub mod sync;     // VaultHeader + header_of(bytes): id/name/revision of a .keystead file without the password (file import, cloud-folder sync);
+                  // CopyIn + decide_copy_in(local, remote): Import | Update | UpToDate | RemoteOlder | OtherVault from the headers alone (the phone's copy-in, see "Cloud-folder sync");
+                  // vault_id_of_file_name(name): Some(id) only for `<id>.keystead` with a valid id (no conflict copies, temp files, .bak);
+                  // VAULT_FILE_MAX_BYTES = 64 MiB: the largest vault file the phone copies in and the PC's mirror reads from the folder
 ```
 
 ### `store::VaultStore`
@@ -1136,6 +1244,9 @@ impl UnlockedVault {
     pub fn master_kek(&self) -> SecretKey;                    // copy of this session's master key-encryption key (opens the current header's wrapped_key): what device unlock stores wrapped in the platform keystore for VaultStore::unlock_with_master_kek;
                                                                // invalid after any master-password change (fresh salt; also change elsewhere → reload_if_changed = KeyChanged), unchanged by recovery-key changes; never reaches the UI layer
     pub fn kdf_salt(&self) -> &str;                            // the header's base64 KDF salt this session's master KEK was derived with (not secret); a stored KEK whose salt differs from the file's (VaultFile::kdf.salt) is known to be stale without trying it
+    pub fn check_copy(&self, file: &VaultFile) -> CopyCheck;  // another copy of this vault's file (the cloud folder's), checked with this session's keys, nothing kept (a decrypted payload is wiped):
+                                                               // Opens (genuine write, same master password) | Forged (same KDF salt/params but key or payload does not authenticate, or the KEK opens a key wrapped for another salt) | OtherPassword (cannot tell)
+    pub fn payload_nonce(&self) -> &str;                       // base64 nonce of the payload this session opened or last wrote (fresh per write; with the revision it tells two writes apart; not secret)
 }
 ```
 
@@ -1612,7 +1723,7 @@ history. The bridge's own writes are not affected.
 | `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` – desktop: a changed `mirrorFolder` is checked first (`invalid_input:mirror_folder`, `invalid_input:mirror_folder_data_dir`, `unsupported:mirror_folder_missing`; nothing saved), then the open vault is copied into the new folder |
-| `mirror_status` | – | **Desktop only.** `MirrorStatus { folder: string\|null, lastMirroredAt: number\|null, lastError: string\|null }` – the cloud-folder mirror ("Cloud-folder mirror (desktop) and phone link"): the folder (`Settings.mirrorFolder`), the last successful copy (ms, since the start or since the folder was set) and the last error code (`unsupported:mirror_folder_missing`, `unsupported:mirror_newer`, `invalid_input:mirror_folder_data_dir`, `io:…`; `null` after a success); not user activity |
+| `mirror_status` | – | **Desktop only.** `MirrorStatus { folder: string\|null, lastMirroredAt: number\|null, lastError: string\|null }` – the cloud-folder mirror ("Cloud-folder mirror (desktop) and phone link"): the folder (`Settings.mirrorFolder`), the last successful copy (ms, since the start or since the folder was set) and the last error code (`unsupported:mirror_folder_missing`, `unsupported:mirror_newer`, `unsupported:mirror_diverged`, `invalid_input:mirror_folder_data_dir`, `io:…`; `null` after a success); not user activity |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
 | `register_browsers` | `browsers: string[]` (ids) | `BrowserStatus` |
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
@@ -1632,9 +1743,16 @@ history. The bridge's own writes are not affected.
 | `device_unlock_status` | – | **Phone only** (see "Fingerprint unlock (phone)"). `DeviceUnlockStatus { available: boolean, unavailableReason: "noHardware"\|"notEnrolled"\|"other"\|null, enabled: boolean, vaults: string[], invalidated: string[] }` – whether the fingerprint can be used now, `Settings.deviceUnlock`, the vaults set up and the ones reset since the start; removes blobs that no longer fit (feature off, vault gone, another salt). No prompt, not user activity |
 | `enable_device_unlock` | `prompt: { title, reason, cancel }, pageVaultId` | **Phone only.** `DeviceUnlockStatus` – the system prompt seals the open vault's master KEK, stores the blob and turns `deviceUnlock` on. `locked` (not the page's vault), `unsupported:device_unlock_unavailable` / `device_unlock_not_enrolled` (no prompt), `unsupported:device_unlock_cancelled` / `_failed` / `_lockout` / `_busy` (nothing stored) |
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
-| `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
+| `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
 **On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+
+On the phone both unlocks – the master password's and the fingerprint's –
+follow the trial rules of synced copies ("Copies on trial" under
+"Cloud-folder sync (phone)"): a copy that opens is confirmed; one that does
+not although its key opened – or whose key wrapping the kept copy proves
+forged – is replaced by the copy before it (which is then opened) or,
+without one, removed – error `unsupported:sync_copy_rejected`.
 
 `BrowserInfo { id: "chrome"|"edge"|"brave"|"chromium"|"vivaldi", name, detected: boolean, registered: boolean }`,
 `PairedClient { id, name, createdAt, lastSeenAt }`,

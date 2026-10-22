@@ -55,6 +55,27 @@ pub struct UnlockedVault {
     data: VaultData,
 }
 
+/// What an open session can tell about another copy of its vault file
+/// ([`UnlockedVault::check_copy`]) – e.g. the copy in a synced cloud folder,
+/// whose plain header (revision included) anyone with write access to that
+/// folder can change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyCheck {
+    /// This session's master KEK opens the copy's vault key and that key its
+    /// payload: a genuine write of this vault under the same master
+    /// password.
+    Opens,
+    /// The copy cannot be genuine: it has this session's KDF salt and
+    /// parameters, so this KEK must open it, but its vault key or payload
+    /// does not authenticate – or the KEK opens a key wrapped for another
+    /// salt. Damaged, or changed by hand (e.g. a raised revision).
+    Forged,
+    /// The copy belongs to another master password (another salt or KDF
+    /// parameters, and this KEK does not open it): this session cannot
+    /// tell.
+    OtherPassword,
+}
+
 /// The new secrets of a save that replaces what opens the vault.
 struct Rekey {
     key: SecretKey,
@@ -922,6 +943,38 @@ impl UnlockedVault {
         self.file = on_disk;
         self.key = key;
         Ok(true)
+    }
+
+    /// Checks `file` – another copy of this vault's file, e.g. the one in a
+    /// synced folder – with this session's keys, without changing anything
+    /// (see [`CopyCheck`]). Nothing is kept: a decrypted payload is wiped.
+    /// The caller compares the ids first (a file of another vault never
+    /// [`CopyCheck::Opens`]: the key wrapping binds the id).
+    pub fn check_copy(&self, file: &VaultFile) -> CopyCheck {
+        let same_kdf =
+            file.kdf.salt == self.file.kdf.salt && file.kdf_params() == self.file.kdf_params();
+        match (file.unwrap_key_with_kek(&self.master_kek), same_kdf) {
+            (Ok(key), true) => match file.decrypt_payload(&key) {
+                Ok(mut data) => {
+                    wipe_data(&mut data);
+                    CopyCheck::Opens
+                }
+                Err(_) => CopyCheck::Forged,
+            },
+            // A KEK opens only what was wrapped for its salt: the header's
+            // salt or parameters were changed.
+            (Ok(_), false) => CopyCheck::Forged,
+            (Err(_), true) => CopyCheck::Forged,
+            (Err(_), false) => CopyCheck::OtherPassword,
+        }
+    }
+
+    /// The base64 nonce of the payload this session opened (or last wrote).
+    /// Every write draws a fresh one, so together with the revision it tells
+    /// two writes of the vault file apart. Not secret (it is in the file's
+    /// plain header).
+    pub fn payload_nonce(&self) -> &str {
+        &self.file.payload.nonce
     }
 
     /// Path of the vault file.

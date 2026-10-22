@@ -35,7 +35,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 (cd apps/desktop && npm run build)
-node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs
+node --test extension/tests/*.test.mjs .github/scripts/*.test.mjs apps/desktop/tests/*.test.mjs
 # Android (JAVA_HOME = JDK 17, ANDROID_HOME, NDK_HOME = NDK 28.2.13676358 set):
 cd apps/desktop && npx tauri android build --apk --debug --target x86_64   # emulator APK
 cd apps/desktop && npx tauri android build --apk --target aarch64          # phone APK (release; debug key without keystore.properties)

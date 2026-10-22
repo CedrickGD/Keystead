@@ -68,6 +68,8 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.folder_not_linked": "No cloud folder is linked.",
   "error.unsupported.folder_picker": "This device has no folder picker.",
   "error.unsupported.sync_file_too_large": "The file is too large (64 MB at most).",
+  "error.unsupported.sync_copy_rejected":
+    "This vault's copy from the cloud folder did not open (damaged or altered) and was removed from this phone. The PC's next copy brings it back.",
   "error.unsupported.platform": "Not available on this device.",
   "error.unsupported.device_unlock_cancelled": "Cancelled.",
   "error.unsupported.device_unlock_failed": "Fingerprint not recognised. Try again or use your master password.",
@@ -78,6 +80,8 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.device_unlock_invalid":
     "Fingerprint unlock was reset because it no longer opens the vault (a new fingerprint or a new master password). Unlock with your master password – you can set it up again afterwards.",
   "error.unsupported.device_unlock_not_set": "Fingerprint unlock is not set up for this vault.",
+  "error.unsupported.device_unlock_needs_password":
+    "This vault arrived from the cloud folder and does not fit the stored fingerprint setup. Unlock it once with your master password.",
   "error.unsupported.device_unlock_busy": "The fingerprint prompt is already open.",
   "error.input.mirror_folder": "That is not a valid folder. Choose the folder with “Change folder”.",
   "error.input.mirror_folder_data_dir":
@@ -86,6 +90,8 @@ export const en: Record<MessageKey, string> = {
     "The cloud folder cannot be reached – was it moved or renamed, or is the drive missing? Keystead tries again with the next save.",
   "error.unsupported.mirror_newer":
     "The cloud folder holds a newer copy of this vault (from another PC, for example) – Keystead does not replace it. Delete it there if this PC's state should count.",
+  "error.unsupported.mirror_diverged":
+    "The cloud folder holds another version of this vault with the same revision (from another PC, for example). Keystead replaces it only with your next change here.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -825,6 +831,7 @@ export const en: Record<MessageKey, string> = {
   "sync.outcome.tooLarge": "Skipped: larger than 64 MB",
   "sync.outcome.failed": "Could not be copied",
   "sync.outcome.missing": "No longer in the folder – stays on this phone",
+  "sync.outcome.rejected": "Not taken: the copy in the folder does not open (damaged or altered)",
   "sync.attachmentsCopied_one": "{n} attachment copied",
   "sync.attachmentsCopied_other": "{n} attachments copied",
   "sync.attachmentsFailed_one": "{n} attachment missing",

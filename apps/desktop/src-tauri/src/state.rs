@@ -186,13 +186,14 @@ impl AppState {
 }
 
 /// The app's own prompt is open until this is dropped
-/// ([`Core::begin_own_prompt`]).
-#[cfg(mobile)]
+/// ([`Core::begin_own_prompt`]). Android only: the fingerprint prompt is the
+/// only such prompt.
+#[cfg(target_os = "android")]
 pub struct OwnPrompt<'a> {
     core: &'a Core,
 }
 
-#[cfg(mobile)]
+#[cfg(target_os = "android")]
 impl Drop for OwnPrompt<'_> {
     fn drop(&mut self) {
         lock_mutex(&self.core.own_prompt).closed = Some(Instant::now());
@@ -451,10 +452,10 @@ impl Core {
         }
     }
 
-    /// Phone: the app's own system prompt (the fingerprint's activity) opens
-    /// now; it counts as closed when the guard is dropped. The monitor does
-    /// not take the `onPause` it causes for the user leaving the app.
-    #[cfg(mobile)]
+    /// Android: the app's own system prompt (the fingerprint's activity)
+    /// opens now; it counts as closed when the guard is dropped. The monitor
+    /// does not take the `onPause` it causes for the user leaving the app.
+    #[cfg(target_os = "android")]
     pub fn begin_own_prompt(&self) -> OwnPrompt<'_> {
         *lock_mutex(&self.own_prompt) = crate::monitor::PromptSpan {
             opened: Some(Instant::now()),
@@ -715,9 +716,18 @@ impl Core {
     /// without holding the state lock; a lock meanwhile wins (`locked`, see
     /// [`Core::install_vault_since`]).
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> AppResult<VaultInfo> {
-        let (epoch, store) = self.unlock_ticket();
-        let vault = store.unlock(vault_id, master_password)?;
-        self.install_vault_since(vault, epoch)
+        // Phone: a copy the cloud-folder sync stored is on trial until it
+        // opens (`folder_sync::unlock_copy`).
+        #[cfg(mobile)]
+        return crate::folder_sync::unlock_copy(self, vault_id, |store| {
+            store.unlock(vault_id, master_password)
+        });
+        #[cfg(not(mobile))]
+        {
+            let (epoch, store) = self.unlock_ticket();
+            let vault = store.unlock(vault_id, master_password)?;
+            self.install_vault_since(vault, epoch)
+        }
     }
 
     /// Clone of the store (for slow operations outside the state lock).

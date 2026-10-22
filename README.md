@@ -115,8 +115,9 @@ Jedes Release enthält auch die Android-App – vorerst als **frühe
 Vorschau** zum Nachschlagen: Tresore öffnen, Benutzernamen, Passwörter und
 2FA-Codes zeigen und kopieren, den Sicherheitsbericht zeigen – ändern kann sie
 nichts. Ihre Tresore holt sie **nur lesend aus einem Ordner deiner eigenen
-Cloud** (über die Nextcloud- oder OneDrive-App auf dem Handy); einen Tresor neu
-anlegen kann sie nicht.
+Cloud** (über die Cloud-App auf dem Handy, z. B. Nextcloud oder OneDrive – mit
+diesen Apps ist das noch ungeprüft, siehe unten); einen Tresor neu anlegen kann
+sie nicht.
 
 **Installieren:**
 
@@ -153,11 +154,20 @@ anlegen kann sie nicht.
    Einstellungen → Synchronisierung) und im Android-Dialog über die Cloud-App
    denselben Ordner wählen – „Diesen Ordner verwenden“, „Zulassen“.
 
+> **Noch ungeprüft:** Schritt 3 klappt nur, wenn deine Cloud-App ihre Ordner
+> in Androids Ordner-Dialog anbietet – nicht jede tut das. Geprüft ist der Weg
+> bisher nur mit dem eingebauten Speicher des Handys (im Emulator), noch nicht
+> auf einem echten Handy mit der Nextcloud- oder der OneDrive-App. Bietet deine
+> Cloud-App dort keinen Ordner an (oder bleibt „Diesen Ordner verwenden“
+> ausgegraut), kommt auf diesem Weg kein Tresor aufs Handy.
+
 Weitere Tresore kommen von selbst mit: Öffne sie einmal am PC, dann liegen sie
 im selben Ordner. Das Handy behält nur Lesezugriff auf den Ordner und gleicht
 beim Start, beim Zurückkehren in die App (höchstens einmal pro Minute) und auf
 Knopfdruck ab: Eine neuere Version vom PC ersetzt die Kopie auf dem Handy, eine
-ältere nie; in den Ordner schreibt die App nichts. Hast du am PC das
+ältere nie; in den Ordner schreibt die App nichts. Eine Kopie, die sich auf
+dem Handy nicht öffnen lässt (beschädigt oder im Ordner verändert), übernimmt
+die App nicht – sie bleibt bei der letzten, die sich geöffnet hat. Hast du am PC das
 Master-Passwort geändert, sperrt sich der Tresor auf dem Handy beim nächsten
 Abgleich, und ab dann gilt das neue Passwort. Im Ordner liegen nur
 verschlüsselte Dateien: `<Tresor-ID>.keystead` und der Ordner
@@ -430,8 +440,8 @@ Every release also carries the Android app – for now an **early
 preview** for looking things up: open vaults, show and copy usernames,
 passwords and 2FA codes, show the security report – it cannot change
 anything. It takes its vaults **read-only from a folder of your own cloud**
-(through the Nextcloud or OneDrive app on the phone); it cannot create a
-vault.
+(through the cloud app on the phone, e.g. Nextcloud or OneDrive – not checked
+with these apps yet, see below); it cannot create a vault.
 
 **Installing:**
 
@@ -469,11 +479,20 @@ vault.
    Sync) and, in Android's dialog, pick the same folder through the cloud app –
    “Use this folder”, “Allow”.
 
+> **Not checked yet:** step 3 only works if your cloud app offers its folders
+> in Android's folder dialog – not every one does. So far the way has been
+> checked only with the phone's built-in storage (in the emulator), not yet on
+> a real phone with the Nextcloud or the OneDrive app. If your cloud app offers
+> no folder there (or “Use this folder” stays greyed out), no vault reaches the
+> phone this way.
+
 More vaults come along by themselves: open them once on the PC and they are in
 the same folder. The phone keeps read access to the folder only and syncs at
 start, when you return to the app (at most once a minute) and on request: a
 newer version from the PC replaces the copy on the phone, an older one never
-does; the app writes nothing to the folder. If you changed the master password
+does; the app writes nothing to the folder. A copy that does not open on the
+phone (damaged, or altered in the folder) is not taken – the app stays with the
+last one that opened. If you changed the master password
 on the PC, the vault on the phone locks at the next sync, and from then on the
 new password applies. The folder holds encrypted files only:
 `<vault id>.keystead` and the folder `<vault id>.keystead.attachments` with the

@@ -27,6 +27,7 @@ const OUTCOME_KEYS: Record<SyncFileResult["outcome"], MessageKey> = {
   tooLarge: "sync.outcome.tooLarge",
   failed: "sync.outcome.failed",
   missing: "sync.outcome.missing",
+  rejected: "sync.outcome.rejected",
 };
 
 /** Re-renders every 30 s, so a relative time ("vor 2 Minuten") stays current. */

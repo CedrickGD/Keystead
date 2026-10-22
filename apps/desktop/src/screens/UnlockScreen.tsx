@@ -23,6 +23,14 @@ import {
   type MasterPasswordState,
 } from "../components/MasterPasswordFields";
 
+/**
+ * Phone: the synced copy of the vault did not open (forged or damaged) and
+ * there was no earlier one – the backend removed it.
+ */
+function copyRejected(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "unsupported" && err.detail === "sync_copy_rejected";
+}
+
 /** Formats user input as XXXXX-XXXXX-XXXXX-XXXXX-XXXXX (Crockford base32). */
 function formatRecoveryInput(raw: string): string {
   const clean = raw.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 25);
@@ -31,7 +39,7 @@ function formatRecoveryInput(raw: string): string {
 
 export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const { t, errorText } = useT();
-  const { vaults, settings, enterVault, showWelcome, info, phoneLayout } = useApp();
+  const { vaults, settings, enterVault, showWelcome, showUnlock, info, phoneLayout } = useApp();
   const initial = vaults.find((v) => v.id === settings.lastVaultId)?.id ?? vaults[0]?.id ?? "";
   const [vaultId, setVaultId] = useState(initial);
   const [mode, setMode] = useState<"password" | "recovery">("password");
@@ -74,10 +82,11 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
       // here. A reset setup is explained by the note below the buttons.
       const detail = deviceUnlockError(err);
       if (detail !== "device_unlock_cancelled" && detail !== "device_unlock_invalid") setError(errorText(err));
+      if (copyRejected(err)) showUnlock();
     } finally {
       setFingerprintBusy(false);
     }
-  }, [busy, deviceUnlock, enterVault, errorText, fingerprintBusy, vault]);
+  }, [busy, deviceUnlock, enterVault, errorText, fingerprintBusy, showUnlock, vault]);
 
   // The automatic prompt waits until the app is visible (a vault locked in the
   // background shows this screen before the user is back).
@@ -130,6 +139,8 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
       const wrong = err instanceof ApiError && err.code === "wrong_password";
       // The synced copy carries a master password set on the PC since.
       setError(wrong ? (passwordChangedOnPc ? t("unlock.passwordChangedOnPc") : t("unlock.wrongPassword")) : errorText(err));
+      // The phone removed that vault's copy: the list (or the welcome screen) follows.
+      if (copyRejected(err)) showUnlock();
       setShake((n) => n + 1);
       requestAnimationFrame(() => inputRef.current?.select());
     } finally {

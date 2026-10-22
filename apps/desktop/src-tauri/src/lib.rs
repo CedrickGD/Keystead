@@ -7,12 +7,21 @@
 //!   (`tauri::mobile_entry_point`), which starts the same Tauri app without
 //!   the desktop-only parts – tray, single instance, updater, browser
 //!   bridge, extension, portable mode, website-icon fetcher, leaked-password
-//!   check, the file-dialog based attachment commands (the image preview
-//!   stays) and import/export. In this stage the phone is **read-only**:
-//!   only the read commands are registered (`gui.rs`).
+//!   check, the cloud-folder mirror, the file-dialog based attachment
+//!   commands (the image preview stays) and import/export. In this stage
+//!   the phone is **read-only** for vault data: the read commands plus the
+//!   phone's own are registered (`gui.rs`) – the cloud-folder sync
+//!   (`mobile/sync.rs` with the Kotlin plugin `KeysteadFolderPlugin`; it
+//!   stores the folder's vault copies and blobs and `sync/link.json`) and
+//!   the fingerprint unlock (`mobile/biometric.rs`; it stores the
+//!   device-unlock blobs and `Settings.deviceUnlock`). Phone-only code is in
+//!   `mobile.rs` (data directory, clipboard, links) and `mobile/`; the
+//!   platform-neutral engines `folder_sync.rs` and `device_unlock.rs` are
+//!   compiled on the desktop for their unit tests only.
 //!
 //! `#[cfg(desktop)]` / `#[cfg(mobile)]` are the aliases `tauri_build` sets
-//! from the target OS.
+//! from the target OS; what only Android has (the plugins' Kotlin sides,
+//! the biometric plugin) is gated on `target_os = "android"`.
 
 // Windows: the unit-test executable of this library links the app's
 // resource file (icon, version info, application manifest) that `build.rs`

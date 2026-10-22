@@ -3,9 +3,10 @@
 //! deployment, update checks and the website-icon fetcher.
 //!
 //! One builder for both: `#[cfg(desktop)]` marks the plugins, commands and
-//! services the phone does without; the phone registers only the read
-//! commands (it is read-only in this stage, see `AppInfo.readOnly` and
-//! "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
+//! services the phone does without; the phone registers the read commands
+//! plus its own – the cloud-folder sync and the fingerprint unlock (it is
+//! read-only for vault data in this stage, see `AppInfo.readOnly` and "On
+//! the phone" under "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
 
 use std::sync::mpsc;
 use std::sync::Arc;

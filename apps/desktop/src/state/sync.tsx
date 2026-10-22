@@ -3,7 +3,7 @@
 // and the three actions with their toasts. Only on the phone platform – the
 // desktop has none of these commands; there `useFolderSync()` is null.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, subscribeEffect } from "../lib/api";
 import type { FolderStatus } from "../lib/types";
 import { useT } from "../i18n";
@@ -60,30 +60,40 @@ export function FolderSyncProvider({
   const confirm = useConfirm();
   const [status, setStatus] = useState<FolderStatus | null>(null);
   const [busy, setBusy] = useState<SyncAction | null>(null);
+  // One subscription for the provider's life; `onStatus` may change meanwhile.
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
 
+  // The first status is fetched once the listener is registered: the sync at
+  // start runs while the page boots, and its only event could otherwise fall
+  // between the boot's vault list and the subscription (the welcome screen
+  // would stay although a vault arrived). This way the result is in the answer
+  // or in an event; the answer also goes to `onStatus`, unless an event came
+  // first (it is at least as new).
   useEffect(() => {
     if (!enabled) return;
-    let cancelled = false;
-    api
-      .folderStatus()
+    let disposed = false;
+    let heard = false;
+    const subscription = events.onSyncStatus((s) => {
+      heard = true;
+      setStatus(s);
+      onStatusRef.current(s);
+    });
+    void subscription
+      .catch(() => undefined)
+      .then(() => (disposed ? null : api.folderStatus()))
       .then((s) => {
-        if (!cancelled) setStatus(s);
+        if (!s || disposed || heard) return;
+        setStatus(s);
+        onStatusRef.current(s);
       })
       .catch(() => undefined);
+    const unsubscribe = subscribeEffect(subscription);
     return () => {
-      cancelled = true;
+      disposed = true;
+      unsubscribe();
     };
   }, [enabled]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    return subscribeEffect(
-      events.onSyncStatus((s) => {
-        setStatus(s);
-        onStatus(s);
-      }),
-    );
-  }, [enabled, onStatus]);
 
   const link = useCallback(async () => {
     setBusy("link");

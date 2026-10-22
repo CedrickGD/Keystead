@@ -68,6 +68,8 @@ export const de = {
   "error.unsupported.folder_not_linked": "Es ist kein Cloud-Ordner verbunden.",
   "error.unsupported.folder_picker": "Auf diesem Gerät gibt es keine Ordnerauswahl.",
   "error.unsupported.sync_file_too_large": "Die Datei ist zu groß (höchstens 64 MB).",
+  "error.unsupported.sync_copy_rejected":
+    "Die Kopie dieses Tresors aus dem Cloud-Ordner ließ sich nicht öffnen (beschädigt oder verändert) und wurde vom Handy entfernt. Mit der nächsten Kopie vom PC kommt er wieder.",
   "error.unsupported.platform": "Auf diesem Gerät nicht verfügbar.",
   "error.unsupported.device_unlock_cancelled": "Abgebrochen.",
   "error.unsupported.device_unlock_failed": "Fingerabdruck nicht erkannt. Versuche es noch einmal oder nutze dein Master-Passwort.",
@@ -79,6 +81,8 @@ export const de = {
   "error.unsupported.device_unlock_invalid":
     "Entsperren mit Fingerabdruck wurde zurückgesetzt, weil es den Tresor nicht mehr öffnet (neuer Fingerabdruck oder neues Master-Passwort). Entsperre mit deinem Master-Passwort – danach kannst du es wieder einrichten.",
   "error.unsupported.device_unlock_not_set": "Für diesen Tresor ist kein Entsperren mit Fingerabdruck eingerichtet.",
+  "error.unsupported.device_unlock_needs_password":
+    "Dieser Tresor kam neu aus dem Cloud-Ordner und passt nicht zum gespeicherten Fingerabdruck. Entsperre ihn einmal mit deinem Master-Passwort.",
   "error.unsupported.device_unlock_busy": "Die Abfrage des Fingerabdrucks ist schon offen.",
   "error.input.mirror_folder": "Das ist kein gültiger Ordner. Wähle den Ordner über „Ordner ändern“ aus.",
   "error.input.mirror_folder_data_dir":
@@ -87,6 +91,8 @@ export const de = {
     "Der Cloud-Ordner ist nicht erreichbar – wurde er verschoben oder umbenannt, oder fehlt das Laufwerk? Keystead versucht es beim nächsten Speichern wieder.",
   "error.unsupported.mirror_newer":
     "Im Cloud-Ordner liegt eine neuere Kopie dieses Tresors (z. B. von einem anderen PC) – Keystead ersetzt sie nicht. Lösche sie dort, wenn der Stand dieses PCs gelten soll.",
+  "error.unsupported.mirror_diverged":
+    "Im Cloud-Ordner liegt eine andere Fassung dieses Tresors mit derselben Revision (z. B. von einem anderen PC). Keystead ersetzt sie erst mit deiner nächsten Änderung hier.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -845,6 +851,7 @@ export const de = {
   "sync.outcome.tooLarge": "Übersprungen: größer als 64 MB",
   "sync.outcome.failed": "Konnte nicht übernommen werden",
   "sync.outcome.missing": "Nicht mehr im Ordner – bleibt auf dem Handy",
+  "sync.outcome.rejected": "Nicht übernommen: Die Kopie im Ordner lässt sich nicht öffnen (beschädigt oder verändert)",
   "sync.attachmentsCopied_one": "{n} Anhang übernommen",
   "sync.attachmentsCopied_other": "{n} Anhänge übernommen",
   "sync.attachmentsFailed_one": "{n} Anhang fehlt",

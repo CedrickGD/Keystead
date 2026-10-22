@@ -807,6 +807,28 @@ Stufe 2a in 8 und 9):
     Zurück-Wischen, Theme auf Dunkel) – ich habe jeden Schritt per Screenshot
     gegengeprüft.
 
+11. **Review-Fixes 1b/2a** (`WIP: mobile 1b/2a - review fixes`; nach dem
+    PC-Reset aus den Transkripten rekonstruiert und am 2026-10-22 fertig
+    gemacht). Die 12 Funde des Reviews: Kopien aus dem Cloud-Ordner sind
+    „auf Probe“, bis sie am Handy aufgehen (`folder_sync::Trial`,
+    `UnlockedVault::check_copy`, `unlock_copy`); Größenlimit 64 MiB auch im
+    PC-Spiegel, Byte-Vergleich bei gleicher Revision, Wiederholung
+    fehlgeschlagener Löschungen; Klartext-KEK im Biometric-Plugin wird
+    überschrieben; Start-Sync-Race im Willkommensbildschirm; Mock mit
+    Auto-Sync; README/Release-Notes: OneDrive/Nextcloud am Handy ungeprüft;
+    `cfg(target_os = "android")` statt `cfg(mobile)`; CLAUDE.md und
+    ARCHITECTURE (Crate-API). Dazu aus einem zweiten Review: eine Kopie auf
+    Probe setzt die Fingerabdruck-Einrichtung nicht mehr zurück
+    (`device_unlock_needs_password`, Rücksetzen erst nach dem Öffnen mit
+    dem Passwort), eine gefälschte Schlüsselhülle mit gleichem Salz wird
+    über die behaltene Kopie erkannt (`kept_copy_opens`), und die Sperre
+    einer abgelehnten Kopie wird vor dem Speichern noch einmal geprüft.
+    **Geprüft** (Windows): fmt, clippy `-D warnings`, `cargo test
+    --workspace`, `node --test` (70/70), `npm run build`. **Nicht geprüft**:
+    Android-Build/Lint, Emulator (auf dem neuen PC fehlen JDK 17, Android
+    SDK und NDK), der Android-only-Code in `mobile/biometric.rs` wurde
+    nicht kompiliert.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle

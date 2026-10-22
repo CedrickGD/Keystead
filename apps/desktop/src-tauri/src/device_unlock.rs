@@ -34,7 +34,10 @@
 //!   anywhere: [`status`] removes leftovers, [`unlock`] refuses. Only the
 //!   commands here change the setting (`save_settings` keeps it).
 
-#![cfg_attr(not(mobile), allow(dead_code))]
+// Only the Android build reaches these flows through a keystore (the
+// biometric plugin's cipher); the desktop compiles this module for its unit
+// tests and iOS has no keystore cipher.
+#![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -65,6 +68,10 @@ pub const INVALID: &str = "device_unlock_invalid";
 /// Error detail: no fingerprint unlock is set up for this vault (or the
 /// feature is off).
 pub const NOT_SET: &str = "device_unlock_not_set";
+/// Error detail: the vault's copy came from the cloud folder and the
+/// stored setup does not fit it; the setup is kept until the copy opens
+/// with the master password (`folder_sync::on_trial`).
+pub const NEEDS_PASSWORD: &str = "device_unlock_needs_password";
 
 /// What `<data>/device-unlock/<vault-id>.json` holds. No secret in the
 /// clear: `sealed` is the keystore's output.
@@ -268,6 +275,10 @@ fn not_set() -> AppError {
     AppError::unsupported(NOT_SET)
 }
 
+fn needs_password() -> AppError {
+    AppError::unsupported(NEEDS_PASSWORD)
+}
+
 /// Writes `blob` atomically (replaces an older one of that vault).
 pub fn store_blob(data_dir: &Path, blob: &Blob) -> AppResult<()> {
     let path = blob_path(data_dir, &blob.vault_id)?;
@@ -447,7 +458,10 @@ pub fn status(core: &Core, keystore: &dyn Keystore) -> DeviceUnlockStatus {
                 // Unreadable right now: decide at the next unlock.
                 Err(_) => continue,
             };
-            forget_if_stale(&data_dir, &vault_id, &file.kdf.salt);
+            // A copy on trial proves no new salt (see `unlock`).
+            if !crate::folder_sync::on_trial(&data_dir, &vault_id) {
+                forget_if_stale(&data_dir, &vault_id, &file.kdf.salt);
+            }
         }
     } else if let Err(e) = remove_all_blobs(&data_dir) {
         log(format_args!(
@@ -569,8 +583,14 @@ pub fn unlock(
         }
         Err(e) => return Err(e.into()),
     };
-    // A new master password: no prompt for a KEK that cannot open it.
+    // A new master password: no prompt for a KEK that cannot open it. A copy
+    // on trial (from the cloud folder, not opened here yet) proves no new
+    // password – anyone who can write the folder can change its salt: the
+    // setup stays until the copy opens with the password.
     if file.kdf.salt != blob.kdf_salt {
+        if crate::folder_sync::on_trial(&data_dir, vault_id) {
+            return Err(needs_password());
+        }
         invalidate(&data_dir, vault_id, "the master password was changed");
         return Err(invalid());
     }
@@ -584,17 +604,22 @@ pub fn unlock(
         return Err(invalid());
     };
     // Like a password unlock that starts now (the prompt may have taken a
-    // while; a lock during it found no vault to close).
-    let (epoch, store) = core.unlock_ticket();
-    match store.unlock_with_master_kek(vault_id, &kek) {
-        Ok(vault) => core.install_vault_since(vault, epoch),
+    // while; a lock during it found no vault to close) – with the rules for
+    // a copy the cloud-folder sync stored (`folder_sync::unlock_copy`).
+    match crate::folder_sync::unlock_copy(core, vault_id, |store| {
+        store.unlock_with_master_kek(vault_id, &kek)
+    }) {
         // The file changed since the salt check (a sync with a new master
-        // password): this KEK opens nothing any more.
-        Err(CoreError::WrongPassword) => {
+        // password): this KEK opens nothing any more – unless that copy is
+        // still on trial (see above).
+        Err(AppError::Core(CoreError::WrongPassword)) => {
+            if crate::folder_sync::on_trial(&data_dir, vault_id) {
+                return Err(needs_password());
+            }
             invalidate(&data_dir, vault_id, "the master password was changed");
             Err(invalid())
         }
-        Err(e) => Err(e.into()),
+        other => other,
     }
 }
 

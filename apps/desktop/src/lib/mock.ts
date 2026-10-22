@@ -15,12 +15,16 @@
 // The phone's cloud-folder sync is simulated (`link_folder` & co.): the
 // "PC's folder" holds the two sample vaults; "Cloud-Ordner wählen" links
 // "Keystead" and copies them in (with `?mock=empty` the welcome screen shows
-// first), `?sync=linked` starts already linked. `simulatePcSave()` lets the
+// first), `?sync=linked` starts already linked (with `?mock=empty`: before
+// the PC's copies arrived – the sync at start brings them). `simulatePcSave()` lets the
 // next sync bring a newer revision (a note "Neu vom PC" in the open vault
 // or "Privat"), `simulatePcPasswordChange()` one with the new master
 // password "demo2" (an open vault locks with reason `keyChanged`),
 // `simulateFolderLost()` makes the next sync fail with
-// `unsupported:folder_access_lost` (linking again repairs it).
+// `unsupported:folder_access_lost` (linking again repairs it). Like the real
+// app, a linked folder is synced on its own at start and whenever the page
+// becomes visible again (`Resumed`), at most every 60 s – switch tabs and
+// come back a minute after `simulatePcSave()` to see it.
 // The desktop's side, "Kopie im Cloud-Ordner aktuell halten"
 // (`mirrorFolder`, `mirror_status`, `mirror://status`), is simulated too:
 // the folder dialog picks `C:\Users\Demo\Nextcloud\Keystead`, every change
@@ -351,10 +355,12 @@ function initSync(linked: boolean, empty: boolean, now: number): MockSync {
     phone,
     lost: false,
   };
-  if (linked && !empty) {
+  if (linked) {
     sync.link = { folderName: "Keystead", linkedAt: now - 3 * DAY };
     sync.lastSyncAt = now - 4 * 60_000;
-    sync.files = [...folder].map(([id, copy]) => syncResult(id, copy.revision, "upToDate", false));
+    // `?mock=empty`: linked before the PC's copies arrived – they are in the
+    // folder now, and the sync at start brings them.
+    sync.files = empty ? [] : [...folder].map(([id, copy]) => syncResult(id, copy.revision, "upToDate", false));
   }
   return sync;
 }
@@ -363,7 +369,10 @@ function getState(): MockState {
   if (!state) {
     state = initState();
     startAutoLockTimer();
-    if (state.appInfo.platform === "android" || state.appInfo.platform === "ios") startBackgroundLockTimer();
+    if (state.appInfo.platform === "android" || state.appInfo.platform === "ios") {
+      startBackgroundLockTimer();
+      startAutoSync();
+    }
     installDevHelpers();
     scheduleMockUpdateAnnouncement();
   }
@@ -546,6 +555,31 @@ function startBackgroundLockTimer(): void {
     }
   });
   window.setInterval(check, 1_000);
+}
+
+/** When the last sync of any kind ended (the automatic one is throttled by it). */
+let lastMockSyncEnd = 0;
+/** Like `AUTO_SYNC_INTERVAL` in `mobile::sync`. */
+const AUTO_SYNC_INTERVAL_MS = 60_000;
+
+/**
+ * Phone mock: like `mobile::sync::start` / `auto_sync` – a sync at start and
+ * whenever the page becomes visible again (`Resumed`), only with a linked
+ * folder, at most every 60 s and never while one runs; its errors only go
+ * into the status (no toast – nobody asked for it).
+ */
+function startAutoSync(): void {
+  const run = () => {
+    const sync = state?.sync;
+    if (!sync?.link || sync.syncing || Date.now() - lastMockSyncEnd < AUTO_SYNC_INTERVAL_MS) return;
+    void mockSyncFolder().catch(() => undefined);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") run();
+  });
+  // At start, while the page boots (as on the phone, its first event may come
+  // before the page listens).
+  window.setTimeout(run, 0);
 }
 
 function requestPairing(clientName = "Microsoft Edge – DESKTOP-4F2K9"): PairingRequest {
@@ -1146,6 +1180,7 @@ async function mockSyncFolder(): Promise<FolderStatus> {
   emitSyncStatus();
   await sleep(900);
   sync.syncing = false;
+  lastMockSyncEnd = Date.now();
   if (sync.lost) {
     sync.lastError = "unsupported:folder_access_lost";
     emitSyncStatus();

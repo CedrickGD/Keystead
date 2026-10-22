@@ -22,11 +22,16 @@
 //!   thread. One prompt at a time.
 //! * The prompt is an activity of its own: while it is open the main
 //!   activity is paused, which the monitor does not take for the user
-//!   leaving the app ([`Core::begin_own_prompt`]).
+//!   leaving the app (`Core::begin_own_prompt`).
+//! * The plugin's `BiometricActivity` keeps the text of its last cipher
+//!   operation in a static field (`encryptDecryptData`, never cleared) –
+//!   after a setup that is the plaintext KEK, reachable for the whole
+//!   process lifetime, also after the vault locked. So every encryption is
+//!   followed by a decryption of malformed data, which overwrites that
+//!   field and fails before any prompt is shown (`PluginKeystore::scrub`).
 
-use std::sync::Mutex;
 #[cfg(target_os = "android")]
-use std::sync::TryLockError;
+use std::sync::{Mutex, TryLockError};
 
 use keystead_core::model::VaultInfo;
 use tauri::AppHandle;
@@ -39,7 +44,14 @@ use crate::device_unlock::{
 use crate::state::Core;
 
 /// Held while a prompt is open (one at a time).
+#[cfg(target_os = "android")]
 static PROMPT: Mutex<()> = Mutex::new(());
+
+/// What the plugin's activity is asked to decrypt to overwrite its static
+/// copy of the last plaintext: not of the form `data;iv`, so the activity
+/// fails while it sets up the cipher – before the prompt.
+#[cfg(target_os = "android")]
+const SCRUB_DATA: &str = "x";
 
 /// The Android Keystore through the biometric plugin.
 struct PluginKeystore<'a> {
@@ -80,11 +92,56 @@ impl PluginKeystore<'_> {
             ..AuthOptions::default()
         };
         let _prompt_open = self.core.begin_own_prompt();
-        self.app
+        let result = self
+            .app
             .biometric()
             .biometric_cipher(prompt.reason.clone(), options)
             .map(|result| result.data)
-            .map_err(|e| keystore_error(e, opening))
+            .map_err(|e| keystore_error(e, opening));
+        if !opening {
+            // Also after a cancelled or failed prompt: the activity took the
+            // text before it showed one.
+            self.scrub(prompt);
+        }
+        result
+    }
+
+    /// Makes the plugin's activity overwrite its static copy of the text it
+    /// encrypted last (see the module docs): a decryption of
+    /// [`SCRUB_DATA`], which fails in the activity's `getCipher()` ("Failed
+    /// to initialize the cipher") before any prompt is shown. Call with the
+    /// prompt lock and the own-prompt guard held (the transparent activity
+    /// still pauses the main one for a moment). Best effort: logged if the
+    /// answer is not the expected failure.
+    fn scrub(&self, prompt: &Prompt) {
+        use tauri::plugin::mobile::PluginInvokeError;
+        use tauri_plugin_biometric::{AuthOptions, BiometricExt as _};
+
+        let options = AuthOptions {
+            allow_device_credential: false,
+            title: Some(prompt.title.clone()),
+            cancel_title: Some(prompt.cancel.clone()),
+            data_to_decrypt: Some(SCRUB_DATA.to_owned()),
+            ..AuthOptions::default()
+        };
+        match self
+            .app
+            .biometric()
+            .biometric_cipher(prompt.reason.clone(), options)
+        {
+            Err(tauri_plugin_biometric::Error::PluginInvoke(
+                PluginInvokeError::InvokeRejected(rejected),
+            )) if rejected
+                .message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Failed to initialize the cipher")) => {}
+            Err(e) => crate::state::log(format_args!(
+                "fingerprint unlock: the plugin's copy of the key may not be cleared: {e}"
+            )),
+            Ok(_) => crate::state::log(
+                "fingerprint unlock: the plugin's copy of the key may not be cleared",
+            ),
+        }
     }
 }
 

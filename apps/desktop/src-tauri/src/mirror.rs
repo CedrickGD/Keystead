@@ -28,14 +28,20 @@
 //!   reads the vault file first and its blob folder afterwards, so it never
 //!   gets a revision without the blobs it references.
 //! * Revisions: the folder's copy is replaced by a higher revision only.
-//!   An equal one is left alone (no needless upload); a higher one in the
-//!   folder (another PC, a restored backup here) is never overwritten:
-//!   `unsupported:mirror_newer`.
+//!   The same write (equal bytes) is left alone (no needless upload); a
+//!   higher revision in the folder (another PC, a restored backup here) is
+//!   never overwritten: `unsupported:mirror_newer`, nor is another write of
+//!   the same revision: `unsupported:mirror_diverged`. Except a copy the
+//!   open vault's keys prove forged or damaged (`UnlockedVault::check_copy`
+//!   – e.g. a revision raised by hand): it is replaced. The folder's copy is
+//!   untrusted input – one above `sync::VAULT_FILE_MAX_BYTES` is replaced
+//!   without being read.
 //! * Errors (folder missing – a cloud drive not mounted –, no permission,
 //!   a full disk) never block saving: the passes run on a thread of their
 //!   own; an error is logged once per distinct code and announced as
 //!   `mirror://status` (the UI shows a toast once per new error), the next
-//!   change tries again.
+//!   change tries again – a failed removal of a deleted vault's copy too
+//!   (kept until it succeeds, while the app runs).
 //! * A folder inside the data directory, or one that looks like a
 //!   Keystead vaults folder, is refused – when it is set
 //!   ([`check_setting`]) and before every pass.
@@ -52,6 +58,8 @@ use std::time::{Duration, Instant};
 use keystead_core::format::{self, VaultFile, VAULT_EXTENSION};
 use keystead_core::model::now_ms;
 use keystead_core::settings::Settings;
+use keystead_core::sync::VAULT_FILE_MAX_BYTES;
+use keystead_core::vault::CopyCheck;
 use keystead_core::{attachments, paths, sync, Error as CoreError, VaultStore};
 use serde::Serialize;
 
@@ -75,6 +83,9 @@ pub const FOLDER_MISSING: &str = "mirror_folder_missing";
 /// `unsupported:mirror_newer` – the folder holds a newer revision of the
 /// vault; it is not replaced.
 pub const MIRROR_NEWER: &str = "mirror_newer";
+/// `unsupported:mirror_diverged` – the folder holds another write of the
+/// same revision (another PC, a restored backup here); it is not replaced.
+pub const MIRROR_DIVERGED: &str = "mirror_diverged";
 
 /// Largest blob copied: the largest attachment plus the blob's own bytes
 /// (the phone refuses anything larger).
@@ -225,6 +236,33 @@ fn read_blob(path: &Path) -> AppResult<Vec<u8>> {
     Ok(bytes)
 }
 
+/// The folder's copy of a vault file as [`mirror_vault`] sees it.
+enum FolderCopy {
+    Missing,
+    /// Larger than [`VAULT_FILE_MAX_BYTES`] (not read), or not readable.
+    Unusable,
+    Bytes(Vec<u8>),
+}
+
+/// Reads the folder's copy at `path` – untrusted input: one above
+/// [`VAULT_FILE_MAX_BYTES`] is not read (its size says so first, so a cloud
+/// drive's placeholder is not downloaded for it).
+fn read_copy(path: &Path) -> FolderCopy {
+    match fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FolderCopy::Missing,
+        Ok(meta) if meta.is_file() && meta.len() <= VAULT_FILE_MAX_BYTES => {}
+        _ => return FolderCopy::Unusable,
+    }
+    let Ok(file) = fs::File::open(path) else {
+        return FolderCopy::Unusable;
+    };
+    let mut bytes = Vec::new();
+    match file.take(VAULT_FILE_MAX_BYTES + 1).read_to_end(&mut bytes) {
+        Ok(_) if bytes.len() as u64 <= VAULT_FILE_MAX_BYTES => FolderCopy::Bytes(bytes),
+        _ => FolderCopy::Unusable,
+    }
+}
+
 fn file_len(path: &Path) -> Option<u64> {
     fs::metadata(path)
         .ok()
@@ -233,8 +271,15 @@ fn file_len(path: &Path) -> Option<u64> {
 }
 
 /// Copies vault `vault_id` of the data directory `data_dir` into `folder`
-/// (see the module docs for the order and the revision rule).
-pub fn mirror_vault(data_dir: &Path, folder: &Path, vault_id: &str) -> AppResult<Report> {
+/// (see the module docs for the order and the revision rule). `check`
+/// asks the open vault's session about the folder's copy (`None`: that
+/// vault is not open – nothing can be proven).
+pub fn mirror_vault(
+    data_dir: &Path,
+    folder: &Path,
+    vault_id: &str,
+    check: &dyn Fn(&VaultFile) -> Option<CopyCheck>,
+) -> AppResult<Report> {
     let local = VaultStore::new(data_dir).vault_path(vault_id);
     let target = copy_path(folder, vault_id)?;
     // 1. The vault file as it is on disk (saves replace it atomically, so
@@ -256,14 +301,28 @@ pub fn mirror_vault(data_dir: &Path, folder: &Path, vault_id: &str) -> AppResult
     }
     check_folder(folder, data_dir)?;
 
-    let write_vault = match VaultFile::read(&target) {
-        Ok(copy) if copy.id == vault_id && copy.revision > file.revision => {
-            return Err(AppError::unsupported(MIRROR_NEWER));
-        }
-        Ok(copy) if copy.id == vault_id && copy.revision == file.revision => false,
-        // Missing, older, damaged (half a download) or another vault's
-        // file under this vault's name: replaced.
-        _ => true,
+    let write_vault = match read_copy(&target) {
+        FolderCopy::Bytes(copy_bytes) => match VaultFile::parse(&copy_bytes) {
+            Ok(copy) if copy.id == vault_id && copy.revision >= file.revision => {
+                if copy_bytes == bytes {
+                    false
+                } else if check(&copy) == Some(CopyCheck::Forged) {
+                    // Its header was changed by hand (or it is damaged):
+                    // the session's keys show it cannot be genuine.
+                    log("replacing a forged or damaged copy in the cloud folder");
+                    true
+                } else if copy.revision > file.revision {
+                    return Err(AppError::unsupported(MIRROR_NEWER));
+                } else {
+                    return Err(AppError::unsupported(MIRROR_DIVERGED));
+                }
+            }
+            // Older, damaged (half a download) or another vault's file
+            // under this vault's name: replaced.
+            _ => true,
+        },
+        // Missing, too large or unreadable: replaced.
+        FolderCopy::Missing | FolderCopy::Unusable => true,
     };
 
     // 2. The blobs – listed after reading the vault file, so all the ones
@@ -333,8 +392,10 @@ pub fn remove_vault(data_dir: &Path, folder: &Path, vault_id: &str) -> AppResult
         return Ok(false);
     }
     check_folder(folder, data_dir)?;
-    let removed = match VaultFile::read(&target) {
-        Ok(copy) if copy.id == vault_id => {
+    // Only a copy whose header says it is that vault's (one too large to
+    // read is left, like a damaged one).
+    let removed = match read_copy(&target) {
+        FolderCopy::Bytes(bytes) if VaultFile::parse(&bytes).is_ok_and(|c| c.id == vault_id) => {
             fs::remove_file(&target).map_err(|e| io_err(&target, e))?;
             true
         }
@@ -397,6 +458,9 @@ struct Progress {
 pub struct MirrorTracker {
     queue: Mutex<Option<Sender<Job>>>,
     progress: Mutex<Progress>,
+    /// Deleted vaults whose copy could not be removed yet: tried again with
+    /// every pass (while the app runs).
+    failed_removals: Mutex<BTreeSet<String>>,
     /// The worker runs (`spawn`); `shutdown` waits for it.
     running: AtomicBool,
     /// Set by the worker once it has done its last job after `shutdown`.
@@ -540,18 +604,42 @@ pub(crate) fn process(core: &Core, jobs: Vec<Job>) {
     let Some(folder) = folder else {
         return;
     };
+    let tracker = core.mirror();
+    // Removals that failed before come first (the drive is back, the cloud
+    // app let go of the file); the last job per vault wins.
+    let retries: Vec<Job> = lock(&tracker.failed_removals)
+        .iter()
+        .map(|id| Job::Removed(id.clone()))
+        .collect();
     let mut last: Vec<Job> = Vec::new();
-    for job in jobs {
+    for job in retries.into_iter().chain(jobs) {
         last.retain(|j| j.vault_id() != job.vault_id());
         last.push(job);
     }
+    // The open vault's session checks a copy in the folder that would
+    // block the pass (a higher revision, or another write of the same).
+    let check = |copy: &VaultFile| {
+        let st = core.state();
+        st.vault
+            .as_ref()
+            .filter(|vault| vault.id() == copy.id)
+            .map(|vault| vault.check_copy(copy))
+    };
     let (mut ok, mut error) = (false, None);
     for job in &last {
         let result = match job {
-            Job::Vault(id) => {
-                mirror_vault(&data_dir, Path::new(&folder), id).map(|r| r.outcome != Outcome::Gone)
+            Job::Vault(id) => mirror_vault(&data_dir, Path::new(&folder), id, &check)
+                .map(|r| r.outcome != Outcome::Gone),
+            Job::Removed(id) => {
+                let removed = remove_vault(&data_dir, Path::new(&folder), id).map(|_| true);
+                let mut failed = lock(&tracker.failed_removals);
+                if removed.is_ok() {
+                    failed.remove(id);
+                } else {
+                    failed.insert(id.clone());
+                }
+                removed
             }
-            Job::Removed(id) => remove_vault(&data_dir, Path::new(&folder), id).map(|_| true),
         };
         match result {
             Ok(done) => ok |= done,
@@ -560,7 +648,6 @@ pub(crate) fn process(core: &Core, jobs: Vec<Job>) {
             }
         }
     }
-    let tracker = core.mirror();
     if tracker.record(core, &folder, ok, error) {
         core.emit(EVENT_STATUS, tracker.status(core));
     }
@@ -568,13 +655,18 @@ pub(crate) fn process(core: &Core, jobs: Vec<Job>) {
 
 /// `mirrorFolder` was changed (set, replaced or turned off): the status
 /// starts over, and the open vault is copied into the new folder right
-/// away. The copies in a previous folder stay there.
+/// away. The copies in a previous folder stay there; removals that failed
+/// are tried again (in a folder without that copy they have nothing to do).
 pub fn folder_changed(core: &Core) {
     let tracker = core.mirror();
     tracker.reset();
     let open = core.state().vault.as_ref().map(|v| v.id().to_owned());
     if let Some(id) = open {
         tracker.request(Job::Vault(id));
+    }
+    let retries: Vec<String> = lock(&tracker.failed_removals).iter().cloned().collect();
+    for id in retries {
+        tracker.request(Job::Removed(id));
     }
     core.emit(EVENT_STATUS, tracker.status(core));
 }
@@ -614,6 +706,11 @@ mod tests {
 
     fn open_id(core: &Core) -> String {
         core.state().vault.as_ref().unwrap().id().to_owned()
+    }
+
+    /// `mirror_vault`'s check without an open session.
+    fn no_session(_: &VaultFile) -> Option<CopyCheck> {
+        None
     }
 
     fn vault_path(core: &Core) -> PathBuf {
@@ -746,14 +843,18 @@ mod tests {
 
         let target = cloud.join(format!("{id}.keystead"));
         assert_eq!(
-            mirror_vault(&core.data_dir(), &cloud, &id).unwrap().outcome,
+            mirror_vault(&core.data_dir(), &cloud, &id, &no_session)
+                .unwrap()
+                .outcome,
             Outcome::Written
         );
         // The same revision again: left alone (no upload by the cloud app).
         let modified = fs::metadata(&target).unwrap().modified().unwrap();
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(
-            mirror_vault(&core.data_dir(), &cloud, &id).unwrap().outcome,
+            mirror_vault(&core.data_dir(), &cloud, &id, &no_session)
+                .unwrap()
+                .outcome,
             Outcome::UpToDate
         );
         assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), modified);
@@ -953,13 +1054,178 @@ mod tests {
         let bak = sibling(&vault_path(&core), ".bak");
         core.lock(None);
         fs::copy(&bak, vault_path_of(&core, &id)).unwrap();
-        let err = mirror_vault(&core.data_dir(), &cloud, &id).unwrap_err();
+        let err = mirror_vault(&core.data_dir(), &cloud, &id, &no_session).unwrap_err();
         assert_eq!(err.code(), "unsupported:mirror_newer");
         assert_eq!(fs::read(&target).unwrap(), newer);
     }
 
     fn vault_path_of(core: &Core, id: &str) -> PathBuf {
         core.store().vault_path(id)
+    }
+
+    #[test]
+    fn another_write_of_the_same_revision_is_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        note(&core, "eins");
+        note(&core, "zwei");
+        run_queued(&core);
+        let target = cloud.join(format!("{id}.keystead"));
+        let folder_copy = fs::read(&target).unwrap();
+        // Back to the previous revision (a restored backup), then a save of
+        // other content: the same revision number as the folder's copy.
+        let bak = sibling(&vault_path(&core), ".bak");
+        core.lock(None);
+        fs::copy(&bak, vault_path_of(&core, &id)).unwrap();
+        core.unlock(&id, "master").unwrap();
+        run_queued(&core);
+        assert_eq!(
+            core.mirror().status(&core).last_error.as_deref(),
+            Some("unsupported:mirror_newer")
+        );
+        note(&core, "anders");
+        run_queued(&core);
+        assert_eq!(
+            VaultFile::read(&target).unwrap().revision,
+            core.read(|v| v.revision()).unwrap()
+        );
+        assert_eq!(fs::read(&target).unwrap(), folder_copy, "not replaced");
+        assert_eq!(
+            core.mirror().status(&core).last_error.as_deref(),
+            Some("unsupported:mirror_diverged")
+        );
+        // The next save is newer than the folder's copy again.
+        note(&core, "weiter");
+        run_queued(&core);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            fs::read(vault_path(&core)).unwrap()
+        );
+        assert!(core.mirror().status(&core).last_error.is_none());
+    }
+
+    #[test]
+    fn a_copy_the_open_vault_proves_forged_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        note(&core, "eins");
+        run_queued(&core);
+        let target = cloud.join(format!("{id}.keystead"));
+        // Someone with access to the folder raised the revision by hand:
+        // the payload (its AAD binds the revision) no longer authenticates.
+        let mut forged = VaultFile::read(&target).unwrap();
+        forged.revision = u64::MAX;
+        fs::write(&target, forged.to_json().unwrap()).unwrap();
+        // Without the open vault nothing proves it: never overwritten.
+        let err = mirror_vault(&core.data_dir(), &cloud, &id, &no_session).unwrap_err();
+        assert_eq!(err.code(), "unsupported:mirror_newer");
+        // With it, the next save replaces it.
+        note(&core, "zwei");
+        run_queued(&core);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            fs::read(vault_path(&core)).unwrap()
+        );
+        assert!(core.mirror().status(&core).last_error.is_none());
+
+        // A genuinely newer copy (another PC with the same password wrote
+        // it into the folder) is still never replaced.
+        let other_pc = VaultStore::new(dir.path().join("other-pc"));
+        let other_path = other_pc.vault_path(&id);
+        fs::create_dir_all(other_path.parent().unwrap()).unwrap();
+        fs::copy(vault_path(&core), &other_path).unwrap();
+        let mut other = other_pc.unlock(&id, "master").unwrap();
+        other
+            .save_item(VaultItem::new(ItemType::Note, "anderer PC"))
+            .unwrap();
+        let newer = fs::read(other.path()).unwrap();
+        fs::write(&target, &newer).unwrap();
+        assert_eq!(
+            mirror_vault(&core.data_dir(), &cloud, &id, &|copy| {
+                core.read(|v| v.check_copy(copy)).ok()
+            })
+            .unwrap_err()
+            .code(),
+            "unsupported:mirror_newer"
+        );
+        assert_eq!(fs::read(&target).unwrap(), newer);
+    }
+
+    #[test]
+    fn an_oversized_copy_is_replaced_without_being_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        let target = cloud.join(format!("{id}.keystead"));
+        // A sparse file just above the limit (nothing to read on disk).
+        let big = fs::File::create(&target).unwrap();
+        big.set_len(VAULT_FILE_MAX_BYTES + 1).unwrap();
+        drop(big);
+        assert!(matches!(read_copy(&target), FolderCopy::Unusable));
+        assert_eq!(
+            mirror_vault(&core.data_dir(), &cloud, &id, &no_session)
+                .unwrap()
+                .outcome,
+            Outcome::Written
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            fs::read(vault_path(&core)).unwrap()
+        );
+
+        // A deleted vault's oversized copy is left alone (like a damaged one).
+        let other = core
+            .store()
+            .create_vault_with_params("Arbeit", "pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        let other_id = other.id().to_owned();
+        drop(other);
+        core.store().delete_vault(&other_id, "pw").unwrap();
+        let other_target = cloud.join(format!("{other_id}.keystead"));
+        let big = fs::File::create(&other_target).unwrap();
+        big.set_len(VAULT_FILE_MAX_BYTES + 1).unwrap();
+        drop(big);
+        assert!(!remove_vault(&core.data_dir(), &cloud, &other_id).unwrap());
+        assert!(other_target.exists());
+    }
+
+    #[test]
+    fn a_failed_removal_is_tried_again_with_the_next_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        note(&core, "x");
+        run_queued(&core);
+        let copy = cloud.join(format!("{id}.keystead"));
+        assert!(copy.exists());
+        // Another vault keeps the app busy afterwards.
+        let other = core
+            .store()
+            .create_vault_with_params("Arbeit", "pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        let other_id = other.id().to_owned();
+
+        // The drive is gone while the vault is deleted: the removal fails.
+        core.lock(None);
+        core.store().delete_vault(&id, "master").unwrap();
+        let away = dir.path().join("cloud-away");
+        fs::rename(&cloud, &away).unwrap();
+        process(&core, vec![Job::Removed(id.clone())]);
+        assert_eq!(
+            core.mirror().status(&core).last_error.as_deref(),
+            Some("unsupported:mirror_folder_missing")
+        );
+
+        // The drive is back: the next pass – for another vault – removes it.
+        fs::rename(&away, &cloud).unwrap();
+        core.install_vault(other).unwrap();
+        run_queued(&core);
+        assert!(!copy.exists(), "the deleted vault's copy is gone");
+        assert!(cloud.join(format!("{other_id}.keystead")).exists());
+        assert!(core.mirror().status(&core).last_error.is_none());
+        assert!(lock(&core.mirror().failed_removals).is_empty());
     }
 
     #[test]
@@ -978,7 +1244,7 @@ mod tests {
             .unwrap();
         let other_id = other.id().to_owned();
         drop(other);
-        mirror_vault(&core.data_dir(), &cloud, &other_id).unwrap();
+        mirror_vault(&core.data_dir(), &cloud, &other_id, &no_session).unwrap();
         fs::write(cloud.join("Einkaufsliste.txt"), b"Milch").unwrap();
 
         // Not while the vault still exists.

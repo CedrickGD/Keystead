@@ -509,7 +509,8 @@ export type SyncOutcome =
   | "unreadable"
   | "tooLarge"
   | "failed"
-  | "missing";
+  | "missing"
+  | "rejected";
 
 export interface SyncFileResult {
   fileName: string;

@@ -1436,3 +1436,50 @@ fn master_kek_survives_recovery_key_changes_but_not_password_changes() {
         Err(Error::WrongPassword)
     ));
 }
+
+#[test]
+fn check_copy_tells_genuine_forged_and_foreign_copies_apart() {
+    use keystead_core::vault::CopyCheck;
+
+    let (_dir, store) = store();
+    let v = create(&store, "Privat");
+    let id = v.id().to_owned();
+    let read = |store: &VaultStore| VaultFile::read(&store.vault_path(&id)).unwrap();
+    // The session's own file, and a later write of it by another process.
+    assert_eq!(v.check_copy(&read(&store)), CopyCheck::Opens);
+    let mut other = store.unlock(&id, PW).unwrap();
+    other.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let newer = read(&store);
+    assert_eq!(v.check_copy(&newer), CopyCheck::Opens);
+    // A recovery-key change rotates the vault key but keeps the password.
+    other.create_recovery_key().unwrap();
+    assert_eq!(v.check_copy(&read(&store)), CopyCheck::Opens);
+    // Every write has a fresh payload nonce; the session knows its own.
+    assert_eq!(other.payload_nonce(), read(&store).payload.nonce);
+    assert_ne!(newer.payload.nonce, read(&store).payload.nonce);
+
+    // A raised revision (the payload's AAD binds it), a damaged payload, a
+    // damaged key wrapping, another salt with the same wrapping: forged.
+    let mut bumped = read(&store);
+    bumped.revision = u64::MAX;
+    assert_eq!(v.check_copy(&bumped), CopyCheck::Forged);
+    let mut payload = read(&store);
+    payload.payload.ciphertext = b64_encode(&[7u8; 64]);
+    assert_eq!(v.check_copy(&payload), CopyCheck::Forged);
+    let mut wrapping = read(&store);
+    wrapping.wrapped_key.ciphertext = b64_encode(&[7u8; 48]);
+    assert_eq!(v.check_copy(&wrapping), CopyCheck::Forged);
+    let mut salt = read(&store);
+    salt.kdf.salt = b64_encode(&[9u8; 16]);
+    assert_eq!(v.check_copy(&salt), CopyCheck::Forged);
+
+    // A new master password set elsewhere: this session cannot tell.
+    other.change_master_password(PW, "new-pw").unwrap();
+    assert_eq!(v.check_copy(&read(&store)), CopyCheck::OtherPassword);
+    // ... neither for garbage under another salt.
+    let mut garbage = read(&store);
+    garbage.wrapped_key.ciphertext = b64_encode(&[7u8; 48]);
+    assert_eq!(v.check_copy(&garbage), CopyCheck::OtherPassword);
+    // The new session opens its own file again.
+    assert_eq!(other.check_copy(&read(&store)), CopyCheck::Opens);
+}

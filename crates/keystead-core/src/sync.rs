@@ -11,6 +11,12 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::format::{VaultFile, VAULT_EXTENSION};
 
+/// The largest vault file a synced folder may hand over (bytes): 64 MiB.
+/// The cloud folder is untrusted input on both sides – the phone copies no
+/// larger file in, and the PC's mirror reads no larger copy of the folder
+/// (it replaces it without reading it).
+pub const VAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The public header of a vault file: no secrets, readable without the
 /// master password. Two files with the same `id` are copies of one vault;
 /// the higher `revision` is the newer one (`updated_at` is only the wall

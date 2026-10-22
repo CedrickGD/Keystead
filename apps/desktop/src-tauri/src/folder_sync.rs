@@ -16,13 +16,27 @@
 //!   vault is added, a higher revision replaces the phone's copy
 //!   atomically, an equal one changes nothing, a lower one is kept out
 //!   (reported as "the PC's copy is older"; never written back).
+//! * Copies on trial ([`Trial`], `<data>/sync/trial/`): the plain header –
+//!   the revision included – is not authenticated without the keys, so
+//!   anyone who can write the folder could raise it. A copy the sync
+//!   stores is therefore **unconfirmed** until it opens on this phone
+//!   ([`unlock_copy`]; or right away when the open vault's keys check it,
+//!   `UnlockedVault::check_copy`): the copy it replaced is kept until then,
+//!   and its revision – not the unconfirmed one's – is what the folder's
+//!   next copy has to beat. A copy that does not open although its key did
+//!   (forged or damaged) is rejected: the kept copy comes back (or, without
+//!   one, the copy goes) and that write of the folder's file is not taken
+//!   again (`rejected`). The open vault refuses a copy its keys prove forged
+//!   without storing it.
 //! * Attachments: blobs the phone lacks (or whose size differs – a blob
 //!   never changes under its id) are stored **before** the phone's vault
 //!   file is replaced, so a vault that references a new attachment never
 //!   arrives without it. The folder's vault file is read first and its
 //!   blob folder listed afterwards: the PC writes the blobs before the
 //!   vault file, so every blob the copy that was read references is
-//!   already there. Only
+//!   already there (a blob folder missing from the top-level listing, which
+//!   was made before the vault file was read, is looked up again for a copy
+//!   with attachments). Only
 //!   names of the form `<id>.bin` with a blob's shape are taken
 //!   (`attachments::looks_like_blob`; the key is in the vault, so nothing
 //!   is decrypted here). Blobs the vault no longer references are left to
@@ -41,23 +55,28 @@
 //! plugin `KeysteadFolderPlugin` (`mobile::sync`), in the unit tests a
 //! directory. Everything here is platform-neutral and tested on the host.
 
-#![cfg_attr(not(mobile), allow(dead_code))]
+// Only the Android build reaches the sync through the folder plugin; the
+// desktop compiles this module for its unit tests and iOS has no plugin yet.
+#![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use keystead_core::attachments;
 use keystead_core::format::{self, VaultFile};
+use keystead_core::model::VaultInfo;
 use keystead_core::sync::{self, CopyIn, VaultHeader};
-use keystead_core::Error as CoreError;
+use keystead_core::vault::CopyCheck;
+use keystead_core::{Error as CoreError, UnlockedVault, VaultStore};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 use crate::state::{log, Core, LockReason};
 
 /// Largest vault file copied in (bytes): 64 MiB.
-pub const VAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub use keystead_core::sync::VAULT_FILE_MAX_BYTES;
 /// Largest blob: the largest attachment plus the blob's own bytes.
 pub const BLOB_MAX_BYTES: u64 =
     attachments::ATTACHMENT_MAX_BYTES + attachments::BLOB_OVERHEAD as u64;
@@ -68,6 +87,10 @@ pub const BLOB_MAX_BYTES: u64 =
 pub const ACCESS_LOST: &str = "folder_access_lost";
 /// Error code: a file is larger than its limit.
 pub const TOO_LARGE: &str = "sync_file_too_large";
+/// Error code: the phone's copy of a vault did not open although its key
+/// did (forged or damaged), and there was no earlier copy to go back to –
+/// it was removed; the PC's next copy brings the vault again.
+pub const COPY_REJECTED: &str = "sync_copy_rejected";
 
 /// `<data>/sync`.
 pub fn sync_dir(data_dir: &Path) -> PathBuf {
@@ -158,6 +181,10 @@ pub enum Outcome {
     Failed,
     /// Synced before, no longer in the folder: the phone keeps its copy.
     Missing,
+    /// This write of the folder's copy did not open with the vault's keys
+    /// (forged or damaged): not taken again – the phone keeps the last copy
+    /// that opened, if it has one (see [`Trial`]).
+    Rejected,
 }
 
 /// One vault file of the folder and what the last sync did with it.
@@ -446,6 +473,16 @@ fn sync_vault_file(
     if remote.id != id {
         return Ok(FileResult::new(name, Outcome::Misnamed).with_header(&remote));
     }
+    let data_dir = core.data_dir();
+    let remote_version = FileVersion::of(&remote_file);
+    let trial = {
+        let _trial = trial_lock();
+        Trial::load(&data_dir, id)
+    };
+    // This write did not open here before: not again.
+    if trial.rejected.as_ref() == Some(&remote_version) {
+        return Ok(FileResult::new(name, Outcome::Rejected).with_header(&remote));
+    }
 
     let local_path = core.store().vault_path(id);
     let (local_file, damaged) = match VaultFile::read(&local_path) {
@@ -456,7 +493,24 @@ fn sync_vault_file(
         Err(_) => (None, true),
     };
     let local = local_file.as_ref().map(VaultHeader::from);
-    let decision = sync::decide_copy_in(local.as_ref(), &remote);
+    let decision = match (&trial.unconfirmed, &local_file) {
+        // The phone's copy has not opened yet: its revision proves nothing
+        // (anyone who can write the folder could have raised it) – the
+        // folder's copy has to beat the last copy that opened here.
+        (Some(_), Some(file)) if file.id == id => {
+            if FileVersion::of(file) == remote_version {
+                CopyIn::UpToDate
+            } else if trial
+                .kept_revision
+                .is_none_or(|kept| remote.revision > kept)
+            {
+                CopyIn::Update
+            } else {
+                CopyIn::RemoteOlder
+            }
+        }
+        _ => sync::decide_copy_in(local.as_ref(), &remote),
+    };
     let mut result = FileResult::new(
         name,
         match decision {
@@ -474,7 +528,9 @@ fn sync_vault_file(
     }
 
     // Attachments first: the vault file must not arrive before its blobs.
-    let (copied, attachment_failures) = copy_attachments(folder, top, id, &local_path, incoming)?;
+    let with_attachments = remote_file.version >= format::FORMAT_VERSION_ATTACHMENTS;
+    let (copied, attachment_failures) =
+        copy_attachments(folder, top, id, &local_path, incoming, with_attachments)?;
     result.attachments_copied = copied;
     result.attachments_failed = attachment_failures;
 
@@ -483,15 +539,27 @@ fn sync_vault_file(
             result.password_changed = local_file
                 .as_ref()
                 .is_some_and(|local| local.kdf.salt != remote_file.kdf.salt);
-            if let Err(e) = install_copy(core, &local_path, id, &bytes) {
-                log(format_args!("could not store the vault copy: {}", e.code()));
-                result.outcome = Outcome::Failed;
-                result.error = Some(e.code());
-                result.password_changed = false;
-            } else {
-                // A new master password (another salt): the fingerprint
-                // unlock's sealed KEK opens nothing any more.
-                crate::device_unlock::forget_if_stale(&core.data_dir(), id, &remote_file.kdf.salt);
+            match install_copy(core, &local_path, id, &bytes, &remote_file) {
+                Ok(Stored::Yes) => {
+                    // A new master password (another salt): the fingerprint
+                    // unlock's sealed KEK opens nothing any more. Not for a
+                    // copy on trial – its salt is unproven until it opens
+                    // (`confirm` decides then).
+                    if !on_trial(&data_dir, id) {
+                        crate::device_unlock::forget_if_stale(&data_dir, id, &remote_file.kdf.salt);
+                    }
+                }
+                Ok(Stored::Rejected) => {
+                    log("a synced vault copy is forged or damaged: not taken");
+                    result.outcome = Outcome::Rejected;
+                    result.password_changed = false;
+                }
+                Err(e) => {
+                    log(format_args!("could not store the vault copy: {}", e.code()));
+                    result.outcome = Outcome::Failed;
+                    result.error = Some(e.code());
+                    result.password_changed = false;
+                }
             }
         }
         // Still the revision whose new password the last sync reported.
@@ -533,20 +601,39 @@ fn fetch(
 }
 
 /// Copies the blobs of `<id>.keystead.attachments` in the folder that the
-/// phone lacks. Returns (copied, failed); only a folder that cannot be read
-/// any more is an error.
+/// phone lacks. `top` is the folder's top level as listed before the vault
+/// file was read; `with_attachments`: the copy that was read references
+/// attachments (format version 2). Returns (copied, failed); only a folder
+/// that cannot be read any more is an error.
 fn copy_attachments(
     folder: &dyn RemoteFolder,
     top: &[RemoteEntry],
     id: &str,
     vault_path: &Path,
     incoming: &Path,
+    with_attachments: bool,
 ) -> AppResult<(u32, u32)> {
     let dir_name = format!("{id}.keystead{}", attachments::DIR_SUFFIX);
-    let Some(remote_dir) = top.iter().find(|e| e.dir && e.name == dir_name) else {
-        return Ok((0, 0));
+    let listed = top.iter().find(|e| e.dir && e.name == dir_name).cloned();
+    let remote_dir = match listed {
+        Some(dir) => dir,
+        // The blob folder may be newer than that listing (the PC added the
+        // vault's first attachment meanwhile – it writes the blobs before
+        // the vault file): a copy with attachments looks again.
+        None if with_attachments => match folder.list(None) {
+            Ok(fresh) => match fresh.into_iter().find(|e| e.dir && e.name == dir_name) {
+                Some(dir) => dir,
+                None => return Ok((0, 0)),
+            },
+            Err(e) if is_access_lost(&e) => return Err(e),
+            Err(e) => {
+                log(format_args!("could not list the folder: {}", e.code()));
+                return Ok((0, 1));
+            }
+        },
+        None => return Ok((0, 0)),
     };
-    let entries = match folder.list(Some(remote_dir)) {
+    let entries = match folder.list(Some(&remote_dir)) {
         Ok(entries) => entries,
         Err(e) if is_access_lost(&e) => return Err(e),
         Err(e) => {
@@ -592,13 +679,52 @@ fn copy_attachments(
     Ok((copied, failures))
 }
 
+/// What [`install_copy`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    Yes,
+    /// The open vault's keys prove the copy forged or damaged: nothing was
+    /// written, the write is remembered as rejected.
+    Rejected,
+}
+
 /// Replaces the phone's copy of vault `id` with `bytes` (already
-/// validated). If that vault is open, it is reloaded under the same state
+/// validated; `remote` is their header). If that vault is open, its keys
+/// check the copy first ([`UnlockedVault::check_copy`]): a forged one is
+/// refused, a genuine one is stored confirmed, one of another master
+/// password unconfirmed; then the vault is reloaded under the same state
 /// lock: the UI gets `vault://changed`; a new master password closes it
-/// with reason `keyChanged`.
-fn install_copy(core: &Core, path: &Path, id: &str, bytes: &[u8]) -> AppResult<()> {
+/// with reason `keyChanged`. Without the open vault the copy is stored
+/// unconfirmed, the copy that opened before kept ([`Trial`]).
+fn install_copy(
+    core: &Core,
+    path: &Path,
+    id: &str,
+    bytes: &[u8],
+    remote: &VaultFile,
+) -> AppResult<Stored> {
+    let data_dir = core.data_dir();
     let (changed, closed) = {
         let mut st = core.state();
+        let _trial = trial_lock();
+        // An unlock may have rejected this very write since the sync looked.
+        if Trial::load(&data_dir, id).rejected == Some(FileVersion::of(remote)) {
+            return Ok(Stored::Rejected);
+        }
+        let check = st
+            .vault
+            .as_ref()
+            .filter(|vault| vault.id() == id)
+            .map(|vault| vault.check_copy(remote));
+        match check {
+            Some(CopyCheck::Forged) => {
+                remember_rejected(&data_dir, id, FileVersion::of(remote));
+                return Ok(Stored::Rejected);
+            }
+            // Genuine: nothing to keep, nothing on trial.
+            Some(CopyCheck::Opens) => Trial::default().save(&data_dir, id)?,
+            Some(CopyCheck::OtherPassword) | None => begin_trial(&data_dir, id, path, remote)?,
+        }
         format::write_atomic(path, bytes, false)?;
         let reload = match st.vault.as_mut() {
             Some(vault) if vault.id() == id => {
@@ -635,7 +761,366 @@ fn install_copy(core: &Core, path: &Path, id: &str, bytes: &[u8]) -> AppResult<(
     if changed {
         core.emit_changed();
     }
-    Ok(())
+    Ok(Stored::Yes)
+}
+
+// ---------------------------------------------------------------------------
+// Copies on trial (`<data>/sync/trial`)
+// ---------------------------------------------------------------------------
+
+/// One write of a vault file, from its plain header: the revision and the
+/// payload's nonce (every write draws a fresh one). Not secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVersion {
+    pub revision: u64,
+    pub nonce: String,
+}
+
+impl FileVersion {
+    fn of(file: &VaultFile) -> Self {
+        FileVersion {
+            revision: file.revision,
+            nonce: file.payload.nonce.clone(),
+        }
+    }
+
+    fn of_session(vault: &UnlockedVault) -> Self {
+        FileVersion {
+            revision: vault.revision(),
+            nonce: vault.payload_nonce().to_owned(),
+        }
+    }
+}
+
+/// What the phone remembers about its copy of one vault beyond the file
+/// itself (`<data>/sync/trial/<id>.json`, camelCase, no secrets; removed
+/// once there is nothing to remember). A copy the sync stores is
+/// **unconfirmed** until it opens on this phone: the folder's plain header
+/// – the revision included – is not authenticated without the keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Trial {
+    /// The copy in `vaults/` came from the folder and has not opened here
+    /// yet: this write of it.
+    #[serde(default)]
+    unconfirmed: Option<FileVersion>,
+    /// While `unconfirmed`: the revision of the copy it replaced – the last
+    /// one that opened here (or was there before), kept beside this file as
+    /// `<id>.keystead`. `None`: there was none (a new vault, a damaged
+    /// copy).
+    #[serde(default)]
+    kept_revision: Option<u64>,
+    /// A write of the folder's copy that did not open with the vault's keys
+    /// (forged or damaged): not taken again.
+    #[serde(default)]
+    rejected: Option<FileVersion>,
+}
+
+/// Held while a trial file and the vault files it describes change. Taken
+/// after the state lock, never the other way round.
+static TRIAL: Mutex<()> = Mutex::new(());
+
+fn trial_lock() -> MutexGuard<'static, ()> {
+    TRIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn trial_dir(data_dir: &Path) -> PathBuf {
+    sync_dir(data_dir).join("trial")
+}
+
+fn trial_path(data_dir: &Path, id: &str) -> PathBuf {
+    trial_dir(data_dir).join(format!("{id}.json"))
+}
+
+fn kept_path(data_dir: &Path, id: &str) -> PathBuf {
+    trial_dir(data_dir).join(format!("{id}.{}", format::VAULT_EXTENSION))
+}
+
+/// A vault id as the app names its vault files – nothing else becomes a
+/// file name here (the unlock's id comes from the page).
+fn valid_id(id: &str) -> bool {
+    sync::vault_id_of_file_name(&format!("{id}.{}", format::VAULT_EXTENSION)) == Some(id)
+}
+
+fn remove_if_present(path: &Path) -> AppResult<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+impl Trial {
+    /// Read leniently: none, or one that cannot be read, remembers nothing.
+    fn load(data_dir: &Path, id: &str) -> Trial {
+        match fs::read(trial_path(data_dir, id)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                log(format_args!("a sync trial record is unreadable: {e}"));
+                Trial::default()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Trial::default(),
+            Err(e) => {
+                log(format_args!("could not read a sync trial record: {e}"));
+                Trial::default()
+            }
+        }
+    }
+
+    /// Writes it atomically – or, with nothing to remember, removes it; the
+    /// kept copy goes once nothing refers to it.
+    fn save(&self, data_dir: &Path, id: &str) -> AppResult<()> {
+        if self.kept_revision.is_none() {
+            remove_if_present(&kept_path(data_dir, id))?;
+        }
+        if *self == Trial::default() {
+            return remove_if_present(&trial_path(data_dir, id));
+        }
+        fs::create_dir_all(trial_dir(data_dir))?;
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(CoreError::from)?;
+        bytes.push(b'\n');
+        format::write_atomic(&trial_path(data_dir, id), &bytes, false)?;
+        Ok(())
+    }
+}
+
+/// Before the sync replaces the phone's copy of `id` at `path` with the
+/// folder's copy `incoming` (unconfirmed): a confirmed copy in place is
+/// kept, so an unlock can go back to it; an unconfirmed one is just
+/// replaced (the copy kept before it stays). Call with the trial lock.
+fn begin_trial(data_dir: &Path, id: &str, path: &Path, incoming: &VaultFile) -> AppResult<()> {
+    let mut trial = Trial::load(data_dir, id);
+    if trial.unconfirmed.is_none() {
+        let current = match fs::read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        trial.kept_revision = match current.and_then(|bytes| {
+            let file = VaultFile::parse(&bytes).ok().filter(|f| f.id == id)?;
+            Some((file.revision, bytes))
+        }) {
+            Some((revision, bytes)) => {
+                fs::create_dir_all(trial_dir(data_dir))?;
+                format::write_atomic(&kept_path(data_dir, id), &bytes, false)?;
+                Some(revision)
+            }
+            // A damaged copy is nothing to go back to.
+            None => None,
+        };
+    }
+    trial.unconfirmed = Some(FileVersion::of(incoming));
+    trial.rejected = None;
+    trial.save(data_dir, id)
+}
+
+/// Remembers `version` of the folder's copy of `id` as rejected (best
+/// effort). Call with the trial lock.
+fn remember_rejected(data_dir: &Path, id: &str, version: FileVersion) {
+    let mut trial = Trial::load(data_dir, id);
+    trial.rejected = Some(version);
+    if let Err(e) = trial.save(data_dir, id) {
+        log(format_args!(
+            "could not remember a rejected copy: {}",
+            e.code()
+        ));
+    }
+}
+
+/// Whether the phone's copy of vault `id` came from the folder and has not
+/// opened here yet: its header (the salt included) is unproven, so the
+/// fingerprint unlock's setup is not judged by it.
+pub fn on_trial(data_dir: &Path, id: &str) -> bool {
+    if !valid_id(id) {
+        return false;
+    }
+    let _trial = trial_lock();
+    Trial::load(data_dir, id).unconfirmed.is_some()
+}
+
+/// Vault `id` opened on this phone as `opened` (with KDF salt `salt`): if
+/// that is its unconfirmed copy, it is confirmed and the kept copy goes
+/// (best effort) – and a fingerprint setup for another salt is stale now.
+/// Another write (a sync stored a newer copy meanwhile) stays on trial.
+fn confirm(data_dir: &Path, id: &str, opened: &FileVersion, salt: &str) {
+    if !valid_id(id) {
+        return;
+    }
+    {
+        let _trial = trial_lock();
+        let mut trial = Trial::load(data_dir, id);
+        if trial.unconfirmed.as_ref() != Some(opened) {
+            return;
+        }
+        trial.unconfirmed = None;
+        trial.kept_revision = None;
+        if let Err(e) = trial.save(data_dir, id) {
+            log(format_args!(
+                "could not confirm a synced copy: {}",
+                e.code()
+            ));
+        }
+    }
+    crate::device_unlock::forget_if_stale(data_dir, id, salt);
+}
+
+/// An unlock of vault `id` with `open` failed with `wrong_password`. If the
+/// phone's copy is on trial, has the same KDF salt and parameters as the
+/// kept copy, and `open` opens the kept copy, the same key must have opened
+/// the copy on trial: its key wrapping is forged (or damaged). The kept
+/// copy is opened from a scratch store (`<data>/sync/probe`, removed
+/// again) and dropped at once.
+fn kept_copy_opens(
+    core: &Core,
+    id: &str,
+    open: &impl Fn(&VaultStore) -> Result<UnlockedVault, CoreError>,
+) -> bool {
+    if !valid_id(id) {
+        return false;
+    }
+    let data_dir = core.data_dir();
+    let probe = sync_dir(&data_dir).join("probe");
+    let staged = {
+        let _trial = trial_lock();
+        let trial = Trial::load(&data_dir, id);
+        let (Some(unconfirmed), Some(_)) = (trial.unconfirmed, trial.kept_revision) else {
+            return false;
+        };
+        let Ok(current) = VaultFile::read(&core.store().vault_path(id)) else {
+            return false;
+        };
+        let Ok(kept_bytes) = fs::read(kept_path(&data_dir, id)) else {
+            return false;
+        };
+        let Ok(kept) = VaultFile::parse(&kept_bytes) else {
+            return false;
+        };
+        if FileVersion::of(&current) != unconfirmed
+            || kept.id != id
+            || kept.kdf.salt != current.kdf.salt
+            || kept.kdf_params() != current.kdf_params()
+        {
+            return false;
+        }
+        let store = VaultStore::new(&probe);
+        fs::create_dir_all(store.vaults_dir())
+            .and_then(|()| fs::write(store.vault_path(id), &kept_bytes))
+            .is_ok()
+    };
+    let opens = staged && open(&VaultStore::new(&probe)).is_ok();
+    if let Err(e) = fs::remove_dir_all(&probe) {
+        log(format_args!("could not remove the sync probe: {e}"));
+    }
+    opens
+}
+
+/// What [`reject_unconfirmed`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// The copy that failed is not one on trial (or changed meanwhile).
+    NotOnTrial,
+    /// The kept copy is back in place.
+    Restored,
+    /// There was no copy to go back to: the failed one was removed.
+    Removed,
+}
+
+/// An unlock of vault `id` failed with `corrupt` – its key opened, its
+/// payload did not (or the file is damaged) – or with a key wrapping
+/// [`kept_copy_opens`] proved forged. If that is the unconfirmed
+/// copy, it is rejected (never taken again) and the kept copy put back, or
+/// – with none – removed.
+fn reject_unconfirmed(core: &Core, id: &str) -> AppResult<Fallback> {
+    if !valid_id(id) {
+        return Ok(Fallback::NotOnTrial);
+    }
+    let data_dir = core.data_dir();
+    let path = core.store().vault_path(id);
+    // Under the state lock: no sync stores a copy meanwhile.
+    let st = core.state();
+    if st.vault.as_ref().is_some_and(|vault| vault.id() == id) {
+        return Ok(Fallback::NotOnTrial);
+    }
+    let _trial = trial_lock();
+    let mut trial = Trial::load(&data_dir, id);
+    let Some(version) = trial.unconfirmed.clone() else {
+        return Ok(Fallback::NotOnTrial);
+    };
+    // Still that copy? (A sync may have stored a newer one since the
+    // unlock read it.)
+    if let Ok(file) = VaultFile::read(&path) {
+        if FileVersion::of(&file) != version {
+            return Ok(Fallback::NotOnTrial);
+        }
+    }
+    let kept = trial
+        .kept_revision
+        .and_then(|_| fs::read(kept_path(&data_dir, id)).ok());
+    let fallback = match kept {
+        Some(bytes) => {
+            format::write_atomic(&path, &bytes, false)?;
+            Fallback::Restored
+        }
+        None => {
+            remove_if_present(&path)?;
+            Fallback::Removed
+        }
+    };
+    trial.unconfirmed = None;
+    trial.kept_revision = None;
+    trial.rejected = Some(version);
+    trial.save(&data_dir, id)?;
+    Ok(fallback)
+}
+
+/// Unlocks vault `vault_id` on the phone and makes it the open vault
+/// (`Core::install_vault_since`; a lock meanwhile wins) – `open` is the
+/// master password's or the fingerprint's way to open it from the store,
+/// called once more after a fallback. A copy on trial that opens is
+/// confirmed. One that does not although its key opened (`corrupt`: forged
+/// or damaged), or whose key wrapping the kept copy proves forged
+/// ([`kept_copy_opens`]: same salt, and the kept copy opens), is rejected:
+/// the copy it replaced is put back and opened instead, or – without one –
+/// it is removed (`unsupported:sync_copy_rejected`).
+pub fn unlock_copy(
+    core: &Core,
+    vault_id: &str,
+    open: impl Fn(&VaultStore) -> Result<UnlockedVault, CoreError>,
+) -> AppResult<VaultInfo> {
+    let (epoch, store) = core.unlock_ticket();
+    let vault = match open(&store) {
+        Ok(vault) => vault,
+        Err(e) => {
+            let forged = match &e {
+                CoreError::Corrupt(_) => true,
+                CoreError::WrongPassword => kept_copy_opens(core, vault_id, &open),
+                _ => false,
+            };
+            if !forged {
+                return Err(e.into());
+            }
+            match reject_unconfirmed(core, vault_id)? {
+                Fallback::Restored => {
+                    log("a synced vault copy did not open: the previous copy is back");
+                    open(&store)?
+                }
+                Fallback::Removed => {
+                    log("a synced vault copy did not open and was removed");
+                    return Err(AppError::unsupported(COPY_REJECTED));
+                }
+                Fallback::NotOnTrial => return Err(e.into()),
+            }
+        }
+    };
+    confirm(
+        &core.data_dir(),
+        vault_id,
+        &FileVersion::of_session(&vault),
+        vault.kdf_salt(),
+    );
+    core.install_vault_since(vault, epoch)
 }
 
 // ---------------------------------------------------------------------------
@@ -656,13 +1141,15 @@ mod tests {
 
     /// A folder on disk standing in for the cloud folder; records the
     /// order of the copies and whether the phone's file `probe` existed at
-    /// each.
+    /// each. `after_list` runs once, right after the first top-level
+    /// listing (the PC writing meanwhile).
     struct DirFolder {
         root: PathBuf,
         copies: RefCell<Vec<String>>,
         probe: Option<PathBuf>,
         probed: RefCell<Vec<bool>>,
         lost: bool,
+        after_list: RefCell<Option<Box<dyn FnOnce()>>>,
     }
 
     impl DirFolder {
@@ -674,6 +1161,7 @@ mod tests {
                 probe: None,
                 probed: RefCell::new(Vec::new()),
                 lost: false,
+                after_list: RefCell::new(None),
             }
         }
     }
@@ -694,6 +1182,11 @@ mod tests {
                     dir: meta.is_dir(),
                     size: meta.is_file().then_some(meta.len()),
                 });
+            }
+            if parent.is_none() {
+                if let Some(hook) = self.after_list.borrow_mut().take() {
+                    hook();
+                }
             }
             Ok(out)
         }
@@ -740,19 +1233,38 @@ mod tests {
 
         /// Copies the vault file and its blobs into the folder.
         fn mirror(&self, v: &UnlockedVault) {
-            fs::create_dir_all(&self.folder).unwrap();
-            let file_name = v.path().file_name().unwrap().to_owned();
-            let blobs = attachments::dir_for(v.path());
-            if blobs.is_dir() {
-                let target = self.folder.join(blobs.file_name().unwrap());
-                fs::create_dir_all(&target).unwrap();
-                for blob in fs::read_dir(&blobs).unwrap() {
-                    let blob = blob.unwrap();
-                    fs::copy(blob.path(), target.join(blob.file_name())).unwrap();
-                }
-            }
-            fs::copy(v.path(), self.folder.join(file_name)).unwrap();
+            mirror_files(v.path(), &self.folder);
         }
+    }
+
+    /// The vault file at `vault` and its blobs into `folder` (blobs first).
+    fn mirror_files(vault: &Path, folder: &Path) {
+        fs::create_dir_all(folder).unwrap();
+        let file_name = vault.file_name().unwrap().to_owned();
+        let blobs = attachments::dir_for(vault);
+        if blobs.is_dir() {
+            let target = folder.join(blobs.file_name().unwrap());
+            fs::create_dir_all(&target).unwrap();
+            for blob in fs::read_dir(&blobs).unwrap() {
+                let blob = blob.unwrap();
+                fs::copy(blob.path(), target.join(blob.file_name())).unwrap();
+            }
+        }
+        fs::copy(vault, folder.join(file_name)).unwrap();
+    }
+
+    /// The phone's unlock with the PC's master password.
+    fn open_on_phone(core: &Core, id: &str) -> AppResult<VaultInfo> {
+        unlock_copy(core, id, |s| s.unlock(id, "pc-pw"))
+    }
+
+    /// Someone with write access to the folder raises the revision of `v`'s
+    /// copy there (the rest stays the real file).
+    fn forge(pc: &Pc, v: &UnlockedVault, revision: u64) {
+        let target = pc.folder.join(v.path().file_name().unwrap());
+        let mut file = VaultFile::read(&target).unwrap();
+        file.revision = revision;
+        fs::write(&target, file.to_json().unwrap()).unwrap();
     }
 
     fn phone(dir: &Path) -> Arc<Core> {
@@ -928,6 +1440,10 @@ mod tests {
         assert_eq!(fs::read(&local).unwrap(), newest);
         let bak = PathBuf::from(format!("{}.bak", local.display()));
         assert!(!bak.exists(), "no backup of an old copy");
+        // It opens on the phone: from now on its revision counts (a copy
+        // that never opened here proves nothing, see `Trial`).
+        open_on_phone(&core, v.id()).unwrap();
+        core.lock(None);
 
         // The folder goes back to revision 1 (a restored backup on the PC):
         // the phone keeps revision 3 and says so.
@@ -963,7 +1479,10 @@ mod tests {
         let core = phone(dir.path());
         let mut link = link();
         sync_folder(&core, &folder, &mut link, 1).unwrap();
-        core.unlock(v.id(), "pc-pw").unwrap();
+        let vault_id = v.id().to_owned();
+        let unlock =
+            |password: &str| unlock_copy(&core, &vault_id, |s| s.unlock(&vault_id, password));
+        unlock("pc-pw").unwrap();
         // Fingerprint unlock set up on the phone (its sealed KEK belongs
         // to this salt).
         let fingerprint = crate::device_unlock::Blob {
@@ -974,7 +1493,6 @@ mod tests {
             created_at: 1,
         };
         crate::device_unlock::store_blob(&core.data_dir(), &fingerprint).unwrap();
-        let vault_id = v.id().to_owned();
         let fingerprint_set_up = || {
             crate::device_unlock::load_blob(&core.data_dir(), &vault_id)
                 .unwrap()
@@ -1009,13 +1527,23 @@ mod tests {
         let result = outcome_of(&link, v.id());
         assert_eq!(result.outcome, Outcome::Updated);
         assert!(result.password_changed);
-        // The fingerprint's KEK opens nothing any more: reset.
-        assert!(!fingerprint_set_up());
-        assert_eq!(
-            core.unlock(v.id(), "pc-pw").unwrap_err().code(),
-            "wrong_password"
+        // Its keys could not check it (another master password): on trial
+        // until the new password opens it, the copy before it kept – and
+        // until then its salt proves nothing: the fingerprint setup stays.
+        assert!(kept_path(&core.data_dir(), &vault_id).is_file());
+        assert!(fingerprint_set_up());
+        assert_eq!(unlock("pc-pw").unwrap_err().code(), "wrong_password");
+        assert!(kept_path(&core.data_dir(), &vault_id).is_file());
+        assert!(fingerprint_set_up());
+        unlock("neu").unwrap();
+        assert!(
+            !trial_path(&core.data_dir(), &vault_id).exists(),
+            "confirmed"
         );
-        core.unlock(v.id(), "neu").unwrap();
+        assert!(!kept_path(&core.data_dir(), &vault_id).exists());
+        // Now the new password is proven: the fingerprint's KEK opens
+        // nothing any more – reset.
+        assert!(!fingerprint_set_up());
 
         // The flag stays while that revision is the newest ...
         sync_folder(&core, &folder, &mut link, 4).unwrap();
@@ -1240,5 +1768,242 @@ mod tests {
         assert_eq!(link.last_error, None);
         assert_eq!(FolderStatus::of(Some(&link)).last_sync_at, Some(4));
         assert!(!FolderStatus::of(None).linked);
+    }
+
+    #[test]
+    fn a_forged_copy_never_replaces_the_last_copy_that_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let mut v = pc.create("Privat");
+        note(&mut v, "eins");
+        pc.mirror(&v);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+        open_on_phone(&core, v.id()).unwrap();
+        let kek = core.read(|o| o.master_kek()).unwrap();
+        core.lock(None);
+        let data_dir = core.data_dir();
+        let local = core.store().vault_path(v.id());
+        let good = fs::read(&local).unwrap();
+
+        // A raised revision: stored, but on trial – the copy before it kept.
+        forge(&pc, &v, u64::MAX);
+        sync_folder(&core, &folder, &mut link, 2).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Updated);
+        assert_ne!(fs::read(&local).unwrap(), good);
+        assert_eq!(fs::read(kept_path(&data_dir, v.id())).unwrap(), good);
+
+        // The unlock (here the fingerprint's KEK) finds it broken and opens
+        // the copy before it instead.
+        let id = v.id().to_owned();
+        let info = unlock_copy(&core, &id, |s| s.unlock_with_master_kek(&id, &kek)).unwrap();
+        assert_eq!(info.id, id);
+        assert_eq!(
+            core.read(|o| (o.revision(), o.items().len())).unwrap(),
+            (v.revision(), 1)
+        );
+        assert_eq!(fs::read(&local).unwrap(), good);
+        assert!(!kept_path(&data_dir, &id).exists());
+        core.lock(None);
+
+        // That write is never taken again ...
+        sync_folder(&core, &folder, &mut link, 3).unwrap();
+        assert_eq!(outcome_of(&link, &id).outcome, Outcome::Rejected);
+        assert_eq!(fs::read(&local).unwrap(), good);
+        // ... and the PC's next genuine revision – far below the forged one
+        // – still arrives.
+        note(&mut v, "zwei");
+        pc.mirror(&v);
+        sync_folder(&core, &folder, &mut link, 4).unwrap();
+        assert_eq!(outcome_of(&link, &id).outcome, Outcome::Updated);
+        open_on_phone(&core, &id).unwrap();
+        assert_eq!(core.read(|o| o.items().len()).unwrap(), 2);
+        assert!(
+            !trial_path(&data_dir, &id).exists(),
+            "nothing left to remember"
+        );
+    }
+
+    #[test]
+    fn a_forged_key_wrapping_is_proved_by_the_copy_that_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let mut v = pc.create("Privat");
+        note(&mut v, "eins");
+        pc.mirror(&v);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+        open_on_phone(&core, v.id()).unwrap();
+        core.lock(None);
+        let data_dir = core.data_dir();
+        let id = v.id().to_owned();
+        let local = core.store().vault_path(&id);
+        let good = fs::read(&local).unwrap();
+
+        // Same salt, a wrapped key that opens with nothing, a raised
+        // revision: the right password gets `wrong_password` from it.
+        let target = pc.folder.join(v.path().file_name().unwrap());
+        let mut file = VaultFile::read(&target).unwrap();
+        let c = &mut file.wrapped_key.ciphertext;
+        let first = if c.starts_with('A') { "B" } else { "A" };
+        c.replace_range(0..1, first);
+        file.revision = 99;
+        fs::write(&target, file.to_json().unwrap()).unwrap();
+        sync_folder(&core, &folder, &mut link, 2).unwrap();
+        assert_eq!(outcome_of(&link, &id).outcome, Outcome::Updated);
+        assert!(on_trial(&data_dir, &id));
+
+        // A wrong password stays a wrong password; nothing changes.
+        let err = unlock_copy(&core, &id, |s| s.unlock(&id, "falsch")).unwrap_err();
+        assert_eq!(err.code(), "wrong_password");
+        assert!(on_trial(&data_dir, &id));
+        assert!(!sync_dir(&data_dir).join("probe").exists());
+
+        // The right one opens the kept copy: the copy on trial is forged.
+        open_on_phone(&core, &id).unwrap();
+        assert_eq!(
+            core.read(|o| (o.revision(), o.items().len())).unwrap(),
+            (v.revision(), 1)
+        );
+        assert_eq!(fs::read(&local).unwrap(), good);
+        assert!(!on_trial(&data_dir, &id));
+        assert!(!sync_dir(&data_dir).join("probe").exists());
+        core.lock(None);
+        sync_folder(&core, &folder, &mut link, 3).unwrap();
+        assert_eq!(outcome_of(&link, &id).outcome, Outcome::Rejected);
+    }
+
+    #[test]
+    fn an_unconfirmed_copy_does_not_raise_the_revision_the_phone_accepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let mut v = pc.create("Privat");
+        pc.mirror(&v);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+        open_on_phone(&core, v.id()).unwrap();
+        core.lock(None);
+        let data_dir = core.data_dir();
+        let confirmed = fs::read(core.store().vault_path(v.id())).unwrap();
+
+        forge(&pc, &v, 1_000);
+        sync_folder(&core, &folder, &mut link, 2).unwrap();
+        // Before anyone unlocks, the PC saves: revision 2 has to beat the
+        // copy that opened (1), not the forged 1000.
+        note(&mut v, "neu");
+        pc.mirror(&v);
+        sync_folder(&core, &folder, &mut link, 3).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Updated);
+        assert_eq!(
+            fs::read(kept_path(&data_dir, v.id())).unwrap(),
+            confirmed,
+            "still the copy that opened"
+        );
+        // The same write again: nothing to do.
+        sync_folder(&core, &folder, &mut link, 4).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::UpToDate);
+        open_on_phone(&core, v.id()).unwrap();
+        assert_eq!(
+            core.read(|o| (o.revision(), o.items().len())).unwrap(),
+            (2, 1)
+        );
+        assert!(!trial_path(&data_dir, v.id()).exists());
+        assert!(!kept_path(&data_dir, v.id()).exists());
+    }
+
+    #[test]
+    fn the_open_vault_refuses_a_copy_its_keys_prove_forged() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let v = pc.create("Privat");
+        pc.mirror(&v);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+        open_on_phone(&core, v.id()).unwrap();
+        let local = core.store().vault_path(v.id());
+        let before = fs::read(&local).unwrap();
+
+        forge(&pc, &v, 7);
+        for now in [2, 3] {
+            assert!(!sync_folder(&core, &folder, &mut link, now).unwrap());
+            assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Rejected);
+            assert_eq!(fs::read(&local).unwrap(), before, "nothing written");
+        }
+        assert_eq!(core.read(|o| o.revision()).unwrap(), 1, "still open");
+        assert!(core.emitted().is_empty());
+        assert!(!kept_path(&core.data_dir(), v.id()).exists());
+    }
+
+    #[test]
+    fn a_forged_first_copy_is_removed_once_it_fails_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let mut v = pc.create("Privat");
+        pc.mirror(&v);
+        forge(&pc, &v, 50);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Imported);
+
+        // No copy before it to go back to: it goes.
+        let err = open_on_phone(&core, v.id()).unwrap_err();
+        assert_eq!(err.code(), "unsupported:sync_copy_rejected");
+        assert!(core.store().list_vaults().unwrap().is_empty());
+        assert!(core.state().vault.is_none());
+        sync_folder(&core, &folder, &mut link, 2).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Rejected);
+        assert!(core.store().list_vaults().unwrap().is_empty());
+
+        // The PC's next copy brings the vault.
+        note(&mut v, "neu");
+        pc.mirror(&v);
+        sync_folder(&core, &folder, &mut link, 3).unwrap();
+        assert_eq!(outcome_of(&link, v.id()).outcome, Outcome::Imported);
+        open_on_phone(&core, v.id()).unwrap();
+        assert_eq!(core.read(|o| o.items().len()).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_blob_folder_newer_than_the_listing_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = Pc::new(dir.path());
+        let mut v = pc.create("Privat");
+        pc.mirror(&v);
+        let folder = DirFolder::new(&pc.folder);
+        let core = phone(dir.path());
+        let mut link = link();
+        sync_folder(&core, &folder, &mut link, 1).unwrap();
+
+        // The PC adds the vault's first attachment and mirrors it right
+        // after the phone's next sync listed the folder – before it reads
+        // the vault file.
+        let item = v.save_item(VaultItem::new(ItemType::Note, "n")).unwrap();
+        let attachment = v
+            .add_attachment(&item.id, "scan.png", b"\x89PNG scan")
+            .unwrap();
+        let (vault, cloud) = (v.path().to_path_buf(), pc.folder.clone());
+        *folder.after_list.borrow_mut() = Some(Box::new(move || mirror_files(&vault, &cloud)));
+        sync_folder(&core, &folder, &mut link, 2).unwrap();
+        let result = outcome_of(&link, v.id());
+        assert_eq!(result.outcome, Outcome::Updated);
+        assert_eq!(
+            (result.attachments_copied, result.attachments_failed),
+            (1, 0)
+        );
+        let opened = core.store().unlock(v.id(), "pc-pw").unwrap();
+        assert_eq!(
+            &*opened.read_attachment(&attachment.id).unwrap(),
+            b"\x89PNG scan"
+        );
     }
 }
