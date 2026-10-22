@@ -14,7 +14,8 @@ itself; the tests in `generator.rs` pin the sizes.
 - 7776 words, log2(7776) ≈ 12.92 bit per word.
 - © Electronic Frontier Foundation. Licence: Creative Commons Attribution
   (CC BY) – EFF's licence for its original material,
-  <https://www.eff.org/copyright>.
+  <https://www.eff.org/copyright> (the page names CC BY 4.0 International;
+  checked 2026-10-17). Attribution: here and in the README credits.
 
 ## `de_dys2p.txt` – German (`"de"`)
 
@@ -32,7 +33,12 @@ itself; the tests in `generator.rs` pin the sizes.
   attribution is not required but given here and in the README.
 - Upstream properties: modelled on the EFF list; 7776 lowercase ASCII words
   (no ä, ö, ü, ß), mostly well-known nouns, verbs and adjectives in their base
-  form, no proper names, unique from the fifth letter on.
+  form, no proper names, meant to be unique from the fifth letter on
+  (upstream says its rules are followed mostly, not perfectly). Measured on
+  `de_dys2p.txt`: 5 to 19 letters per word; the first five letters tell all
+  words apart except three pairs (gelacht/gelackmeiert,
+  metapher/metaphorisch, scheren/scherzen) – irrelevant for the generator,
+  which always writes whole words.
 - **Keystead's change:** 52 words were removed so that passphrases stay
   family-friendly (vulgar, sexual, violent or Nazi-era terms, slurs and
   stigmatising words). What remains: **7724 words**, log2(7724) ≈ 12.92 bit

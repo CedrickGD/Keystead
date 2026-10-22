@@ -38,7 +38,7 @@ an interface here, change every side.
 | `crates/keystead-tui` | Terminal UI (ratatui + crossterm). Library `keystead_tui::run()` + binary `keystead-cli`. |
 | `apps/desktop` | Tauri 2 app. `src/` = React + TypeScript + Vite frontend, `src-tauri/` = Rust backend (binary name `Keystead`). |
 | `extension/chrome` | Manifest V3 extension, plain JavaScript (no build step, load unpacked). Embedded into the app at build time (`src-tauri/build.rs`). |
-| `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`) and of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`). |
+| `extension/tests` | `node --test` tests of the extension's pure helpers (`lib/version.js`, `lib/pending.js`, `lib/settings.js`, `lib/generator.js`), of the locales (`_locales/de` and `en` have the same keys and placeholders), of the form detection `lib/forms.js` on a small dependency-free fake DOM (`helpers/mini-dom.mjs`) and of the service worker's generator traffic – the real `background.js` on a fake `chrome` (`helpers/fake-chrome.mjs`). |
 | `.github/workflows/build.yml`, `.github/scripts/` | CI: tests, Windows build, versioning, updater signing/manifest, releases (see "Releases & in-app updates"). |
 | `assets/` | Brand assets: `keystead.svg` (app icon), `keystead-glyph.svg` (single-colour shield, `currentColor`), `keystead-1024.png` (source for `npx tauri icon` and the extension icons), `Keystead.ico`. |
 | `docs/` | This file + user docs. |
@@ -85,7 +85,15 @@ returned code: `0` success, `1` error, `2` invalid usage.
   `clipboardClearSeconds`, pending secret cleared on lock/quit), `o` open
   http(s) website, `n`/`e` edit (the editor keeps what it does not show:
   folder, tags, further websites, custom fields), `d` trash, `g` generator
-  (copies are added to the vault's generator history), auto-lock after
+  (not reworked with the desktop generator: it starts from the
+  `GeneratorOptions` defaults, not the default preset, and offers only
+  kind, length 4–128, the four groups, look-alikes, words, separator
+  (`-`, space, `.`, `_`), capitalisation and number – English list; a
+  value appears on opening and after every option change, shown only in
+  the terminal; only `c` (copy) adds it to the vault's generator history,
+  via `add_generated_password` without the desktop's newest-entry check;
+  Ctrl+G in the editor fills the password with those options and stores
+  nothing), auto-lock after
   `autoLockMinutes`, file re-checked every 5 s (`reload_if_changed`),
   `Conflict` → reload + retry once;
   `KeyChanged` (master password changed elsewhere) locks the TUI, `Rollback`
@@ -95,7 +103,9 @@ returned code: `0` success, `1` error, `2` invalid usage.
 * Subcommands (all accept `--vault NAME|ID`; default: the only vault, else
   `lastVaultId`): `vaults`, `list`, `get <id|name|search terms>
   [--field password|username|totp|notes|uri] [--copy]`, `generate [--length N |
-  --passphrase] [--words N] [--no-symbols] [--copy]`. `--copy` keeps the
+  --passphrase] [--words N] [--no-symbols] [--copy]` (the `GeneratorOptions`
+  defaults with these changes, not the default preset; `--length` 5–128,
+  `--words` 3–20; nothing is stored). `--copy` keeps the
   process alive until the clipboard is cleared (any key clears at once).
 * Master password: prompted on the TTY (`rpassword`), or – insecure, for
   scripts – `$KEYSTEAD_MASTER_PASSWORD`.
@@ -303,8 +313,9 @@ impl UnlockedVault {
     pub fn generator_history_info(&self) -> Vec<GeneratedPasswordInfo>;  // { id, createdAt } per entry, newest first – no passwords
     pub fn generated_password(&self, id: &str) -> Option<&GeneratedPassword>; // one entry by id
         // GeneratedPassword { id, password, createdAt } (camelCase; Debug without the password). Entries of older payloads have no id
-        // (serde default ""): every load into an UnlockedVault (unlock, create, reload_if_changed) gives entries without an id – or with
-        // the id of an earlier entry – a fresh UUID in memory; the next save persists them.
+        // (serde default ""; builds up to 2.0.0 also drop the ids when they save): every load into an UnlockedVault (unlock, create,
+        // reload_if_changed) gives entries without an id – or with the id of an earlier entry – a fresh UUID in memory; the next save
+        // persists them.
     pub fn icon_hosts_needing_fetch(&self, now: i64) -> Vec<String>; // website icons due (see "Website icons"): none yet, 30 days old, failure 7 days old; fetchable hosts only
     pub fn set_icons(&mut self, results: &[(String, Option<Vec<u8>>)], now: i64) -> Result<usize>; // one save; None = failed; hosts of no login ignored; Conflict → reload + retry
     pub fn icon_for_host(&self, host: &str) -> Option<&str>;      // base64 PNG
@@ -760,7 +771,9 @@ interface Settings {
 }
 ```
 Loading is lenient: missing fields (settings files of older versions) and
-invalid values get their defaults; unknown keys are ignored.
+invalid values get their defaults; unknown keys are ignored – and not
+written back, so a build up to 2.0.0 that saves the settings drops
+`generatorPresets` and `generatorDefault`.
 `generatorPresets` is parsed preset by preset (`id` and `name` must be
 strings; `options` field by field via `GeneratorOptions::from_json_lenient`,
 so a value of a later version costs only that field). Loading and saving
@@ -964,6 +977,16 @@ after ~0.9 s, `check_pwned_vault` builds the report like the backend
 (non-trashed logins with a password, grouped by identical password, sorted
 by count desc then item id) and answers after ~1 s – `locked` if the
 page's vault was locked or switched meanwhile (see "Leaked-password check").
+Generator: `src/lib/demo/generator.ts` generates with the checks of
+`src/lib/generatorRules.ts` (the core's codes and order) and short demo word
+lists (the entropy shown still uses the real list sizes); previews only,
+`remember_generated` with the backend's length codes, newest-entry check
+and page-vault check, the history redacted, `reveal_generated` /
+`copy_generated` by id; the preset commands with the backend's codes, a
+deleted default falls back to `"standard"`, `save_settings` keeps the
+stored presets and default. "Privat" starts with three history entries, the
+settings with one user preset ("Online-Banking": 16 characters, symbols
+`!?#`, first character a letter).
 
 Frontend integration requirements for `src-tauri`:
 * File pickers use `@tauri-apps/plugin-dialog` (`open`, `save`): register
@@ -1249,7 +1272,7 @@ vault without recovery key is dropped silently.
   screen) if the epoch changed meanwhile – so a lock that lands during the
   0.3–1 s derivation is never undone, and nothing opens from the data
   directory's old location. Copies of a vault secret (`copy_secret_field`,
-  the bridge's `copy_field` – read and copied through
+  `copy_generated`, the bridge's `copy_field` – read and copied through
   `VaultBackend::copy_field`) carry the epoch of their read and are dropped
   (`locked`) if a lock or switch happened before the copy;
   `clear_copied_secret` and the copy hold the same lock, so a copy is either
