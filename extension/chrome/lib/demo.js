@@ -10,6 +10,7 @@
 import { ApiError } from "./popup-api.js";
 import { normalizeSettings } from "./settings.js";
 import { DEMO_ICONS } from "./demo-icons.js";
+import { CHAR_CLASSES, MIN_KEYS, generatorIssue, lenientOptions } from "./generator.js";
 
 const LOGINS = [
   { id: "d1", type: "login", name: "GitHub", subtitle: "max.mustermann@example.com", uri: "https://github.com", favorite: true, hasTotp: true, folderId: null },
@@ -39,7 +40,11 @@ const VAULTS = [
   { id: "demo-privat", name: "Privat" },
 ];
 
-const WORDS = ["anker", "birke", "dachs", "eule", "fjord", "gipfel", "hafen", "insel", "jolle", "kompass", "lerche", "mond", "nebel", "otter", "pfad", "quelle", "regen", "sturm", "tanne", "ufer", "vogel", "welle", "zeder"];
+// Demo word lists (the app embeds the EFF list and a German list of 7724 words).
+const WORDS = {
+  de: ["anker", "birke", "dachs", "eule", "fjord", "gipfel", "hafen", "insel", "jolle", "kompass", "lerche", "mond", "nebel", "otter", "pfad", "quelle", "regen", "sturm", "tanne", "ufer", "vogel", "welle", "zeder"],
+  en: ["anchor", "birch", "badger", "owl", "fjord", "summit", "harbor", "island", "dinghy", "compass", "lark", "moon", "fog", "otter", "path", "spring", "rain", "storm", "pine", "shore", "bird", "wave", "cedar"],
+};
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -51,22 +56,42 @@ function randomInt(max) {
   return buf[0] % max;
 }
 
+/** Like the app's generator (minimums, symbol set, exclusions, first letter); invalid options → invalid_request. */
 function fakeGenerate(options) {
+  if (generatorIssue(options)) throw new ApiError("invalid_request");
   if (options.kind === "passphrase") {
-    const words = Array.from({ length: options.words || 5 }, () => {
-      const word = WORDS[randomInt(WORDS.length)];
+    const list = WORDS[options.wordlist] ?? WORDS.en;
+    const words = Array.from({ length: options.words }, () => {
+      const word = list[randomInt(list.length)];
       return options.capitalize ? word[0].toUpperCase() + word.slice(1) : word;
     });
     if (options.includeNumber) words[randomInt(words.length)] += String(randomInt(10));
-    return words.join(options.separator ?? "-");
+    return words.join(options.separator);
   }
-  let chars = "";
-  if (options.uppercase) chars += options.avoidAmbiguous ? "ABCDEFGHJKLMNPQRSTUVWXYZ" : "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  if (options.lowercase) chars += options.avoidAmbiguous ? "abcdefghijkmnopqrstuvwxyz" : "abcdefghijklmnopqrstuvwxyz";
-  if (options.digits) chars += options.avoidAmbiguous ? "23456789" : "0123456789";
-  if (options.symbols) chars += "!@#$%^&*-_=+?";
-  if (!chars) chars = "abcdefghijklmnopqrstuvwxyz";
-  return Array.from({ length: options.length || 20 }, () => chars[randomInt(chars.length)]).join("");
+  const usable = (set) =>
+    [...new Set(Array.from(set))].filter((c) => !options.exclude.includes(c) && !(options.avoidAmbiguous && "Il1O0".includes(c)));
+  const sets = {
+    uppercase: usable("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    lowercase: usable("abcdefghijklmnopqrstuvwxyz"),
+    digits: usable("0123456789"),
+    symbols: usable(options.symbolSet),
+  };
+  const enabled = CHAR_CLASSES.filter((cls) => options[cls]);
+  const all = enabled.flatMap((cls) => sets[cls]);
+  const letters = [...(options.uppercase ? sets.uppercase : []), ...(options.lowercase ? sets.lowercase : [])];
+  const chars = enabled.flatMap((cls) => Array.from({ length: options[MIN_KEYS[cls]] }, () => sets[cls][randomInt(sets[cls].length)]));
+  if (options.startWithLetter && !chars.some((c) => letters.includes(c))) chars.push(letters[randomInt(letters.length)]);
+  while (chars.length < options.length) chars.push(all[randomInt(all.length)]);
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  if (options.startWithLetter && !letters.includes(chars[0])) {
+    const positions = chars.map((c, i) => (letters.includes(c) ? i : -1)).filter((i) => i >= 0);
+    const pos = positions[randomInt(positions.length)];
+    [chars[0], chars[pos]] = [chars[pos], chars[0]];
+  }
+  return chars.join("");
 }
 
 export function createDemoApi(state) {
@@ -184,12 +209,13 @@ export function createDemoApi(state) {
       await delay(150);
       return { filled: true };
     },
+    /** `options`: own options; `null`: the stored ones; without any (or `{}`) the "app's default preset" – here the generator defaults. */
     async generate(options) {
       await delay(60);
-      return fakeGenerate(options || {});
+      return fakeGenerate(lenientOptions(options ?? generatorOptions ?? {}));
     },
     async fillGenerated() {
-      return { filled: 1 };
+      return { filled: 1, remembered: current === "unlocked" };
     },
     async totpTimers(itemIds) {
       requireUnlocked();
@@ -220,13 +246,16 @@ export function createDemoApi(state) {
     async saveGeneratorOptions(options) {
       generatorOptions = options;
     },
+    async clearGeneratorOptions() {
+      generatorOptions = null;
+    },
     async copyField(_itemId, field) {
       requireUnlocked();
       return { remaining: field === "totp" ? 23 : null };
     },
-    async copySecret() {
+    async copyGenerated() {
       requireUnlocked();
-      return null;
+      return { remembered: true };
     },
     copy: async () => undefined,
     close: () => undefined,

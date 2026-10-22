@@ -779,8 +779,10 @@ In the desktop app only the preset commands (`generator_presets`,
 `set_default_generator_preset`) change `generatorPresets` and
 `generatorDefault`; `save_settings` keeps the stored values of both (see the
 command table). The default preset is what the editor's generator popover
-and the browser extension's suggestions use for every option they do not
-set themselves (see "Browser bridge protocol"). The user picks it on the
+and the browser extension (page suggestions, context menu / shortcut, the
+popup's generator and its *Login hinzufügen* – unless the user gave the
+popup own options) use for every option they do not set themselves (see
+"Browser bridge protocol"). The user picks it on the
 generator page ("Als Standard verwenden", see "UI/UX principles"); the
 settings page has no row for it – one place for everything about presets.
 
@@ -1051,8 +1053,10 @@ item; copying never sends it there.
   `remember: false`), which is not stored. Only a password the user *used* –
   copied from the generator, or taken into an item – enters the vault's
   generator history, reported by the page with `remember_generated` (the
-  browser extension reports a suggestion the user took with the bridge's
-  `remember_generated`). `generator_history` answers
+  browser extension asks the bridge for previews only and reports a
+  password the user used – copied from its popup, filled into a page, a
+  suggestion taken, saved in a new login – with the bridge's
+  `remember_generated`; see "Browser extension behaviour"). `generator_history` answers
   `GeneratedPasswordInfo { id, createdAt }` only; `reveal_generated` (one
   password, for an eye toggle that hides again like the item's – 30 s, blur
   / hidden window, lock, unmount) and `copy_generated` (the sensitive
@@ -2028,8 +2032,8 @@ Error codes: `not_paired`, `pairing_denied`, `locked`, `wrong_password`, `not_fo
 | `search` | yes, unlocked | `query` | `ItemSummary[]` (max 50; optional `icon`) |
 | `get_login` | yes, unlocked | `itemId` | `{ id, name, username, password, totp: TotpCode\|null, uris: string[] }` |
 | `get_totp` | yes, unlocked | `itemId` | `TotpCode` |
-| `generate_password` | yes | `options?` (GeneratorOptions partial), `remember?: bool` | `string` – every option the request does not set comes from the app's default generator preset (see below); stored in the generator history if unlocked – unless `remember: false`: a preview, not stored, no user activity |
-| `remember_generated` | yes, unlocked | `password` (1–1024 chars) | `null` – adds a password the user took from a preview to the open vault's generator history |
+| `generate_password` | yes | `options?` (GeneratorOptions partial), `remember?: bool` | `string` – every option the request does not set comes from the app's default generator preset (see below); stored in the generator history if unlocked – unless `remember: false`: a preview, not stored, no user activity. The current extension sends `remember: false` on every request (extensions up to 2.0.0 only for page suggestions): the popup's own options in full, or no `options` / `{}` for the default preset |
+| `remember_generated` | yes, unlocked | `password` (1–1024 chars) | `null` – adds a password the user used from a preview (extension: copied in the popup, filled into a page from the popup / context menu / shortcut, a suggestion taken, saved in a new login) to the open vault's generator history; the newest entry is not added twice |
 | `save_login` | yes, unlocked | `name, url, username, password` | `{ id }` (creates new login) |
 | `update_password` | yes, unlocked | `itemId, password` | `{ id }` |
 | `check_login_password` | yes, unlocked | `itemId, password` | `bool` – whether `password` equals the stored password (the secret is never returned; used for the save/update prompt) |
@@ -2299,13 +2303,46 @@ The extension's security model and file roles are in
 * **Password suggestion**: on a focus that follows a user gesture
   (transient user activation) on a suggestion field while unlocked, the
   service worker generates a preview (`generate_password`, `remember: false`,
-  the popup's generator options over the app's default generator preset)
-  and the page shows it
+  the popup's own generator options, else the app's default generator
+  preset) and the page shows it
   masked in a bubble in the closed shadow root. *Verwenden* (trusted click,
   500 ms dwell) fills the field and its confirmation fields, counts as user
   input for the save prompt and sends `remember_generated` (skipped if
   another vault was opened meanwhile). Locked / not paired: only a click on
   the field icon explains how to get suggestions.
+* **Generator** (popup tab *Generator*, *Login hinzufügen*, context menu,
+  `Ctrl+Shift+9`): every password is a preview (`generate_password` with
+  `remember: false`, `background.js` `generatePreview`); `remember_generated`
+  (`rememberGenerated`, best effort: `locked` or an older app's
+  `invalid_request` – it stored the preview already – are ignored) follows
+  only a use: *Kopieren* in the popup (`popup:copy-generated`: `copy_secret`,
+  then `remember_generated`), *Ausfüllen* in the popup and the context menu /
+  shortcut once a field took the password (`popup:fill-generated`,
+  `generateInto`; nothing is remembered when no field filled), a suggestion's
+  *Verwenden*, and *Login hinzufügen* saved with the password its wand put
+  into the field (`popup:save-login` with `generated: true`). The popup tab
+  shows no password until *Generieren* (also Enter outside buttons, selects
+  and switches, and Ctrl+G); changing an option marks a shown preview as
+  outdated ("Die Optionen haben sich geändert …") and never generates.
+  Options: without own options (default) the tab says *Standard-Vorlage der
+  App* and requests carry no options of their own (`{}`); *Anpassen* starts
+  **own options** for this browser from the generator defaults – stored in
+  `chrome.storage.local` `generatorOptions` as a full `GeneratorOptions`
+  (`lib/generator.js`), and only while they are valid – which the
+  suggestions, the context menu / shortcut and *Login hinzufügen* then use
+  too; *App-Vorlage nutzen* removes them. The own options cover everything
+  the app's generator page offers except presets: length 4–128, the four
+  groups with a minimum each, allowed symbols, excluded characters, first
+  letter, look-alikes; words, separator (≤ 8), word list (English /
+  German), capitalisation, number. `lib/generator.js` mirrors the core's
+  checks (`generatorIssue`, the same `invalid_input` codes in the same
+  order – the bridge only says `invalid_request`), shows them inline and
+  disables *Generieren* while the options are invalid, and estimates the
+  entropy (real word list sizes 7776 / 7724). Stored options of older
+  extensions are read field by field over the defaults (`lenientOptions`);
+  each request sends only known fields with acceptable values
+  (`requestOptions`). The bridge has no preset list, so the popup can name
+  the app's default preset only as such.
 * **2FA after a fill**: when a login with a TOTP seed is filled (popup,
   dropdown, `Ctrl+Shift+L`) the service worker stores a 2FA offer for the tab
   (`chrome.storage.session` `totp:<tabId>` = item id, site, vault id, expiry

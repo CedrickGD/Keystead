@@ -17,9 +17,13 @@ import * as store from "./lib/store.js";
 import { parseWebUrl, siteKey, displayHost } from "./lib/sites.js";
 import { extensionUpdateAction, parseVersion } from "./lib/version.js";
 import { openVaultId, pendingVaultState } from "./lib/pending.js";
+import { GENERATED_MAX_CHARS, requestOptions } from "./lib/generator.js";
 
 const bridge = new NativeBridge();
-const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
+// "chrome-extension://<id>" – the root URL without its slash (the same as its
+// origin in Chrome; extension/tests load this file in node, whose URL gives
+// non-web schemes the origin "null").
+const EXTENSION_ORIGIN = chrome.runtime.getURL("").replace(/\/+$/, "");
 const BADGE_COLOR = "#2f6fed";
 /** After these failures, automatic (non-user) requests pause so we don't spawn failing hosts on every page. */
 const BACKOFF_MS = { host_missing: 60_000, host_forbidden: 60_000, app_unavailable: 20_000, timeout: 20_000 };
@@ -42,8 +46,6 @@ const UNLOCKED_TYPES = new Set([
   "copy_secret",
   "remember_generated",
 ]);
-/** Longest generated password a content script may report as used (see remember_generated). */
-const MAX_SUGGESTION_CHARS = 1024;
 
 const t = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
 
@@ -623,40 +625,54 @@ async function fillGenerated(tabId, frameId, password, target) {
 }
 
 // ---------------------------------------------------------------------------
-// Generator options
+// Generator: previews, and the history only for passwords the user used
 // ---------------------------------------------------------------------------
+//
+// Nothing generated here is stored on its own: every password comes from the
+// app as a *preview* (`generate_password` with `remember: false`). Only once
+// the user used it – copied it from the popup, filled it into a page (popup
+// "Ausfüllen", context menu, shortcut, a suggestion's "Verwenden") or saved
+// it in a new login – does `remember_generated` put it into the open vault's
+// generator history. Older apps ignore `remember: false` (they stored the
+// preview already) and answer `remember_generated` with `invalid_request`.
 
-const GENERATOR_RULES = {
-  kind: (v) => v === "password" || v === "passphrase",
-  length: (v) => Number.isInteger(v) && v >= 5 && v <= 128,
-  uppercase: (v) => typeof v === "boolean",
-  lowercase: (v) => typeof v === "boolean",
-  digits: (v) => typeof v === "boolean",
-  symbols: (v) => typeof v === "boolean",
-  minDigits: (v) => Number.isInteger(v) && v >= 0 && v <= 128,
-  minSymbols: (v) => Number.isInteger(v) && v >= 0 && v <= 128,
-  avoidAmbiguous: (v) => typeof v === "boolean",
-  words: (v) => Number.isInteger(v) && v >= 3 && v <= 20,
-  separator: (v) => typeof v === "string" && v.length <= 5,
-  capitalize: (v) => typeof v === "boolean",
-  includeNumber: (v) => typeof v === "boolean",
-};
-
-/** Keeps only known GeneratorOptions fields with valid values (the app fills in defaults). */
-function sanitizeGeneratorOptions(raw) {
-  const options = {};
-  if (!raw || typeof raw !== "object") return options;
-  for (const [key, valid] of Object.entries(GENERATOR_RULES)) {
-    if (valid(raw[key])) options[key] = raw[key];
-  }
-  return options;
+/**
+ * The `generate_password` payload of a preview: the generator options given
+ * (`rawOptions`, the popup's own options; `null`: those the popup stored) –
+ * only fields the app accepts (lib/generator.js) – or none, so the app
+ * generates with its default generator preset.
+ */
+async function previewPayload(rawOptions) {
+  const options = requestOptions(rawOptions ?? (await store.getGeneratorOptions()));
+  return options ? { options, remember: false } : { remember: false };
 }
 
-async function generatePassword(rawOptions) {
-  const options = sanitizeGeneratorOptions(rawOptions ?? (await store.getGeneratorOptions()));
-  const password = await call("generate_password", { options });
-  if (typeof password !== "string" || !password) throw new BridgeError("internal");
+/**
+ * A preview from the app: neither stored in the generator history nor user
+ * activity (see rememberGenerated). `auto`: background traffic (a page
+ * focused its signup field), which pauses after the app was unreachable.
+ */
+async function generatePreview(rawOptions, { auto = false } = {}) {
+  const password = await call("generate_password", await previewPayload(rawOptions), { auto });
+  if (typeof password !== "string" || !password || password.length > GENERATED_MAX_CHARS) throw new BridgeError("internal");
   return password;
+}
+
+/**
+ * The user used a previewed password: into the open vault's generator
+ * history (`remember_generated`; the app does not add the newest entry
+ * twice). Best effort – it never throws and answers whether the app stored
+ * it: not while locked, nor in older apps (`invalid_request`; they stored
+ * the preview already).
+ */
+async function rememberGenerated(password) {
+  if (typeof password !== "string" || !password || password.length > GENERATED_MAX_CHARS) return false;
+  try {
+    await call("remember_generated", { password });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function sha256Hex(text) {
@@ -665,13 +681,11 @@ async function sha256Hex(text) {
 }
 
 /**
- * A password suggestion for a signup / password change field: generated with
- * the user's generator options from the popup (else the app's defaults: 20
- * characters, all classes) as a preview – `remember: false`, so it is
- * neither stored in the generator history nor counted as activity until the
- * user takes it (cs:suggestion-used). Only while the vault is unlocked. The
- * tab keeps its hash (and the vault) so only a suggestion really shown there
- * can be remembered later.
+ * A password suggestion for a signup / password change field: a preview with
+ * the popup's own generator options, else the app's default generator preset
+ * – not stored and no activity until the user takes it (cs:suggestion-used).
+ * Only while the vault is unlocked. The tab keeps its hash (and the vault) so
+ * only a suggestion really shown there can be remembered later.
  */
 async function suggestPassword(sender) {
   const tabId = sender.tab?.id;
@@ -679,9 +693,7 @@ async function suggestPassword(sender) {
   if (!(await store.getSettings()).suggestPasswords) throw new BridgeError("disabled");
   const status = await store.getStatus();
   if (status?.state !== "unlocked") throw new BridgeError(status?.state === "not_paired" ? "not_paired" : "locked");
-  const options = sanitizeGeneratorOptions(await store.getGeneratorOptions());
-  const password = await call("generate_password", { options, remember: false }, { auto: true });
-  if (typeof password !== "string" || !password || password.length > MAX_SUGGESTION_CHARS) throw new BridgeError("internal");
+  const password = await generatePreview(null, { auto: true });
   await store.addSuggestion(tabId, await sha256Hex(password), openVaultId(status));
   return { password };
 }
@@ -689,24 +701,16 @@ async function suggestPassword(sender) {
 /**
  * The user took a suggestion ("Verwenden"): into the generator history of the
  * vault it was suggested for – only a suggestion this tab was shown (used
- * once), and not after another vault was opened. Apps without
- * `remember_generated` stored the preview already (they ignore
- * `remember: false`).
+ * once), and not after another vault was opened.
  */
 async function suggestionUsed(msg, sender) {
   const tabId = sender.tab?.id;
-  const password = requireString(msg.password, MAX_SUGGESTION_CHARS);
+  const password = requireString(msg.password, GENERATED_MAX_CHARS);
   if (tabId === undefined || !password) throw new BridgeError("invalid_request");
   const issued = await store.takeSuggestion(tabId, await sha256Hex(password));
   if (!issued) return { remembered: false };
   if (pendingVaultState(issued, await store.getStatus()) === "stale") return { remembered: false };
-  try {
-    await call("remember_generated", { password });
-    return { remembered: true };
-  } catch (err) {
-    if (errorCode(err) === "invalid_request") return { remembered: false };
-    throw err;
-  }
+  return { remembered: await rememberGenerated(password) };
 }
 
 // ---------------------------------------------------------------------------
@@ -976,18 +980,25 @@ const popupHandlers = {
     }
     return timers;
   },
-  "popup:copy-secret": async (msg) => {
-    const text = requireString(msg.text);
-    if (!text) throw new BridgeError("invalid_request");
-    await call("copy_secret", { text });
-    return null;
+  // The user copied the generator's preview: the app copies it (like
+  // copy_field) and keeps it in the generator history.
+  "popup:copy-generated": async (msg) => {
+    const password = requireString(msg.password, GENERATED_MAX_CHARS);
+    if (!password) throw new BridgeError("invalid_request");
+    await call("copy_secret", { text: password });
+    return { remembered: await rememberGenerated(password) };
   },
   // The user picked the login in the popup: explicit (see fillTab).
   "popup:fill": (msg) => fillTab(requireTabId(msg.tabId), requireString(msg.itemId, 200), { explicit: true }),
-  "popup:generate": (msg) => generatePassword(msg.options),
+  // A preview only. `options`: the popup's own options; `null`: those it
+  // stored – without any, the app's default generator preset.
+  "popup:generate": (msg) => generatePreview(msg.options ?? null),
+  // The user filled the preview into the page: into the history once it is in a field.
   "popup:fill-generated": async (msg) => {
     const tabId = requireTabId(msg.tabId);
-    return fillGenerated(tabId, await focusedFrameId(tabId), requireString(msg.password), "focused");
+    const password = requireString(msg.password, GENERATED_MAX_CHARS);
+    const result = await fillGenerated(tabId, await focusedFrameId(tabId), password, "focused");
+    return { ...result, remembered: await rememberGenerated(password) };
   },
   "popup:save-login": async (msg) => {
     const name = requireString(msg.name, 200).trim();
@@ -996,6 +1007,8 @@ const popupHandlers = {
     const password = requireString(msg.password);
     if (!name || !password) throw new BridgeError("invalid_request");
     const result = await call("save_login", { name, url, username, password });
+    // `generated`: the password is the generator's preview, taken into this new login.
+    if (msg.generated === true) await rememberGenerated(password);
     refreshActiveTab().catch(() => undefined);
     return result;
   },
@@ -1129,11 +1142,16 @@ async function autofillCommand(tab) {
   }
 }
 
+/**
+ * Context menu / shortcut: a preview (the popup's own options, else the app's
+ * default preset) into the field – into the generator history only once a
+ * field took it.
+ */
 async function generateInto(tab, frameId, target) {
   if (!tab || tab.id === undefined || !parseWebUrl(tab.url)) return;
   let password;
   try {
-    password = await generatePassword(null);
+    password = await generatePreview(null);
   } catch (err) {
     const code = errorCode(err);
     toast(tab.id, code === "invalid_request" || code === "internal" ? "csGenerateFailed" : "csNotConnected");
@@ -1143,7 +1161,9 @@ async function generateInto(tab, frameId, target) {
     await fillGenerated(tab.id, frameId, password, target);
   } catch {
     toast(tab.id, "csNoField");
+    return;
   }
+  await rememberGenerated(password);
 }
 
 chrome.commands.onCommand.addListener((command, tab) => {

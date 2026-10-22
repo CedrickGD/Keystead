@@ -54,13 +54,21 @@ export function createApi() {
     matches: (tabId) => call("popup:matches", { tabId }),
     search: (query) => call("popup:search", { query }),
     fill: (tabId, itemId) => call("popup:fill", { tabId, itemId }),
-    generate: (options) => call("popup:generate", { options }),
+    /**
+     * A preview from the app – not stored in the generator history. `options`:
+     * the popup's own generator options; `null`: those stored here, else the
+     * app's default generator preset.
+     */
+    generate: (options) => call("popup:generate", { options: options ?? null }),
+    /** Fills a preview into the page's focused field; then it is in the generator history. Resolves to { filled, remembered }. */
     fillGenerated: (tabId, password) => call("popup:fill-generated", { tabId, password }),
     /** Countdown data of 2FA codes: [{ id, period, remaining }] (the codes stay in the service worker). */
     totpTimers: (itemIds) => call("popup:totp-timers", { itemIds }),
+    /** `{ name, url, username, password, generated }` – `generated`: the password is a preview taken into this login (it goes into the generator history). */
     saveLogin: (login) => call("popup:save-login", login),
     neverRemove: (hostname) => call("popup:never-remove", { hostname }),
 
+    /** The popup's own generator options (lib/generator.js), or null: the app's default preset applies. */
     async loadGeneratorOptions() {
       try {
         const { generatorOptions } = await chrome.storage.local.get("generatorOptions");
@@ -74,6 +82,14 @@ export function createApi() {
         await chrome.storage.local.set({ generatorOptions: options });
       } catch {
         // Options are a convenience; generation still works with the current values.
+      }
+    },
+    /** Drops the own options: suggestions, the context menu and the popup use the app's default preset again. */
+    async clearGeneratorOptions() {
+      try {
+        await chrome.storage.local.remove("generatorOptions");
+      } catch {
+        // Best effort: the stored options then stay in use for suggestions until removed.
       }
     },
     /** Extension settings (lib/settings.js); the service worker and the pages pick up changes. */
@@ -112,8 +128,8 @@ export function createApi() {
      * Resolves to { remaining } (seconds a copied TOTP code stays valid, else null).
      */
     copyField: (itemId, field) => call("popup:copy-field", { itemId, field }),
-    /** Copies a secret the popup already holds (a generated password) through the app. */
-    copySecret: (text) => call("popup:copy-secret", { text }),
+    /** Copies the generator's preview through the app; then it is in the generator history. Resolves to { remembered }. */
+    copyGenerated: (password) => call("popup:copy-generated", { password }),
     /** Non-secret text only (e.g. a username): stays on the clipboard. */
     copy: (text) => navigator.clipboard.writeText(text),
     close: () => window.close(),

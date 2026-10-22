@@ -8,6 +8,24 @@
 import { t, uiLanguage } from "./lib/i18n.js";
 import { icon, logo } from "./lib/icons.js";
 import { createApi } from "./lib/popup-api.js";
+import {
+  CHARSET_INPUT_MAX_CHARS,
+  CHAR_CLASSES,
+  DEFAULT_SYMBOLS,
+  GENERATOR_DEFAULTS,
+  MIN_KEYS,
+  PASSPHRASE_MAX_WORDS,
+  PASSPHRASE_MIN_WORDS,
+  PASSWORD_MAX_LEN,
+  PASSWORD_MIN_LEN,
+  SEPARATOR_MAX_CHARS,
+  entropyBits,
+  entropyScore,
+  generatorIssue,
+  lenientOptions,
+  requiredCharacters,
+  symbolSetProblem,
+} from "./lib/generator.js";
 
 const demoState = new URLSearchParams(location.search).get("demo");
 const api = demoState ? (await import("./lib/demo.js")).createDemoApi(demoState) : createApi();
@@ -16,20 +34,17 @@ const app = document.getElementById("app");
 const toastNode = document.getElementById("toast");
 
 const AVATAR_HUES = [214, 262, 330, 20, 145, 188, 282, 350, 38, 168, 236, 4];
-const GENERATOR_DEFAULTS = {
-  kind: "password",
-  length: 20,
-  uppercase: true,
-  lowercase: true,
-  digits: true,
-  symbols: true,
-  minDigits: 1,
-  minSymbols: 1,
-  avoidAmbiguous: false,
-  words: 5,
-  separator: "-",
-  capitalize: true,
-  includeNumber: true,
+
+/** Generator: chip labels of the character groups. */
+const CHARSET_LABELS = { uppercase: "A–Z", lowercase: "a–z", digits: "0–9", symbols: "!@#" };
+const MIN_LABEL_KEYS = { uppercase: "genMinUppercase", lowercase: "genMinLowercase", digits: "genMinDigits", symbols: "genMinSymbols" };
+/** Generator: the fields under "Weitere Optionen". */
+const MORE_KEYS = ["minUppercase", "minLowercase", "minDigits", "minSymbols", "symbolSet", "exclude", "startWithLetter"];
+const EMPTIED_KEYS = {
+  uppercase: "genIssueEmptiedUppercase",
+  lowercase: "genIssueEmptiedLowercase",
+  digits: "genIssueEmptiedDigits",
+  symbols: "genIssueEmptiedSymbols",
 };
 
 // ---------------------------------------------------------------------------
@@ -884,14 +899,6 @@ function showUnlocked(status, initialTab = "page") {
     });
   }
 
-  function copyGenerated(password) {
-    if (!password) return undefined;
-    return guarded(async () => {
-      await api.copySecret(password);
-      toast(t("copied"));
-    });
-  }
-
   // --- 2FA countdown ------------------------------------------------------------
 
   const RING_LENGTH = 2 * Math.PI * 9.5;
@@ -1140,142 +1147,172 @@ function showUnlocked(status, initialTab = "page") {
   }
 
   // --- "Generator" -------------------------------------------------------------
+  //
+  // Nothing is generated behind the user's back: no password until the user
+  // asks ("Generieren", Enter, Ctrl+G); changing an option only marks a shown
+  // preview as outdated. A preview is not stored – copying or filling it puts
+  // it into the vault's generator history (the service worker then sends
+  // remember_generated). Without own options the app's default generator
+  // preset applies; "Anpassen" starts own options for this browser, which the
+  // page suggestions and the context menu then use as well. Own options are
+  // stored only while they are valid (lib/generator.js generatorIssue), so a
+  // half-edited form never breaks the suggestions.
 
   async function renderGenerator() {
     const stored = await api.loadGeneratorOptions();
     if (ctx.tab !== "generator") return;
-    const options = { ...GENERATOR_DEFAULTS };
-    for (const key of Object.keys(GENERATOR_DEFAULTS)) {
-      if (stored && typeof stored[key] === typeof GENERATOR_DEFAULTS[key]) options[key] = stored[key];
-    }
-    options.length = clamp(options.length, 5, 128);
-    options.words = clamp(options.words, 3, 20);
-
-    let password = "";
+    /** The own options, or null: the app's default preset. */
+    let own = stored ? lenientOptions(stored) : null;
+    let preview = "";
+    /** What the preview was generated with: "preset" or the own options as JSON. */
+    let previewSource = "";
+    let previewKind = "password";
     let seq = 0;
-    let debounce = 0;
+    let generating = false;
+    /** "Weitere Optionen" open – null: open if one of its fields is set or has a problem. */
+    let moreOpen = null;
+    let moreDetails = null;
+    let symbolReset = null;
+    const minInputs = {};
 
+    const source = h("div", { class: "gen-source" });
     const output = h("div", { class: "gen-output", "aria-live": "polite" });
-    const box = h(
-      "div",
-      { class: "gen-box" },
-      output,
-      h(
-        "div",
-        { class: "gen-box-actions" },
-        iconButton("refresh", t("regenerate"), () => generate()),
-        iconButton("copy", t("copy"), () => copyGenerated(password)),
-      ),
-    );
-    const kindButtons = [
-      ["password", t("generatorPassword")],
-      ["passphrase", t("generatorPassphrase")],
-    ].map(([kind, label]) =>
-      h("button", {
-        type: "button",
-        "aria-pressed": String(options.kind === kind),
-        text: label,
-        onclick: () => {
-          if (options.kind === kind) return;
-          options.kind = kind;
-          kindButtons.forEach((b, i) => b.setAttribute("aria-pressed", String(["password", "passphrase"][i] === kind)));
-          renderControls();
-          changed(true);
-        },
-      }),
-    );
+    const regenerateButton = iconButton("refresh", t("regenerate"), () => generate());
+    const box = h("div", { class: "gen-box" });
+    const previewNote = h("p", { class: "gen-meta", hidden: true, text: t("genPreviewNote") });
+    const staleNote = h("p", { class: "gen-note", hidden: true, text: t("genStale") });
+    const kindSeg = h("div", { class: "seg", role: "group", "aria-label": t("genKind") });
     const controls = h("div", { class: "panel" });
-    content.append(box, h("div", { class: "seg", role: "group" }, kindButtons), controls);
-    renderControls();
+    const issueNode = h("p", { class: "field-error gen-issue", role: "alert", hidden: true });
+    const meta = h("p", { class: "gen-meta", title: t("genEntropyHint"), hidden: true });
+    content.append(source, box, previewNote, staleNote, kindSeg, controls, issueNode, meta);
 
-    const copyButton = button(t("copy"), { kind: "secondary", iconName: "copy", onclick: () => copyGenerated(password) });
-    const fillButton = button(t("fillGenerated"), {
-      kind: "primary",
-      onclick: async (ev) => {
-        if (!password) return;
-        const btn = ev.currentTarget;
-        setBusy(btn, true);
-        try {
-          if (!ctx.tabInfo?.web) throw Object.assign(new Error("no_field"), { code: "no_field" });
-          await api.fillGenerated(ctx.tabInfo.tabId, password);
-          if (api.demo) toast(t("insertedPassword"));
-          else api.close();
-        } catch (err) {
-          if (!routeError(err)) toast(errorText(err?.code), "error");
-        } finally {
-          setBusy(btn, false);
-        }
-      },
-    });
-    setFooter(copyButton, fillButton);
-    generate();
+    const generateButton = button(t("genGenerate"), { kind: "primary", iconName: "wand", wide: true, onclick: () => generate() });
+    const copyButton = button(t("copy"), { kind: "secondary", iconName: "copy", onclick: () => copyPreview() });
+    const fillButton = button(t("fillGenerated"), { kind: "primary", onclick: (ev) => fillPreview(ev.currentTarget) });
 
-    function renderControls() {
+    renderSource();
+    renderOptions();
+    renderBox();
+    document.addEventListener("keydown", onGeneratorKeys);
+
+    function currentSource() {
+      return own ? JSON.stringify(own) : "preset";
+    }
+    function problem() {
+      return own ? generatorIssue(own) : null;
+    }
+
+    function renderSource() {
+      source.replaceChildren(
+        h(
+          "div",
+          { class: "gen-source-text" },
+          h("span", { class: "gen-source-title", text: t(own ? "genSourceOwn" : "genSourcePreset") }),
+          h("span", { class: "gen-source-hint", text: t(own ? "genSourceOwnHint" : "genSourcePresetHint") }),
+        ),
+        h("button", {
+          class: "link-btn",
+          type: "button",
+          text: t(own ? "genUsePreset" : "genCustomize"),
+          onclick: () => switchSource(!own),
+        }),
+      );
+    }
+
+    /** "Anpassen": own options from the defaults; "App-Vorlage nutzen": drops them. */
+    function switchSource(customise) {
+      own = customise ? { ...GENERATOR_DEFAULTS } : null;
+      moreOpen = null;
+      if (own) api.saveGeneratorOptions({ ...own });
+      else api.clearGeneratorOptions();
+      renderSource();
+      renderOptions();
+    }
+
+    function renderOptions() {
+      kindSeg.replaceChildren();
       controls.replaceChildren();
-      if (options.kind === "password") {
-        controls.append(
-          rangeOption(t("length"), "length", 5, 128),
-          charsetChips(),
-          switchOption(t("avoidAmbiguous"), "avoidAmbiguous"),
+      moreDetails = null;
+      symbolReset = null;
+      for (const cls of CHAR_CLASSES) delete minInputs[cls];
+      kindSeg.hidden = !own;
+      controls.hidden = !own;
+      if (own) {
+        kindSeg.append(
+          ...[
+            ["password", t("generatorPassword")],
+            ["passphrase", t("generatorPassphrase")],
+          ].map(([kind, label]) =>
+            h("button", {
+              type: "button",
+              "aria-pressed": String(own.kind === kind),
+              text: label,
+              onclick: () => {
+                if (own.kind === kind) return;
+                own.kind = kind;
+                renderOptions();
+                changed();
+              },
+            }),
+          ),
         );
-      } else {
-        const separator = h("input", { class: "num", type: "text", maxlength: 3, "aria-label": t("separator"), spellcheck: "false" });
-        separator.value = options.separator;
-        separator.addEventListener("input", () => {
-          options.separator = separator.value;
-          changed();
-        });
-        controls.append(
-          rangeOption(t("words"), "words", 3, 20),
-          h("label", { class: "opt" }, h("span", { class: "opt-label", text: t("separator") }), separator),
-          switchOption(t("capitalize"), "capitalize"),
-          switchOption(t("includeNumber"), "includeNumber"),
-        );
+        if (own.kind === "password") {
+          controls.append(
+            rangeOption(t("length"), "length", PASSWORD_MIN_LEN, PASSWORD_MAX_LEN),
+            charsetChips(),
+            switchOption(t("avoidAmbiguous"), "avoidAmbiguous"),
+            moreOptions(),
+          );
+        } else {
+          controls.append(
+            rangeOption(t("words"), "words", PASSPHRASE_MIN_WORDS, PASSPHRASE_MAX_WORDS),
+            separatorOption(),
+            wordlistOption(),
+            switchOption(t("capitalize"), "capitalize"),
+            switchOption(t("includeNumber"), "includeNumber"),
+          );
+        }
       }
+      refreshState();
     }
 
     function rangeOption(label, key, min, max) {
       const range = h("input", { type: "range", min, max, step: 1, "aria-label": label });
       const number = h("input", { class: "num", type: "number", min, max, "aria-label": label });
-      range.value = String(options[key]);
-      number.value = String(options[key]);
+      range.value = String(own[key]);
+      number.value = String(own[key]);
       range.addEventListener("input", () => {
         number.value = range.value;
-        options[key] = Number(range.value);
+        own[key] = Number(range.value);
         changed();
       });
       number.addEventListener("change", () => {
         const value = clamp(Number.parseInt(number.value, 10), min, max);
         number.value = String(value);
         range.value = String(value);
-        options[key] = value;
-        changed(true);
+        own[key] = value;
+        changed();
       });
       return h("div", { class: "opt opt-range" }, h("span", { class: "opt-label", text: label }), number, range);
     }
 
-    /** Toggle chips for the character sets; at least one must stay enabled. */
+    /** Toggle chips for the character groups; at least one stays enabled. */
     function charsetChips() {
-      const sets = [
-        ["uppercase", "A–Z"],
-        ["lowercase", "a–z"],
-        ["digits", "0–9"],
-        ["symbols", "!@#"],
-      ];
-      const chips = sets.map(([key, label]) =>
+      const chips = CHAR_CLASSES.map((key) =>
         h("button", {
           type: "button",
           class: "chip",
-          text: label,
+          text: CHARSET_LABELS[key],
           title: t(key),
           "aria-label": t(key),
-          "aria-pressed": String(options[key] === true),
+          "aria-pressed": String(own[key] === true),
           onclick: (ev) => {
-            const enable = !options[key];
-            if (!enable && !sets.some(([other]) => other !== key && options[other])) return;
-            options[key] = enable;
+            const enable = !own[key];
+            if (!enable && !CHAR_CLASSES.some((other) => other !== key && own[other])) return;
+            own[key] = enable;
             ev.currentTarget.setAttribute("aria-pressed", String(enable));
-            changed(true);
+            changed();
           },
         }),
       );
@@ -1284,10 +1321,10 @@ function showUnlocked(status, initialTab = "page") {
 
     function switchOption(label, key) {
       const input = h("input", { type: "checkbox", role: "switch" });
-      input.checked = options[key] === true;
+      input.checked = own[key] === true;
       input.addEventListener("change", () => {
-        options[key] = input.checked;
-        changed(true);
+        own[key] = input.checked;
+        changed();
       });
       return h(
         "label",
@@ -1297,27 +1334,251 @@ function showUnlocked(status, initialTab = "page") {
       );
     }
 
-    function changed(immediate = false) {
-      api.saveGeneratorOptions({ ...options });
-      clearTimeout(debounce);
-      // Each generation is stored in the vault's generator history: wait until the user settled.
-      debounce = setTimeout(generate, immediate ? 0 : 350);
+    /** Minimums, allowed symbols, excluded characters, first letter – folded unless used. */
+    function moreOptions() {
+      const details = h("details", { class: "opt-more" });
+      details.open = moreOpen ?? moreWanted();
+      details.addEventListener("toggle", () => {
+        moreOpen = details.open;
+      });
+      details.append(
+        h("summary", { class: "opt opt-summary" }, h("span", { class: "opt-label", text: t("genMore") }), icon("chevron")),
+        minimumsOption(),
+        symbolSetOption(),
+        excludeOption(),
+        switchOption(t("genStartWithLetter"), "startWithLetter"),
+      );
+      moreDetails = details;
+      return details;
+    }
+
+    function moreWanted() {
+      return MORE_KEYS.some((key) => own[key] !== GENERATOR_DEFAULTS[key]) || concernsMore(problem());
+    }
+
+    function minimumsOption() {
+      const cells = CHAR_CLASSES.map((cls) => {
+        const key = MIN_KEYS[cls];
+        const input = h("input", { class: "num", type: "number", min: 0, max: PASSWORD_MAX_LEN, "aria-label": t(MIN_LABEL_KEYS[cls]) });
+        input.value = String(own[key]);
+        const apply = (commit) => {
+          const parsed = Number.parseInt(input.value, 10);
+          if (!commit && !(Number.isInteger(parsed) && parsed >= 0 && parsed <= PASSWORD_MAX_LEN)) return;
+          const value = clamp(parsed, 0, PASSWORD_MAX_LEN);
+          if (commit) input.value = String(value);
+          own[key] = value;
+          changed();
+        };
+        input.addEventListener("input", () => apply(false));
+        input.addEventListener("change", () => apply(true));
+        minInputs[cls] = input;
+        return h("label", { class: "min-cell", title: t(MIN_LABEL_KEYS[cls]) }, h("span", { class: "min-label", text: CHARSET_LABELS[cls] }), input);
+      });
+      return h("div", { class: "opt opt-stack" }, h("span", { class: "opt-label", text: t("genMinimums") }), h("div", { class: "min-grid" }, cells));
+    }
+
+    function symbolSetOption() {
+      const input = h("input", {
+        class: "input mono",
+        type: "text",
+        spellcheck: "false",
+        autocomplete: "off",
+        maxlength: CHARSET_INPUT_MAX_CHARS,
+        "aria-label": t("genSymbolSet"),
+      });
+      input.value = own.symbolSet;
+      input.addEventListener("input", () => {
+        own.symbolSet = input.value;
+        changed();
+      });
+      symbolReset = h("button", {
+        class: "link-btn",
+        type: "button",
+        text: t("genSymbolSetReset"),
+        onclick: () => {
+          input.value = DEFAULT_SYMBOLS;
+          own.symbolSet = DEFAULT_SYMBOLS;
+          changed();
+          input.focus();
+        },
+      });
+      return h(
+        "div",
+        { class: "opt opt-stack" },
+        h("div", { class: "opt-head" }, h("span", { class: "opt-label", text: t("genSymbolSet") }), symbolReset),
+        input,
+      );
+    }
+
+    function excludeOption() {
+      const input = h("input", {
+        class: "input mono",
+        type: "text",
+        spellcheck: "false",
+        autocomplete: "off",
+        maxlength: CHARSET_INPUT_MAX_CHARS,
+        placeholder: t("genExcludePlaceholder"),
+        "aria-label": t("genExclude"),
+      });
+      input.value = own.exclude;
+      input.addEventListener("input", () => {
+        own.exclude = input.value;
+        changed();
+      });
+      return h("div", { class: "opt opt-stack" }, h("span", { class: "opt-label", text: t("genExclude") }), input);
+    }
+
+    function separatorOption() {
+      const input = h("input", { class: "num", type: "text", maxlength: SEPARATOR_MAX_CHARS, "aria-label": t("separator"), spellcheck: "false" });
+      input.value = own.separator;
+      input.addEventListener("input", () => {
+        own.separator = input.value;
+        changed();
+      });
+      return h("label", { class: "opt" }, h("span", { class: "opt-label", text: t("separator") }), input);
+    }
+
+    function wordlistOption() {
+      const select = h(
+        "select",
+        { class: "select-sm", "aria-label": t("genWordlist") },
+        h("option", { value: "en", text: t("genWordlistEn") }),
+        h("option", { value: "de", text: t("genWordlistDe") }),
+      );
+      select.value = own.wordlist;
+      select.addEventListener("change", () => {
+        own.wordlist = select.value === "de" ? "de" : "en";
+        changed();
+      });
+      return h("label", { class: "opt" }, h("span", { class: "opt-label", text: t("genWordlist") }), select);
+    }
+
+    function changed() {
+      if (own && !problem()) api.saveGeneratorOptions({ ...own });
+      refreshState();
+    }
+
+    /** Problem text, entropy, outdated preview, enabled buttons – after every change. */
+    function refreshState() {
+      const issue = problem();
+      issueNode.hidden = !issue;
+      issueNode.textContent = issue ? generatorIssueText(issue, own) : "";
+      for (const cls of CHAR_CLASSES) if (minInputs[cls]) minInputs[cls].disabled = !own[cls];
+      if (symbolReset) symbolReset.hidden = own.symbolSet === DEFAULT_SYMBOLS;
+      if (issue && moreDetails && !moreDetails.open && concernsMore(issue)) {
+        moreDetails.open = true;
+        moreOpen = true;
+      }
+      const bits = own && !issue ? entropyBits(own) : null;
+      meta.hidden = bits === null;
+      if (bits !== null) meta.textContent = t("genEntropy", [String(Math.round(bits)), t(`genStrength${entropyScore(bits)}`)]);
+      staleNote.hidden = !preview || previewSource === currentSource();
+      previewNote.hidden = !preview || !staleNote.hidden;
+      generateButton.disabled = generating || Boolean(issue);
+      regenerateButton.disabled = generating || Boolean(issue);
+    }
+
+    function renderBox() {
+      if (!preview) {
+        box.classList.add("empty");
+        box.replaceChildren(
+          h(
+            "div",
+            { class: "gen-empty" },
+            h("div", { class: "gen-empty-title", text: t("genEmptyTitle") }),
+            h("p", { class: "gen-empty-text", text: t("genEmptyText") }),
+          ),
+        );
+        setFooter(generateButton);
+        return;
+      }
+      box.classList.remove("empty");
+      // Without own options the kind is the preset's: wrap like a phrase (fine for both).
+      output.classList.toggle("phrase", previewKind !== "password");
+      renderPassword(output, preview, previewKind !== "password");
+      if (!output.isConnected) {
+        box.replaceChildren(output, h("div", { class: "gen-box-actions" }, regenerateButton, iconButton("copy", t("copy"), () => copyPreview())));
+        setFooter(copyButton, fillButton);
+      }
     }
 
     async function generate() {
+      if (generating || problem()) return;
       const mine = ++seq;
+      const sourceKey = currentSource();
+      const kind = own ? own.kind : "preset";
+      // "Generieren" makes way for the preview: its focus moves to "Neu generieren".
+      const moveFocus = document.activeElement === generateButton;
+      let shown = false;
+      generating = true;
       output.classList.add("busy");
+      refreshState();
       try {
-        const next = await api.generate({ ...options });
-        if (mine !== seq) return;
-        password = next;
-        output.classList.toggle("phrase", options.kind === "passphrase");
-        renderPassword(output, next);
+        // `{}`: no own options – the app's default preset (whatever storage still holds).
+        const next = await api.generate(own ? { ...own } : {});
+        if (mine !== seq || !box.isConnected) return;
+        preview = next;
+        previewSource = sourceKey;
+        previewKind = kind;
+        renderBox();
+        shown = true;
       } catch (err) {
-        if (mine === seq && !routeError(err)) toast(errorText(err?.code), "error");
+        if (mine === seq && !routeError(err)) toast(err?.code === "invalid_request" ? t("genFailed") : errorText(err?.code), "error");
       } finally {
-        if (mine === seq) output.classList.remove("busy");
+        if (mine === seq) {
+          generating = false;
+          output.classList.remove("busy");
+          if (box.isConnected) refreshState();
+          if (shown && moveFocus) regenerateButton.focus();
+        }
       }
+    }
+
+    function copyPreview() {
+      if (!preview) return undefined;
+      const password = preview;
+      return guarded(async () => {
+        const result = await api.copyGenerated(password);
+        toast(t(result?.remembered ? "genCopiedRemembered" : "copied"));
+      });
+    }
+
+    async function fillPreview(btn) {
+      if (!preview) return;
+      setBusy(btn, true);
+      try {
+        if (!ctx.tabInfo?.web) throw Object.assign(new Error("no_field"), { code: "no_field" });
+        await api.fillGenerated(ctx.tabInfo.tabId, preview);
+        if (api.demo) toast(t("insertedPassword"));
+        else api.close();
+      } catch (err) {
+        if (!routeError(err)) toast(errorText(err?.code), "error");
+      } finally {
+        setBusy(btn, false);
+      }
+    }
+
+    /** Enter (not on buttons, selects, switches) and Ctrl+G generate while this tab is shown. */
+    function onGeneratorKeys(ev) {
+      if (!box.isConnected) {
+        document.removeEventListener("keydown", onGeneratorKeys);
+        return;
+      }
+      if (ev.defaultPrevented || ev.altKey || ev.shiftKey || ev.isComposing) return;
+      const shortcut = (ev.ctrlKey || ev.metaKey) && String(ev.key || "").toLowerCase() === "g";
+      const enter = ev.key === "Enter" && !ev.ctrlKey && !ev.metaKey;
+      if (!shortcut && !(enter && enterGenerates(ev.target))) return;
+      ev.preventDefault();
+      // Apply a number the user typed but did not commit yet.
+      if (ev.target instanceof HTMLInputElement && ev.target.type === "number") ev.target.dispatchEvent(new Event("change"));
+      generate();
+    }
+
+    function enterGenerates(target) {
+      if (!(target instanceof Element) || target === document.body || target === document.documentElement) return true;
+      if (!screen.contains(target) || target.closest("header, nav, .menu")) return false;
+      if (target instanceof HTMLInputElement) return ["text", "number", "range"].includes(target.type);
+      return !target.closest("button, select, summary, a, textarea, [role='menuitem']");
     }
   }
 
@@ -1473,14 +1734,52 @@ function clamp(value, min, max) {
   return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : min;
 }
 
-/** Shows a password with digits and symbols colored (text nodes only, no HTML). */
-function renderPassword(node, password) {
+/** True if a generator problem concerns a field under "Weitere Optionen". */
+function concernsMore(issue) {
+  if (!issue) return false;
+  if (issue.code === "no_character_set") return issue.emptied !== undefined;
+  return ["symbol_set", "exclude", "start_with_letter", "minimums_exceed_length"].includes(issue.code);
+}
+
+/** The text for a generatorIssue() result (the generator's codes, see lib/generator.js). */
+function generatorIssueText(issue, options) {
+  switch (issue.code) {
+    case "length":
+      return t("genIssueLength");
+    case "words":
+      return t("genIssueWords");
+    case "separator":
+      return t("genIssueSeparator");
+    case "symbol_set": {
+      const reason = symbolSetProblem(options);
+      return t(reason === "empty" ? "genIssueSymbolsEmpty" : reason === "too_long" ? "genIssueSymbolsTooLong" : "genIssueSymbolsInvalid");
+    }
+    case "exclude":
+      return t("genIssueExclude");
+    case "no_character_set":
+      return t(EMPTIED_KEYS[issue.emptied] ?? "genIssueNoCharset");
+    case "start_with_letter":
+      return t("genIssueStartWithLetter");
+    case "minimums_exceed_length":
+      return t("genIssueMinimums", [String(requiredCharacters(options)), String(options.length)]);
+    default:
+      return t("genIssueOptions");
+  }
+}
+
+/**
+ * Shows a password with digits and symbols colored (text nodes only, no
+ * HTML). `phrase`: a line may break after each symbol run (a passphrase's
+ * separators), so words stay whole.
+ */
+function renderPassword(node, password, phrase = false) {
   node.replaceChildren();
   let run = "";
   let runClass = null;
   const flush = () => {
     if (!run) return;
     node.append(runClass ? h("span", { class: runClass, text: run }) : document.createTextNode(run));
+    if (phrase && runClass === "s") node.append(h("wbr"));
     run = "";
   };
   for (const ch of password) {
@@ -1561,9 +1860,13 @@ function showAddLogin(ctx) {
   name.value = info ? info.host : "";
   url.value = info ? info.origin : "";
   let passwordInput = null;
+  /** The generator's last preview put into the field: kept in the generator history only if the login is saved with it. */
+  let generated = "";
   const generateBtn = iconButton("wand", t("generate"), async () => {
+    // A preview with the popup's own options, else the app's default preset.
     const password = await guarded(() => api.generate(null));
     if (typeof password === "string" && passwordInput) {
+      generated = password;
       passwordInput.value = password;
       passwordInput.type = "text";
     }
@@ -1602,6 +1905,7 @@ function showAddLogin(ctx) {
             url: url.value.trim(),
             username: username.value.trim(),
             password: secret.input.value,
+            generated: generated !== "" && secret.input.value === generated,
           });
           toast(t("saved"));
           back();
