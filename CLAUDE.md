@@ -49,9 +49,9 @@ clippy lints break CI otherwise).
 - The GitHub repo is **public**. Never commit private keys, tokens or vault files.
   Signing keys live in the private repo `CedrickGD/keys` (folder `keystead/`); CI
   uses the secret `TAURI_SIGNING_PRIVATE_KEY`.
-- `main` holds the released state (2.0.0 and later). Work on a feature branch
-  and merge it via pull request with a merge commit; the owner decides when to
-  merge and when to tag.
+- Work directly on `main` – no feature branches, no pull requests (owner's
+  wish, 2026-10-23). Intermediate commits carry `[skip ci]`; the owner decides
+  when a beta (`[release]`) or a stable tag is published.
 - Commit message markers: `[release]` publishes a signed beta pre-release
   (`v<version in tauri.conf.json>-beta.<run>`, e.g. `v2.0.1-beta.12`; Windows
   setup + ZIPs + release-signed Android APK) that installed desktop apps on
