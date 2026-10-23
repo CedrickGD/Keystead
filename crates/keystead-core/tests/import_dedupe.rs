@@ -820,6 +820,13 @@ fn plan_classifies_every_item_type() {
     let preview = plan.preview();
     assert_eq!(preview.new_count, 5);
     let text = serde_json::to_string(&preview).unwrap();
+    // Without the random item ids: one could contain a secret's digits
+    // ("…-774755001577" holds "5500").
+    let text = text
+        .split('"')
+        .filter(|part| uuid::Uuid::parse_str(part).is_err())
+        .collect::<Vec<_>>()
+        .join("\"");
     for secret in [
         "gh-pass",
         "mail-pass",
