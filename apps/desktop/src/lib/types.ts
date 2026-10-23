@@ -503,6 +503,14 @@ export interface Settings {
    */
   mirrorFolder: string | null;
   /**
+   * Desktop: the WebDAV server the app keeps its vault copies on instead of a cloud folder (stage 2c;
+   * one method per PC). No password. Only `set_sync_server` / `clear_sync_server` change it
+   * (`save_settings` keeps the stored value, except that a new `mirrorFolder` clears it). The phone ignores it.
+   */
+  syncServer: SyncServer | null;
+  /** Phone: automatic syncs with a server only on Wi-Fi ("Nur über WLAN synchronisieren"). Default false. */
+  syncWifiOnly: boolean;
+  /**
    * The user's generator presets and the default preset's id. Changed only by
    * the preset commands (`save_generator_preset` …); `save_settings` keeps the
    * stored values, so read them from `generator_presets`, not from here.
@@ -611,9 +619,61 @@ export interface SyncFileResult {
   passwordChanged: boolean;
 }
 
-/** The phone's linked cloud folder (`folder_status`, `sync://status`). No secrets. */
+/** A WebDAV server as stored (`Settings.syncServer`, a phone's server link). No password. */
+export interface SyncServer {
+  /** The server URL as entered. */
+  url: string;
+  user: string;
+  /** The folder below `url` (default "Keystead"). */
+  folder: string;
+  /** SHA-256 (hex) of the server certificate the user confirmed; null when the system trusts it. */
+  certSha256: string | null;
+  /** The server honoured `If-Match` when it was set up (atomic checks before each write). */
+  cas: boolean;
+}
+
+/** What the server form sends (`webdav_test`, `webdav_create_folder`, `link_webdav`, `set_sync_server`). */
+export interface WebDavConfig {
+  url: string;
+  user: string;
+  /** Sent once; never stored by the page, never returned. */
+  password: string;
+  folder: string;
+  certSha256: string | null;
+}
+
+/** A server certificate the system does not trust (to confirm by its SHA-256). */
+export interface CertInfo {
+  sha256: string;
+  subject: string;
+  issuer: string;
+  notBefore: number | null;
+  notAfter: number | null;
+}
+
+/** The connection test's result (`webdav_test`, `webdav_create_folder`). No secrets. */
+export interface WebDavTest {
+  /** The folder exists and can be used. */
+  ok: boolean;
+  /** The error code otherwise (e.g. `unsupported:sync_auth_failed`). */
+  code: string | null;
+  /** The certificate is not trusted: its facts, for the user to confirm. */
+  certificate: CertInfo | null;
+  /** A URL the server points to instead (same-host https redirect, Nextcloud's WebDAV folder). */
+  suggestedUrl: string | null;
+  /** The server is fine, the folder does not exist yet ("Ordner anlegen"). */
+  folderMissing: boolean;
+  writable: boolean;
+  cas: boolean;
+}
+
+/** The phone's linked cloud folder or server (`folder_status`, `sync://status`). No secrets. */
 export interface FolderStatus {
   linked: boolean;
+  /** What the phone is linked to (null without a link). */
+  kind: "folder" | "webdav" | null;
+  /** The server of a `webdav` link (no password). */
+  server: SyncServer | null;
   /** The app may write the linked folder (false for a read-only link or none). */
   writable: boolean;
   syncing: boolean;
@@ -624,6 +684,10 @@ export interface FolderStatus {
   /** Error code of the last failed sync, e.g. `unsupported:folder_access_lost`. */
   lastError: string | null;
   files: SyncFileResult[];
+  /** Why the last automatic sync did not run: `sync_wifi_only` (mobile data), `sync_backoff` (server failed shortly before). */
+  skipped: string | null;
+  /** While automatic syncs pause after a server error: when the next may run (ms). */
+  retryAt: number | null;
 }
 
 /**
@@ -669,8 +733,16 @@ export interface SyncNotice {
 
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
 export interface MirrorStatus {
-  /** `Settings.mirrorFolder`; null = off. */
+  /** How the copies are kept: a cloud folder, a WebDAV server, or null = off. */
+  kind: "folder" | "webdav" | null;
+  /** `Settings.mirrorFolder`; null without one. */
   folder: string | null;
+  /** `Settings.syncServer` (no password); null without one. */
+  server: SyncServer | null;
+  /** A stored server password survives a restart (Windows); false: asked again after a restart. */
+  passwordKept: boolean;
+  /** While the rounds pause after a server error: when the next may run (ms). */
+  retryAt: number | null;
   /** When a pass last reached this folder (ms; since the start or since the folder was set). */
   lastMirroredAt: number | null;
   /** When a pass last took the folder's copy of a vault (the phone's edits; ms, likewise). */

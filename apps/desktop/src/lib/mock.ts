@@ -62,6 +62,16 @@
 // "Wiederherstellen" opens the import with it (password "demo").
 // A resolution must name the two writes of the recorded conflict
 // (`localDigest`/`remoteDigest`, else `unsupported:sync_conflict_changed`).
+// Stage 2c: a WebDAV server instead of the folder – the server form
+// (`webdav_test`, `webdav_create_folder`) answers by the URL: one containing
+// "demo" connects, "selfsigned" first asks to trust its certificate, "fail"
+// refuses the login (`sync_auth_failed`), "demo-missing" has no folder until
+// "Ordner anlegen", anything else is offline; only https:// URLs without
+// credentials are accepted. The phone's `link_webdav` links it like a folder
+// (the same sample vaults), the PC's `set_sync_server` replaces the mirror
+// folder (and `clear_sync_server` turns it off); no password is kept.
+// `?sync=server` (phone) starts linked to a demo server, `?mirror=server` (PC)
+// with one set.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -105,11 +115,14 @@ import type {
   Settings,
   SyncConflict,
   SyncFileResult,
+  SyncServer,
   TotpCode,
   UpdateInfo,
   VaultData,
   VaultInfo,
   VaultItem,
+  WebDavConfig,
+  WebDavTest,
 } from "./types";
 import { DEFAULT_GENERATOR_OPTIONS } from "./types";
 import { totpNow } from "./demo/totp";
@@ -201,7 +214,7 @@ interface MockMirror {
 /** The phone's linked cloud folder (see the header comment). */
 interface MockSync {
   /** `writable`: false for a read-only link (`?sync=readonly`, a link from before stage 2b). */
-  link: { folderName: string; linkedAt: number; writable: boolean } | null;
+  link: { folderName: string; linkedAt: number; writable: boolean; kind: "folder" | "webdav"; server: SyncServer | null } | null;
   lastSyncAt: number | null;
   lastError: string | null;
   files: SyncFileResult[];
@@ -343,6 +356,8 @@ function initState(): MockState {
       lockInBackgroundSeconds: 60,
       deviceUnlock: phone && params.get("fingerprint") === "on" && !empty,
       mirrorFolder: !phone && params.get("mirror") === "on" ? MOCK_MIRROR_FOLDER : null,
+      syncServer: !phone && params.get("mirror") === "server" ? { ...MOCK_SERVER } : null,
+      syncWifiOnly: false,
       generatorPresets: empty
         ? []
         : [
@@ -400,7 +415,7 @@ function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock
 
 /** `mode`: `?sync=` – "linked", "readonly" (linked without write access) or none. */
 function initSync(mode: string | null, empty: boolean, now: number): MockSync {
-  const linked = mode === "linked" || mode === "readonly";
+  const linked = mode === "linked" || mode === "readonly" || mode === "server";
   const folder = new Map([
     [PRIVATE_VAULT_ID, { revision: 42, password: DEMO_PASSWORD, newNotes: 0 }],
     [WORK_VAULT_ID, { revision: 17, password: DEMO_PASSWORD, newNotes: 0 }],
@@ -417,7 +432,10 @@ function initSync(mode: string | null, empty: boolean, now: number): MockSync {
     lost: false,
   };
   if (linked) {
-    sync.link = { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: mode !== "readonly" };
+    sync.link =
+      mode === "server"
+        ? { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: true, kind: "webdav", server: { ...MOCK_SERVER } }
+        : { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: mode !== "readonly", kind: "folder", server: null };
     sync.lastSyncAt = now - 4 * 60_000;
     // `?mock=empty`: linked before the PC's copies arrived – they are in the
     // folder now, and the sync at start brings them.
@@ -991,7 +1009,79 @@ function validateSettings(input: unknown, stored: Settings): Settings {
   }
   if (typeof s.deviceUnlock !== "boolean") fail("invalid_input:settings");
   if (s.mirrorFolder !== null && typeof s.mirrorFolder !== "string") fail("invalid_input:settings");
-  return clone({ ...s, mirrorFolder: s.mirrorFolder?.trim() ? s.mirrorFolder : null });
+  if (typeof s.syncWifiOnly !== "boolean") fail("invalid_input:settings");
+  const mirrorFolder = s.mirrorFolder?.trim() ? s.mirrorFolder : null;
+  // Like `from_the_page`: only the server commands change `syncServer` – a new folder replaces it.
+  const syncServer = mirrorFolder !== null && mirrorFolder !== stored.mirrorFolder ? null : stored.syncServer;
+  return clone({ ...s, mirrorFolder, syncServer });
+}
+
+// ---------------------------------------------------------------------------
+// WebDAV server (stage 2c, see the header comment)
+// ---------------------------------------------------------------------------
+
+const MOCK_SERVER: SyncServer = {
+  url: "https://cloud.demo.example",
+  user: "demo",
+  folder: "Keystead",
+  certSha256: null,
+  cas: true,
+};
+
+const MOCK_CERT = {
+  sha256: "3f9a1c0e7b2d4a6f8e1c3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a",
+  subject: "CN=nas.local",
+  issuer: "CN=nas.local",
+  notBefore: Date.UTC(2026, 0, 1),
+  notAfter: Date.UTC(2028, 0, 1),
+};
+
+/** Server folders made with "Ordner anlegen" (by URL and folder). */
+const mockCreatedFolders = new Set<string>();
+
+function parseWebDavConfig(input: unknown): WebDavConfig {
+  const c = input as Partial<WebDavConfig> | null;
+  if (!c || typeof c.url !== "string" || typeof c.user !== "string" || typeof c.password !== "string") {
+    fail("invalid_input:webdav_config");
+  }
+  const url = c.url.trim();
+  const host = url.replace(/^https:\/\//i, "").split("/")[0] ?? "";
+  if (!/^https:\/\/[^/]/i.test(url) || host.includes("@")) fail("invalid_input:server_url");
+  const folder = typeof c.folder === "string" && c.folder.trim() ? c.folder.trim() : "Keystead";
+  if (folder.split("/").some((part) => part === "." || part === "..") || folder.includes("\\")) {
+    fail("invalid_input:server_folder");
+  }
+  return { url, user: c.user, password: c.password, folder, certSha256: c.certSha256 ?? null };
+}
+
+/** `webdav_test`: the answer the URL asks for (see the header comment). */
+function mockWebdavTest(cfg: WebDavConfig): WebDavTest {
+  const result: WebDavTest = {
+    ok: false,
+    code: null,
+    certificate: null,
+    suggestedUrl: null,
+    folderMissing: false,
+    writable: false,
+    cas: false,
+  };
+  const url = cfg.url.toLowerCase();
+  if (url.includes("selfsigned") && cfg.certSha256 !== MOCK_CERT.sha256) {
+    return { ...result, code: "unsupported:sync_server_certificate", certificate: { ...MOCK_CERT } };
+  }
+  if (!url.includes("demo") && !url.includes("selfsigned")) return { ...result, code: "unsupported:sync_offline" };
+  if (url.includes("fail") || !cfg.password) return { ...result, code: "unsupported:sync_auth_failed" };
+  if (url.includes("missing") && !mockCreatedFolders.has(`${url}|${cfg.folder}`)) {
+    return { ...result, code: "unsupported:sync_server_folder_missing", folderMissing: true };
+  }
+  return { ...result, ok: true, writable: true, cas: true };
+}
+
+/** The server as stored (no password) once the test passed; the test's code otherwise. */
+function mockConnect(cfg: WebDavConfig): SyncServer {
+  const test = mockWebdavTest(cfg);
+  if (!test.ok) fail(test.code ?? "unsupported:sync_server_error");
+  return { url: cfg.url, user: cfg.user, folder: cfg.folder, certSha256: cfg.certSha256, cas: test.cas };
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,8 +1101,14 @@ function checkMirrorFolder(folder: string): void {
 
 function mirrorStatus(): MirrorStatus {
   const s = getState();
+  const folder = s.settings.mirrorFolder;
+  const server = folder === null ? s.settings.syncServer : null;
   return {
-    folder: s.settings.mirrorFolder,
+    kind: folder !== null ? "folder" : server ? "webdav" : null,
+    folder,
+    server: clone(server),
+    passwordKept: true,
+    retryAt: null,
     lastMirroredAt: s.mirror.lastMirroredAt,
     lastPulledAt: s.mirror.lastPulledAt,
     lastError: s.mirror.lastError,
@@ -1026,7 +1122,7 @@ function scheduleMirrorPass(): void {
   window.clearTimeout(mirrorTimer);
   mirrorTimer = window.setTimeout(() => {
     const s = getState();
-    if (!s.settings.mirrorFolder || !s.unlockedId || isPhone()) return;
+    if ((!s.settings.mirrorFolder && !s.settings.syncServer) || !s.unlockedId || isPhone()) return;
     const before = JSON.stringify(mirrorStatus());
     if (s.mirror.lost) {
       s.mirror.lastError = "unsupported:mirror_folder_missing";
@@ -1294,6 +1390,8 @@ function folderStatus(): FolderStatus {
   const sync = getState().sync;
   return {
     linked: sync.link !== null,
+    kind: sync.link?.kind ?? null,
+    server: clone(sync.link?.server ?? null),
     writable: sync.link?.writable ?? false,
     syncing: sync.syncing,
     folderName: sync.link?.folderName ?? null,
@@ -1301,6 +1399,8 @@ function folderStatus(): FolderStatus {
     lastSyncAt: sync.link ? sync.lastSyncAt : null,
     lastError: sync.link ? sync.lastError : null,
     files: sync.link ? clone(sync.files) : [],
+    skipped: null,
+    retryAt: null,
   };
 }
 
@@ -1994,6 +2094,39 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "mirror_status":
       return mirrorStatus();
 
+    case "webdav_test": {
+      const cfg = parseWebDavConfig(args.config);
+      await sleep(600);
+      return mockWebdavTest(cfg);
+    }
+
+    case "webdav_create_folder": {
+      const cfg = parseWebDavConfig(args.config);
+      await sleep(500);
+      const before = mockWebdavTest(cfg);
+      if (!before.ok && !before.folderMissing) fail(before.code ?? "unsupported:sync_server_error");
+      mockCreatedFolders.add(`${cfg.url.toLowerCase()}|${cfg.folder}`);
+      return mockWebdavTest(cfg);
+    }
+
+    case "set_sync_server": {
+      const cfg = parseWebDavConfig(args.config);
+      await sleep(600);
+      s.settings = { ...s.settings, syncServer: mockConnect(cfg), mirrorFolder: null };
+      s.mirror.lastMirroredAt = null;
+      s.mirror.lastError = null;
+      emit("mirror://status", mirrorStatus());
+      scheduleMirrorPass();
+      return mirrorStatus();
+    }
+
+    case "clear_sync_server":
+      s.settings = { ...s.settings, syncServer: null };
+      s.mirror.lastMirroredAt = null;
+      s.mirror.lastError = null;
+      emit("mirror://status", mirrorStatus());
+      return mirrorStatus();
+
     case "browser_status":
       return browserStatus();
 
@@ -2120,7 +2253,23 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       // The system picker; the user picks the PC's folder in the cloud app
       // (and grants write access – the link is writable from now on).
       await sleep(700);
-      s.sync.link = { folderName: "Keystead", linkedAt: Date.now(), writable: true };
+      s.sync.link = { folderName: "Keystead", linkedAt: Date.now(), writable: true, kind: "folder", server: null };
+      s.sync.lost = false;
+      s.sync.lastError = null;
+      s.lastActivity = Date.now();
+      try {
+        await mockSyncFolder();
+      } catch {
+        /* recorded in lastError */
+      }
+      return folderStatus();
+    }
+
+    case "link_webdav": {
+      const cfg = parseWebDavConfig(args.config);
+      await sleep(700);
+      const server = mockConnect(cfg);
+      s.sync.link = { folderName: server.folder, linkedAt: Date.now(), writable: true, kind: "webdav", server };
       s.sync.lost = false;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
@@ -2233,6 +2382,9 @@ const PHONE_COMMANDS = new Set([
   "save_settings",
   "folder_status",
   "link_folder",
+  "link_webdav",
+  "webdav_test",
+  "webdav_create_folder",
   "sync_now",
   "unlink_folder",
   "device_unlock_status",
@@ -2462,7 +2614,7 @@ function mockPhonePush(): void {
     deletedAt: null,
   });
   touch(vault);
-  if (s.settings.mirrorFolder) {
+  if (s.settings.mirrorFolder || s.settings.syncServer) {
     s.mirror.lastPulledAt = now;
     s.mirror.lastMirroredAt = now;
     emit("mirror://status", mirrorStatus());

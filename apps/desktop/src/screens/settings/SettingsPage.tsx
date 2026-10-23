@@ -11,6 +11,7 @@ import {
   FolderOpen,
   FolderSync,
   RefreshCw,
+  Server,
   CircleArrowUp,
   CircleAlert,
   Globe,
@@ -63,14 +64,18 @@ import { useFolderSync } from "../../state/sync";
 import { useDeviceUnlock } from "../../state/deviceUnlock";
 import { useMirror } from "../../state/mirror";
 import {
+  PhoneServerDialog,
   RelinkBanner,
   SyncFileList,
   SyncSteps,
   folderLost,
   needsRelink,
+  serverNeedsPassword,
   useRelativeTimeTick,
+  useSkippedText,
   useSyncErrorText,
 } from "../../components/FolderSync";
+import { WebDavDialog } from "../../components/WebDavForm";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -888,32 +893,53 @@ function UpdateCheckResult({ result }: { result: CheckResult }) {
 }
 
 /**
- * Phone only: the linked cloud folder the vaults come from ("Cloud-folder
- * sync (phone)" in docs/ARCHITECTURE.md) – copy-in only.
+ * Phone only: where the vaults are synced with – a cloud folder ("Cloud-folder
+ * sync (phone)" in docs/ARCHITECTURE.md) or, since stage 2c, a folder on a
+ * WebDAV server ("Server sync (WebDAV)").
  */
 function SyncSection() {
   const { t, formatDateTime, formatRelative } = useT();
   const folderSync = useFolderSync();
+  const { settings, updateSettings } = useApp();
   const errorFor = useSyncErrorText();
-  useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt));
+  const skippedText = useSkippedText();
+  const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
+  useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync) return null;
   const { status, busy, link, sync, unlink } = folderSync;
   const linked = status?.linked === true;
+  const server = status?.kind === "webdav" ? status.server : null;
   const syncing = Boolean(status?.syncing) || busy === "sync";
+  const skipped = skippedText(status);
+  const dialog = serverForm && (
+    <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
+  );
 
   return (
     <SettingsSection id="sync" title={t("settings.sync")} description={t("settings.syncDesc")}>
       {!linked ? (
-        <SettingRow title={t("settings.syncFolder")} description={<SyncSteps />} stacked>
-          <Button
-            variant="primary"
-            icon={<FolderOpen />}
-            loading={busy === "link"}
-            disabled={!status || busy !== null}
-            onClick={() => void link()}
-          >
-            {t("sync.pickFolder")}
-          </Button>
+        <SettingRow title={t("sync.method")} description={<SyncSteps />} stacked>
+          <div className="setting-actions">
+            <Button
+              variant="primary"
+              icon={<FolderOpen />}
+              loading={busy === "link"}
+              disabled={!status || busy !== null}
+              onClick={() => void link()}
+            >
+              {t("sync.pickFolder")}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<Server />}
+              loading={busy === "server"}
+              disabled={!status || busy !== null}
+              onClick={() => setServerForm("new")}
+            >
+              {t("sync.connectServer")}
+            </Button>
+          </div>
+          <p className="subtle">{t("sync.methodSoon")}</p>
         </SettingRow>
       ) : (
         <>
@@ -922,26 +948,72 @@ function SyncSection() {
               <RelinkBanner />
             </div>
           )}
-          <SettingRow
-            title={t("settings.syncFolder")}
-            description={
-              <>
-                <strong className="sync-folder-name">{status?.folderName}</strong>
-                <span className="sync-folder-desc">{t("settings.syncFolderDesc")}</span>
-              </>
-            }
-            stacked
-          >
-            <Button
-              variant="secondary"
-              icon={<FolderOpen />}
-              loading={busy === "link"}
-              disabled={busy !== null && busy !== "link"}
-              onClick={() => void link()}
+          {server ? (
+            <SettingRow
+              title={t("sync.server")}
+              description={
+                <>
+                  <code className="path selectable">{server.url}</code>
+                  <span className="sync-folder-desc">{t("sync.serverUserFolder", { user: server.user, folder: server.folder })}</span>
+                  <span className="sync-folder-desc">{t("sync.serverDesc")}</span>
+                </>
+              }
+              stacked
             >
-              {folderLost(status) ? t("sync.repick") : t("sync.changeFolder")}
-            </Button>
-          </SettingRow>
+              <div className="setting-actions">
+                <Button
+                  variant={serverNeedsPassword(status?.lastError) ? "primary" : "secondary"}
+                  icon={serverNeedsPassword(status?.lastError) ? <KeyRound /> : <Server />}
+                  loading={busy === "server"}
+                  disabled={busy !== null && busy !== "server"}
+                  onClick={() => setServerForm("edit")}
+                >
+                  {serverNeedsPassword(status?.lastError) ? t("sync.reenterPassword") : t("sync.changeServer")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  icon={<FolderOpen />}
+                  loading={busy === "link"}
+                  disabled={busy !== null && busy !== "link"}
+                  onClick={() => void link()}
+                >
+                  {t("sync.switchToFolder")}
+                </Button>
+              </div>
+            </SettingRow>
+          ) : (
+            <SettingRow
+              title={t("settings.syncFolder")}
+              description={
+                <>
+                  <strong className="sync-folder-name">{status?.folderName}</strong>
+                  <span className="sync-folder-desc">{t("settings.syncFolderDesc")}</span>
+                </>
+              }
+              stacked
+            >
+              <div className="setting-actions">
+                <Button
+                  variant="secondary"
+                  icon={<FolderOpen />}
+                  loading={busy === "link"}
+                  disabled={busy !== null && busy !== "link"}
+                  onClick={() => void link()}
+                >
+                  {folderLost(status) ? t("sync.repick") : t("sync.changeFolder")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  icon={<Server />}
+                  loading={busy === "server"}
+                  disabled={busy !== null && busy !== "server"}
+                  onClick={() => setServerForm("new")}
+                >
+                  {t("sync.switchToServer")}
+                </Button>
+              </div>
+            </SettingRow>
+          )}
           <SettingRow
             title={t("settings.syncLast")}
             description={
@@ -957,6 +1029,7 @@ function SyncSection() {
                     <span>{errorFor(status.lastError)}</span>
                   </span>
                 )}
+                {skipped && !syncing && <span className="sync-folder-desc">{skipped}</span>}
               </>
             }
             stacked
@@ -971,8 +1044,17 @@ function SyncSection() {
               {t("sync.syncNow")}
             </Button>
           </SettingRow>
+          {server && (
+            <SettingRow title={t("sync.wifiOnly")} description={t("sync.wifiOnlyDesc")}>
+              <Switch
+                checked={settings.syncWifiOnly}
+                onChange={(syncWifiOnly) => void updateSettings({ syncWifiOnly })}
+                label={t("sync.wifiOnly")}
+              />
+            </SettingRow>
+          )}
           <SettingRow
-            title={t("settings.syncVaults")}
+            title={server ? t("settings.syncVaultsServer") : t("settings.syncVaults")}
             description={
               status && status.files.length > 0 ? <SyncFileList files={status.files} /> : t("settings.syncNoFiles")
             }
@@ -991,58 +1073,87 @@ function SyncSection() {
           </SettingRow>
         </>
       )}
+      {dialog}
     </SettingsSection>
   );
 }
 
+type SyncMethod = "none" | "folder" | "webdav";
+
 /**
- * Desktop: "Kopie im Cloud-Ordner aktuell halten" – the encrypted copies the
- * phone reads ("Cloud-folder mirror (desktop) and phone link" in
- * docs/ARCHITECTURE.md), and the way to the phone.
+ * Desktop: how the PC keeps its encrypted copies for the phone – off, a
+ * cloud folder ("Cloud-folder mirror (desktop) and phone link" in
+ * docs/ARCHITECTURE.md) or, since stage 2c, a WebDAV server ("Server sync
+ * (WebDAV)"); one method at a time.
  */
-function PhoneSection() {
+function DesktopSyncSection() {
   const { t, errorText, formatDateTime, formatRelative } = useT();
   const mirror = useMirror();
-  const openImport = useOpenImport();
   const { settings } = useApp();
+  const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const status = mirror?.status ?? null;
-  useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt));
+  useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt || status?.retryAt));
   if (!mirror) return null;
   const folder = settings.mirrorFolder;
-  const on = folder !== null;
+  const server = folder === null ? settings.syncServer : null;
+  const method: SyncMethod = folder !== null ? "folder" : server ? "webdav" : "none";
+
+  const pick = (next: SyncMethod) => {
+    if (next === method) return;
+    // A folder or a server replaces the other one (the backend clears it).
+    if (next === "folder") void mirror.choose();
+    else if (next === "webdav") setServerForm("new");
+    else void (method === "folder" ? mirror.turnOff() : mirror.clearServer());
+  };
+
+  const state = (
+    <>
+      <span className="mirror-state">
+        {status?.lastMirroredAt
+          ? t("mirror.lastCopied", { when: `${formatRelative(status.lastMirroredAt)} · ${formatDateTime(status.lastMirroredAt)}` })
+          : method === "webdav"
+            ? t("mirror.noCopyYetServer")
+            : t("mirror.noCopyYet")}
+      </span>
+      {status?.lastPulledAt && (
+        <span className="mirror-state">
+          {t("mirror.lastPulled", { when: `${formatRelative(status.lastPulledAt)} · ${formatDateTime(status.lastPulledAt)}` })}
+        </span>
+      )}
+      {status?.lastError && (
+        <span className="callout callout-warning mirror-error" role="status">
+          <TriangleAlert />
+          <span>{errorText(new ApiError(status.lastError))}</span>
+        </span>
+      )}
+      {status?.retryAt && status.retryAt > Date.now() && (
+        <span className="mirror-state">{t("mirror.retryAt", { when: formatRelative(status.retryAt) })}</span>
+      )}
+    </>
+  );
 
   return (
-    <SettingsSection id="phone" title={t("settings.phone")} description={t("settings.phoneDesc")}>
-      <SettingRow title={t("mirror.title")} description={t("mirror.desc")}>
-        <Switch
-          checked={on}
-          onChange={(enable) => void (enable ? mirror.choose() : mirror.turnOff())}
-          label={t("mirror.title")}
-          disabled={mirror.busy}
+    <SettingsSection id="sync" title={t("settings.sync")} description={t("settings.syncDescPc")}>
+      <SettingRow title={t("sync.method")} description={t("sync.methodSoon")} stacked>
+        <Segmented<SyncMethod>
+          value={method}
+          onChange={pick}
+          ariaLabel={t("sync.method")}
+          options={[
+            { value: "none", label: t("sync.methodNone") },
+            { value: "folder", label: t("sync.methodFolder"), icon: <FolderOpen /> },
+            { value: "webdav", label: t("sync.methodServer"), icon: <Server /> },
+          ]}
         />
       </SettingRow>
-      {on && (
+      {method === "folder" && (
         <SettingRow
           title={t("mirror.folder")}
           description={
             <>
               <code className="path selectable">{folder}</code>
-              <span className="mirror-state">
-                {status?.lastMirroredAt
-                  ? t("mirror.lastCopied", { when: `${formatRelative(status.lastMirroredAt)} · ${formatDateTime(status.lastMirroredAt)}` })
-                  : t("mirror.noCopyYet")}
-              </span>
-              {status?.lastPulledAt && (
-                <span className="mirror-state">
-                  {t("mirror.lastPulled", { when: `${formatRelative(status.lastPulledAt)} · ${formatDateTime(status.lastPulledAt)}` })}
-                </span>
-              )}
-              {status?.lastError && (
-                <span className="callout callout-warning mirror-error" role="status">
-                  <TriangleAlert />
-                  <span>{errorText(new ApiError(status.lastError))}</span>
-                </span>
-              )}
+              <span className="mirror-state">{t("mirror.desc")}</span>
+              {state}
             </>
           }
         >
@@ -1051,6 +1162,58 @@ function PhoneSection() {
           </Button>
         </SettingRow>
       )}
+      {method === "webdav" && server && (
+        <SettingRow
+          title={t("sync.server")}
+          description={
+            <>
+              <code className="path selectable">{server.url}</code>
+              <span className="mirror-state">{t("sync.serverUserFolder", { user: server.user, folder: server.folder })}</span>
+              <span className="mirror-state">{t("mirror.serverDesc")}</span>
+              {state}
+            </>
+          }
+          stacked
+        >
+          <Button
+            variant={serverNeedsPassword(status?.lastError) ? "primary" : "secondary"}
+            icon={serverNeedsPassword(status?.lastError) ? <KeyRound /> : <Server />}
+            loading={mirror.busy}
+            onClick={() => setServerForm("edit")}
+          >
+            {serverNeedsPassword(status?.lastError) ? t("sync.reenterPassword") : t("sync.changeServer")}
+          </Button>
+        </SettingRow>
+      )}
+      {serverForm && (
+        <WebDavDialog
+          initial={serverForm === "edit" ? server : null}
+          title={serverForm === "edit" ? t("webdav.changeTitle") : t("webdav.title")}
+          connectLabel={t("webdav.connect")}
+          passwordNote={status?.passwordKept === false ? t("webdav.passwordMemory") : t("webdav.passwordStoredPc")}
+          onConnect={mirror.setServer}
+          onClose={() => setServerForm(null)}
+        />
+      )}
+    </SettingsSection>
+  );
+}
+
+/**
+ * Desktop: the way to the phone – the vaults the folder or server offers
+ * (made on the phone), the phone's conflict copies and the steps; the
+ * method itself is chosen under "Synchronisierung" (`DesktopSyncSection`).
+ */
+function PhoneSection() {
+  const { t, formatDateTime, formatRelative } = useT();
+  const mirror = useMirror();
+  const openImport = useOpenImport();
+  const { settings } = useApp();
+  if (!mirror) return null;
+  const on = settings.mirrorFolder !== null || settings.syncServer !== null;
+
+  return (
+    <SettingsSection id="phone" title={t("settings.phone")} description={t("settings.phoneDesc")}>
       {on && mirror.offers.length > 0 && (
         <SettingRow title={t("sync.offer.listTitle")} description={t("sync.offer.listDesc")} stacked>
           <ul className="offer-list">
@@ -1298,8 +1461,8 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
   // The phone: no browser integration, import/export or desktop extras.
   const desktop = !isPhonePlatform(info.platform);
   const shown = {
-    // The phone's cloud-folder sync, and the desktop's copies for it.
-    sync: !desktop,
+    // The phone's cloud-folder or server sync; the desktop's copies for it.
+    sync: true,
     phone: desktop,
     browser: desktop,
     data: desktop && !info.readOnly,
@@ -1414,7 +1577,7 @@ export function SettingsPage({ initialSection, items }: { initialSection?: strin
         <div className="settings-content">
           <GeneralSection />
           <SecuritySection />
-          {shown.sync && <SyncSection />}
+          {shown.sync && (desktop ? <DesktopSyncSection /> : <SyncSection />)}
           {shown.phone && <PhoneSection />}
           {shown.browser && <BrowserSection />}
           {shown.data && <ImportExportSection />}

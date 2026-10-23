@@ -111,7 +111,7 @@ export const de = {
   "error.unsupported.sync_name_taken":
     "Die Cloud-App hat die Tresor-Datei unter einem anderen Namen angelegt. Keystead hat nichts geschrieben – prüfe den Ordner in der Cloud-App.",
   "error.unsupported.sync_not_writable":
-    "Keystead darf in den Cloud-Ordner nicht schreiben. Wähle den Ordner einmal neu und tippe auf „Zulassen“.",
+    "Keystead darf hier nicht schreiben. Beim Cloud-Ordner: wähle ihn einmal neu und tippe auf „Zulassen“. Beim Server: prüfe, ob der Benutzer den Ordner beschreiben darf.",
   "error.unsupported.sync_local_changed":
     "Der Tresor wurde auf dem Handy gerade geändert. Keystead gleicht ihn bei der nächsten Synchronisierung ab.",
   "error.unsupported.sync_conflict_password":
@@ -121,11 +121,31 @@ export const de = {
   "error.unsupported.sync_conflict_changed":
     "Der Tresor hat sich inzwischen noch einmal geändert. Keystead hat ihn neu geprüft.",
   "error.unsupported.sync_remote_changed":
-    "Die Kopie im Cloud-Ordner hat sich inzwischen geändert. Keystead gleicht sie neu ab – überschrieben wurde nichts.",
+    "Die Kopie im Ordner hat sich inzwischen geändert. Keystead gleicht sie neu ab – überschrieben wurde nichts.",
   "error.unsupported.mirror_remote_unsupported":
     "Die Kopie im Cloud-Ordner stammt von einer neueren Keystead-Version (oder ist keine Keystead-Tresor-Datei). Keystead übernimmt und überschreibt sie nicht – aktualisiere Keystead auf allen Geräten.",
   "error.unsupported.sync_unlock_raced":
     "Der Tresor wurde während des Entsperrens von der Synchronisierung aktualisiert. Bitte entsperre ihn noch einmal.",
+  "error.unsupported.sync_offline":
+    "Der Server ist nicht erreichbar – keine Internetverbindung, oder die Adresse stimmt nicht.",
+  "error.unsupported.sync_auth_failed": "Der Server hat die Anmeldung abgelehnt. Prüfe Benutzername und App-Passwort.",
+  "error.unsupported.sync_server_folder_missing":
+    "Den Ordner gibt es auf dem Server nicht (mehr). Lege ihn im Server-Formular an („Ordner anlegen“) oder wähle einen anderen.",
+  "error.unsupported.sync_server_not_webdav":
+    "Unter dieser Adresse antwortet kein WebDAV-Server. Bei Nextcloud genügt die Adresse des Servers; sonst die WebDAV-Adresse deines Anbieters.",
+  "error.unsupported.sync_server_quota": "Auf dem Server ist kein Platz mehr frei.",
+  "error.unsupported.sync_server_error": "Der Server meldet einen Fehler. Keystead versucht es später erneut.",
+  "error.unsupported.sync_server_response": "Der Server hat unerwartet geantwortet.",
+  "error.unsupported.sync_server_certificate":
+    "Das Zertifikat des Servers ist unbekannt oder hat sich geändert. Bestätige es im Server-Formular – nur, wenn du die Änderung erwartest.",
+  "error.unsupported.sync_file_missing": "Die Datei ist auf dem Server nicht (mehr) vorhanden.",
+  "error.unsupported.sync_credentials_missing":
+    "Das Passwort für den Server fehlt. Gib es unter Einstellungen → Synchronisierung erneut ein.",
+  "error.input.server_url":
+    "Das ist keine gültige Server-Adresse. Sie beginnt mit https:// und enthält weder Benutzername noch Passwort.",
+  "error.input.server_folder": "Das ist kein gültiger Ordnername (nicht „.“ oder „..“, kein „\\“).",
+  "error.input.webdav_config": "Die Angaben zum Server sind unvollständig.",
+  "error.input.server_link": "Die Verbindung zum Server ist beschädigt. Verbinde den Server neu.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -197,7 +217,8 @@ export const de = {
   "welcome.featBrowserDesc": "Logins direkt in Chrome, Edge oder Brave ausfüllen.",
   "welcome.defaultVaultName": "Privat",
   "welcome.phoneSubtitle": "Dein Passwort-Tresor – verschlüsselt und unterwegs griffbereit.",
-  "welcome.phoneFeatLocalDesc": "Kein Keystead-Server, kein Konto – die App hat nicht einmal Internetzugriff.",
+  "welcome.phoneFeatLocalDesc":
+    "Kein Keystead-Server, kein Konto – die App spricht nur mit deinem eigenen Server, wenn du einen verbindest.",
   "welcome.phoneFeatLookup": "Nachschlagen, kopieren, bearbeiten",
   "welcome.phoneFeatLookupDesc": "Passwörter, 2FA-Codes und Notizen griffbereit – Änderungen kommen über den Cloud-Ordner auch auf den PC.",
   "welcome.or": "oder",
@@ -913,19 +934,48 @@ export const de = {
   "settings.securityDescPhone": "Automatisches Sperren, Fingerabdruck und Zwischenablage. Master-Passwort und Wiederherstellung änderst du am PC.",
   "settings.sync": "Synchronisierung",
   "settings.syncShort": "Sync",
-  "settings.syncDesc": "Deine Tresore kommen über einen Ordner deiner eigenen Cloud aufs Handy – und deine Änderungen auf dem Handy auf demselben Weg zurück zum PC.",
+  "settings.syncDesc":
+    "Deine Tresore kommen über einen Ordner deiner eigenen Cloud oder deinen WebDAV-Server aufs Handy – und deine Änderungen auf dem Handy auf demselben Weg zurück zum PC.",
   "settings.syncFolder": "Cloud-Ordner",
   "settings.syncFolderDesc": "Keystead gleicht diesen Ordner beim Start ab, wenn du in die App zurückkehrst (höchstens einmal pro Minute), nach jeder Änderung und auf Knopfdruck.",
   "settings.syncLast": "Letzte Synchronisierung",
   "settings.syncVaults": "Tresore im Ordner",
   "settings.syncNoFiles": "Im Ordner liegt kein Tresor.",
   "settings.syncUnlinkDesc": "Die Tresore auf diesem Handy bleiben erhalten, werden aber nicht mehr aktualisiert.",
-  "sync.welcomeTitle": "Tresor aus Cloud-Ordner holen",
-  "sync.stepPc": "Am PC: In den Einstellungen „Kopie im Cloud-Ordner aktuell halten“ einschalten und einen Ordner in Nextcloud oder OneDrive wählen.",
-  "sync.stepCloudApp": "Auf dem Handy: Die Nextcloud- oder OneDrive-App installieren und anmelden.",
-  "sync.stepPhone": "Hier: „Cloud-Ordner wählen“ tippen und denselben Ordner über die Cloud-App auswählen – dann „Diesen Ordner verwenden“ und „Zulassen“.",
+  "settings.syncDescPc":
+    "Halte deine Tresore mit dem Handy abgeglichen – über einen Ordner deiner eigenen Cloud oder direkt über einen WebDAV-Server. Ein Keystead-Server ist nie im Spiel.",
+  "settings.syncVaultsServer": "Tresore auf dem Server",
+  "sync.welcomeTitle": "Tresor vom PC holen",
+  "sync.stepPc":
+    "Am PC: In den Einstellungen unter „Synchronisierung“ einen Cloud-Ordner in Nextcloud oder OneDrive wählen – oder einen WebDAV-Server verbinden.",
+  "sync.stepCloudApp":
+    "Auf dem Handy, nur für den Cloud-Ordner: Die Nextcloud- oder OneDrive-App installieren und anmelden.",
+  "sync.stepPhone":
+    "Hier: „Cloud-Ordner wählen“ tippen und denselben Ordner über die Cloud-App auswählen („Diesen Ordner verwenden“, „Zulassen“) – oder „Mit Server verbinden (WebDAV)“ mit demselben Server und Ordner wie am PC.",
   "sync.pickFolder": "Cloud-Ordner wählen",
-  "sync.folderNote": "Keystead schreibt in den Ordner nur seine eigenen, verschlüsselten Tresor-Dateien und verbindet sich mit keinem Server. Die Übertragung übernimmt deine Cloud-App.",
+  "sync.folderNote":
+    "Keystead legt nur seine eigenen, verschlüsselten Tresor-Dateien ab – im Cloud-Ordner (die Übertragung übernimmt deine Cloud-App) oder direkt auf deinem Server. Ein Keystead-Server ist nie im Spiel.",
+  "sync.method": "Abgleich über",
+  "sync.methodNone": "Kein Abgleich",
+  "sync.methodFolder": "Cloud-Ordner",
+  "sync.methodServer": "WebDAV-Server",
+  "sync.methodSoon": "Google Drive und Dropbox folgen bald.",
+  "sync.connectServer": "Mit Server verbinden (WebDAV)",
+  "sync.server": "WebDAV-Server",
+  "sync.serverDesc":
+    "Keystead gleicht den Ordner auf dem Server beim Start ab, wenn du in die App zurückkehrst (höchstens einmal pro Minute), nach jeder Änderung und auf Knopfdruck – über WLAN oder mobile Daten.",
+  "sync.serverUserFolder": "Benutzer „{user}“ · Ordner „{folder}“",
+  "sync.changeServer": "Server ändern",
+  "sync.reenterPassword": "Passwort erneut eingeben",
+  "sync.switchToFolder": "Stattdessen Cloud-Ordner",
+  "sync.switchToServer": "Stattdessen WebDAV-Server",
+  "sync.wifiOnly": "Nur über WLAN synchronisieren",
+  "sync.wifiOnlyDesc":
+    "Mit mobilen Daten wartet der automatische Abgleich, bis du wieder im WLAN bist. „Jetzt synchronisieren“ geht immer.",
+  "sync.skipped.wifiOnly": "Der automatische Abgleich wartet auf WLAN.",
+  "sync.skipped.backoff": "Der Server war eben nicht erreichbar – nächster automatischer Versuch {when}.",
+  "sync.serverNote":
+    "Keystead überträgt nur seine eigenen, verschlüsselten Tresor-Dateien – direkt zu deinem Server, ohne Keystead-Server dazwischen.",
   "sync.linkedEmptyTitle": "Im Ordner „{folder}“ liegt noch kein Tresor",
   "sync.linkedEmptyText": "Prüfe am PC, ob „Kopie im Cloud-Ordner aktuell halten“ genau diesen Ordner nutzt und die Cloud-App die Datei schon hochgeladen hat. Tippe dann auf „Jetzt synchronisieren“.",
   "sync.linkedEmpty": "Ordner „{folder}“ verbunden – darin liegt noch kein Tresor.",
@@ -1029,7 +1079,8 @@ export const de = {
   "sync.copies.dismissed": "Die Konfliktkopie wird nicht mehr angezeigt. Die Datei im Ordner bleibt liegen.",
   "settings.phone": "Handy",
   "settings.phoneShort": "Handy",
-  "settings.phoneDesc": "Deine Tresore in der Android-App – über einen Ordner deiner eigenen Cloud. Keystead selbst verbindet sich dafür mit keinem Server.",
+  "settings.phoneDesc":
+    "Deine Tresore in der Android-App – über einen Ordner deiner eigenen Cloud oder deinen WebDAV-Server. Ein Keystead-Server ist nie im Spiel.",
   "mirror.title": "Kopie im Cloud-Ordner aktuell halten",
   "mirror.desc":
     "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt in einen Ordner deiner Wahl und aktualisiert ihn nach jedem Speichern. Die Nextcloud- oder OneDrive-App lädt ihn hoch, die Android-App holt ihn von dort – und Änderungen vom Handy übernimmt Keystead von dort.",
@@ -1041,17 +1092,63 @@ export const de = {
   "mirror.noCopyYet": "Seit dem Start noch nichts kopiert – das passiert beim Öffnen eines Tresors und nach jedem Speichern.",
   "mirror.enabledToast": "Keystead hält jetzt eine Kopie in „{folder}“ aktuell.",
   "mirror.disabledToast": "Kopie im Cloud-Ordner ausgeschaltet – die Dateien im Ordner bleiben liegen.",
-  "mirror.failedToast": "Kopie im Cloud-Ordner nicht aktualisiert: {error}",
-  "mirror.step1Title": "Ordner in deiner Cloud wählen",
+  "mirror.failedToast": "Abgleich nicht gelungen: {error}",
+  "mirror.serverDesc":
+    "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt auf den Server und übernimmt Änderungen vom Handy von dort – nach jedem Speichern, wenn du das Fenster wieder öffnest und jede Minute.",
+  "mirror.noCopyYetServer":
+    "Seit dem Start noch nichts hochgeladen – das passiert beim Öffnen eines Tresors und nach jedem Speichern.",
+  "mirror.retryAt": "Pausiert nach einem Serverfehler – nächster Versuch {when}.",
+  "mirror.serverEnabledToast": "Keystead hält jetzt eine Kopie auf „{server}“ aktuell.",
+  "mirror.serverDisabledToast": "Abgleich mit dem Server ausgeschaltet – die Dateien auf dem Server bleiben liegen.",
+  "webdav.title": "Mit WebDAV-Server verbinden",
+  "webdav.changeTitle": "Server ändern",
+  "webdav.subtitle":
+    "Nextcloud, ownCloud, ein NAS (z. B. Synology, UGREEN, QNAP) oder ein Anbieter wie Koofr, GMX, WEB.DE oder MagentaCLOUD.",
+  "webdav.url": "Server-Adresse",
+  "webdav.urlHint": "z. B. https://cloud.example.de – bei Nextcloud genügt die Adresse des Servers.",
+  "webdav.user": "Benutzername",
+  "webdav.password": "App-Passwort",
+  "webdav.passwordHint":
+    "Am besten ein eigenes App-Passwort für Keystead (bei Nextcloud: Einstellungen → Sicherheit), nicht das Passwort deines Kontos.",
+  "webdav.passwordStoredPhone":
+    "Keystead speichert es mit dem Schlüsselspeicher des Handys verschlüsselt und schickt es nur an diesen Server.",
+  "webdav.passwordStoredPc":
+    "Keystead speichert es für deinen Windows-Benutzer verschlüsselt und schickt es nur an diesen Server.",
+  "webdav.passwordMemory":
+    "Auf diesem System merkt sich Keystead das Passwort nur, bis die App beendet wird – danach fragt es erneut.",
+  "webdav.folder": "Ordner auf dem Server",
+  "webdav.folderHint":
+    "Keystead legt dort nur seine verschlüsselten Tresor-Dateien ab. Nimm am PC und am Handy denselben Server und Ordner.",
+  "webdav.test": "Verbindung testen",
+  "webdav.connect": "Verbinden",
+  "webdav.ok": "Verbindung steht – der Ordner ist bereit.",
+  "webdav.okReadOnly":
+    "Verbindung steht, aber in den Ordner darf Keystead nicht schreiben: Änderungen kommen nicht auf den Server.",
+  "webdav.folderMissing": "Der Server antwortet, aber den Ordner „{folder}“ gibt es dort noch nicht.",
+  "webdav.createFolder": "Ordner anlegen",
+  "webdav.suggested": "Der Server nennt diese Adresse: {url}",
+  "webdav.useSuggested": "Übernehmen",
+  "webdav.certTitle": "Unbekanntes Zertifikat",
+  "webdav.certText":
+    "Das System kennt das Zertifikat dieses Servers nicht – z. B. ein selbst ausgestelltes auf deinem NAS. Vertraue ihm nur, wenn der Fingerabdruck mit dem auf deinem Server übereinstimmt.",
+  "webdav.certSubject": "Ausgestellt für",
+  "webdav.certIssuer": "Ausgestellt von",
+  "webdav.certValid": "Gültig",
+  "webdav.certValidRange": "{from} bis {to}",
+  "webdav.certFingerprint": "SHA-256-Fingerabdruck",
+  "webdav.certTrust": "Diesem Zertifikat vertrauen",
+  "webdav.required": "Bitte ausfüllen.",
+  "mirror.step1Title": "Ordner oder Server wählen",
   "mirror.step1Text":
-    "Schalte oben „Kopie im Cloud-Ordner aktuell halten“ ein und wähle einen Ordner in deinem Nextcloud- oder OneDrive-Ordner, z. B. „Nextcloud\\Keystead“. Die Cloud-App auf dem PC lädt die Dateien hoch.",
-  "mirror.step2Title": "Cloud-App auf dem Handy",
-  "mirror.step2Text": "Installiere auf dem Handy die Nextcloud- oder OneDrive-App und melde dich mit demselben Konto an wie am PC.",
-  "mirror.step3Title": "Ordner in Keystead auf dem Handy verbinden",
+    "Wähle oben unter „Synchronisierung“ einen Cloud-Ordner – einen Ordner in deinem Nextcloud- oder OneDrive-Ordner, z. B. „Nextcloud\\Keystead“; die Cloud-App auf dem PC lädt die Dateien hoch – oder verbinde einen WebDAV-Server (Nextcloud, NAS, Koofr, GMX, WEB.DE, MagentaCLOUD …).",
+  "mirror.step2Title": "Handy vorbereiten",
+  "mirror.step2Text":
+    "Mit Cloud-Ordner: Installiere auf dem Handy die Nextcloud- oder OneDrive-App und melde dich mit demselben Konto an wie am PC. Mit WebDAV-Server: Nichts weiter – das Handy verbindet sich selbst mit dem Server.",
+  "mirror.step3Title": "Keystead auf dem Handy verbinden",
   "mirror.step3Text":
-    "Installiere die Android-App (die APK aus den Releases), tippe auf „Cloud-Ordner wählen“ und wähle denselben Ordner über die Cloud-App – dann „Diesen Ordner verwenden“ und „Zulassen“. Danach holt das Handy jede neue Version selbst.",
+    "Installiere die Android-App (die APK aus den Releases). Tippe auf „Cloud-Ordner wählen“ und wähle denselben Ordner über die Cloud-App („Diesen Ordner verwenden“, „Zulassen“) – oder auf „Mit Server verbinden (WebDAV)“ mit demselben Server und Ordner wie hier. Danach holt das Handy jede neue Version selbst.",
   "mirror.privacy":
-    "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud-Anbieter sieht Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Bearbeiten kannst du hier und auf dem Handy; wurde ein Tresor auf beiden geändert, fragt Keystead, welcher Stand gilt.",
+    "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud- oder Server-Anbieter sieht Dateinamen, Größen, Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Bearbeiten kannst du hier und auf dem Handy; wurde ein Tresor auf beiden geändert, fragt Keystead, welcher Stand gilt.",
   "settings.autoLock": "Automatisch sperren",
   "settings.autoLockDesc": "Nach dieser Zeit ohne Aktivität wird der Tresor gesperrt.",
   "settings.lockInBackground": "Sperren im Hintergrund",
@@ -1160,7 +1257,8 @@ export const de = {
   "about.installed": "Daten im Benutzerprofil",
   "about.phoneData": "Daten im App-Speicher",
   "about.releasesTitle": "Neue Versionen",
-  "about.releasesDesc": "Auf dem Handy sucht Keystead nicht selbst nach Updates – die App hat keinen Internetzugriff. Lade die neue APK von der Releases-Seite und installiere sie über die alte; deine Daten bleiben erhalten.",
+  "about.releasesDesc":
+    "Auf dem Handy sucht Keystead nicht selbst nach Updates. Lade die neue APK von der Releases-Seite und installiere sie über die alte; deine Daten bleiben erhalten.",
   "about.releasesOpen": "Releases auf GitHub öffnen",
   "about.wordlists": "Wortlisten für Passphrasen",
   "about.wordlistEn": "Englisch: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), Lizenz CC BY 4.0 (creativecommons.org/licenses/by/4.0), ohne die Würfelnummern.",

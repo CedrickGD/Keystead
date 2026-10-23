@@ -41,6 +41,8 @@ import type {
   UpdateProgress,
   VaultInfo,
   VaultItem,
+  WebDavConfig,
+  WebDavTest,
 } from "./types";
 
 /** True when running inside the Tauri webview. */
@@ -269,6 +271,17 @@ export const api = {
    * the folder, the last successful copy and the last error. Changes come as `mirror://status`.
    */
   mirrorStatus: () => call<MirrorStatus>("mirror_status"),
+  /**
+   * Desktop: the PC keeps its copies on this WebDAV server from now on (the connection test must pass;
+   * the password is stored by the backend, never returned). Replaces a cloud folder.
+   */
+  setSyncServer: (config: WebDavConfig) => call<MirrorStatus>("set_sync_server", { config }),
+  /** Desktop: no server any more (its stored password is removed; the copies on it stay). */
+  clearSyncServer: () => call<MirrorStatus>("clear_sync_server"),
+  /** Both platforms: the server form's connection test – nothing is stored. */
+  webdavTest: (config: WebDavConfig) => call<WebDavTest>("webdav_test", { config }),
+  /** Both platforms: "Ordner anlegen" – creates the server's sync folder, then tests again. */
+  webdavCreateFolder: (config: WebDavConfig) => call<WebDavTest>("webdav_create_folder", { config }),
   /** Desktop: the vaults in the mirror folder the PC does not have (as the last scan found them). */
   folderOffers: () => call<FolderOffer[]>("folder_offers"),
   /** Desktop: takes an offered vault from the mirror folder (on trial: it opens with its own master password). */
@@ -329,6 +342,11 @@ export const api = {
    * first sync is in `lastError`.
    */
   linkFolder: () => call<FolderStatus | null>("link_folder"),
+  /**
+   * Links a folder on a WebDAV server instead (stage 2c) and syncs; the connection test must pass
+   * (its code as the error). The password is sealed by the Android Keystore, never returned.
+   */
+  linkWebdav: (config: WebDavConfig) => call<FolderStatus>("link_webdav", { config }),
   /** Syncs now; rejects with the sync's error (also recorded in `lastError`). */
   syncNow: () => call<FolderStatus>("sync_now"),
   /** Forgets the folder; the vault copies stay on the phone. */

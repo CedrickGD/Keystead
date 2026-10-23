@@ -15,6 +15,7 @@ import {
   Plus,
   Puzzle,
   RefreshCw,
+  Server,
   TriangleAlert,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -30,7 +31,7 @@ import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
 import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
-import { SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
+import { PhoneServerDialog, SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
@@ -198,14 +199,19 @@ function PhoneWelcome({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-/** The welcome slot: the way to the first vault, or the linked folder's state. */
+/**
+ * The welcome slot: the way to the first vault – a cloud folder, or a
+ * WebDAV server (stage 2c) – or the linked folder's or server's state.
+ */
 function PhoneVaultSource() {
   const { t } = useT();
   const folderSync = useFolderSync();
   const errorFor = useSyncErrorText();
+  const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const status = folderSync?.status ?? null;
   const busy = folderSync?.busy ?? null;
   const linked = status?.linked === true;
+  const server = status?.kind === "webdav" ? status.server : null;
   const lost = folderLost(status);
   const syncing = Boolean(status?.syncing) || busy === "sync";
 
@@ -241,16 +247,29 @@ function PhoneVaultSource() {
             >
               {t("sync.syncNow")}
             </Button>
-            <Button
-              variant="secondary"
-              block
-              icon={<FolderOpen />}
-              loading={busy === "link"}
-              disabled={busy !== null && busy !== "link"}
-              onClick={() => void folderSync?.link()}
-            >
-              {t("sync.otherFolder")}
-            </Button>
+            {server ? (
+              <Button
+                variant="secondary"
+                block
+                icon={<Server />}
+                loading={busy === "server"}
+                disabled={busy !== null && busy !== "server"}
+                onClick={() => setServerForm("edit")}
+              >
+                {t("sync.changeServer")}
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                block
+                icon={<FolderOpen />}
+                loading={busy === "link"}
+                disabled={busy !== null && busy !== "link"}
+                onClick={() => void folderSync?.link()}
+              >
+                {t("sync.otherFolder")}
+              </Button>
+            )}
           </div>
         </>
       ) : (
@@ -272,9 +291,22 @@ function PhoneVaultSource() {
           >
             {lost ? t("sync.repick") : t("sync.pickFolder")}
           </Button>
+          <Button
+            variant="secondary"
+            block
+            icon={<Server />}
+            loading={busy === "server"}
+            disabled={!folderSync || busy !== null}
+            onClick={() => setServerForm("new")}
+          >
+            {t("sync.connectServer")}
+          </Button>
         </>
       )}
-      <p className="subtle sync-note">{t("sync.folderNote")}</p>
+      <p className="subtle sync-note">{server ? t("sync.serverNote") : t("sync.folderNote")}</p>
+      {serverForm && (
+        <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
+      )}
     </>
   );
 }

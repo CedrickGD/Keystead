@@ -10,6 +10,8 @@ export interface AppContextValue {
   settings: Settings;
   /** Optimistically applies and persists a settings change; reverts and toasts on failure. */
   updateSettings: (patch: Partial<Settings>) => Promise<boolean>;
+  /** Reads the settings again (after a command that changed them in the backend, e.g. `set_sync_server`). */
+  reloadSettings: () => Promise<void>;
   vaults: VaultInfo[];
   refreshVaults: () => Promise<VaultInfo[]>;
   /** The unlocked vault (null while locked). */

@@ -2,16 +2,18 @@
 // (phone)" in docs/ARCHITECTURE.md): the way a vault reaches the phone, the
 // status line of the unlock screen, the per-vault results and the prompt to
 // pick a read-only linked folder again (stage 2b: the phone writes its
-// changes back). The state and actions come from `useFolderSync()`
-// (state/sync.tsx).
+// changes back); since stage 2c the server dialog (a WebDAV server instead
+// of the folder, "Server sync (WebDAV)") and why an automatic sync waited.
+// The state and actions come from `useFolderSync()` (state/sync.tsx).
 
 import { useCallback, useEffect, useState } from "react";
 import { CloudOff, FolderOpen, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
 import { ApiError } from "../lib/api";
-import type { FolderStatus, SyncFileResult } from "../lib/types";
+import type { FolderStatus, SyncFileResult, SyncServer } from "../lib/types";
 import { useT, type MessageKey } from "../i18n";
 import { useFolderSync } from "../state/sync";
 import { Button } from "./Controls";
+import { WebDavDialog } from "./WebDavForm";
 
 /** The text of an error code the sync recorded (`lastError`, a file's `error`). */
 export function useSyncErrorText(): (code: string) => string {
@@ -67,7 +69,49 @@ export function isUsable(file: SyncFileResult): boolean {
 
 /** A folder is linked, but only for reading: the phone's changes do not reach the PC. */
 export function needsRelink(status: FolderStatus | null): boolean {
-  return status?.linked === true && !status.writable && !folderLost(status);
+  return status?.linked === true && status.kind !== "webdav" && !status.writable && !folderLost(status);
+}
+
+/** The server's password is missing or was refused: the user enters it again (both platforms). */
+export function serverNeedsPassword(lastError: string | null | undefined): boolean {
+  return lastError === "unsupported:sync_credentials_missing" || lastError === "unsupported:sync_auth_failed";
+}
+
+/**
+ * Why the last automatic sync waited (no Wi-Fi with "Nur über WLAN", a
+ * server error shortly before) – `null` when it did not. `when`: the
+ * relative time of `retryAt`.
+ */
+export function useSkippedText(): (status: FolderStatus | null) => string | null {
+  const { t, formatRelative } = useT();
+  return useCallback(
+    (status: FolderStatus | null) => {
+      if (!status?.linked || status.syncing) return null;
+      if (status.skipped === "sync_wifi_only") return t("sync.skipped.wifiOnly");
+      if (status.retryAt !== null && status.retryAt > Date.now()) {
+        return t("sync.skipped.backoff", { when: formatRelative(status.retryAt) });
+      }
+      return null;
+    },
+    [formatRelative, t],
+  );
+}
+
+/** The phone's server dialog: links the server (`link_webdav`) and closes once that worked. */
+export function PhoneServerDialog({ initial, onClose }: { initial: SyncServer | null; onClose: () => void }) {
+  const { t } = useT();
+  const folderSync = useFolderSync();
+  if (!folderSync) return null;
+  return (
+    <WebDavDialog
+      initial={initial}
+      title={initial ? t("webdav.changeTitle") : t("webdav.title")}
+      connectLabel={t("webdav.connect")}
+      passwordNote={t("webdav.passwordStoredPhone")}
+      onConnect={folderSync.linkServer}
+      onClose={onClose}
+    />
+  );
 }
 
 /**
@@ -155,6 +199,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
   const { t, formatRelative } = useT();
   const folderSync = useFolderSync();
   const errorFor = useSyncErrorText();
+  const skippedText = useSkippedText();
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt));
   if (!folderSync?.status) return null;
   const { status, busy, link, sync } = folderSync;
@@ -209,6 +254,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
       </div>
       {selected?.outcome === "pcOlder" && <p className="sync-line-note">{t("sync.pcOlderHint")}</p>}
       {needsRelink(status) && <p className="sync-line-note">{t("sync.relink.short")}</p>}
+      {!status.lastError && skippedText(status) && <p className="sync-line-note">{skippedText(status)}</p>}
     </div>
   );
 }

@@ -110,7 +110,7 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.sync_name_taken":
     "The cloud app created the vault file under another name. Keystead wrote nothing – check the folder in the cloud app.",
   "error.unsupported.sync_not_writable":
-    "Keystead may not write to the cloud folder. Pick the folder again and tap “Allow”.",
+    "Keystead may not write here. Cloud folder: pick it again and tap “Allow”. Server: check that the user may write the folder.",
   "error.unsupported.sync_local_changed":
     "The vault was just changed on the phone. Keystead compares it again with the next sync.",
   "error.unsupported.sync_conflict_password":
@@ -120,11 +120,30 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.sync_conflict_changed":
     "The vault changed once more meanwhile. Keystead has checked it again.",
   "error.unsupported.sync_remote_changed":
-    "The copy in the cloud folder changed meanwhile. Keystead compares it again – nothing was overwritten.",
+    "The copy in the folder changed meanwhile. Keystead compares it again – nothing was overwritten.",
   "error.unsupported.mirror_remote_unsupported":
     "The copy in the cloud folder is from a newer Keystead version (or not a Keystead vault file). Keystead neither takes nor overwrites it – update Keystead on all your devices.",
   "error.unsupported.sync_unlock_raced":
     "The vault was updated by the sync while it was being unlocked. Please unlock it once more.",
+  "error.unsupported.sync_offline": "The server cannot be reached – no internet connection, or the address is wrong.",
+  "error.unsupported.sync_auth_failed": "The server refused the login. Check the user name and app password.",
+  "error.unsupported.sync_server_folder_missing":
+    "The folder does not exist on the server (any more). Create it in the server form (“Create folder”) or choose another one.",
+  "error.unsupported.sync_server_not_webdav":
+    "No WebDAV server answers at this address. For Nextcloud the server's address is enough; otherwise use your provider's WebDAV address.",
+  "error.unsupported.sync_server_quota": "The server has no space left.",
+  "error.unsupported.sync_server_error": "The server reports an error. Keystead tries again later.",
+  "error.unsupported.sync_server_response": "The server answered unexpectedly.",
+  "error.unsupported.sync_server_certificate":
+    "The server's certificate is unknown or has changed. Confirm it in the server form – only if you expect the change.",
+  "error.unsupported.sync_file_missing": "The file is not (or no longer) on the server.",
+  "error.unsupported.sync_credentials_missing":
+    "The server's password is missing. Enter it again under Settings → Sync.",
+  "error.input.server_url":
+    "That is not a valid server address. It starts with https:// and contains neither a user name nor a password.",
+  "error.input.server_folder": "That is not a valid folder name (not “.” or “..”, no “\\”).",
+  "error.input.webdav_config": "The server details are incomplete.",
+  "error.input.server_link": "The link to the server is damaged. Connect the server again.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -191,7 +210,8 @@ export const en: Record<MessageKey, string> = {
   "welcome.featBrowserDesc": "Fill logins right in Chrome, Edge or Brave.",
   "welcome.defaultVaultName": "Personal",
   "welcome.phoneSubtitle": "Your password vault – encrypted and at hand on the go.",
-  "welcome.phoneFeatLocalDesc": "No Keystead server, no account – the app does not even have internet access.",
+  "welcome.phoneFeatLocalDesc":
+    "No Keystead server, no account – the app only talks to your own server, if you connect one.",
   "welcome.phoneFeatLookup": "Look up, copy, edit",
   "welcome.phoneFeatLookupDesc": "Passwords, 2FA codes and notes at hand – changes reach your PC through the cloud folder.",
   "welcome.or": "or",
@@ -892,19 +912,46 @@ export const en: Record<MessageKey, string> = {
   "settings.securityDescPhone": "Auto-lock, fingerprint and clipboard. Change the master password and recovery on your PC.",
   "settings.sync": "Sync",
   "settings.syncShort": "Sync",
-  "settings.syncDesc": "Your vaults come to this phone through a folder of your own cloud – and your changes on the phone go back to the PC the same way.",
+  "settings.syncDesc":
+    "Your vaults come to this phone through a folder of your own cloud or your WebDAV server – and your changes on the phone go back to the PC the same way.",
   "settings.syncFolder": "Cloud folder",
   "settings.syncFolderDesc": "Keystead syncs with this folder at start, when you return to the app (at most once a minute), after every change and when you ask it to.",
   "settings.syncLast": "Last sync",
   "settings.syncVaults": "Vaults in the folder",
   "settings.syncNoFiles": "There is no vault in the folder.",
   "settings.syncUnlinkDesc": "The vaults on this phone stay, but they are no longer updated.",
-  "sync.welcomeTitle": "Get your vault from a cloud folder",
-  "sync.stepPc": "On your PC: in the settings, turn on “Keep a copy in a cloud folder up to date” and choose a folder in Nextcloud or OneDrive.",
-  "sync.stepCloudApp": "On your phone: install the Nextcloud or OneDrive app and sign in.",
-  "sync.stepPhone": "Here: tap “Choose cloud folder” and pick that same folder through the cloud app – then “Use this folder” and “Allow”.",
+  "settings.syncDescPc":
+    "Keep your vaults in sync with the phone – through a folder of your own cloud or directly through a WebDAV server. A Keystead server is never involved.",
+  "settings.syncVaultsServer": "Vaults on the server",
+  "sync.welcomeTitle": "Get your vault from the PC",
+  "sync.stepPc":
+    "On your PC: in the settings under “Sync”, choose a cloud folder in Nextcloud or OneDrive – or connect a WebDAV server.",
+  "sync.stepCloudApp": "On your phone, for the cloud folder only: install the Nextcloud or OneDrive app and sign in.",
+  "sync.stepPhone":
+    "Here: tap “Choose cloud folder” and pick that same folder through the cloud app (“Use this folder”, “Allow”) – or “Connect to a server (WebDAV)” with the same server and folder as on the PC.",
   "sync.pickFolder": "Choose cloud folder",
-  "sync.folderNote": "Keystead writes only its own encrypted vault files to the folder and connects to no server. Your cloud app does the transfer.",
+  "sync.folderNote":
+    "Keystead stores only its own encrypted vault files – in the cloud folder (your cloud app does the transfer) or directly on your server. A Keystead server is never involved.",
+  "sync.method": "Sync through",
+  "sync.methodNone": "No sync",
+  "sync.methodFolder": "Cloud folder",
+  "sync.methodServer": "WebDAV server",
+  "sync.methodSoon": "Google Drive and Dropbox are coming soon.",
+  "sync.connectServer": "Connect to a server (WebDAV)",
+  "sync.server": "WebDAV server",
+  "sync.serverDesc":
+    "Keystead syncs with the folder on the server at start, when you return to the app (at most once a minute), after every change and when you ask it to – over Wi-Fi or mobile data.",
+  "sync.serverUserFolder": "User “{user}” · folder “{folder}”",
+  "sync.changeServer": "Change server",
+  "sync.reenterPassword": "Enter the password again",
+  "sync.switchToFolder": "Use a cloud folder instead",
+  "sync.switchToServer": "Use a WebDAV server instead",
+  "sync.wifiOnly": "Sync over Wi-Fi only",
+  "sync.wifiOnlyDesc": "On mobile data the automatic sync waits until you are on Wi-Fi again. “Sync now” always works.",
+  "sync.skipped.wifiOnly": "The automatic sync is waiting for Wi-Fi.",
+  "sync.skipped.backoff": "The server could not be reached just now – next automatic try {when}.",
+  "sync.serverNote":
+    "Keystead transfers only its own encrypted vault files – straight to your server, with no Keystead server in between.",
   "sync.linkedEmptyTitle": "No vault in the folder “{folder}” yet",
   "sync.linkedEmptyText": "Check on your PC that “Keep a copy in a cloud folder up to date” uses exactly this folder and that the cloud app has uploaded the file. Then tap “Sync now”.",
   "sync.linkedEmpty": "Folder “{folder}” linked – there is no vault in it yet.",
@@ -1008,7 +1055,8 @@ export const en: Record<MessageKey, string> = {
   "sync.copies.dismissed": "The conflict copy is no longer shown. The file stays in the folder.",
   "settings.phone": "Phone",
   "settings.phoneShort": "Phone",
-  "settings.phoneDesc": "Your vaults in the Android app – through a folder of your own cloud. Keystead itself connects to no server for it.",
+  "settings.phoneDesc":
+    "Your vaults in the Android app – through a folder of your own cloud or your WebDAV server. A Keystead server is never involved.",
   "mirror.title": "Keep a copy in a cloud folder up to date",
   "mirror.desc":
     "Keystead puts every vault you open here, encrypted, into a folder of your choice and updates it after every save. The Nextcloud or OneDrive app uploads it, the Android app takes it from there – and Keystead takes the phone's changes from there.",
@@ -1020,17 +1068,60 @@ export const en: Record<MessageKey, string> = {
   "mirror.noCopyYet": "Nothing copied since the start – that happens when a vault is opened and after every save.",
   "mirror.enabledToast": "Keystead now keeps a copy up to date in “{folder}”.",
   "mirror.disabledToast": "Cloud-folder copy turned off – the files in the folder stay where they are.",
-  "mirror.failedToast": "Cloud-folder copy not updated: {error}",
-  "mirror.step1Title": "Choose a folder in your cloud",
+  "mirror.failedToast": "Sync did not work: {error}",
+  "mirror.serverDesc":
+    "Keystead puts every vault you open here onto the server, encrypted, and takes the phone's changes from there – after every save, when you return to the window and every minute.",
+  "mirror.noCopyYetServer":
+    "Nothing uploaded since the start – that happens when a vault is opened and after every save.",
+  "mirror.retryAt": "Paused after a server error – next try {when}.",
+  "mirror.serverEnabledToast": "Keystead now keeps a copy on “{server}” up to date.",
+  "mirror.serverDisabledToast": "Sync with the server turned off – the files on the server stay.",
+  "webdav.title": "Connect to a WebDAV server",
+  "webdav.changeTitle": "Change server",
+  "webdav.subtitle":
+    "Nextcloud, ownCloud, a NAS (e.g. Synology, UGREEN, QNAP) or a provider such as Koofr, GMX, WEB.DE or MagentaCLOUD.",
+  "webdav.url": "Server address",
+  "webdav.urlHint": "e.g. https://cloud.example.com – for Nextcloud the server's address is enough.",
+  "webdav.user": "User name",
+  "webdav.password": "App password",
+  "webdav.passwordHint":
+    "Best use an app password of its own for Keystead (Nextcloud: Settings → Security), not your account's password.",
+  "webdav.passwordStoredPhone":
+    "Keystead stores it encrypted with the phone's keystore and sends it to this server only.",
+  "webdav.passwordStoredPc": "Keystead stores it encrypted for your Windows user and sends it to this server only.",
+  "webdav.passwordMemory": "On this system Keystead keeps the password only until the app quits – then it asks again.",
+  "webdav.folder": "Folder on the server",
+  "webdav.folderHint":
+    "Keystead puts only its encrypted vault files there. Use the same server and folder on the PC and the phone.",
+  "webdav.test": "Test connection",
+  "webdav.connect": "Connect",
+  "webdav.ok": "Connected – the folder is ready.",
+  "webdav.okReadOnly": "Connected, but Keystead may not write the folder: changes will not reach the server.",
+  "webdav.folderMissing": "The server answers, but the folder “{folder}” does not exist there yet.",
+  "webdav.createFolder": "Create folder",
+  "webdav.suggested": "The server points to this address: {url}",
+  "webdav.useSuggested": "Use it",
+  "webdav.certTitle": "Unknown certificate",
+  "webdav.certText":
+    "The system does not know this server's certificate – e.g. a self-issued one on your NAS. Trust it only if the fingerprint matches the one on your server.",
+  "webdav.certSubject": "Issued to",
+  "webdav.certIssuer": "Issued by",
+  "webdav.certValid": "Valid",
+  "webdav.certValidRange": "{from} to {to}",
+  "webdav.certFingerprint": "SHA-256 fingerprint",
+  "webdav.certTrust": "Trust this certificate",
+  "webdav.required": "Please fill this in.",
+  "mirror.step1Title": "Choose a folder or server",
   "mirror.step1Text":
-    "Turn on “Keep a copy in a cloud folder up to date” above and choose a folder inside your Nextcloud or OneDrive folder, e.g. “Nextcloud\\Keystead”. The cloud app on the PC uploads the files.",
-  "mirror.step2Title": "Cloud app on the phone",
-  "mirror.step2Text": "Install the Nextcloud or OneDrive app on the phone and sign in with the same account as on the PC.",
-  "mirror.step3Title": "Link the folder in Keystead on the phone",
+    "Under “Sync” above, choose a cloud folder – a folder inside your Nextcloud or OneDrive folder, e.g. “Nextcloud\\Keystead”; the cloud app on the PC uploads the files – or connect a WebDAV server (Nextcloud, a NAS, Koofr, GMX, WEB.DE, MagentaCLOUD …).",
+  "mirror.step2Title": "Prepare the phone",
+  "mirror.step2Text":
+    "With a cloud folder: install the Nextcloud or OneDrive app on the phone and sign in with the same account as on the PC. With a WebDAV server: nothing else – the phone connects to the server itself.",
+  "mirror.step3Title": "Connect Keystead on the phone",
   "mirror.step3Text":
-    "Install the Android app (the APK from the releases), tap “Choose cloud folder” and pick the same folder through the cloud app – then “Use this folder” and “Allow”. From then on the phone fetches every new version itself.",
+    "Install the Android app (the APK from the releases). Tap “Choose cloud folder” and pick the same folder through the cloud app (“Use this folder”, “Allow”) – or “Connect to a server (WebDAV)” with the same server and folder as here. From then on the phone fetches every new version itself.",
   "mirror.privacy":
-    "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud provider sees the vault name, revision and modification time, never the content – without your master password nobody opens the files. You can edit here and on the phone; if a vault was changed on both, Keystead asks which state counts.",
+    "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud or server provider sees file names, sizes, the vault name, revision and modification time, never the content – without your master password nobody opens the files. You can edit here and on the phone; if a vault was changed on both, Keystead asks which state counts.",
   "settings.autoLock": "Lock automatically",
   "settings.autoLockDesc": "The vault locks after this much time without activity.",
   "settings.lockInBackground": "Lock in the background",
@@ -1139,7 +1230,8 @@ export const en: Record<MessageKey, string> = {
   "about.installed": "Data in user profile",
   "about.phoneData": "Data in app storage",
   "about.releasesTitle": "New versions",
-  "about.releasesDesc": "On the phone Keystead does not check for updates itself – the app has no internet access. Download the new APK from the releases page and install it over the old one; your data stays.",
+  "about.releasesDesc":
+    "On the phone Keystead does not check for updates itself. Download the new APK from the releases page and install it over the old one; your data stays.",
   "about.releasesOpen": "Open releases on GitHub",
   "about.wordlists": "Passphrase word lists",
   "about.wordlistEn": "English: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), licensed under CC BY 4.0 (creativecommons.org/licenses/by/4.0), without the dice numbers.",

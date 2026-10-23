@@ -1502,3 +1502,38 @@ mark {
   order: 1;
   margin-right: 0;
 }
+
+/* The WebDAV server form (components/WebDavForm.tsx): its notes stack their
+   text and button; an untrusted certificate's facts in two columns. */
+.webdav-cert-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.webdav-cert-body .btn {
+  margin-top: 4px;
+}
+
+.webdav-cert-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 4px 0 0;
+}
+
+.webdav-cert-facts dt {
+  opacity: 0.8;
+}
+
+.webdav-cert-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.webdav-fingerprint {
+  font-size: 12px;
+  line-height: 1.45;
+}

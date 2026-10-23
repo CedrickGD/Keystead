@@ -9,12 +9,16 @@
 // (`dismiss_folder_vault`). And the conflict copies the phone put into the
 // folder (`folder_conflict_copies`, `mirror://conflictCopies`): restored into
 // the data folder for the import (`restore_folder_conflict_copy`) or hidden
-// (`dismiss_folder_conflict_copy`). Desktop only – the phone has no such
-// command; there `useMirror()` is null.
+// (`dismiss_folder_conflict_copy`). Since stage 2c a WebDAV server can take
+// the folder's place ("Server sync (WebDAV)"): `set_sync_server` /
+// `clear_sync_server` – one method at a time, so after either the page reads
+// the settings again (`mirrorFolder` and `syncServer` changed in the
+// backend). Desktop only – the phone has no such command; there
+// `useMirror()` is null.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, pickFolder, subscribeEffect } from "../lib/api";
-import type { FolderConflictCopy, FolderOffer, MirrorStatus } from "../lib/types";
+import type { FolderConflictCopy, FolderOffer, MirrorStatus, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useApp } from "./app";
@@ -28,6 +32,10 @@ export interface MirrorApi {
   choose: () => Promise<void>;
   /** Turns the mirror off (the copies in the folder stay). */
   turnOff: () => Promise<void>;
+  /** Keeps the copies on this WebDAV server instead (tested first); resolves to whether it worked. */
+  setServer: (config: WebDavConfig) => Promise<boolean>;
+  /** No server any more (its password is removed; the copies on it stay). */
+  clearServer: () => Promise<void>;
   /** Vaults in the folder this PC does not have (newest scan). */
   offers: FolderOffer[];
   /** The offer being taken or declined. */
@@ -57,7 +65,7 @@ export function useMirror(): MirrorApi | null {
 export function MirrorProvider({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   const { t, errorText } = useT();
   const toast = useToast();
-  const { settings, updateSettings, refreshVaults } = useApp();
+  const { settings, updateSettings, reloadSettings, refreshVaults } = useApp();
   const [status, setStatus] = useState<MirrorStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [offers, setOffers] = useState<FolderOffer[]>([]);
@@ -238,12 +246,76 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
     }
   }, [t, toast, updateSettings]);
 
+  const setServer = useCallback(
+    async (config: WebDavConfig) => {
+      setBusy(true);
+      try {
+        const next = await api.setSyncServer(config);
+        knownError.current = next.lastError;
+        setStatus(next);
+        await reloadSettings();
+        toast.success(t("mirror.serverEnabledToast", { server: config.url }));
+        return true;
+      } catch (err) {
+        toast.error(errorText(err));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [errorText, reloadSettings, t, toast],
+  );
+
+  const clearServer = useCallback(async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.clearSyncServer());
+      await reloadSettings();
+      toast.info(t("mirror.serverDisabledToast"));
+    } catch (err) {
+      toast.error(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [errorText, reloadSettings, t, toast]);
+
   const value = useMemo<MirrorApi | null>(
     () =>
       enabled
-        ? { status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss, copies, copyBusy, restoreCopy, dismissCopy }
+        ? {
+            status,
+            busy,
+            choose,
+            turnOff,
+            setServer,
+            clearServer,
+            offers,
+            offerBusy,
+            adopt,
+            dismiss,
+            copies,
+            copyBusy,
+            restoreCopy,
+            dismissCopy,
+          }
         : null,
-    [enabled, status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss, copies, copyBusy, restoreCopy, dismissCopy],
+    [
+      enabled,
+      status,
+      busy,
+      choose,
+      turnOff,
+      setServer,
+      clearServer,
+      offers,
+      offerBusy,
+      adopt,
+      dismiss,
+      copies,
+      copyBusy,
+      restoreCopy,
+      dismissCopy,
+    ],
   );
   return <MirrorContext.Provider value={value}>{children}</MirrorContext.Provider>;
 }

@@ -228,6 +228,14 @@ function AppRoot({
     [errorText, setSettings, toast],
   );
 
+  const reloadSettings = useCallback(async () => {
+    try {
+      setSettings(await api.getSettings());
+    } catch {
+      /* the next save sends what the page has; the backend keeps what only its commands change */
+    }
+  }, [setSettings]);
+
   const enterVault = useCallback(
     (info: VaultInfo) => {
       enterSeq.current += 1;
@@ -309,6 +317,7 @@ function AppRoot({
       setInfo: (info) => setBoot((b) => (b ? { ...b, info } : b)),
       settings,
       updateSettings,
+      reloadSettings,
       vaults: boot.vaults,
       refreshVaults,
       vault,
@@ -319,7 +328,7 @@ function AppRoot({
       showUnlock: () => void toUnlockOrWelcome(),
       phoneLayout,
     };
-  }, [boot, settings, updateSettings, refreshVaults, vault, enterVault, lock, toUnlockOrWelcome, phoneLayout]);
+  }, [boot, settings, updateSettings, reloadSettings, refreshVaults, vault, enterVault, lock, toUnlockOrWelcome, phoneLayout]);
 
   if (screen === "error" || (screen !== "loading" && !ctx)) {
     return (

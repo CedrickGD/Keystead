@@ -1,18 +1,20 @@
 // The phone's cloud-folder sync on the UI side ("Cloud-folder sync (phone)"
 // in docs/ARCHITECTURE.md): the status (`folder_status`, `sync://status`)
-// and the three actions with their toasts; once per app start a hint when
+// and the actions with their toasts – a cloud folder (`link_folder`) or,
+// since stage 2c, a WebDAV server (`link_webdav`, "Server sync (WebDAV)");
+// once per app start a hint when
 // an edit could not reach the folder because it is linked read-only
 // (outcome `notWritable`). Only on the phone platform – the
 // desktop has none of these commands; there `useFolderSync()` is null.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, subscribeEffect } from "../lib/api";
-import type { FolderStatus } from "../lib/types";
+import type { FolderStatus, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
 
-export type SyncAction = "link" | "sync" | "unlink";
+export type SyncAction = "link" | "server" | "sync" | "unlink";
 
 export interface FolderSyncApi {
   /** null until the first answer. */
@@ -21,6 +23,8 @@ export interface FolderSyncApi {
   busy: SyncAction | null;
   /** Opens the system folder picker and links the choice (then syncs). */
   link: () => Promise<void>;
+  /** Links a folder on a WebDAV server (then syncs); resolves to whether it worked. */
+  linkServer: (config: WebDavConfig) => Promise<boolean>;
   /** Syncs now. */
   sync: () => Promise<void>;
   /** Asks, then forgets the folder (the vault copies stay). */
@@ -140,6 +144,28 @@ export function FolderSyncProvider({
     }
   }, [errorText, onStatus, t, toast, tp]);
 
+  const linkServer = useCallback(
+    async (config: WebDavConfig) => {
+      setBusy("server");
+      try {
+        const linked = await api.linkWebdav(config);
+        setStatus(linked);
+        onStatus(linked);
+        const folder = linked.folderName ?? "";
+        if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+        else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
+        else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
+        return true;
+      } catch (err) {
+        toast.error(errorText(err));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [errorText, onStatus, t, toast, tp],
+  );
+
   const sync = useCallback(async () => {
     setBusy("sync");
     try {
@@ -179,8 +205,8 @@ export function FolderSyncProvider({
   relinkRef.current = () => void link();
 
   const value = useMemo<FolderSyncApi | null>(
-    () => (enabled ? { status, busy, link, sync, unlink } : null),
-    [enabled, status, busy, link, sync, unlink],
+    () => (enabled ? { status, busy, link, linkServer, sync, unlink } : null),
+    [enabled, status, busy, link, linkServer, sync, unlink],
   );
   return <FolderSyncContext.Provider value={value}>{children}</FolderSyncContext.Provider>;
 }
