@@ -1,4 +1,4 @@
-<!-- Arbeitsdokument, Stand 2026-10-16 (Entscheidungstabelle und Stand-Vermerke 2026-10-17). Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
+<!-- Arbeitsdokument, Stand 2026-10-16 (Entscheidungstabelle und Stand-Vermerke 2026-10-17, Stufe 2b 2026-10-23). Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
 
 # Block 5 „Mobile“ – Entwurf und Entscheidungen
 
@@ -11,16 +11,19 @@
 | E1 | Paketname | `io.github.cedrickgd.keystead` nur für Android (`tauri.android.conf.json`); Desktop behält `com.keystead.desktop` |
 | E2 | Mindest-Android | API 29 (Android 10) |
 | E3 | Sperre im Hintergrund | Standard 1 Minute, einstellbar (Sofort / 1 min / 5 min / Nie) |
-| E4 | Stufe 1 und 2a | Handy nur lesend |
+| E4 | Stufe 1 und 2a | Handy nur lesend. **Stand 2026-10-23 (Stufe 2b umgesetzt):** das Handy bearbeitet jetzt – Einträge (anlegen, ändern, Papierkorb, wiederherstellen, endgültig löschen), Favoriten, Ordner, Tags, Tresor umbenennen und neu anlegen; Anhänge bleiben am Handy nur ansehbar; Master-Passwort, Wiederherstellungsschlüssel, Tresor löschen, Import und Export bleiben am PC |
 | E5 | Fingerabdruck | Opt-in, Standard aus; Plugin-Rust-API wenn verifiziert, sonst eigenes Kotlin-Plugin. **Stand 2026-10-17:** umgesetzt mit (a), `tauri-plugin-biometric` 2.5 (`biometric_cipher`), `allowDeviceCredential = false` |
 | E6 | Netz | Stufe 1 ohne INTERNET-Berechtigung; ab Stufe 2 Update-Hinweis über das Mini-Kotlin-Plugin; Website-Icons und HIBP auf Android dauerhaft aus. **Stand 2026-10-17 (Entscheidung der Umsetzungsläufe, zur Bestätigung):** die App bleibt auch ab Stufe 2 **ohne INTERNET** – kein Update-Hinweis, kein `fetchText` im Kotlin-Plugin; „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Opener gibt den Link an den Browser, dafür braucht die App keine Berechtigung); das Hauptmanifest deklariert keine Berechtigung, das APK-Gate prüft das gemergte Manifest |
 | E7 | Desktop-Seite des Syncs | neue Einstellung „Kopie im Cloud-Ordner aktuell halten“. **Stand 2026-10-17:** umgesetzt (`mirrorFolder`, Einstellungen → Handy), samt Anhang-Ordner |
 | E8 | Backup | `allowBackup="false"` + dataExtractionRules |
 | E9 | CI | Android bei jedem Push mitbauen |
 | E10 | Keystore | vom Assistenten auf dem PC des Besitzers erzeugt, im privaten Repo `CedrickGD/keys/keystead/` abgelegt, Secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` gesetzt (2026-10-16) |
-| E11 | Reihenfolge nach 2a | **Autofill zuerst**, dann Bearbeiten + Zwei-Wege-Sync |
+| E11 | Reihenfolge nach 2a | ~~Autofill zuerst, dann Bearbeiten + Zwei-Wege-Sync~~ – **vom Besitzer am 2026-10-23 geändert: 2b (Bearbeiten + Zwei-Wege-Sync) vor Autofill**; 2b ist umgesetzt, Autofill (Stufe 3) folgt |
 | E12 | Werkzeuge | installiert (JDK 17, NDK 28.2.13676358, Plattform 37.0, Rust-Targets, Umgebungsvariablen) |
 | E13 | iOS | siehe „Plattformen“: CI-Simulator-Job nach Android |
+| E14 | Neuer Tresor im Ordner (PC) | **2026-10-23:** der PC fragt, bevor er einen Tresor aus dem Cloud-Ordner übernimmt, den er nicht hat (z. B. am Handy angelegt): Angebot „Übernehmen“ / „Nicht übernehmen“, nie still |
+| E15 | Tresor am Handy anlegen | **2026-10-23:** erlaubt, auch ohne verbundenen Ordner (bleibt bis dahin nur auf dem Handy, `localOnly`; wird geschrieben, sobald ein beschreibbarer Ordner verbunden ist) |
+| E16 | Anhänge am Handy | **2026-10-23:** nur ansehen (kein Anhängen, Speichern, Entfernen); ein Bearbeiten am Handy behält die Anhänge des PCs |
 
 ---
 
@@ -125,6 +128,15 @@ Grundlage für alles: der Core kennt nur Dateipfade; `write_atomic` (Temp-Datei 
 - Anhänge: nur die Tresordatei wird synchronisiert; Einträge bleiben, `read_attachment` → `not_found` → UI „Anhänge sind nur am PC verfügbar“. Ordner-Sync (`ACTION_OPEN_DOCUMENT_TREE`, Blobs **vor** der Tresordatei und vor dem Entsperren kopieren, sonst räumt `sweep` nach 1 h weg) = späteres Inkrement.
 
 ### Stufe 2b – Bearbeiten am Handy + Rückweg
+
+> **Stand 2026-10-23 – umgesetzt** (auf `main`; Vertrag: ARCHITECTURE „Cloud-folder sync (phone)“, „Cloud-folder mirror (desktop) and phone link“, „Vault file format“ → „Sync proof“ / „Sync decision rule“). Abweichungen vom Text unten:
+>
+> * **`syncProof` statt nur Basis + Digest:** jede Tresordatei trägt im Kopf eine authentifizierte Herkunft (`syncProof`: bis zu 512 Vorgänger-Digests, HMAC-SHA256 unter einem aus dem Tresorschlüssel abgeleiteten Schlüssel). Der Kopf im Ordner ist nicht authentifiziert – eine höhere Revision allein ersetzt deshalb nie etwas: gezogen wird nur, was nachweislich von der Basis abstammt (bei gesperrtem Tresor nur „auf Probe“, geprüft beim Entsperren); sonst Konflikt. Das ist eine **Format-Erweiterung** (optionaler Kopf-Schlüssel, 2.0.x behält ihn unverändert, nach dessen nächstem Speichern gilt er nicht mehr) – entgegen „keine Formatänderung“ unten.
+> * **Konfliktkopien auch im Ordner:** das Handy hat keinen Import; die verlierende Seite bleibt in `<data>/conflicts/` **und** wird als `<id>.keystead.conflict-<Zeit>-phone` in den Cloud-Ordner gelegt (nur die Tresordatei, nie über eine vorhandene Datei); der PC listet solche Kopien und bietet „Wiederherstellen“ (über den Import, ohne Anhänge) an. Nicht schreibbare Ordner: die Kopie wartet (`sync/outbox.json`).
+> * **Schreibfreigabe:** Ordner-Links aus 2a haben nur Lesefreigabe – das Handy meldet Änderungen dann als „kommen noch nicht zum PC“ und bittet, den Ordner einmal neu zu wählen.
+> * **Entscheidungen des Besitzers vom 2026-10-23** (oben E14–E16): der PC fragt, bevor er einen neuen Tresor aus dem Ordner übernimmt; das Handy darf Tresore auch ohne Ordner anlegen; Anhänge bleiben am Handy nur ansehbar. Die Reihenfolge E11 hat der Besitzer geändert: 2b vor Autofill.
+> * **Passwortwechsel** weiter nur am PC; eine Kopie mit anderem Master-Passwort nimmt das Handy nur über einen Stand ohne eigene Änderungen auf Probe, sonst ist es ein Konflikt; öffnet das bisherige Passwort die behaltene Kopie statt der neuen, bleibt das Handy bei seinem Stand (Konflikt, Hinweis) – niemand wird ausgesperrt.
+> * Verifiziert: Unit-Tests (Core, App-Crate), Emulator-Lauf am 2026-10-23. Nicht verifiziert: echtes Handy, echte Nextcloud-/OneDrive-App, echte PC-App Ende-zu-Ende mit dem Desktop-Spiegel (siehe HANDOFF).
 
 - Read-only aufheben (Schreib-Commands registrieren, Editor im Phone-Layout). Nach jedem Speichern Copy-out über dieselbe URI (Modus `wt`, ganze Bytes; Nextcloud lädt beim Schließen des Descriptors asynchron hoch), danach Remote erneut lesen und Revision bestätigen.
 - **Konflikterkennung im Core** (`sync::decide`, rein, host-testbar): ein Revisionszähler erkennt keine Divergenz (PC 12→13 und Handy 12→13 getrennt → gleiche Revision, anderer Inhalt; `reload_if_changed` meldet `Ok(false)`). Deshalb `SyncHead { id, revision, digest }` mit `digest` = SHA-256 über `payload.ciphertext` + `wrappedKey` (ohne Passwort berechenbar) und die persistierte Basis `lastSyncedRevision`: ids verschieden → `OtherVault`; remote > local == base → `PullRemote`; local > remote == base → `PushLocal`; gleich + gleicher Digest → `UpToDate`; sonst `Diverged`. **Keine Formatänderung** (ARCHITECTURE L135-237 bleibt).

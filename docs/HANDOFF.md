@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-17)
+# Übergabe – Stand Keystead (2026-10-23)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -10,7 +10,7 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 |---|---|
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
 | `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
-| Entwicklung | Feature-Branches (`claude/…`), Merge per PR mit Merge-Commit nach `main`. Der alte Branch `claude/quirky-archimedes-i4qa3j` ist gemergt und kann gelöscht werden. |
+| Entwicklung | **Seit 2026-10-23 direkt auf `main`** (Wunsch des Besitzers, steht auch in `CLAUDE.md`): keine Feature-Branches, keine Pull Requests. Zwischenstände tragen `[skip ci]`; ob und wann eine Beta (`[release]`) oder ein Tag `vX.Y.Z` veröffentlicht wird, entscheidet der Besitzer. Gepushte Commits nicht umschreiben. Die früheren Branches (`claude/mobile-android`, `claude/generator`, `claude/beta-phone`, `claude/releases-link`) sind Geschichte – ihr Stand ist über die Beta-Zusammenführung in `main`. |
 | Generator | `claude/generator` (abgezweigt vom Stand 2.0.0, lokal im eigenen Worktree `Keystead-generator`): Überarbeitung des Generators, siehe „Was fertig ist“. Stand 2026-10-17: WIP-Commits mit `[skip ci]`; die ersten drei (core, backend, UI) sind schon auf `origin/claude/generator` gepusht (öffentliches Repo), die späteren (extension, docs, review fixes) nur lokal. Bereits gepushte Commits nicht umschreiben (kein squash/amend/rebase – sonst Force-Push auf einen öffentlichen Branch). Nicht gemergt, nicht veröffentlicht. |
 | Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, Android-Keystore `keystead-android-release.jks` mit Passwortdatei, README) |
 | GitHub-Secrets | `TAURI_SIGNING_PRIVATE_KEY` (Inhalt von `keys/keystead/tauri-updater.key`); für die APK `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (= `keystead`) – alle im Keystead-Repo gesetzt (die Android-Secrets am 2026-10-16) |
@@ -44,7 +44,10 @@ WebView2 (ist auf Win 10/11 vorhanden).
   Keystead“ verlinkt die Releases. Release-Notes und README nennen sie
   „frühe Vorschau“: nur lesen, die Tresore kommen über den Cloud-Ordner
   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“), einen Tresor
-  anlegen kann sie nicht.
+  anlegen kann sie nicht. **Seit Stufe 2b (2026-10-23, noch nicht
+  veröffentlicht)** bearbeitet die App und gleicht in beide Richtungen ab –
+  das README sagt das schon; die Release-Notes der nächsten Beta müssen es
+  auch sagen, samt „beide Geräte aktualisieren“.
 - **`[skip ci]`** für Zwischenstände (kein Build, keine Discord-Meldung).
 - Stabile Version: Tag `vX.Y.Z` → Release als „Latest“. Danach `version` in
   `apps/desktop/src-tauri/tauri.conf.json` hochzählen (sonst sortieren spätere
@@ -376,7 +379,7 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
    `main` und eine Beta mit `[release]`. Möglicher Folgeschritt: den
    Generator der Terminal-Version angleichen (siehe „Bekannte Grenzen“).
 
-## In Arbeit: Block 5 „Mobile“ (Branch `claude/mobile-android`)
+## In Arbeit: Block 5 „Mobile“ (seit 2026-10-23 direkt auf `main`)
 
 Entwurf und Entscheidungen des Besitzers: [`BLOCK5-DESIGN.md`](BLOCK5-DESIGN.md)
 (Paketname `io.github.cedrickgd.keystead`, minSdk 29, Handy nur lesend,
@@ -398,7 +401,9 @@ suchen und filtern, aufdecken und kopieren, 2FA-Codes, Bildvorschau von
 Anhängen, Sicherheitsbericht, Sperre im Hintergrund; eigenes Handy-Layout
 mit Zurück-Geste. Ohne `INTERNET`-Berechtigung, ohne Android-Backup, mit
 `FLAG_SECURE`. **Nicht**: bearbeiten (Stufe 2b), Autofill (Stufe 3, als
-Nächstes), Update-Prüfung, Icons laden, Leak-Prüfung.
+Nächstes), Update-Prüfung, Icons laden, Leak-Prüfung. (Stand 1a–2a – seit
+Stufe 2b bearbeitet die App und gleicht in beide Richtungen ab, siehe
+„Stufe 2b“ unten.)
 
 **Bitte bestätigen** (in den Läufen so entschieden bzw. umgesetzt, in
 `BLOCK5-DESIGN.md` vermerkt):
@@ -973,6 +978,90 @@ Stufe 2a in 8 und 9):
     `main` und die drei Feature-Branches sind unverändert; PR #13 ist
     weiterhin offen.
 
+### Stufe 2b – Bearbeiten am Handy und Zwei-Wege-Sync (2026-10-23)
+
+Auf `main` (Commits `a3cbe41` … `5bbf5b6`, dazu die Re-Review-Fixes
+`Mobile 2b: re-review fixes` und diese Doku; alle `[skip ci]`, nichts
+veröffentlicht). Vertrag: `ARCHITECTURE.md` – „Cloud-folder sync (phone)“,
+„Cloud-folder mirror (desktop) and phone link“, „Sync conflicts“ und unter
+„Vault file format“ „Sync proof“ und „Sync decision rule“. Entscheidungen
+und Abweichungen vom Entwurf: `BLOCK5-DESIGN.md`, „Stufe 2b“ und E4, E11,
+E14–E16.
+
+**Was fertig ist:**
+* **Bearbeiten am Handy**: Einträge anlegen/ändern/Papierkorb/wiederherstellen/
+  endgültig löschen, Favoriten, Ordner, Tags, Tresor umbenennen und neu
+  anlegen (auch ohne verbundenen Ordner – dann `localOnly`, geschrieben,
+  sobald ein beschreibbarer Ordner verbunden ist). Anhänge nur ansehen;
+  Master-Passwort, Wiederherstellungsschlüssel, Tresor löschen,
+  Import/Export bleiben am PC.
+* **Zwei-Wege-Sync**: Das Handy schreibt jede Änderung 3 s später (beim
+  Verlassen der App sofort) als `<id>.keystead` in den Ordner, liest sie
+  zurück und vergleicht die Bytes; der PC-Spiegel zieht Handy-Stände
+  (offener Tresor: geprüft und neu geladen; gesperrt: „auf Probe“, geprüft
+  beim Entsperren). Entscheidung auf beiden Seiten mit derselben Regel
+  (`keystead_core::sync::decide`): Basis je Tresor und Ordner
+  (`sync/base/`), Digest jeder Schreibung, **`syncProof`** (authentifizierte
+  Herkunft im Dateikopf, HMAC unter einem Schlüssel aus dem
+  Tresorschlüssel, bis zu 512 Vorgänger) – eine höhere Revision allein
+  ersetzt nie etwas.
+* **Konflikte**: beide Seiten geändert (oder nichts beweist die Abstammung)
+  → nichts wird überschrieben, Dialog am Handy und am PC („Stand vom PC
+  übernehmen“ / „Stand vom Handy behalten“ / „Später“; mit Anhangszahlen;
+  mit anderem Master-Passwort nur „vom PC übernehmen“). Die verlierende
+  Seite bleibt in `<data>/conflicts/` (mit Blobs).
+* **Konfliktkopien im Ordner**: das Handy legt die verlierende Seite
+  zusätzlich als `<id>.keystead.conflict-<Zeit>-phone` in den Cloud-Ordner
+  (nur anlegen, nie überschreiben; bei nicht beschreibbarem Ordner wartet
+  sie in `sync/outbox.json`); der PC listet sie unter Einstellungen → Handy
+  und bietet „Wiederherstellen“ (über den Import, ohne Anhänge) und
+  „Ausblenden“.
+* **Angebote am PC**: ein Tresor im Ordner, den der PC nicht hat (am Handy
+  angelegt), wird angeboten („Übernehmen“ / „Nicht übernehmen“), nie still
+  übernommen.
+* **Schreibfreigabe**: Links aus 2a dürfen nur lesen – Hinweis „Änderungen
+  kommen noch nicht zum PC“ mit „Ordner erneut wählen“.
+* **Re-Review-Fixes** (nach `5bbf5b6`): das Handy nimmt eine Kopie mit
+  anderem Master-Passwort nur noch über einen Stand ohne eigene Änderungen
+  (die Basis) auf Probe, sonst Konflikt wie am PC; eine beim Entsperren
+  beiseitegelegte Handy-Kopie geht zusätzlich in den Ordner, und die App
+  sagt es (`sync://notice`, Toast); eine Kopie auf Probe mit fremdem Salz
+  sperrt niemanden aus (das bisherige Passwort bzw. der Fingerabdruck öffnet
+  die behaltene Kopie, die Ordnerkopie wird ein Konflikt, Toast);
+  veraltete Probe-Einträge nach einem Absturz werden erkannt und
+  aufgeräumt; `syncProof` bis 512 Vorgänger, Grenze vor dem Kopieren
+  geprüft; Blobs einer Konfliktkopie begrenzt (10 000 Dateien / ~2 GiB,
+  sonst `sync_conflict_blobs_too_many`). Blobs der Konfliktkopie kommen
+  bewusst **nicht** in den Ordner (der Import trägt keine Anhänge – in
+  ARCHITECTURE und im Dialogtext dokumentiert).
+
+**Verifiziert:**
+* Unit-Tests (Stand nach den Re-Review-Fixes, 2026-10-23): `cargo test -p
+  keystead-core` 241 grün (1 ignoriert), `-p keystead-desktop --lib` 244
+  grün (4 ignoriert), `-p keystead-tui` 68 grün, `node --test` 99 grün;
+  fmt, clippy `-D warnings` (Windows und aarch64-Android), `tsc`, `npm run
+  build`.
+* **Emulator-Lauf am 2026-10-23** (AVD `MB_S26`, Debug-APK x86_64, Ordner
+  per `adb push` statt Cloud-App): Speichern am Handy scheiterte zuerst mit
+  „try_lock() not supported“ – Android hat in `std` keine Dateisperren;
+  behoben (`6e3d51b`: auf Android ohne Sperre, nur die App erreicht ihren
+  Datenordner, Schreiben unter der Zustandssperre). Danach: Eintrag am Handy
+  anlegen → in den Ordner geschrieben; Änderung am PC → am Handy
+  übernommen; beide Seiten geändert → Konfliktdialog → aufgelöst;
+  gesperrt gezogene Kopie → beim Entsperren geprüft und bestätigt.
+
+**Nicht verifiziert:**
+* ein echtes Handy; die echte Nextcloud- oder OneDrive-App als
+  Ordner-Anbieter (Schreibfreigabe, Upload-Verhalten, Konfliktkopien der
+  Cloud-App);
+* die echte PC-App Ende-zu-Ende mit dem Desktop-Spiegel gegen dasselbe
+  Handy (der PC-Teil ist nur per Unit-Tests geprüft);
+* die Re-Review-Fixes im Emulator (nur Unit-Tests).
+* **Wichtig für Nutzer:** Clients 2.0.x synchronisieren weiter nach der
+  alten Regel (der PC-Spiegel überschreibt nie eine höhere Revision, zieht
+  aber nichts; ein 2.0.x-PC behält den `syncProof` nur bis zu seinem
+  nächsten Speichern) – **beide Geräte aktualisieren**, zuerst den PC.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -1069,7 +1158,11 @@ Punkten 8 (Handy) und 9 (PC) – ein eigener Einzeldatei-Import
 bestätigen“ oben mit dem Besitzer klären, und einmal Ende-zu-Ende mit der
 echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
 
-1. **Autofill** (Stufe 3, E11 – der Besitzer will es vor dem Bearbeiten):
+1. ~~**2b**~~ Bearbeiten am Handy + Zwei-Wege-Sync: **fertig** (2026-10-23,
+   Abschnitt „Stufe 2b“ oben; der Besitzer hat die Reihenfolge E11 auf
+   „2b vor Autofill“ geändert). Offen: Prüfung mit echtem Handy, echter
+   Cloud-App und der echten PC-App Ende-zu-Ende; danach eine Beta.
+2. **Autofill** (Stufe 3, E11 – jetzt als Nächstes):
    ein Android-`AutofillService` in Kotlin (gleicher Prozess wie die
    Rust-Bibliothek, JNI), zuerst die Minimalvariante – nur Browser/Domain,
    Benutzername + Passwort, kein Speichern; ohne offene App entsperrt eine
@@ -1077,12 +1170,6 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    `BLOCK5-DESIGN.md`, „Stufe 3“. Dabei sinnvoll: der Fingerabdruck als
    eigenes Kotlin-Plugin (E5 b: StrongBox, eigener Alias, `ByteArray` statt
    Text), weil Autofill denselben Keystore-KEK braucht.
-2. **2b** Bearbeiten am Handy + Zwei-Wege-Sync mit Konfliktdialog
-   (Schreibkommandos registrieren, Editor im Handy-Layout, Copy-out in den
-   Ordner – dafür braucht das Handy dann eine Schreibfreigabe –, Konflikt-
-   erkennung `sync::decide` mit Digest und Basis-Revision; der PC-Spiegel
-   ersetzt bisher nie eine höhere Revision im Ordner – 2b braucht dort
-   dieselbe Konfliktlogik).
 3. Kleinere offene Punkte: das Launcher-Icon von `gen/android` (noch
    Tauris Standard, auch im Fingerabdruck-Prompt sichtbar) durch das
    Keystead-Logo ersetzen; Zwischenablage mit langem Timer härten
@@ -1108,6 +1195,27 @@ der von Lauf zu Lauf wechseln kann: zwischen zwei solchen APKs ggf.
 deinstallieren.
 
 ## Bekannte Grenzen / offene Punkte
+
+- **Zwei-Wege-Sync (Stufe 2b)**:
+  - Nicht auf echter Hardware geprüft (echtes Handy, Nextcloud-/OneDrive-App,
+    echte PC-App mit Spiegel Ende-zu-Ende) – siehe „Stufe 2b“.
+  - 2.0.x-Clients gleichen nach der alten Regel ab; beide Geräte
+    aktualisieren. Ein 2.0.x-PC, der speichert, macht den `syncProof`
+    ungültig – das nächste Ziehen am Handy wird dann ein Konflikt statt
+    eines stillen Ziehens (gewollt).
+  - Kein Zusammenführen: bei einem Konflikt gewinnt eine Seite, die andere
+    bleibt als Konfliktkopie; deren Anhänge kommen beim „Wiederherstellen“
+    am PC nicht mit (der Keystead-Import trägt keine Anhänge), sie bleiben
+    bei der Kopie auf dem Handy.
+  - `Trial.rejected` merkt sich nur eine abgelehnte Schreibung – wer den
+    Ordner schreiben kann und die Nonce ständig ändert, bekommt jede Variante
+    erneut auf Probe (kostet je einen Rückfall beim Entsperren, nichts geht
+    verloren).
+  - Wer das Master-Passwort am PC ändert und am Handy das alte eintippt,
+    landet beim alten Stand des Handys mit Konflikt („nur übernehmen, wenn
+    du das neue Passwort kennst“) – gewollt, damit eine fremde Kopie im
+    Ordner niemanden aussperrt.
+  - Konfliktkopien in `<data>/conflicts/` werden nie automatisch gelöscht.
 
 - EXE ist nicht code-signiert → SmartScreen-Warnung. Der Besitzer will nichts
   Kostenpflichtiges; eine kostenlose Option für Open-Source-Projekte wäre

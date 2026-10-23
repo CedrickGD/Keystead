@@ -91,7 +91,7 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Aufs Handy**: „Kopie im Cloud-Ordner aktuell halten“ legt jeden Tresor, den
   du öffnest, verschlüsselt in einen Ordner deiner Nextcloud oder deines OneDrive
   und hält ihn nach jedem Speichern aktuell; die [Android-App](#android-app-vorschau)
-  liest ihn von dort (nur lesend).
+  gleicht ihn darüber ab – Änderungen vom Handy übernimmt der PC von dort.
 - **Portabler Modus** (Daten neben der EXE, z. B. auf einem USB-Stick),
   Infobereich-Symbol, helles/dunkles Design, Deutsch und Englisch.
 
@@ -120,13 +120,17 @@ Regel schon installiert).
 
 ### Android-App (Vorschau)
 
-Jedes Release enthält auch die Android-App – vorerst als **frühe
-Vorschau** zum Nachschlagen: Tresore öffnen, Benutzernamen, Passwörter und
-2FA-Codes zeigen und kopieren, den Sicherheitsbericht zeigen – ändern kann sie
-nichts. Ihre Tresore holt sie **nur lesend aus einem Ordner deiner eigenen
-Cloud** (über die Cloud-App auf dem Handy, z. B. Nextcloud oder OneDrive – mit
-diesen Apps ist das noch ungeprüft, siehe unten); einen Tresor neu anlegen kann
-sie nicht.
+Jedes Release enthält auch die Android-App – vorerst als **Vorschau**:
+Tresore öffnen, Benutzernamen, Passwörter und 2FA-Codes zeigen und kopieren,
+Einträge **bearbeiten** und den Sicherheitsbericht zeigen. Ihre Tresore
+gleicht sie **über einen Ordner deiner eigenen Cloud** mit dem PC ab – in
+beide Richtungen (über die Cloud-App auf dem Handy, z. B. Nextcloud oder
+OneDrive – mit diesen Apps ist das noch ungeprüft, siehe unten).
+
+> **Beide Geräte aktualisieren:** Das Bearbeiten am Handy und der Rückweg zum
+> PC brauchen die neue Version auf **beiden** Geräten. Ein PC mit Keystead
+> 2.0.x übernimmt keine Änderungen vom Handy und gleicht nach der alten Regel
+> ab – aktualisiere zuerst den PC, dann das Handy.
 
 **Installieren:**
 
@@ -171,14 +175,47 @@ sie nicht.
 > ausgegraut), kommt auf diesem Weg kein Tresor aufs Handy.
 
 Weitere Tresore kommen von selbst mit: Öffne sie einmal am PC, dann liegen sie
-im selben Ordner. Das Handy behält nur Lesezugriff auf den Ordner und gleicht
-beim Start, beim Zurückkehren in die App (höchstens einmal pro Minute) und auf
-Knopfdruck ab: Eine neuere Version vom PC ersetzt die Kopie auf dem Handy, eine
-ältere nie; in den Ordner schreibt die App nichts. Eine Kopie, die sich auf
-dem Handy nicht öffnen lässt (beschädigt oder im Ordner verändert), übernimmt
-die App nicht – sie bleibt bei der letzten, die sich geöffnet hat. Hast du am PC das
-Master-Passwort geändert, sperrt sich der Tresor auf dem Handy beim nächsten
-Abgleich, und ab dann gilt das neue Passwort. Im Ordner liegen nur
+im selben Ordner. Das Handy gleicht beim Start, beim Zurückkehren in die App
+(höchstens einmal pro Minute), kurz nach jeder Änderung und auf Knopfdruck ab:
+Eine neuere Version vom PC ersetzt die Kopie auf dem Handy, eine ältere nie.
+Eine Kopie, die sich auf dem Handy nicht öffnen lässt (beschädigt oder im
+Ordner verändert), übernimmt die App nicht – sie bleibt bei der letzten, die
+sich geöffnet hat. Hast du am PC das Master-Passwort geändert, sperrt sich der
+Tresor auf dem Handy beim nächsten Abgleich, und ab dann gilt das neue
+Passwort. Öffnet stattdessen dein bisheriges Passwort, bleibt das Handy bei
+seinem Stand und fragt, welcher gelten soll.
+
+**Am Handy bearbeiten und zurück zum PC:** Einträge anlegen, ändern, in den
+Papierkorb legen und wiederherstellen, Favoriten, Ordner und Tags, Tresor
+umbenennen und neue Tresore anlegen – das Handy schreibt jede Änderung wenige
+Sekunden später in den Cloud-Ordner (beim Verlassen der App sofort), liest sie
+zur Kontrolle zurück, und der PC übernimmt sie beim nächsten Abgleich. Einen
+Tresor, den du am Handy neu anlegst, bevor ein Ordner verbunden ist, schreibt
+es hinein, sobald einer verbunden ist; am PC erscheint er erst, wenn du dort
+„Übernehmen“ wählst (Keystead fragt, statt fremde Tresore still zu
+übernehmen). Anhänge kannst du am Handy nur ansehen – sie bleiben beim
+Bearbeiten erhalten. Master-Passwort, Wiederherstellungsschlüssel, Tresor
+löschen, Import und Export gibt es nur am PC.
+
+**Einmal neu verbinden für den Schreibzugriff:** Hast du den Ordner mit einer
+älteren Version verbunden, darf Keystead dort nur lesen. Dann bleiben
+Änderungen auf dem Handy, und die App sagt „Änderungen kommen noch nicht zum
+PC“ – wähle den Ordner unter Einstellungen → Synchronisierung einmal neu
+(„Ordner erneut wählen“) und tippe auf „Zulassen“.
+
+**Wenn beide Seiten geändert wurden:** Hast du denselben Tresor am PC und am
+Handy geändert, bevor sie sich abgeglichen haben, überschreibt Keystead
+nichts, sondern fragt (am Handy und am PC gleich): „Stand vom PC übernehmen“,
+„Stand vom Handy behalten“ oder „Später“. Ein Zusammenführen gibt es nicht.
+Der andere Stand geht nicht verloren: Er bleibt als Konfliktkopie im
+Datenordner (Unterordner `conflicts`). Am Handy legt Keystead ihn zusätzlich
+in den Cloud-Ordner; der PC bietet unter Einstellungen → Handy an, ihn
+wiederherzustellen (die Einträge kommen über den Import zurück, Anhänge nicht
+– die bleiben bei der Kopie auf dem Handy). Hat die Kopie vom PC ein anderes
+Master-Passwort, kann der Stand vom Handy nicht behalten werden – übernimm
+den Stand vom PC nur, wenn du das neue Passwort kennst. Keystead erkennt an
+einer verschlüsselten Herkunftsangabe in jeder Tresordatei, ob ein Stand auf
+dem anderen aufbaut – eine höhere Versionsnummer allein ersetzt nie etwas. Im Ordner liegen nur
 verschlüsselte Dateien: `<Tresor-ID>.keystead` und der Ordner
 `<Tresor-ID>.keystead.attachments` mit den verschlüsselten Anhängen – die
 Dateinamen sind Tresor-IDs. Dein Cloud-Anbieter sieht die verschlüsselten Daten
@@ -204,12 +241,11 @@ Master-Passwort geht immer auch. Nach einem neu eingerichteten Fingerabdruck
 oder einem am PC geänderten Master-Passwort fragt Keystead wieder nach dem
 Passwort und bietet danach an, den Fingerabdruck neu einzurichten.
 
-**Was noch fehlt:** Bearbeiten am Handy (Einträge, Ordner, Tags, neue Tresore
-– das geht nur am PC), Ausfüllen in anderen Apps (Android-Autofill, als
+**Was noch fehlt:** Ausfüllen in anderen Apps (Android-Autofill, als
 Nächstes geplant), Website-Icons laden und die Prüfung auf geleakte Passwörter
 (nur am PC; Icons, die der PC geladen hat, zeigt das Handy), Dateien anhängen
-oder speichern, einen Tresor vom Handy entfernen (auch einer, den du am PC
-löschst, bleibt auf dem Handy). Beim Deinstallieren löscht Android die Daten
+oder speichern, Master-Passwort ändern, einen Tresor vom Handy entfernen (auch
+einer, den du am PC löschst, bleibt auf dem Handy). Beim Deinstallieren löscht Android die Daten
 der App – auch die Tresore auf dem Handy (der Cloud-Ordner bleibt unberührt).
 
 ### Browser-Erweiterung einrichten
@@ -449,8 +485,8 @@ and also available in English.
   changed passwords. **Export** as an encrypted `.keystead` file, CSV or Bitwarden JSON.
 - **On the phone**: “Keep a copy in a cloud folder up to date” puts every vault you
   open, encrypted, into a folder of your Nextcloud or OneDrive and keeps it up to
-  date after every save; the [Android app](#android-app-preview) reads it from there
-  (read-only).
+  date after every save; the [Android app](#android-app-preview)
+  syncs it through there – the PC takes changes made on the phone from there.
 - **Portable mode** (data next to the exe, e.g. on a USB stick), tray icon, light/dark theme.
 
 ### Download & quick start
@@ -475,12 +511,16 @@ Requires Windows 10 or 11 (the WebView2 runtime they need is normally already in
 
 ### Android app (preview)
 
-Every release also carries the Android app – for now an **early
-preview** for looking things up: open vaults, show and copy usernames,
-passwords and 2FA codes, show the security report – it cannot change
-anything. It takes its vaults **read-only from a folder of your own cloud**
-(through the cloud app on the phone, e.g. Nextcloud or OneDrive – not checked
-with these apps yet, see below); it cannot create a vault.
+Every release also carries the Android app – for now as a **preview**: open
+vaults, show and copy usernames, passwords and 2FA codes, **edit** items and
+show the security report. It syncs its vaults with the PC **through a folder
+of your own cloud** – both ways (through the cloud app on the phone, e.g.
+Nextcloud or OneDrive – not checked with these apps yet, see below).
+
+> **Update both devices:** editing on the phone and the way back to the PC
+> need the new version on **both** devices. A PC with Keystead 2.0.x takes no
+> changes from the phone and syncs by the old rule – update the PC first,
+> then the phone.
 
 **Installing:**
 
@@ -526,14 +566,42 @@ with these apps yet, see below); it cannot create a vault.
 > phone this way.
 
 More vaults come along by themselves: open them once on the PC and they are in
-the same folder. The phone keeps read access to the folder only and syncs at
-start, when you return to the app (at most once a minute) and on request: a
-newer version from the PC replaces the copy on the phone, an older one never
-does; the app writes nothing to the folder. A copy that does not open on the
-phone (damaged, or altered in the folder) is not taken – the app stays with the
-last one that opened. If you changed the master password
-on the PC, the vault on the phone locks at the next sync, and from then on the
-new password applies. The folder holds encrypted files only:
+the same folder. The phone syncs at start, when you return to the app (at most
+once a minute), shortly after every change and on request: a newer version from
+the PC replaces the copy on the phone, an older one never does. A copy that
+does not open on the phone (damaged, or altered in the folder) is not taken –
+the app stays with the last one that opened. If you changed the master
+password on the PC, the vault on the phone locks at the next sync, and from
+then on the new password applies. If your previous password opens it instead,
+the phone keeps its own state and asks which one should count.
+
+**Editing on the phone and syncing back to the PC:** add, change, trash and
+restore items, favourites, folders and tags, rename a vault and create new
+vaults – the phone writes every change into the cloud folder a few seconds
+later (at once when you leave the app), reads it back to check it, and the PC
+takes it at its next sync. A vault you create on the phone before a folder is
+linked is written there once one is; on the PC it appears only after you
+choose to take it there (Keystead asks instead of quietly taking vaults it
+does not know). Attachments are view-only on the phone – editing keeps them.
+Master password, recovery key, deleting a vault, import and export are
+PC-only.
+
+**Re-link once for write access:** if you linked the folder with an older
+version, Keystead may only read it. Then changes stay on the phone and the app
+says so – pick the folder once more under Settings → Sync and tap “Allow”.
+
+**When both sides changed:** if you changed the same vault on the PC and on
+the phone before they synced, Keystead overwrites nothing and asks (the same on
+the phone and the PC) whether to take the PC's state, keep the phone's state,
+or decide later. There is no merging. The other state is not lost: it stays as
+a conflict copy in the data folder (subfolder `conflicts`). On the phone,
+Keystead also puts it into the cloud folder; the PC offers to restore it under
+Settings → Phone (the entries come back through the import, attachments do
+not – they stay with the copy on the phone). If the copy from the PC has
+another master password, the phone's state cannot be kept – only take the
+PC's state if you know the new password. Keystead tells from an encrypted
+ancestry record in every vault file whether one state builds on the other – a
+higher version number alone never replaces anything. The folder holds encrypted files only:
 `<vault id>.keystead` and the folder `<vault id>.keystead.attachments` with the
 encrypted attachments – the file names are vault ids. Your cloud provider sees
 the encrypted data and the unencrypted file header (vault name, revision,
@@ -556,11 +624,11 @@ by itself; the master password always works too. After a newly added
 fingerprint or a master password changed on the PC, Keystead asks for the
 password again and then offers to set up the fingerprint once more.
 
-**Still missing:** editing on the phone (items, folders, tags, new vaults –
-only on the PC), filling in other apps (Android autofill, planned next),
+**Still missing:** filling in other apps (Android autofill, planned next),
 loading website icons and the leaked-password check (PC only; the phone shows
-the icons the PC loaded), attaching or saving files, removing a vault from the
-phone (one you delete on the PC stays on the phone too). Uninstalling the app
+the icons the PC loaded), attaching or saving files, changing the master
+password, removing a vault from the phone (one you delete on the PC stays on
+the phone too). Uninstalling the app
 makes Android delete its data – including the vaults on the phone (the cloud
 folder is not touched).
 
