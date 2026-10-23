@@ -765,6 +765,13 @@ pub fn lock_vault_file(vault_path: &Path) -> Result<FileLock> {
                     "vault file is locked by another process",
                 )));
             }
+            // Android: std has no file locks there (`Unsupported`). Only the
+            // app itself reaches its private data directory, and its writes
+            // already run under the app's state lock – so going on without
+            // the OS lock is safe there (and the only way to save at all).
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+                return Ok(FileLock { _file: file });
+            }
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::io_at(&lock_path, e)),
         }
     }
