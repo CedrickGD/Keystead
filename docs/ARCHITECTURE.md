@@ -404,7 +404,19 @@ folder and copies them in, and writes the vault files it changed back
     file is looked at once more (`sync_remote_changed`); then the
     phone's vault file goes through `<data>/sync/outgoing/<id>.keystead` to
     the plugin's `writeFile`, which truncates and rewrites the folder's file
-    or creates it under exactly that name. The sync reads the written file
+    or creates it under exactly that name. The write is
+    `RemoteFolder::write_vault_checked(name, bytes, precondition)`: the
+    second look returns the precondition it verified – `IfMatch(etag)` of
+    the copy it read again (`RemoteEntry.etag`, `#[serde(default)]`; the
+    plugin's entries have none → unconditional), `IfNoneMatch` for a file
+    that must not exist yet. The folder plugin's default implementation
+    ignores it (`write_vault`, unchanged); a server checks it atomically
+    and refuses with `sync_remote_changed` (HTTP 412) – looked at once
+    more, like a change the second look found. A second try after an
+    unverified write goes over the first write's ETag only. Errors that
+    end the whole sync instead of failing one file (`ends_sync`):
+    `folder_access_lost`, `sync_offline`, `sync_auth_failed`,
+    `sync_server_certificate`. The sync reads the written file
     back and compares the bytes; a mismatch is written once more, then
     reported (`failed`, `unsupported:sync_write_unverified`); only a
     verified write becomes the base (`pushed`). A vault the phone made and
@@ -1205,7 +1217,8 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   folder setting changes – while the app runs (an exit forgets it); its
   copy is not offered meanwhile. Vaults never opened in the app are not
   copied.
-* **A pass** (`mirror::mirror_vault`): read the vault file (gone → nothing
+* **A pass** (`mirror::mirror_vault_in` with the round's `MirrorStore`, see
+  "Remote backends"): read the vault file (gone → nothing
   to do), parse it (`VaultFile::parse`; the id must be the file's), check
   the folder, read the folder's copy (at most 64 MiB, parsed and validated
   – KDF limits included). A copy that cannot be read right now (an I/O
@@ -1383,6 +1396,75 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   same directory) against the PC's: edits going back and forth, and both
   sides editing – the conflict on the side that comes second, resolved
   there, both converging.
+
+### Remote backends (stage 2c, `src-tauri/src/remote/`)
+
+The I/O seam both engines use for a server; the engines' logic
+(`keystead_core::sync::decide`, sync proof, trial, conflicts) is unchanged.
+Built and tested, **not wired to settings, commands or the UI yet**.
+
+* `remote::Remote` (`Send + Sync`, blocking): `key()` (what bases and the
+  link are recorded for – `webdav:<normalized folder URL>`, never
+  credentials), `probe()` → `Access { exists, writable, cas }`,
+  `list(dir)` (`""` or an attachment folder, depth 1) →
+  `RemoteMeta { name, dir, size, etag, modified }`, `get(path, max)` →
+  bytes and ETag, `put(path, bytes, Precondition)`, `mkcol(dir)`,
+  `delete(path, Precondition)`. `Precondition`: `None`, `IfMatch(etag)`,
+  `IfNoneMatch`. Paths are validated against the layout (`<id>.keystead`, a
+  phone conflict copy, `<id>.keystead.attachments[/<id>.bin]`; nothing
+  else, `invalid_input:remote_path`). Codes (`unsupported:`):
+  `sync_offline`, `sync_auth_failed`, `sync_not_writable`,
+  `sync_server_folder_missing`, `sync_server_not_webdav`,
+  `sync_server_quota`, `sync_server_error`, `sync_server_response`,
+  `sync_server_certificate`, `sync_remote_changed` (a failed precondition),
+  `sync_file_missing`, `sync_file_too_large`.
+* Phone: `remote::folder::RemoteDirFolder<R>` is a `RemoteFolder` (entry
+  `uri` = the relative path, `etag` = the server's; `write_vault_checked` =
+  a conditional `PUT`; `write_conflict_copy` = `PUT` with `If-None-Match: *`,
+  412 → `sync_name_taken`; `writable()` = the probe, a missing folder →
+  `sync_server_folder_missing`).
+* PC: `mirror.rs` reaches the folder only through `trait MirrorStore`
+  (`key`, `check`, `read(name)` → bytes **and a version**, `write_vault(id,
+  bytes, Precondition)` → written or not, blob list/get/put/remove, the
+  top-level files with their stamps, `keep_copy`, `may_replace_damaged`).
+  `FsStore` is the cloud folder as before (version = SHA-256 of the bytes,
+  read again right before a write; stamp = size and time). `RemoteStore<R>`
+  is a server (version = ETag; stamp = ETag, else size and time; the blob
+  folder is made with its first blob; a **damaged** server copy is replaced
+  only once it is still the same damaged copy ≥ 60 s later – it may be an
+  upload in progress). A push writes with `IfMatch(version)` of the copy
+  the decision was made on (`IfNoneMatch` for none); a refused write is
+  `Changed` (looked at again by the next pass). A server ignoring `If-Match`
+  loses the atomicity only: the side whose write was gone over finds a
+  conflict on its next look (tested).
+* WebDAV (`remote::webdav::WebDavRemote`, `dav_xml`, `tls`): an own thin
+  client on reqwest (async client on a small runtime of its own – the
+  blocking client has a total timeout only): `PROPFIND` (explicit props,
+  answers parsed without DTDs, ≤ 8 MiB, ≤ 10 000 responses, depth ≤ 32,
+  hrefs only the folder itself or one entry in it – same origin, no `..`,
+  encoded slashes, `\`, NUL), `GET` (capped by `Content-Length` and by
+  counting), `PUT` with `If-Match` / `If-None-Match: *`, `MKCOL`, `DELETE`.
+  Connect 15 s, read 30 s, no total timeout, no redirects, Basic auth;
+  `https` only (debug builds also `http` to `localhost` and `10.0.2.2`),
+  no credentials in the URL. The probe's `If-Match` test (`PUT` of
+  `.keystead-cas-probe` with an ETag no file has: 412 → `cas`, a write
+  that went through is removed again). The connection test
+  (`WebDavRemote::test` → `WebDavTest { ok, code, certificate,
+  suggestedUrl, folderMissing, writable, cas }`) suggests a same-host
+  redirect target or Nextcloud's `/remote.php/dav/files/<user>/` for a bare
+  host only if it answers as a WebDAV folder; `create_folder` is
+  "Ordner anlegen" (never done by a sync).
+* TLS (`remote::tls`, the only place on the phone that builds an HTTP
+  client – a unit test greps for others): rustls with ring, desktop
+  `rustls-platform-verifier`, Android `webpki-roots`. An untrusted
+  certificate → `sync_server_certificate` plus `CertInfo { sha256,
+  subject, issuer, notBefore, notAfter }` (`fetch_certificate`: a handshake
+  up to the certificate, nothing sent); once confirmed, `PinnedVerifier`
+  accepts exactly that leaf (handshake signatures still verified). Unit
+  tests run an in-process WebDAV server (`remote::test_server`, plain and
+  TLS with an rcgen certificate, hostile answers) and an in-memory server
+  (`remote::mem::MemRemote`: ETags, preconditions, offline, cut uploads, a
+  server ignoring `If-Match`) under both engines and across them.
 
 ## Data locations (`keystead_core::paths`)
 

@@ -67,6 +67,9 @@ mod platform;
 mod portable;
 #[cfg(desktop)]
 mod pwned;
+// The sync's I/O seam to a server (stage 2c, both platforms): the trait
+// both engines use, their adapters and the WebDAV client.
+mod remote;
 mod secrets;
 mod state;
 // The two-way cloud-folder sync's shared parts (both platforms): the sync

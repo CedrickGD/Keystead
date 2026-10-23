@@ -31,8 +31,10 @@
 //!   write.
 //! * A push reads the folder's copy again right before it writes (a copy
 //!   that changed since the decision is looked at once more), writes the
-//!   phone's vault file through [`RemoteFolder::write_vault`], reads it
-//!   back and compares the bytes (a second try, then
+//!   phone's vault file through [`RemoteFolder::write_vault_checked`] (on a
+//!   server a conditional write: `If-Match` with the ETag of the copy it
+//!   read again, `If-None-Match` for a new file; a failed one is looked at
+//!   once more), reads it back and compares the bytes (a second try, then
 //!   `unsupported:sync_write_unverified`); only then the base becomes the
 //!   pushed head. A link without write permission (a 2a link) reports
 //!   `notWritable` and writes nothing.
@@ -92,8 +94,8 @@
 //!   `<data>/sync/outgoing/` for the plugin.
 //!
 //! The folder itself is behind [`RemoteFolder`]: on Android the Kotlin
-//! plugin `KeysteadFolderPlugin` (`mobile::sync`), in the unit tests a
-//! directory. Everything here is platform-neutral and tested on the host.
+//! plugin `KeysteadFolderPlugin` (`mobile::sync`), on a server
+//! `remote::folder::RemoteDirFolder`, in the unit tests a directory. Everything here is platform-neutral and tested on the host.
 
 // Only the Android build reaches the sync through the folder plugin; the
 // desktop compiles this module for its unit tests and iOS has no plugin yet.
@@ -113,6 +115,7 @@ use keystead_core::Error as CoreError;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::remote::{self, Precondition};
 use crate::state::{log, Core, LockReason};
 use crate::sync_base::{self, sync_dir};
 use crate::sync_conflict::{
@@ -151,7 +154,7 @@ pub const LOCAL_CHANGED: &str = "sync_local_changed";
 /// Error code (per file): the folder's copy changed between the decision
 /// and the write (the PC wrote it meanwhile): nothing was written; it is
 /// looked at again.
-pub const REMOTE_CHANGED: &str = "sync_remote_changed";
+pub const REMOTE_CHANGED: &str = remote::CHANGED;
 fn link_path(data_dir: &Path) -> PathBuf {
     sync_dir(data_dir).join("link.json")
 }
@@ -180,8 +183,11 @@ fn has_code(e: &AppError, detail: &str) -> bool {
     e.code() == format!("unsupported:{detail}")
 }
 
-fn is_access_lost(e: &AppError) -> bool {
-    has_code(e, ACCESS_LOST)
+/// Whether `e` ends the whole sync rather than one file's: the folder
+/// cannot be read any more ([`ACCESS_LOST`]) or, on a server, it cannot be
+/// reached, refused the login or its certificate (`remote::ends_sync`).
+fn ends_sync(e: &AppError) -> bool {
+    has_code(e, ACCESS_LOST) || remote::ends_sync(e)
 }
 
 fn is_too_large(e: &AppError) -> bool {
@@ -205,6 +211,10 @@ pub struct RemoteEntry {
     /// Size in bytes, if the provider knows it.
     #[serde(default)]
     pub size: Option<u64>,
+    /// The file's version as the provider names it (a server's strong
+    /// ETag); `None` where there is none (the Android folder plugin).
+    #[serde(default)]
+    pub etag: Option<String>,
 }
 
 /// The linked folder as the sync sees it.
@@ -233,6 +243,23 @@ pub trait RemoteFolder {
     /// `unsupported:sync_write_unverified` (the size read back differs),
     /// [`access_lost`].
     fn write_vault(&self, name: &str, bytes: &[u8]) -> AppResult<RemoteEntry>;
+
+    /// [`RemoteFolder::write_vault`] only if `pre` still holds – the
+    /// precondition the push verified by reading the folder's copy again
+    /// (`If-Match` with its ETag, or `If-None-Match` for a copy that must
+    /// not exist yet). A server checks it atomically and refuses with
+    /// `unsupported:sync_remote_changed`; the default (the Android folder
+    /// plugin, which has no such check) ignores it and relies on the
+    /// read-again alone.
+    fn write_vault_checked(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        pre: &Precondition,
+    ) -> AppResult<RemoteEntry> {
+        let _ = pre;
+        self.write_vault(name, bytes)
+    }
 
     /// Creates the top-level file `name` – always a phone conflict copy,
     /// `<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`
@@ -819,7 +846,7 @@ fn flush_outbox(ctx: &Ctx<'_>) -> AppResult<()> {
                     "could not write a queued conflict copy into the folder: {}",
                     e.code()
                 ));
-                if is_access_lost(&e) {
+                if ends_sync(&e) {
                     lost = Some(e);
                 }
                 left.push(copy);
@@ -1012,22 +1039,32 @@ fn remote_changed() -> AppError {
 }
 
 /// Whether the folder's file `name` is still `seen` (`None`: still none) –
-/// read again right before a write. A provider may still overwrite it
-/// unseen afterwards; the authenticated ancestry catches that on the other
-/// side (a conflict, never a silent pull).
-fn still_seen(ctx: &Ctx<'_>, name: &str, seen: Option<&[u8]>) -> AppResult<bool> {
+/// read again right before a write. `Some(precondition)` for the write: it
+/// holds only over this very copy (`If-Match` with the ETag the listing
+/// gave, `If-None-Match` while there is none; unconditional where the
+/// folder has no ETags). A server checks it atomically; a provider without
+/// that may still overwrite the file unseen afterwards – the authenticated
+/// ancestry catches that on the other side (a conflict, never a silent
+/// pull). `None`: it changed.
+fn still_seen(ctx: &Ctx<'_>, name: &str, seen: Option<&[u8]>) -> AppResult<Option<Precondition>> {
     let top = ctx.folder.list(None)?;
     let entry = top.iter().find(|e| !e.dir && e.name == name);
     match (entry, seen) {
-        (None, None) => Ok(true),
+        (None, None) => Ok(Some(Precondition::IfNoneMatch)),
         (Some(entry), Some(seen)) => {
             match fetch(ctx.folder, entry, ctx.incoming, VAULT_FILE_MAX_BYTES) {
-                Ok(now) => Ok(now == seen),
-                Err(e) if is_access_lost(&e) => Err(e),
-                Err(_) => Ok(false),
+                Ok(now) if now == seen => Ok(Some(
+                    entry
+                        .etag
+                        .clone()
+                        .map_or(Precondition::None, Precondition::IfMatch),
+                )),
+                Ok(_) => Ok(None),
+                Err(e) if ends_sync(&e) => Err(e),
+                Err(_) => Ok(None),
             }
         }
-        _ => Ok(false),
+        _ => Ok(None),
     }
 }
 
@@ -1045,12 +1082,14 @@ fn push(
     head: &SyncHead,
     seen: Option<&[u8]>,
 ) -> AppResult<Option<AppError>> {
-    if !still_seen(ctx, name, seen)? {
+    let Some(mut pre) = still_seen(ctx, name, seen)? else {
         return Ok(Some(remote_changed()));
-    }
+    };
     let mut last = None;
     for _ in 0..2 {
-        match write_and_verify(ctx, name, bytes) {
+        // A failed precondition (the PC wrote meanwhile) is
+        // `sync_remote_changed`: looked at once more by the caller.
+        match write_and_verify(ctx, name, bytes, &mut pre) {
             Ok(()) => {
                 let base = SyncBase::new(head, ctx.tree, now_ms());
                 if let Err(e) = sync_base::save(&ctx.data_dir, id, &base) {
@@ -1058,7 +1097,7 @@ fn push(
                 }
                 return Ok(None);
             }
-            Err(e) if is_access_lost(&e) => return Err(e),
+            Err(e) if ends_sync(&e) => return Err(e),
             Err(e) if has_code(&e, WRITE_UNVERIFIED) => last = Some(e),
             Err(e) => return Ok(Some(e)),
         }
@@ -1068,11 +1107,22 @@ fn push(
     })))
 }
 
-fn write_and_verify(ctx: &Ctx<'_>, name: &str, bytes: &[u8]) -> AppResult<()> {
-    let entry = ctx.folder.write_vault(name, bytes)?;
+/// One write under `pre`, read back. Afterwards `pre` names the written
+/// file (a second try goes over this write only).
+fn write_and_verify(
+    ctx: &Ctx<'_>,
+    name: &str,
+    bytes: &[u8],
+    pre: &mut Precondition,
+) -> AppResult<()> {
+    let entry = ctx.folder.write_vault_checked(name, bytes, pre)?;
+    *pre = entry
+        .etag
+        .clone()
+        .map_or(Precondition::None, Precondition::IfMatch);
     match fetch(ctx.folder, &entry, ctx.incoming, VAULT_FILE_MAX_BYTES) {
         Ok(back) if back == bytes => Ok(()),
-        Err(e) if is_access_lost(&e) => Err(e),
+        Err(e) if ends_sync(&e) => Err(e),
         Ok(_) | Err(_) => Err(AppError::unsupported(WRITE_UNVERIFIED)),
     }
 }
@@ -1117,7 +1167,7 @@ fn sync_vault_file(
     }
     let bytes = match fetch(folder, entry, ctx.incoming, VAULT_FILE_MAX_BYTES) {
         Ok(bytes) => bytes,
-        Err(e) if is_access_lost(&e) => return Err(e),
+        Err(e) if ends_sync(&e) => return Err(e),
         Err(e) if is_too_large(&e) => return Ok(FileResult::new(name, Outcome::TooLarge)),
         Err(e) => return Ok(failed(name, Outcome::Failed, &e)),
     };
@@ -1468,7 +1518,7 @@ fn remote_blob_dir(
     // vault file).
     match folder.list(None) {
         Ok(fresh) => Ok(Ok(fresh.into_iter().find(|e| e.dir && e.name == dir_name))),
-        Err(e) if is_access_lost(&e) => Err(e),
+        Err(e) if ends_sync(&e) => Err(e),
         Err(e) => {
             log(format_args!("could not list the folder: {}", e.code()));
             Ok(Err(1))
@@ -1511,7 +1561,7 @@ fn copy_blobs_from(
 ) -> AppResult<(u32, u32)> {
     let entries = match folder.list(Some(remote_dir)) {
         Ok(entries) => entries,
-        Err(e) if is_access_lost(&e) => return Err(e),
+        Err(e) if ends_sync(&e) => return Err(e),
         Err(e) => {
             log(format_args!("could not list the attachments: {}", e.code()));
             return Ok((0, 1));
@@ -1562,7 +1612,7 @@ fn copy_blobs_from(
                 }
             }
             Ok(_) => failures += 1,
-            Err(e) if is_access_lost(&e) => return Err(e),
+            Err(e) if ends_sync(&e) => return Err(e),
             Err(_) => failures += 1,
         }
     }
@@ -2038,6 +2088,7 @@ mod tests {
                     uri: entry.path().display().to_string(),
                     dir: meta.is_dir(),
                     size: meta.is_file().then_some(meta.len()),
+                    etag: None,
                 });
             }
             if parent.is_none() {
@@ -2098,6 +2149,7 @@ mod tests {
                 uri: path.display().to_string(),
                 dir: false,
                 size: Some(fs::metadata(&path)?.len()),
+                etag: None,
             })
         }
 
@@ -4044,5 +4096,295 @@ mod tests {
             assert!(!is_conflict_copy_of(&name, id), "{name}");
         }
         assert!(!is_conflict_copy_of("../x.keystead.conflict-1", "../x"));
+    }
+
+    // -----------------------------------------------------------------------
+    // On a server (stage 2c): the same engine over `remote::folder`
+    // -----------------------------------------------------------------------
+
+    mod over_a_server {
+        use super::*;
+        use crate::remote::folder::RemoteDirFolder;
+        use crate::remote::mem::MemRemote;
+        use crate::remote::{self, Remote as _};
+
+        const KEY: &str = "webdav:https://cloud.example/dav/Keystead/";
+
+        /// The PC's copy of `v` onto the server (blobs first).
+        fn upload(server: &MemRemote, v: &UnlockedVault) {
+            let id = v.id();
+            let blobs = attachments::dir_for(v.path());
+            if blobs.is_dir() {
+                let dir = remote::blob_dir_name(id);
+                for blob in fs::read_dir(&blobs).unwrap() {
+                    let blob = blob.unwrap();
+                    let name = blob.file_name().to_string_lossy().into_owned();
+                    server.write(&format!("{dir}/{name}"), &fs::read(blob.path()).unwrap());
+                }
+            }
+            server.write(&format!("{id}.keystead"), &fs::read(v.path()).unwrap());
+        }
+
+        /// The PC's vault "Privat" with one note on the server; the phone
+        /// imported it and has it open.
+        struct Sides {
+            _dir: tempfile::TempDir,
+            v: UnlockedVault,
+            server: Arc<MemRemote>,
+            folder: RemoteDirFolder<Arc<MemRemote>>,
+            core: Arc<Core>,
+            link: LinkState,
+            id: String,
+        }
+
+        fn sides() -> Sides {
+            let dir = tempfile::tempdir().unwrap();
+            let pc = Pc::new(dir.path());
+            let mut v = pc.create("Privat");
+            note(&mut v, "vom PC");
+            let server = Arc::new(MemRemote::new(KEY));
+            upload(&server, &v);
+            let folder = RemoteDirFolder::new(Arc::clone(&server));
+            let core = phone(dir.path());
+            let mut link = LinkState::new(folder.remote().key(), "Keystead".into(), 1, true);
+            sync_folder(&core, &folder, &mut link, 1).unwrap();
+            let id = v.id().to_owned();
+            assert_eq!(outcome_of(&link, &id).outcome, Outcome::Imported);
+            open_on_phone(&core, &id).unwrap();
+            server.take_log();
+            Sides {
+                _dir: dir,
+                v,
+                server,
+                folder,
+                core,
+                link,
+                id,
+            }
+        }
+
+        impl Sides {
+            fn name(&self) -> String {
+                format!("{}.keystead", self.id)
+            }
+
+            fn local(&self) -> Vec<u8> {
+                fs::read(self.core.store().vault_path(&self.id)).unwrap()
+            }
+
+            fn remote(&self) -> Vec<u8> {
+                self.server.file(&self.name()).unwrap()
+            }
+
+            fn sync(&mut self, now: i64) -> FileResult {
+                sync_folder(&self.core, &self.folder, &mut self.link, now).unwrap();
+                outcome_of(&self.link, &self.id).clone()
+            }
+
+            fn push(&mut self, now: i64) -> FileResult {
+                sync_vault(&self.core, &self.folder, &mut self.link, &self.id, now).unwrap();
+                outcome_of(&self.link, &self.id).clone()
+            }
+
+            fn base(&self) -> Option<(u64, String)> {
+                base_head(&self.core, &self.link, &self.id)
+            }
+
+            fn local_head(&self) -> (u64, String) {
+                head_of_path(&self.core.store().vault_path(&self.id))
+            }
+        }
+
+        #[test]
+        fn attachments_arrive_and_edits_go_both_ways() {
+            let dir = tempfile::tempdir().unwrap();
+            let pc = Pc::new(dir.path());
+            let mut v = pc.create("Privat");
+            let item = v
+                .save_item(VaultItem::new(ItemType::Login, "Bank"))
+                .unwrap();
+            v.add_attachment(&item.id, "scan.png", b"\x89PNG not really")
+                .unwrap();
+            let server = Arc::new(MemRemote::new(KEY));
+            upload(&server, &v);
+            let folder = RemoteDirFolder::new(Arc::clone(&server));
+            let core = phone(dir.path());
+            let mut link = LinkState::new(KEY.into(), "Keystead".into(), 1, true);
+            assert!(sync_folder(&core, &folder, &mut link, 1).unwrap());
+            let id = v.id().to_owned();
+            let result = outcome_of(&link, &id);
+            assert_eq!(result.outcome, Outcome::Imported);
+            assert_eq!(result.attachments_copied, 1);
+            open_on_phone(&core, &id).unwrap();
+            let blobs = attachments::dir_for(&core.store().vault_path(&id));
+            assert_eq!(fs::read_dir(blobs).unwrap().count(), 1);
+            assert!(server.take_log().is_empty(), "nothing written");
+
+            // The phone edits: one conditional write, read back, the base.
+            edit_on_phone(&core, "vom Handy");
+            sync_vault(&core, &folder, &mut link, &id, 2).unwrap();
+            assert_eq!(outcome_of(&link, &id).outcome, Outcome::Pushed);
+            let name = format!("{id}.keystead");
+            assert_eq!(server.take_log(), [format!("PUT {name}")]);
+            assert_eq!(
+                server.file(&name).unwrap(),
+                fs::read(core.store().vault_path(&id)).unwrap()
+            );
+            assert_eq!(
+                base_head(&core, &link, &id),
+                Some(head_of_path(&core.store().vault_path(&id)))
+            );
+
+            // The PC takes it and edits again: the phone takes that.
+            fs::write(v.path(), server.file(&name).unwrap()).unwrap();
+            assert!(v.reload_if_changed().unwrap());
+            note(&mut v, "wieder vom PC");
+            upload(&server, &v);
+            sync_folder(&core, &folder, &mut link, 3).unwrap();
+            assert_eq!(outcome_of(&link, &id).outcome, Outcome::Updated);
+            assert_eq!(core.read(|o| o.items().len()).unwrap(), 3);
+            assert!(server.take_log().is_empty());
+            assert!(conflict_events(&core).is_empty());
+        }
+
+        #[test]
+        fn a_pc_write_meanwhile_fails_the_precondition_and_is_a_conflict() {
+            let mut s = sides();
+            edit_on_phone(&s.core, "vom Handy");
+            let local = s.local();
+            // The PC writes between the phone's second look and its write.
+            note(&mut s.v, "vom PC dazwischen");
+            let pc_copy = fs::read(s.v.path()).unwrap();
+            let server = Arc::clone(&s.server);
+            let name = s.name();
+            let written = pc_copy.clone();
+            s.server
+                .before_put(&s.name(), move || server.write(&name, &written));
+            let result = s.push(2);
+            // The write was refused (412); the next look finds both changed.
+            assert_eq!(result.outcome, Outcome::Conflict);
+            assert!(s.server.take_log().is_empty(), "nothing written");
+            assert_eq!(s.remote(), pc_copy);
+            assert_eq!(s.local(), local);
+            assert_eq!(s.conflicts().len(), 1);
+        }
+
+        #[test]
+        fn a_cut_upload_is_written_again_over_itself_then_reported() {
+            let mut s = sides();
+            edit_on_phone(&s.core, "eins");
+            s.server.cut_next_puts(1);
+            assert_eq!(s.push(2).outcome, Outcome::Pushed);
+            assert_eq!(s.server.take_log().len(), 2);
+            assert_eq!(s.remote(), s.local());
+            assert_eq!(s.base(), Some(s.local_head()));
+
+            let base = s.base();
+            edit_on_phone(&s.core, "zwei");
+            s.server.cut_next_puts(2);
+            let result = s.push(3);
+            assert_eq!(result.outcome, Outcome::Failed);
+            assert_eq!(
+                result.error.as_deref(),
+                Some("unsupported:sync_write_unverified")
+            );
+            assert_eq!(s.base(), base, "not recorded");
+        }
+
+        #[test]
+        fn an_unreachable_server_ends_the_sync_and_changes_nothing() {
+            let mut s = sides();
+            edit_on_phone(&s.core, "vom Handy");
+            let before = s.link.files.clone();
+            let remote = s.remote();
+            s.server.set_offline(true);
+            let e = sync_folder(&s.core, &s.folder, &mut s.link, 2).unwrap_err();
+            assert_eq!(e.code(), "unsupported:sync_offline");
+            assert_eq!(
+                s.link.last_error.as_deref(),
+                Some("unsupported:sync_offline")
+            );
+            assert_eq!(s.link.files, before);
+            let e = sync_vault(&s.core, &s.folder, &mut s.link, &s.id, 3).unwrap_err();
+            assert_eq!(e.code(), "unsupported:sync_offline");
+            // A missing folder too.
+            s.server.set_offline(false);
+            s.server.set_missing(true);
+            let e = sync_folder(&s.core, &s.folder, &mut s.link, 4).unwrap_err();
+            assert_eq!(e.code(), "unsupported:sync_server_folder_missing");
+            s.server.set_missing(false);
+            assert_eq!(s.remote(), remote);
+            // Back: pushed.
+            assert_eq!(s.sync(5).outcome, Outcome::Pushed);
+            assert_eq!(s.link.last_error, None);
+        }
+
+        #[test]
+        fn a_server_without_etags_still_reads_before_it_writes() {
+            let mut s = sides();
+            s.server.without_etags(true);
+            edit_on_phone(&s.core, "vom Handy");
+            assert_eq!(s.push(2).outcome, Outcome::Pushed);
+            assert_eq!(s.remote(), s.local());
+            // Both changed: a conflict, nothing written.
+            edit_on_phone(&s.core, "noch mal");
+            note(&mut s.v, "vom PC");
+            upload(&s.server, &s.v);
+            s.server.take_log();
+            assert_eq!(s.push(3).outcome, Outcome::Conflict);
+            assert!(s.server.take_log().is_empty());
+        }
+
+        #[test]
+        fn conflict_copies_are_created_never_overwritten() {
+            let mut s = sides();
+            edit_on_phone(&s.core, "vom Handy");
+            note(&mut s.v, "vom PC");
+            upload(&s.server, &s.v);
+            assert_eq!(s.sync(2).outcome, Outcome::Conflict);
+            // A copy of that second is there already: the next second's name.
+            let taken = sync::phone_conflict_file_name(&s.id, 1_792_764_309_000);
+            s.server.write(&taken, b"someone else's");
+            let seen = crate::sync_conflict::recorded_digests(&s.core.data_dir(), &s.id);
+            resolve_conflict(
+                &s.core,
+                &s.folder,
+                &mut s.link,
+                &s.id,
+                Some(&s.id),
+                Keep::Remote,
+                (&seen.0, &seen.1),
+                1_792_764_309_000,
+            )
+            .unwrap();
+            assert_eq!(s.server.file(&taken).unwrap(), b"someone else's");
+            let next = sync::phone_conflict_file_name(&s.id, 1_792_764_310_000);
+            let copy = s.server.file(&next).unwrap();
+            assert_eq!(names_of_copy(&copy), ["vom Handy", "vom PC"]);
+            assert_eq!(s.remote(), s.local(), "the server's state is kept");
+            assert_eq!(
+                s.folder
+                    .write_conflict_copy(&next, b"x")
+                    .unwrap_err()
+                    .code(),
+                "unsupported:sync_name_taken"
+            );
+        }
+
+        /// The items of a vault file of the PC's vault (`pc-pw`).
+        fn names_of_copy(bytes: &[u8]) -> Vec<String> {
+            let dir = tempfile::tempdir().unwrap();
+            let file = VaultFile::parse(bytes).unwrap();
+            let store = VaultStore::new(dir.path());
+            fs::create_dir_all(store.vaults_dir()).unwrap();
+            fs::write(store.vault_path(&file.id), bytes).unwrap();
+            names_of(&store.unlock(&file.id, "pc-pw").unwrap())
+        }
+
+        impl Sides {
+            fn conflicts(&self) -> Vec<SyncConflict> {
+                conflicts_for_page(&self.core, Some(&self.id)).unwrap()
+            }
+        }
     }
 }

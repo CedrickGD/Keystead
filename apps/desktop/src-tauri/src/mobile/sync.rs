@@ -739,6 +739,7 @@ mod android {
                 uri: written.uri,
                 dir: false,
                 size: Some(written.size),
+                etag: None,
             })
         }
 

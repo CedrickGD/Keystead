@@ -16,7 +16,7 @@
 //!   `.lock`, export or other file of the data folder; the only temporary
 //!   files are `format::write_atomic`'s hidden `.<name>.<hex>.tmp`, which
 //!   the phone ignores.
-//! * What to do with a vault ([`mirror_vault`]) is
+//! * What to do with a vault ([`mirror_vault_in`]) is
 //!   `sync_base::decide_copies` (`keystead_core::sync::decide`) on the heads
 //!   of both copies, the vault's **sync base** for this folder
 //!   (`sync_base.rs`, `<data>/sync/base/<id>.json`: the last head the PC
@@ -104,6 +104,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
+use sha2::{Digest as _, Sha256};
+
 use keystead_core::format::{self, VaultFile, VAULT_EXTENSION};
 use keystead_core::model::{now_ms, VaultInfo};
 use keystead_core::settings::Settings;
@@ -117,6 +119,7 @@ use serde::Serialize;
 use crate::attachments::{is_dialog_path, is_inside};
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
+use crate::remote::{self, Precondition, Remote};
 use crate::state::{log, Core};
 use crate::sync_base::{self, decide_copies, sync_dir};
 use crate::sync_conflict::{
@@ -260,14 +263,14 @@ pub fn check_setting(core: &Core, settings: &Settings) -> AppResult<()> {
     }
 }
 
-/// `<folder>/<id>.keystead`, for a valid vault id only (ids become file
-/// names; ours never have anything else, but a path is built from it).
-fn copy_path(folder: &Path, vault_id: &str) -> AppResult<PathBuf> {
+/// `<id>.keystead`, for a valid vault id only (ids become file names and
+/// paths; ours never have anything else).
+fn copy_name(vault_id: &str) -> AppResult<String> {
     let name = format!("{vault_id}.{VAULT_EXTENSION}");
     if sync::vault_id_of_file_name(&name) != Some(vault_id) {
         return Err(not_found(&format!("vault {vault_id}")));
     }
-    Ok(folder.join(name))
+    Ok(name)
 }
 
 /// The ids of the vault files (`<id>.keystead`, nothing hidden, no
@@ -325,23 +328,32 @@ fn read_blob(path: &Path) -> AppResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Copies the blobs of `from` that `to` lacks (or whose size differs – a
-/// blob never changes under its id) into `to` – the data folder's into the
-/// cloud folder before a push, the cloud folder's into the data folder
-/// before a pull. Only `<id>.bin` files of a blob's shape and size (the
-/// cloud folder is untrusted input; the key is in the vault, so nothing is
-/// decrypted here); others are skipped. Returns the blob names of `from`
-/// and how many were copied.
-fn copy_blobs(from: &Path, to: &Path) -> AppResult<(BTreeSet<String>, u32)> {
-    let names = blob_names(from)?;
+/// Copies the blobs of the PC's attachments folder `local_dir` that the
+/// store lacks for vault `id` (or whose size differs – a blob never changes
+/// under its id) into it, before a push. Only `<id>.bin` files of a blob's
+/// shape and size; others are skipped. Returns the blob names of
+/// `local_dir` and how many were copied.
+fn copy_blobs_out(
+    local_dir: &Path,
+    store: &dyn MirrorStore,
+    id: &str,
+) -> AppResult<(BTreeSet<String>, u32)> {
+    let names = blob_names(local_dir)?;
+    if names.is_empty() {
+        return Ok((names, 0));
+    }
+    let there = store.blob_names(id)?;
     let mut copied = 0;
     for name in &names {
-        let source = from.join(name);
-        let target = to.join(name);
-        if file_len(&target).is_some_and(|len| Some(len) == file_len(&source)) {
+        let source = local_dir.join(name);
+        let len = file_len(&source);
+        if there
+            .get(name)
+            .is_some_and(|size| size.is_some() && *size == len)
+        {
             continue;
         }
-        if file_len(&source).is_some_and(|len| len > BLOB_MAX_BYTES) {
+        if len.is_some_and(|len| len > BLOB_MAX_BYTES) {
             log(format_args!("not copied: {name} is too large for a blob"));
             continue;
         }
@@ -356,22 +368,71 @@ fn copy_blobs(from: &Path, to: &Path) -> AppResult<(BTreeSet<String>, u32)> {
             log(format_args!("not copied: {name} is no attachment blob"));
             continue;
         }
-        format::write_atomic(&target, &blob, false)?;
+        store.put_blob(id, name, &blob)?;
         copied += 1;
     }
     Ok((names, copied))
 }
 
-/// The folder's copy of a vault file as [`mirror_vault`] sees it.
+/// Copies the store's blobs of vault `id` that `local_dir` lacks (or whose
+/// size differs) into it, before a pull – the store is untrusted input:
+/// only `<id>.bin` files of a blob's shape and size (the key is in the
+/// vault, so nothing is decrypted here). Returns how many were copied.
+fn copy_blobs_in(store: &dyn MirrorStore, id: &str, local_dir: &Path) -> AppResult<u32> {
+    let mut copied = 0;
+    for (name, size) in store.blob_names(id)? {
+        let target = local_dir.join(&name);
+        let local = file_len(&target);
+        if local.is_some() && (size.is_none() || size == local) {
+            continue;
+        }
+        if size.is_some_and(|size| size > BLOB_MAX_BYTES) {
+            log(format_args!("not copied: {name} is too large for a blob"));
+            continue;
+        }
+        let blob = match store.get_blob(id, &name) {
+            Ok(blob) => blob,
+            // Removed meanwhile.
+            Err(e) if remote::has_code(&e, remote::FILE_MISSING) => continue,
+            Err(e) if remote::has_code(&e, remote::TOO_LARGE) => {
+                log(format_args!("not copied: {name} is too large for a blob"));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if blob.len() as u64 > BLOB_MAX_BYTES || !attachments::looks_like_blob(&blob) {
+            log(format_args!("not copied: {name} is no attachment blob"));
+            continue;
+        }
+        format::write_atomic(&target, &blob, false)?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+/// The folder's copy of a vault file (or of a phone conflict copy) as
+/// [`mirror_vault_in`] sees it.
 enum FolderCopy {
     Missing,
     /// Larger than [`VAULT_FILE_MAX_BYTES`] (not read).
     TooLarge,
     /// It could not be read right now (a cloud drive's placeholder that is
-    /// not downloaded, a file the cloud app holds open while it writes it):
-    /// the pass is skipped, nothing is overwritten.
+    /// not downloaded, a file the cloud app holds open while it writes it,
+    /// a server that cannot be reached): the pass is skipped, nothing is
+    /// overwritten.
     Unreadable(AppError),
-    Bytes(Vec<u8>),
+    /// The bytes and their version (a folder's: their SHA-256; a server's:
+    /// the ETag, if it sends one) – what a write over this copy is
+    /// conditional on.
+    Bytes(Vec<u8>, Option<String>),
+}
+
+/// The version token of a file of the folder: its SHA-256, hex.
+fn version_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Reads the folder's copy at `path` – untrusted input: one above
@@ -394,7 +455,10 @@ fn read_copy(path: &Path) -> FolderCopy {
     };
     let mut bytes = Vec::new();
     match file.take(VAULT_FILE_MAX_BYTES + 1).read_to_end(&mut bytes) {
-        Ok(_) if bytes.len() as u64 <= VAULT_FILE_MAX_BYTES => FolderCopy::Bytes(bytes),
+        Ok(_) if bytes.len() as u64 <= VAULT_FILE_MAX_BYTES => {
+            let version = version_of(&bytes);
+            FolderCopy::Bytes(bytes, Some(version))
+        }
         Ok(_) => FolderCopy::TooLarge,
         Err(e) => FolderCopy::Unreadable(io_err(path, e)),
     }
@@ -405,6 +469,421 @@ fn file_len(path: &Path) -> Option<u64> {
         .ok()
         .filter(|m| m.is_file())
         .map(|m| m.len())
+}
+
+/// What a scan compares to see whether a file changed since it was last
+/// read (`None`: missing): a folder's size and modification time, a
+/// server's ETag (or size and time without one).
+type Stamp = Option<String>;
+
+/// [`Stamp`] of a local file.
+fn fs_stamp(path: &Path) -> Stamp {
+    fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| {
+        let time = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or_else(|| "-".to_owned(), |d| d.as_nanos().to_string());
+        format!("{}:{time}", m.len())
+    })
+}
+
+/// The ids of the vault files among the top-level `files`, sorted.
+fn vault_ids_of(files: &BTreeMap<String, Stamp>) -> Vec<String> {
+    let mut ids: Vec<String> = files
+        .keys()
+        .filter_map(|name| sync::vault_id_of_file_name(name).map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The phone's conflict copies among the top-level `files`, sorted.
+fn conflict_copies_of(files: &BTreeMap<String, Stamp>) -> Vec<String> {
+    files
+        .keys()
+        .filter(|name| sync::vault_id_of_phone_conflict_copy(name).is_some())
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Where the copies are: a folder or a server
+// ---------------------------------------------------------------------------
+
+/// The other side of the mirror: the cloud folder ([`FsStore`]) or a server
+/// ([`RemoteStore`]). Every path is built from a vault id and a blob name
+/// the caller validated; the layout is the cloud folder's.
+trait MirrorStore {
+    /// What the sync bases are recorded for: the folder as set
+    /// (`Settings.mirrorFolder`), or the server's key (`webdav:<url>`).
+    fn key(&self) -> &str;
+    /// Before every pass: the folder may (still) be used.
+    fn check(&self) -> AppResult<()>;
+    /// The top-level file `name` (`<id>.keystead` or a phone conflict copy).
+    fn read(&self, name: &str) -> FolderCopy;
+    /// Writes vault `id`'s file if `pre` holds; `false`: it did not (the
+    /// copy changed since it was read) and nothing was written.
+    fn write_vault(&self, id: &str, bytes: &[u8], pre: &Precondition) -> AppResult<bool>;
+    /// Removes vault `id`'s file (a deleted vault's copy).
+    fn remove_vault_file(&self, id: &str, pre: &Precondition) -> AppResult<()>;
+    /// The blobs (`<id>.bin` names) of vault `id`'s attachment folder with
+    /// their sizes; none without the folder.
+    fn blob_names(&self, id: &str) -> AppResult<BTreeMap<String, Option<u64>>>;
+    /// The blob `name` of vault `id` (at most a blob's size; a larger one
+    /// may come back longer – the caller checks). Missing →
+    /// `unsupported:sync_file_missing`.
+    fn get_blob(&self, id: &str, name: &str) -> AppResult<Vec<u8>>;
+    /// Writes the blob `name` of vault `id` (its folder is made first).
+    fn put_blob(&self, id: &str, name: &str, bytes: &[u8]) -> AppResult<()>;
+    fn remove_blob(&self, id: &str, name: &str) -> AppResult<()>;
+    /// Removes vault `id`'s attachment folder if nothing is left in it.
+    fn remove_blob_dir_if_empty(&self, id: &str);
+    /// The files at the top (names and stamps).
+    fn top_files(&self) -> AppResult<BTreeMap<String, Stamp>>;
+    /// The top-level file `name`'s stamp (a server: as last listed or
+    /// written).
+    fn stamp(&self, name: &str) -> Stamp;
+    /// Keeps `bytes` – the store's copy of vault `id` – as a conflict copy
+    /// in `<data>/conflicts/`, with the store's blobs of that vault.
+    fn keep_copy(&self, data_dir: &Path, id: &str, bytes: &[u8], at: i64) -> AppResult<PathBuf>;
+    /// A damaged copy (`token`: its version) may be replaced now. A folder:
+    /// always. A server: only once it is still the same damaged copy a
+    /// while later – it may be an upload in progress.
+    fn may_replace_damaged(&self, id: &str, token: &str) -> bool {
+        let _ = (id, token);
+        true
+    }
+}
+
+/// The cloud folder on disk (`Settings.mirrorFolder`).
+struct FsStore {
+    folder: PathBuf,
+    key: String,
+    data_dir: PathBuf,
+}
+
+impl FsStore {
+    fn new(folder: &str, data_dir: &Path) -> Self {
+        FsStore {
+            folder: PathBuf::from(folder),
+            key: folder.to_owned(),
+            data_dir: data_dir.to_path_buf(),
+        }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.folder.join(name)
+    }
+
+    fn blob_dir(&self, id: &str) -> PathBuf {
+        self.folder.join(remote::blob_dir_name(id))
+    }
+}
+
+impl MirrorStore for FsStore {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn check(&self) -> AppResult<()> {
+        check_folder(&self.folder, &self.data_dir)
+    }
+
+    fn read(&self, name: &str) -> FolderCopy {
+        read_copy(&self.path(name))
+    }
+
+    /// The folder has no atomic check: the copy is read again right before
+    /// the write.
+    fn write_vault(&self, id: &str, bytes: &[u8], pre: &Precondition) -> AppResult<bool> {
+        let path = self.path(&copy_name(id)?);
+        let still = match (read_copy(&path), pre) {
+            (FolderCopy::Bytes(_, now), Precondition::IfMatch(seen)) => now.as_ref() == Some(seen),
+            (FolderCopy::Missing, Precondition::IfNoneMatch) => true,
+            (_, Precondition::None) => true,
+            _ => false,
+        };
+        if !still {
+            return Ok(false);
+        }
+        format::write_atomic(&path, bytes, false)?;
+        Ok(true)
+    }
+
+    fn remove_vault_file(&self, id: &str, _pre: &Precondition) -> AppResult<()> {
+        let path = self.path(&copy_name(id)?);
+        fs::remove_file(&path).map_err(|e| io_err(&path, e))
+    }
+
+    fn blob_names(&self, id: &str) -> AppResult<BTreeMap<String, Option<u64>>> {
+        let dir = self.blob_dir(id);
+        Ok(blob_names(&dir)?
+            .into_iter()
+            .map(|name| {
+                let len = file_len(&dir.join(&name));
+                (name, len)
+            })
+            .collect())
+    }
+
+    fn get_blob(&self, id: &str, name: &str) -> AppResult<Vec<u8>> {
+        let path = self.blob_dir(id).join(name);
+        read_blob(&path).map_err(|e| {
+            if path.exists() {
+                e
+            } else {
+                AppError::unsupported(remote::FILE_MISSING)
+            }
+        })
+    }
+
+    fn put_blob(&self, id: &str, name: &str, bytes: &[u8]) -> AppResult<()> {
+        Ok(format::write_atomic(
+            &self.blob_dir(id).join(name),
+            bytes,
+            false,
+        )?)
+    }
+
+    fn remove_blob(&self, id: &str, name: &str) -> AppResult<()> {
+        let path = self.blob_dir(id).join(name);
+        fs::remove_file(&path).map_err(|e| io_err(&path, e))
+    }
+
+    fn remove_blob_dir_if_empty(&self, id: &str) {
+        // Only succeeds if nothing else is left in it.
+        let _ = fs::remove_dir(self.blob_dir(id));
+    }
+
+    fn top_files(&self) -> AppResult<BTreeMap<String, Stamp>> {
+        let entries = match fs::read_dir(&self.folder) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(io_err(&self.folder, e)),
+        };
+        let mut files = BTreeMap::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| io_err(&self.folder, e))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if entry.file_type().is_ok_and(|t| t.is_file()) {
+                let stamp = fs_stamp(&entry.path());
+                files.insert(name, stamp);
+            }
+        }
+        Ok(files)
+    }
+
+    fn stamp(&self, name: &str) -> Stamp {
+        fs_stamp(&self.path(name))
+    }
+
+    fn keep_copy(&self, data_dir: &Path, id: &str, bytes: &[u8], at: i64) -> AppResult<PathBuf> {
+        let blobs = self.blob_dir(id);
+        sync_conflict::keep_conflict_copy(data_dir, id, bytes, Some(&blobs), at)
+    }
+}
+
+/// How long a damaged copy on a server must stay the same damaged copy
+/// before the PC's replaces it (an upload that is still running, or a
+/// server that shows a file before it is complete).
+// Used by `RemoteStore` only, which is wired up in WP5.
+#[cfg_attr(not(test), expect(dead_code))]
+const DAMAGED_WAIT_MS: i64 = 60_000;
+
+/// A server's folder ([`Remote`]), e.g. WebDAV.
+// The desktop's server sync is wired up in a later step of stage 2c (WP5).
+#[cfg_attr(not(test), expect(dead_code))]
+struct RemoteStore<R: Remote> {
+    remote: R,
+    key: String,
+    /// The top-level files' stamps as last listed or written.
+    stamps: Mutex<BTreeMap<String, String>>,
+    /// Damaged copies seen: vault id → (version, first seen, ms).
+    damaged: Mutex<BTreeMap<String, (String, i64)>>,
+    /// The clock of [`MirrorStore::may_replace_damaged`] (ms).
+    clock: fn() -> i64,
+}
+
+#[cfg_attr(not(test), expect(dead_code))]
+impl<R: Remote> RemoteStore<R> {
+    fn new(remote: R) -> Self {
+        let key = remote.key();
+        RemoteStore {
+            remote,
+            key,
+            stamps: Mutex::new(BTreeMap::new()),
+            damaged: Mutex::new(BTreeMap::new()),
+            clock: now_ms,
+        }
+    }
+
+    fn blob_path(id: &str, name: &str) -> String {
+        format!("{}/{name}", remote::blob_dir_name(id))
+    }
+
+    fn remember(&self, name: &str, stamp: Option<String>) {
+        let mut stamps = lock(&self.stamps);
+        match stamp {
+            Some(stamp) => stamps.insert(name.to_owned(), stamp),
+            None => stamps.remove(name),
+        };
+    }
+}
+
+/// A server entry's stamp: its ETag, else its size and time.
+// Used by `RemoteStore` only, which is wired up in WP5.
+#[cfg_attr(not(test), expect(dead_code))]
+fn meta_stamp(meta: &remote::RemoteMeta) -> String {
+    meta.etag
+        .clone()
+        .unwrap_or_else(|| format!("{:?}:{:?}", meta.size, meta.modified))
+}
+
+impl<R: Remote> MirrorStore for RemoteStore<R> {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn check(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn read(&self, name: &str) -> FolderCopy {
+        match self.remote.get(name, VAULT_FILE_MAX_BYTES) {
+            Ok((bytes, etag)) => {
+                if let Some(etag) = &etag {
+                    self.remember(name, Some(etag.clone()));
+                }
+                FolderCopy::Bytes(bytes, etag)
+            }
+            Err(e) if remote::has_code(&e, remote::FILE_MISSING) => {
+                self.remember(name, None);
+                FolderCopy::Missing
+            }
+            Err(e) if remote::has_code(&e, remote::TOO_LARGE) => FolderCopy::TooLarge,
+            Err(e) => FolderCopy::Unreadable(e),
+        }
+    }
+
+    fn write_vault(&self, id: &str, bytes: &[u8], pre: &Precondition) -> AppResult<bool> {
+        let name = copy_name(id)?;
+        match self.remote.put(&name, bytes, pre.clone()) {
+            Ok(meta) => {
+                self.remember(&name, meta.etag.is_some().then(|| meta_stamp(&meta)));
+                Ok(true)
+            }
+            Err(e) if remote::has_code(&e, remote::CHANGED) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn remove_vault_file(&self, id: &str, pre: &Precondition) -> AppResult<()> {
+        let name = copy_name(id)?;
+        match self.remote.delete(&name, pre.clone()) {
+            Err(e) if !remote::has_code(&e, remote::FILE_MISSING) => Err(e),
+            _ => {
+                self.remember(&name, None);
+                Ok(())
+            }
+        }
+    }
+
+    fn blob_names(&self, id: &str) -> AppResult<BTreeMap<String, Option<u64>>> {
+        match self.remote.list(&remote::blob_dir_name(id)) {
+            Ok(entries) => Ok(entries
+                .into_iter()
+                .filter(|e| !e.dir && attachments::blob_id_of_file_name(&e.name).is_some())
+                .map(|e| (e.name, e.size))
+                .collect()),
+            Err(e) if remote::has_code(&e, remote::FILE_MISSING) => Ok(BTreeMap::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn get_blob(&self, id: &str, name: &str) -> AppResult<Vec<u8>> {
+        let (bytes, _) = self
+            .remote
+            .get(&Self::blob_path(id, name), BLOB_MAX_BYTES)?;
+        Ok(bytes)
+    }
+
+    fn put_blob(&self, id: &str, name: &str, bytes: &[u8]) -> AppResult<()> {
+        let path = Self::blob_path(id, name);
+        match self.remote.put(&path, bytes, Precondition::None) {
+            // The attachment folder is made with the first blob.
+            Err(e) if remote::has_code(&e, remote::FILE_MISSING) => {
+                self.remote.mkcol(&remote::blob_dir_name(id))?;
+                self.remote.put(&path, bytes, Precondition::None)?;
+                Ok(())
+            }
+            other => other.map(|_| ()),
+        }
+    }
+
+    fn remove_blob(&self, id: &str, name: &str) -> AppResult<()> {
+        match self
+            .remote
+            .delete(&Self::blob_path(id, name), Precondition::None)
+        {
+            Err(e) if !remote::has_code(&e, remote::FILE_MISSING) => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    fn remove_blob_dir_if_empty(&self, id: &str) {
+        let dir = remote::blob_dir_name(id);
+        if self
+            .remote
+            .list(&dir)
+            .is_ok_and(|entries| entries.is_empty())
+        {
+            let _ = self.remote.delete(&dir, Precondition::None);
+        }
+    }
+
+    fn top_files(&self) -> AppResult<BTreeMap<String, Stamp>> {
+        let files: BTreeMap<String, String> = self
+            .remote
+            .list("")?
+            .iter()
+            .filter(|meta| !meta.dir)
+            .map(|meta| (meta.name.clone(), meta_stamp(meta)))
+            .collect();
+        *lock(&self.stamps) = files.clone();
+        Ok(files.into_iter().map(|(n, s)| (n, Some(s))).collect())
+    }
+
+    fn stamp(&self, name: &str) -> Stamp {
+        lock(&self.stamps).get(name).cloned()
+    }
+
+    fn keep_copy(&self, data_dir: &Path, id: &str, bytes: &[u8], at: i64) -> AppResult<PathBuf> {
+        let path = sync_conflict::keep_conflict_copy(data_dir, id, bytes, None, at)?;
+        copy_blobs_in(self, id, &attachments::dir_for(&path))?;
+        Ok(path)
+    }
+
+    fn may_replace_damaged(&self, id: &str, token: &str) -> bool {
+        let now = (self.clock)();
+        let mut damaged = lock(&self.damaged);
+        match damaged.get(id) {
+            Some((seen, since)) if seen == token => {
+                if now - since >= DAMAGED_WAIT_MS {
+                    damaged.remove(id);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => {
+                damaged.insert(id.to_owned(), (token.to_owned(), now));
+                false
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +915,7 @@ pub enum Outcome {
     OnTrial,
 }
 
-/// The result of [`mirror_vault`].
+/// The result of [`mirror_vault_in`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Report {
     pub outcome: Outcome,
@@ -459,39 +938,57 @@ impl Report {
 struct Pass<'a> {
     core: &'a Core,
     data_dir: PathBuf,
-    /// The folder as set (`Settings.mirrorFolder`): what bases are recorded
-    /// for.
+    /// Where the copies are.
+    store: &'a dyn MirrorStore,
+    /// The store's key (`Settings.mirrorFolder` for a folder): what bases
+    /// are recorded for.
     folder: &'a str,
     id: &'a str,
+    /// `<id>.keystead`.
+    name: String,
     local_path: PathBuf,
-    target: PathBuf,
     local_bytes: Vec<u8>,
     local: VaultFile,
     local_head: SyncHead,
 }
 
-/// The folder's copy as a pass found it.
-enum Remote {
+/// The folder's copy as a pass found it (with its version, see
+/// [`FolderCopy::Bytes`]).
+enum Found {
     Missing,
     /// Damaged (not valid JSON, a header that fails validation) or another
     /// vault's file under this vault's name: kept as a conflict copy, then
     /// replaced.
-    Damaged(Vec<u8>),
-    Copy(Box<VaultFile>, Vec<u8>),
+    Damaged(Vec<u8>, Option<String>),
+    Copy(Box<VaultFile>, Vec<u8>, Option<String>),
 }
 
-/// Syncs vault `vault_id` of the PC with its copy in `folder` (see the
+/// The folder's copy a decision was made on: a write goes over exactly
+/// this one.
+#[derive(Clone, Copy)]
+struct SeenCopy<'a> {
+    bytes: &'a [u8],
+    version: Option<&'a str>,
+}
+
+/// [`mirror_vault_in`] with the cloud folder `folder` (the unit tests; the
+/// worker passes the store of its round).
+#[cfg(test)]
+pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Report> {
+    mirror_vault_in(core, &FsStore::new(folder, &core.data_dir()), vault_id)
+}
+
+/// Syncs vault `vault_id` of the PC with its copy in `store` (see the
 /// module docs): writes the PC's copy, takes the folder's, records a
 /// conflict or reports why neither happens (`unsupported:mirror_remote_older`,
 /// `unsupported:mirror_remote_gone`, `unsupported:mirror_other_password`,
 /// `unsupported:mirror_remote_unsupported`, `unsupported:sync_file_too_large`,
 /// an I/O error for a copy that cannot be read right now). The open vault's
 /// session checks the folder's copy where that matters.
-pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Report> {
+fn mirror_vault_in(core: &Core, store: &dyn MirrorStore, vault_id: &str) -> AppResult<Report> {
     let data_dir = core.data_dir();
-    let folder_path = Path::new(folder);
     let local_path = core.store().vault_path(vault_id);
-    let target = copy_path(folder_path, vault_id)?;
+    let name = copy_name(vault_id)?;
     // 1. The vault file as it is on disk (saves replace it atomically, so
     //    this is one whole revision).
     let local_bytes = match fs::read(&local_path) {
@@ -503,47 +1000,47 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
     if local.id != vault_id {
         return Err(CoreError::Corrupt("vault file of another vault".into()).into());
     }
-    check_folder(folder_path, &data_dir)?;
+    store.check()?;
     let local_head = sync::head_of(&local);
     let trial = {
         let _trial = trial_lock();
         Trial::load(&data_dir, vault_id)
     };
     let on_trial = trial.unconfirmed.as_ref() == Some(&FileVersion::of(&local));
-    let remote = match read_copy(&target) {
-        FolderCopy::Missing => Remote::Missing,
+    let found = match store.read(&name) {
+        FolderCopy::Missing => Found::Missing,
         // Never overwritten: a copy this pass cannot read is not known to
         // be worthless.
         FolderCopy::TooLarge => return Err(AppError::unsupported(TOO_LARGE)),
         FolderCopy::Unreadable(e) => return Err(e),
-        FolderCopy::Bytes(bytes) => match VaultFile::parse(&bytes) {
-            Ok(file) if file.id == vault_id => Remote::Copy(Box::new(file), bytes),
+        FolderCopy::Bytes(bytes, version) => match VaultFile::parse(&bytes) {
+            Ok(file) if file.id == vault_id => Found::Copy(Box::new(file), bytes, version),
             // A newer format (or not a Keystead file at all): never
             // overwritten.
             Err(CoreError::Unsupported(_)) => {
                 return Err(AppError::unsupported(REMOTE_UNSUPPORTED))
             }
-            Ok(_) | Err(_) => Remote::Damaged(bytes),
+            Ok(_) | Err(_) => Found::Damaged(bytes, version),
         },
     };
+    let folder = store.key();
     let pass = Pass {
         core,
         data_dir,
+        store,
         folder,
         id: vault_id,
+        name,
         local_path,
-        target,
         local_bytes,
         local,
         local_head,
     };
 
-    let (file, bytes) = match remote {
+    let (file, bytes, version) = match found {
         // A copy that has not opened here is never written to the folder.
-        Remote::Missing | Remote::Damaged(_) if on_trial => {
-            return Ok(Report::of(Outcome::OnTrial))
-        }
-        Remote::Missing => {
+        Found::Missing | Found::Damaged(..) if on_trial => return Ok(Report::of(Outcome::OnTrial)),
+        Found::Missing => {
             let base = sync_base::load(&pass.data_dir, vault_id, folder);
             return match sync::decide(
                 Some(&pass.local_head),
@@ -556,11 +1053,27 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
                 _ => Err(AppError::unsupported(REMOTE_GONE)),
             };
         }
-        Remote::Damaged(bytes) => {
+        Found::Damaged(bytes, version) => {
+            // A server may show a file before its upload is complete: only
+            // a copy that is still the same damaged one a while later is
+            // replaced (a folder's at once).
+            let token = version.clone().unwrap_or_else(|| version_of(&bytes));
+            if !store.may_replace_damaged(vault_id, &token) {
+                log("the server's copy looks damaged: looked at again later");
+                return Ok(Report::of(Outcome::Changed));
+            }
             log("keeping a damaged copy of the cloud folder before it is replaced");
-            return push(&pass, Some(&bytes), Some(&bytes));
+            let seen = SeenCopy {
+                bytes: &bytes,
+                version: version.as_deref(),
+            };
+            return push(&pass, Some(seen), Some(&bytes));
         }
-        Remote::Copy(file, bytes) => (*file, bytes),
+        Found::Copy(file, bytes, version) => (*file, bytes, version),
+    };
+    let seen = SeenCopy {
+        bytes: &bytes,
+        version: version.as_deref(),
     };
     let remote_head = sync::head_of(&file);
     let remote_version = FileVersion::of(&file);
@@ -571,7 +1084,7 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
             return Ok(Report::of(Outcome::OnTrial));
         }
         log("replacing a rejected copy in the cloud folder");
-        return push(&pass, Some(&bytes), None);
+        return push(&pass, Some(seen), None);
     }
 
     if on_trial {
@@ -583,7 +1096,7 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
         }
         if trial.kept_revision.is_none_or(|kept| file.revision > kept) {
             let kept = kept_head(&pass);
-            return pull(&pass, &file, &bytes, &remote_head, kept.as_ref());
+            return pull(&pass, &file, seen, &remote_head, kept.as_ref());
         }
         return Ok(Report::of(Outcome::OnTrial));
     }
@@ -602,10 +1115,10 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
     };
     match decision {
         SyncDecision::UpToDate => up_to_date(&pass, &remote_head, false),
-        SyncDecision::PushLocal => push(&pass, Some(&bytes), None),
+        SyncDecision::PushLocal => push(&pass, Some(seen), None),
         SyncDecision::PullRemote | SyncDecision::PullUnverified => {
             let from = pass.local_head.clone();
-            pull(&pass, &file, &bytes, &remote_head, Some(&from))
+            pull(&pass, &file, seen, &remote_head, Some(&from))
         }
         SyncDecision::RemoteOlder => Err(AppError::unsupported(REMOTE_OLDER)),
         // Both copies are there: only `Diverged` is left.
@@ -613,7 +1126,7 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
         | SyncDecision::OtherVault
         | SyncDecision::NewRemote
         | SyncDecision::NewLocal
-        | SyncDecision::RemoteGone => conflict(&pass, &file, &bytes, &remote_head),
+        | SyncDecision::RemoteGone => conflict(&pass, &file, seen, &remote_head),
     }
 }
 
@@ -673,10 +1186,9 @@ fn sync_blobs_out(
     write: impl FnOnce() -> AppResult<bool>,
 ) -> AppResult<(u32, u32)> {
     let local_dir = attachments::dir_for(&pass.local_path);
-    let mirror_dir = attachments::dir_for(&pass.target);
     // 2. The blobs – listed after reading the vault file, so all the ones
     //    it references are there – before the vault file.
-    let (local_blobs, copied) = copy_blobs(&local_dir, &mirror_dir)?;
+    let (local_blobs, copied) = copy_blobs_out(&local_dir, pass.store, pass.id)?;
     // 3. The vault file.
     if !write()? {
         return Ok((copied, 0));
@@ -684,36 +1196,52 @@ fn sync_blobs_out(
     // 4. Blobs the data folder no longer has (their attachments are gone
     //    from the revision just written). Only `<id>.bin` files.
     let mut removed = 0;
-    for name in blob_names(&mirror_dir)?.difference(&local_blobs) {
-        let path = mirror_dir.join(name);
-        match fs::remove_file(&path) {
+    for name in pass.store.blob_names(pass.id)?.keys() {
+        if local_blobs.contains(name) {
+            continue;
+        }
+        match pass.store.remove_blob(pass.id, name) {
             Ok(()) => removed += 1,
-            Err(e) => log(format_args!("could not remove a mirrored blob: {e}")),
+            Err(e) => log(format_args!(
+                "could not remove a mirrored blob: {}",
+                e.code()
+            )),
         }
     }
     if local_blobs.is_empty() {
-        // Only succeeds if nothing else is left in it.
-        let _ = fs::remove_dir(&mirror_dir);
+        pass.store.remove_blob_dir_if_empty(pass.id);
     }
     Ok((copied, removed))
 }
 
 /// Writes the PC's copy to the folder (blobs first) and records its head
 /// as the base. `seen`: the folder's copy the decision was made on (`None`:
-/// missing) – read again right before the write; if it changed meanwhile
-/// (the phone wrote it), nothing is written (`Changed`). `keep`: the
-/// folder's copy is kept as a conflict copy before it is replaced.
-fn push(pass: &Pass<'_>, seen: Option<&[u8]>, keep: Option<&[u8]>) -> AppResult<Report> {
+/// missing) – the write goes over exactly that one (`If-Match` with its
+/// version, `If-None-Match` for none; a folder reads it again right
+/// before); if it changed meanwhile (the phone wrote it), nothing is
+/// written (`Changed`). `keep`: the folder's copy is kept as a conflict
+/// copy before it is replaced.
+fn push(pass: &Pass<'_>, seen: Option<SeenCopy<'_>>, keep: Option<&[u8]>) -> AppResult<Report> {
+    let pre = match seen {
+        None => Precondition::IfNoneMatch,
+        Some(seen) => seen
+            .version
+            .map_or(Precondition::None, |v| Precondition::IfMatch(v.to_owned())),
+    };
     let mut changed = false;
     let (blobs_copied, blobs_removed) = sync_blobs_out(pass, || {
-        let still = match (read_copy(&pass.target), seen) {
-            (FolderCopy::Bytes(now), Some(seen)) => now == seen,
-            (FolderCopy::Missing, None) => true,
-            _ => false,
-        };
-        if !still {
-            changed = true;
-            return Ok(false);
+        // Read again where the write itself cannot tell: before the
+        // folder's copy is kept, and without a version to write over.
+        if keep.is_some() || pre == Precondition::None {
+            let still = match (pass.store.read(&pass.name), seen) {
+                (FolderCopy::Bytes(now, _), Some(seen)) => now == seen.bytes,
+                (FolderCopy::Missing, None) => true,
+                _ => false,
+            };
+            if !still {
+                changed = true;
+                return Ok(false);
+            }
         }
         if let Some(old) = keep {
             let at = now_ms();
@@ -725,7 +1253,10 @@ fn push(pass: &Pass<'_>, seen: Option<&[u8]>, keep: Option<&[u8]>) -> AppResult<
                 Err(e) => return Err(e),
             }
         }
-        format::write_atomic(&pass.target, &pass.local_bytes, false)?;
+        if !pass.store.write_vault(pass.id, &pass.local_bytes, &pre)? {
+            changed = true;
+            return Ok(false);
+        }
         Ok(true)
     })?;
     if changed {
@@ -754,7 +1285,7 @@ enum Installed {
     LocalChanged,
 }
 
-/// Takes the folder's copy `file` (`bytes`, head `remote_head`) in place of
+/// Takes the folder's copy `file` (`seen`, head `remote_head`) in place of
 /// the PC's – a copy that must descend from `from` (the PC's copy, or the
 /// one a copy on trial replaced): its blobs the PC lacks first, then
 /// [`install_pulled`]. A copy the open vault proves forged is overwritten
@@ -762,15 +1293,12 @@ enum Installed {
 fn pull(
     pass: &Pass<'_>,
     file: &VaultFile,
-    bytes: &[u8],
+    seen: SeenCopy<'_>,
     remote_head: &SyncHead,
     from: Option<&SyncHead>,
 ) -> AppResult<Report> {
-    let (_, blobs_copied) = copy_blobs(
-        &attachments::dir_for(&pass.target),
-        &attachments::dir_for(&pass.local_path),
-    )?;
-    match install_pulled(pass, file, bytes, remote_head, from)? {
+    let blobs_copied = copy_blobs_in(pass.store, pass.id, &attachments::dir_for(&pass.local_path))?;
+    match install_pulled(pass, file, seen.bytes, remote_head, from)? {
         Installed::Yes { reloaded } => {
             if reloaded {
                 pass.core.emit_changed();
@@ -784,9 +1312,9 @@ fn pull(
         }
         Installed::Forged => {
             log("the cloud folder's copy is forged or damaged: replaced");
-            push(pass, Some(bytes), None)
+            push(pass, Some(seen), None)
         }
-        Installed::NotDescending => conflict(pass, file, bytes, remote_head),
+        Installed::NotDescending => conflict(pass, file, seen, remote_head),
         Installed::LocalChanged => Ok(Report::of(Outcome::Changed)),
     }
 }
@@ -870,7 +1398,7 @@ fn install_pulled(
 fn conflict(
     pass: &Pass<'_>,
     file: &VaultFile,
-    bytes: &[u8],
+    seen: SeenCopy<'_>,
     remote_head: &SyncHead,
 ) -> AppResult<Report> {
     let (check, counts) = {
@@ -889,7 +1417,7 @@ fn conflict(
             remember_rejected(&pass.data_dir, pass.id, FileVersion::of(file));
         }
         log("the cloud folder's copy of a vault in conflict is forged or damaged: replaced");
-        return push(pass, Some(bytes), None);
+        return push(pass, Some(seen), None);
     }
     sync_conflict::record_conflict(
         pass.core,
@@ -909,36 +1437,47 @@ fn attachment_counts(counts: Option<(usize, usize)>) -> (u32, u32) {
     counts.map_or((0, 0), |(here, there)| (n(here), n(there)))
 }
 
-/// Removes the copy of the deleted vault `vault_id` from `folder`: its
+/// [`remove_vault_in`] with the cloud folder `folder` (the unit tests).
+#[cfg(test)]
+pub fn remove_vault(data_dir: &Path, folder: &Path, vault_id: &str) -> AppResult<bool> {
+    let store = FsStore::new(&folder.to_string_lossy(), data_dir);
+    remove_vault_in(data_dir, &store, vault_id)
+}
+
+/// Removes the copy of the deleted vault `vault_id` from `store`: its
 /// vault file (only if it is that vault's) and its blobs. Nothing happens
 /// while the vault still exists in `data_dir`. Returns whether a vault
 /// file was removed.
-pub fn remove_vault(data_dir: &Path, folder: &Path, vault_id: &str) -> AppResult<bool> {
-    let target = copy_path(folder, vault_id)?;
+fn remove_vault_in(data_dir: &Path, store: &dyn MirrorStore, vault_id: &str) -> AppResult<bool> {
+    let name = copy_name(vault_id)?;
     if keystead_core::VaultStore::new(data_dir)
         .vault_path(vault_id)
         .exists()
     {
         return Ok(false);
     }
-    check_folder(folder, data_dir)?;
+    store.check()?;
     // Only a copy whose header says it is that vault's (one too large to
     // read is left, like a damaged one).
-    let removed = match read_copy(&target) {
-        FolderCopy::Bytes(bytes) if VaultFile::parse(&bytes).is_ok_and(|c| c.id == vault_id) => {
-            fs::remove_file(&target).map_err(|e| io_err(&target, e))?;
+    let removed = match store.read(&name) {
+        FolderCopy::Bytes(bytes, version)
+            if VaultFile::parse(&bytes).is_ok_and(|c| c.id == vault_id) =>
+        {
+            let pre = version.map_or(Precondition::None, Precondition::IfMatch);
+            store.remove_vault_file(vault_id, &pre)?;
             true
         }
         _ => false,
     };
-    let mirror_dir = attachments::dir_for(&target);
-    for name in blob_names(&mirror_dir)? {
-        let path = mirror_dir.join(&name);
-        if let Err(e) = fs::remove_file(&path) {
-            log(format_args!("could not remove a mirrored blob: {e}"));
+    for name in store.blob_names(vault_id)?.keys() {
+        if let Err(e) = store.remove_blob(vault_id, name) {
+            log(format_args!(
+                "could not remove a mirrored blob: {}",
+                e.code()
+            ));
         }
     }
-    let _ = fs::remove_dir(&mirror_dir);
+    store.remove_blob_dir_if_empty(vault_id);
     Ok(removed)
 }
 
@@ -958,18 +1497,8 @@ pub struct FolderOffer {
     pub updated_at: i64,
 }
 
-/// Size and modification time of a file (`None`: missing).
-type Stamp = Option<(u64, Option<SystemTime>)>;
-
-fn stamp(path: &Path) -> Stamp {
-    fs::metadata(path)
-        .ok()
-        .filter(|m| m.is_file())
-        .map(|m| (m.len(), m.modified().ok()))
-}
-
 /// What the last scan found for one file of the folder, while neither it
-/// nor the PC's copy changed (size and time).
+/// nor the PC's copy changed ([`Stamp`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seen {
     remote: Stamp,
@@ -1013,8 +1542,8 @@ fn save_dismissed(data_dir: &Path, ids: &BTreeSet<String>) -> AppResult<()> {
 
 /// The offer for the folder's copy at `path` of vault `id`: its header,
 /// if it is a readable copy of that vault.
-fn read_offer(path: &Path, id: &str) -> Option<FolderOffer> {
-    let FolderCopy::Bytes(bytes) = read_copy(path) else {
+fn read_offer(store: &dyn MirrorStore, name: &str, id: &str) -> Option<FolderOffer> {
+    let FolderCopy::Bytes(bytes, _) = store.read(name) else {
         return None;
     };
     let file = VaultFile::parse(&bytes).ok().filter(|f| f.id == id)?;
@@ -1033,22 +1562,22 @@ fn read_offer(path: &Path, id: &str) -> Option<FolderOffer> {
 /// dismissed (or deleted here with a removal still pending). `cached`:
 /// files whose size and time – and those of the PC's copy – did not change
 /// since the last scan are not read again (the periodic scan).
-fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
+fn scan(core: &Core, store: &dyn MirrorStore, cached: bool, results: &mut Results) {
     let tracker = core.mirror();
     let data_dir = core.data_dir();
-    let folder_path = Path::new(folder);
-    if let Err(e) = check_folder(folder_path, &data_dir) {
+    let folder = store.key();
+    if let Err(e) = store.check() {
         results.add(Err(e));
         return;
     }
-    let ids = match vault_ids_in(folder_path) {
-        Ok(ids) => ids,
+    let top = match store.top_files() {
+        Ok(top) => top,
         Err(e) => {
             results.add(Err(e));
             return;
         }
     };
-    let store = core.store();
+    let store_vaults = core.store();
     let dismissed = load_dismissed(&data_dir);
     let pending_removals = lock(&tracker.failed_removals).clone();
     let previous = if cached {
@@ -1058,19 +1587,19 @@ fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
     };
     let mut seen = BTreeMap::new();
     let mut offers = Vec::new();
-    for id in ids {
-        let Ok(remote_path) = copy_path(folder_path, &id) else {
+    for id in vault_ids_of(&top) {
+        let Ok(name) = copy_name(&id) else {
             continue;
         };
-        let local_path = store.vault_path(&id);
+        let local_path = store_vaults.vault_path(&id);
         let stamps = |offer: Option<FolderOffer>| Seen {
-            remote: stamp(&remote_path),
-            local: stamp(&local_path),
+            remote: store.stamp(&name),
+            local: fs_stamp(&local_path),
             offer,
         };
         let unchanged = previous
             .get(&id)
-            .filter(|p: &&Seen| p.remote == stamp(&remote_path) && p.local == stamp(&local_path));
+            .filter(|p: &&Seen| p.remote == store.stamp(&name) && p.local == fs_stamp(&local_path));
         if local_path.exists() {
             if sync_base::load(&data_dir, &id, folder).is_none() {
                 continue;
@@ -1079,7 +1608,7 @@ fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
                 seen.insert(id, p.clone());
                 continue;
             }
-            let result = mirror_vault(core, folder, &id);
+            let result = mirror_vault_in(core, store, &id);
             if result.as_ref().is_ok_and(|r| r.outcome != Outcome::Changed) {
                 seen.insert(id, stamps(None));
             }
@@ -1091,7 +1620,7 @@ fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
         }
         let offer = match unchanged {
             Some(p) => p.offer.clone(),
-            None => read_offer(&remote_path, &id),
+            None => read_offer(store, &name, &id),
         };
         if let Some(offer) = offer {
             seen.insert(id, stamps(Some(offer.clone())));
@@ -1100,7 +1629,7 @@ fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
     }
     *lock(&tracker.seen) = seen;
     tracker.set_offers(core, offers);
-    scan_conflict_copies(core, folder, cached);
+    scan_conflict_copies(core, store, conflict_copies_of(&top), cached);
 }
 
 /// `adopt_folder_vault`: takes vault `vault_id` from the folder – it must
@@ -1121,22 +1650,28 @@ pub fn adopt(core: &Core, vault_id: &str) -> AppResult<VaultInfo> {
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
     let data_dir = core.data_dir();
-    let folder_path = Path::new(&folder);
-    check_folder(folder_path, &data_dir)?;
+    adopt_in(core, &FsStore::new(&folder, &data_dir), vault_id)
+}
+
+/// [`adopt`] from `store` (the caller holds the pass lock).
+fn adopt_in(core: &Core, mirror: &dyn MirrorStore, vault_id: &str) -> AppResult<VaultInfo> {
+    let tracker = core.mirror();
+    let data_dir = core.data_dir();
+    let folder = mirror.key();
+    mirror.check()?;
     let store = core.store();
     let path = store.vault_path(vault_id);
     if path.exists() {
         return Err(AppError::invalid(VAULT_EXISTS));
     }
-    let target = copy_path(folder_path, vault_id)?;
-    let FolderCopy::Bytes(bytes) = read_copy(&target) else {
+    let FolderCopy::Bytes(bytes, _) = mirror.read(&copy_name(vault_id)?) else {
         return Err(not_found(&format!("vault {vault_id}")));
     };
     let file = VaultFile::parse(&bytes)?;
     if file.id != vault_id {
         return Err(not_found(&format!("vault {vault_id}")));
     }
-    copy_blobs(&attachments::dir_for(&target), &attachments::dir_for(&path))?;
+    copy_blobs_in(mirror, vault_id, &attachments::dir_for(&path))?;
     {
         let _st = core.state();
         let _trial = trial_lock();
@@ -1146,7 +1681,7 @@ pub fn adopt(core: &Core, vault_id: &str) -> AppResult<VaultInfo> {
         // Nothing to go back to: there was no copy here.
         begin_trial(&data_dir, vault_id, &path, &file)?;
         format::write_atomic(&path, &bytes, false)?;
-        let base = SyncBase::new(&sync::head_of(&file), &folder, now_ms());
+        let base = SyncBase::new(&sync::head_of(&file), folder, now_ms());
         if let Err(e) = sync_base::save(&data_dir, vault_id, &base) {
             log(format_args!("could not record the sync base: {}", e.code()));
         }
@@ -1229,34 +1764,12 @@ fn save_dismissed_copies(data_dir: &Path, names: &BTreeSet<String>) -> AppResult
     Ok(())
 }
 
-/// The names of the phone's conflict copies at the top of `folder` (files
-/// only, sorted).
-fn conflict_copy_names(folder: &Path) -> AppResult<Vec<String>> {
-    let entries = match fs::read_dir(folder) {
-        Ok(entries) => entries,
-        Err(e) => return Err(io_err(folder, e)),
-    };
-    let mut names = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| io_err(folder, e))?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if sync::vault_id_of_phone_conflict_copy(&name).is_some()
-            && entry.file_type().is_ok_and(|t| t.is_file())
-        {
-            names.push(name);
-        }
-    }
-    names.sort();
-    Ok(names)
-}
-
-/// The phone's conflict copy `name` in `folder` with the bytes it has, if
-/// it is a readable vault file of the vault its name says.
-fn read_conflict_copy(folder: &Path, name: &str) -> Option<(FolderConflictCopy, Vec<u8>)> {
+fn read_conflict_copy(
+    store: &dyn MirrorStore,
+    name: &str,
+) -> Option<(FolderConflictCopy, Vec<u8>)> {
     let id = sync::vault_id_of_phone_conflict_copy(name)?;
-    let FolderCopy::Bytes(bytes) = read_copy(&folder.join(name)) else {
+    let FolderCopy::Bytes(bytes, _) = store.read(name) else {
         return None;
     };
     let file = VaultFile::parse(&bytes).ok().filter(|f| f.id == id)?;
@@ -1273,12 +1786,8 @@ fn read_conflict_copy(folder: &Path, name: &str) -> Option<(FolderConflictCopy, 
 /// Lists the phone's conflict copies in `folder` that were neither
 /// restored nor hidden. `cached`: copies whose size and time did not change
 /// since the last scan are not read again.
-fn scan_conflict_copies(core: &Core, folder: &str, cached: bool) {
+fn scan_conflict_copies(core: &Core, store: &dyn MirrorStore, names: Vec<String>, cached: bool) {
     let tracker = core.mirror();
-    let folder_path = Path::new(folder);
-    let Ok(names) = conflict_copy_names(folder_path) else {
-        return;
-    };
     let dismissed = load_dismissed_copies(&core.data_dir());
     let previous = if cached {
         lock(&tracker.copies_seen).clone()
@@ -1288,10 +1797,10 @@ fn scan_conflict_copies(core: &Core, folder: &str, cached: bool) {
     let mut seen = BTreeMap::new();
     let mut copies = Vec::new();
     for name in names.into_iter().filter(|n| !dismissed.contains(n)) {
-        let now = stamp(&folder_path.join(&name));
+        let now = store.stamp(&name);
         let copy = match previous.get(&name) {
             Some((was, copy)) if *was == now => copy.clone(),
-            _ => read_conflict_copy(folder_path, &name).map(|(copy, _)| copy),
+            _ => read_conflict_copy(store, &name).map(|(copy, _)| copy),
         };
         if let Some(copy) = &copy {
             copies.push(copy.clone());
@@ -1328,9 +1837,9 @@ pub fn restore_copy(core: &Core, file_name: &str) -> AppResult<String> {
     let folder = checked_folder(core)?;
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
-    let (_, bytes) =
-        read_conflict_copy(Path::new(&folder), file_name).ok_or_else(|| not_found(file_name))?;
     let data_dir = core.data_dir();
+    let store = FsStore::new(&folder, &data_dir);
+    let (_, bytes) = read_conflict_copy(&store, file_name).ok_or_else(|| not_found(file_name))?;
     let dir = sync_conflict::conflicts_dir(&data_dir);
     fs::create_dir_all(&dir)?;
     let path = (1..)
@@ -1421,7 +1930,13 @@ pub fn resolve_conflict(
     let tracker = core.mirror();
     let result = {
         let _pass = lock(&tracker.pass);
-        resolve_in(core, &folder, &record, keep, now)
+        resolve_in(
+            core,
+            &FsStore::new(&folder, &core.data_dir()),
+            &record,
+            keep,
+            now,
+        )
     };
     if let Err(e) = &result {
         let code = e.code();
@@ -1437,17 +1952,16 @@ pub fn resolve_conflict(
 
 fn resolve_in(
     core: &Core,
-    folder: &str,
+    store: &dyn MirrorStore,
     record: &ConflictRecord,
     keep: Keep,
     now: i64,
 ) -> AppResult<VaultInfo> {
     let id = record.conflict.vault_id.as_str();
     let data_dir = core.data_dir();
-    let folder_path = Path::new(folder);
-    check_folder(folder_path, &data_dir)?;
-    let target = copy_path(folder_path, id)?;
-    let FolderCopy::Bytes(remote_bytes) = read_copy(&target) else {
+    let folder = store.key();
+    store.check()?;
+    let FolderCopy::Bytes(remote_bytes, _) = store.read(&copy_name(id)?) else {
         return Err(conflict_changed());
     };
     let remote = VaultFile::parse(&remote_bytes).map_err(|_| conflict_changed())?;
@@ -1488,14 +2002,7 @@ fn resolve_in(
 
     match keep {
         Keep::Local => {
-            let remote_blobs = attachments::dir_for(&target);
-            sync_conflict::keep_conflict_copy(
-                &data_dir,
-                id,
-                &remote_bytes,
-                Some(&remote_blobs),
-                now,
-            )?;
+            store.keep_copy(&data_dir, id, &remote_bytes, now)?;
             let info = {
                 let mut st = core.state();
                 let vault = st
@@ -1515,7 +2022,7 @@ fn resolve_in(
                 &SyncBase::new(&remote_head, folder, now_ms()),
             )?;
             set_record(core, id, None);
-            match mirror_vault(core, folder, id) {
+            match mirror_vault_in(core, store, id) {
                 Ok(report) if report.outcome == Outcome::Written => {}
                 Ok(report) => {
                     log(format_args!(
@@ -1543,7 +2050,7 @@ fn resolve_in(
                 Some(&local_blobs),
                 now,
             )?;
-            copy_blobs(&attachments::dir_for(&target), &local_blobs)?;
+            copy_blobs_in(store, id, &local_blobs)?;
             let info = install_resolved(
                 core,
                 folder,
@@ -1876,12 +2383,30 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
             st.store.root().to_path_buf(),
         )
     };
+    let store = folder.as_deref().map(|f| FsStore::new(f, &data_dir));
     if tracker.relinked.swap(false, Ordering::SeqCst) {
-        start_over(core, folder.as_deref());
+        start_over(core, store.as_ref().map(|s| s as &dyn MirrorStore));
     }
-    let Some(folder) = folder else {
+    let Some(store) = store else {
         return;
     };
+    let results = run_round(core, &store, jobs, scan_anyway);
+    if tracker.record(core, store.key(), results) {
+        core.emit(EVENT_STATUS, tracker.status(core));
+    }
+}
+
+/// The passes of one round against `store` (the caller holds the pass
+/// lock): the last job per vault, removals that failed before first, a scan
+/// after them (`scan_anyway`, or a [`Job::Scan`] among `jobs`).
+fn run_round(
+    core: &Core,
+    store: &dyn MirrorStore,
+    jobs: Vec<Job>,
+    scan_anyway: Option<bool>,
+) -> Results {
+    let tracker = core.mirror();
+    let data_dir = core.data_dir();
     // Removals that failed before come first (the drive is back, the cloud
     // app let go of the file); the last job per vault wins.
     let retries: Vec<Job> = lock(&tracker.failed_removals)
@@ -1901,9 +2426,9 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
     let mut results = Results::default();
     for job in &last {
         match job {
-            Job::Vault(id) => results.add(mirror_vault(core, &folder, id)),
+            Job::Vault(id) => results.add(mirror_vault_in(core, store, id)),
             Job::Removed(id) => {
-                let removed = remove_vault(&data_dir, Path::new(&folder), id);
+                let removed = remove_vault_in(&data_dir, store, id);
                 let mut failed = lock(&tracker.failed_removals);
                 if removed.is_ok() {
                     failed.remove(id);
@@ -1924,11 +2449,9 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
         }
     }
     if let Some(cached) = scan_cached {
-        scan(core, &folder, cached, &mut results);
+        scan(core, store, cached, &mut results);
     }
-    if tracker.record(core, &folder, results) {
-        core.emit(EVENT_STATUS, tracker.status(core));
-    }
+    results
 }
 
 /// The first round after the folder was set (or turned off): the
@@ -1936,7 +2459,7 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
 /// in the new folder, a vault whose copy is missing although it has a base
 /// there (it was removed) is written again – setting the folder is how the
 /// user asks for that.
-fn start_over(core: &Core, folder: Option<&str>) {
+fn start_over(core: &Core, store: Option<&dyn MirrorStore>) {
     let tracker = core.mirror();
     let data_dir = core.data_dir();
     if let Err(e) = sync_conflict::clear_conflicts(&data_dir) {
@@ -1947,14 +2470,18 @@ fn start_over(core: &Core, folder: Option<&str>) {
     tracker.set_offers(core, Vec::new());
     lock(&tracker.copies_seen).clear();
     tracker.set_copies(core, Vec::new());
-    let Some(folder) = folder else {
+    let Some(store) = store else {
         return;
     };
     let Ok(local_ids) = vault_ids_in(&core.store().vaults_dir()) else {
         return;
     };
+    let Ok(top) = store.top_files() else {
+        return;
+    };
+    let folder = store.key();
     for id in local_ids {
-        let gone = copy_path(Path::new(folder), &id).is_ok_and(|p| !p.exists());
+        let gone = copy_name(&id).is_ok_and(|name| !top.contains_key(&name));
         if gone && sync_base::load(&data_dir, &id, folder).is_some() {
             if let Err(e) = sync_base::remove(&data_dir, &id) {
                 log(format_args!("could not remove a sync base: {}", e.code()));
@@ -3240,6 +3767,7 @@ mod tests {
                     uri: entry.path().to_string_lossy().into_owned(),
                     dir: meta.is_dir(),
                     size: meta.is_file().then_some(meta.len()),
+                    etag: None,
                 });
             }
             Ok(out)
@@ -3258,6 +3786,7 @@ mod tests {
                 uri: path.to_string_lossy().into_owned(),
                 dir: false,
                 size: Some(bytes.len() as u64),
+                etag: None,
             })
         }
         fn write_conflict_copy(&self, name: &str, bytes: &[u8]) -> AppResult<()> {
@@ -3769,6 +4298,612 @@ mod tests {
         ] {
             assert_eq!(restore_copy(&core, bad).unwrap_err().code(), "not_found");
             assert_eq!(dismiss_copy(&core, bad).unwrap_err().code(), "not_found");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // On a server (stage 2c): the same passes over a `RemoteStore`
+    // -----------------------------------------------------------------
+
+    mod over_a_server {
+        use std::sync::atomic::AtomicI64;
+
+        use super::*;
+        use crate::remote::folder::RemoteDirFolder;
+        use crate::remote::mem::MemRemote;
+
+        const KEY: &str = "webdav:https://cloud.example/dav/Keystead/";
+
+        fn server() -> Arc<MemRemote> {
+            Arc::new(MemRemote::new(KEY))
+        }
+
+        fn store_of(server: &Arc<MemRemote>) -> RemoteStore<Arc<MemRemote>> {
+            RemoteStore::new(Arc::clone(server))
+        }
+
+        /// Runs the jobs the hooks queued against `store`.
+        fn run_queued_on(core: &Core, store: &dyn MirrorStore) -> Results {
+            let jobs = core.mirror().take_recorded();
+            run_round(core, store, jobs, None)
+        }
+
+        fn scan_on(core: &Core, store: &dyn MirrorStore) -> Results {
+            run_round(core, store, vec![Job::Scan], None)
+        }
+
+        fn pass_on(core: &Core, store: &dyn MirrorStore, id: &str) -> AppResult<Report> {
+            mirror_vault_in(core, store, id)
+        }
+
+        fn base_on(core: &Core, id: &str) -> Option<(u64, String)> {
+            sync_base::load(&core.data_dir(), id, KEY).map(|b| (b.revision, b.digest))
+        }
+
+        /// `v`'s vault file and blobs onto the server (blobs first), as the
+        /// phone or another PC does.
+        fn upload(server: &MemRemote, v: &UnlockedVault) {
+            let id = v.id();
+            let blobs = attachments::dir_for(v.path());
+            if blobs.is_dir() {
+                let dir = remote::blob_dir_name(id);
+                for blob in fs::read_dir(&blobs).unwrap() {
+                    let blob = blob.unwrap();
+                    let name = blob.file_name().to_string_lossy().into_owned();
+                    server.write(&format!("{dir}/{name}"), &fs::read(blob.path()).unwrap());
+                }
+            }
+            server.write(&format!("{id}.keystead"), &fs::read(v.path()).unwrap());
+        }
+
+        #[test]
+        fn a_save_goes_to_the_server_blobs_first_and_removed_ones_leave_after() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            let name = format!("{id}.keystead");
+            let blob_dir = remote::blob_dir_name(&id);
+            let item = note(&core, "Ausweis");
+            let a = core
+                .mutate(|v| v.add_attachment(&item, "scan.png", b"\x89PNG fake scan"))
+                .unwrap();
+            let results = run_queued_on(&core, &store);
+            assert!(results.ok && results.error.is_none(), "{results:?}");
+            let blob = format!("{blob_dir}/{}.bin", a.id);
+            assert_eq!(
+                server.paths(),
+                BTreeSet::from([name.clone(), format!("{blob_dir}/"), blob.clone()])
+            );
+            // The blob folder and blob before the vault file.
+            assert_eq!(
+                server.take_log(),
+                [
+                    format!("MKCOL {blob_dir}"),
+                    format!("PUT {blob}"),
+                    format!("PUT {name}"),
+                ]
+            );
+            let local = vault_path(&core);
+            assert_eq!(server.file(&name).unwrap(), fs::read(&local).unwrap());
+            assert_eq!(base_on(&core, &id), pair(&head_of_path(&local)));
+
+            // Nothing changed: nothing written.
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::UpToDate
+            );
+            assert!(server.take_log().is_empty());
+
+            // The attachment goes: the vault file first, then the blob, then
+            // its empty folder.
+            core.mutate(|v| v.remove_attachment(&a.id)).unwrap();
+            run_queued_on(&core, &store);
+            assert_eq!(
+                server.take_log(),
+                [
+                    format!("PUT {name}"),
+                    format!("DELETE {blob}"),
+                    format!("DELETE {blob_dir}"),
+                ]
+            );
+            assert_eq!(server.paths(), BTreeSet::from([name]));
+        }
+
+        #[test]
+        fn the_open_vault_takes_a_newer_copy_from_the_server() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            note(&core, "PC");
+            run_queued_on(&core, &store);
+            let mut phone = other_device(dir.path(), &core, &id);
+            let item = add_note(&mut phone, "Handy");
+            let attachment = phone.add_attachment(&item, "foto.jpg", b"JPEG").unwrap();
+            upload(&server, &phone);
+            server.take_log();
+
+            let results = scan_on(&core, &store);
+            assert!(results.pulled, "{results:?}");
+            assert_eq!(names(&core), ["Handy", "PC"]);
+            assert_eq!(
+                &*core
+                    .read(|v| v.read_attachment(&attachment.id))
+                    .unwrap()
+                    .unwrap(),
+                b"JPEG"
+            );
+            let name = format!("{id}.keystead");
+            assert_eq!(
+                fs::read(vault_path(&core)).unwrap(),
+                server.file(&name).unwrap()
+            );
+            assert_eq!(base_on(&core, &id), pair(&head_of_path(&vault_path(&core))));
+            assert!(server.take_log().is_empty(), "a pull writes nothing");
+            // An unchanged server copy is not read again by the next scan.
+            assert_eq!(
+                scan_on(&core, &store).error,
+                None,
+                "nothing to do, no error"
+            );
+            assert!(server.take_log().is_empty());
+        }
+
+        #[test]
+        fn both_changed_is_a_conflict_and_the_server_copy_stays() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let mut phone = other_device(dir.path(), &core, &id);
+            add_note(&mut phone, "Handy");
+            upload(&server, &phone);
+            note(&core, "PC");
+            server.take_log();
+            run_queued_on(&core, &store);
+            let conflicts = sync_conflict::conflicts_for_page(&core, Some(&id)).unwrap();
+            assert_eq!(conflicts.len(), 1);
+            assert!(server.take_log().is_empty(), "nothing written");
+            assert_eq!(
+                server.file(&format!("{id}.keystead")).unwrap(),
+                fs::read(phone.path()).unwrap()
+            );
+            assert_eq!(names(&core), ["PC"]);
+
+            // Keeping the server's state: the PC's goes to a conflict copy.
+            let seen = sync_conflict::recorded_digests(&core.data_dir(), &id);
+            let record =
+                sync_conflict::verified_record(&core.data_dir(), &id, (&seen.0, &seen.1)).unwrap();
+            resolve_in(&core, &store, &record, Keep::Remote, AT).unwrap();
+            assert_eq!(names(&core), ["Handy"]);
+            assert_eq!(
+                sync_conflict::list(&core.data_dir(), Some(&id))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(server.take_log().is_empty());
+        }
+
+        #[test]
+        fn a_phone_write_meanwhile_fails_the_precondition() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let mut phone = other_device(dir.path(), &core, &id);
+            add_note(&mut phone, "Handy");
+            let phone_copy = fs::read(phone.path()).unwrap();
+            note(&core, "PC");
+            core.mirror().take_recorded();
+            // The phone writes between the PC's read and its write.
+            let name = format!("{id}.keystead");
+            let other = Arc::clone(&server);
+            let (path, bytes) = (name.clone(), phone_copy.clone());
+            server.before_put(&name, move || other.write(&path, &bytes));
+            server.take_log();
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Changed
+            );
+            assert!(server.take_log().is_empty(), "the write was refused");
+            assert_eq!(server.file(&name).unwrap(), phone_copy);
+            // The next pass finds both changed.
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Conflict
+            );
+            assert_eq!(server.file(&name).unwrap(), phone_copy);
+        }
+
+        static CLOCK: AtomicI64 = AtomicI64::new(0);
+
+        fn clock() -> i64 {
+            CLOCK.load(Ordering::SeqCst)
+        }
+
+        #[test]
+        fn a_damaged_server_copy_is_replaced_only_once_it_stays_damaged() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let mut store = store_of(&server);
+            store.clock = clock;
+            CLOCK.store(1_000_000, Ordering::SeqCst);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let name = format!("{id}.keystead");
+            // Half an upload (or a damaged file).
+            server.write(&name, b"{\"format\": \"keystead-vault\", \"ver");
+            server.take_log();
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Changed
+            );
+            CLOCK.store(1_030_000, Ordering::SeqCst);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Changed
+            );
+            // Another damaged state starts over.
+            server.write(
+                &name,
+                b"{\"format\": \"keystead-vault\", \"version\": 2, \"i",
+            );
+            CLOCK.store(1_061_000, Ordering::SeqCst);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Changed
+            );
+            assert!(server.take_log().is_empty());
+            assert!(sync_conflict::list(&core.data_dir(), Some(&id))
+                .unwrap()
+                .is_empty());
+            // Still the same a minute later: kept as a conflict copy, replaced.
+            CLOCK.store(1_121_000, Ordering::SeqCst);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            assert_eq!(
+                server.file(&name).unwrap(),
+                fs::read(vault_path(&core)).unwrap()
+            );
+            assert_eq!(
+                sync_conflict::list(&core.data_dir(), Some(&id))
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+
+        #[test]
+        fn deleting_a_vault_removes_its_server_copy_only() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            let item = note(&core, "Anhang");
+            core.mutate(|v| v.add_attachment(&item, "a.txt", b"a"))
+                .unwrap();
+            run_queued_on(&core, &store);
+            let other = core
+                .store()
+                .create_vault_with_params("Arbeit", "pw", KdfParams::insecure_for_tests())
+                .unwrap();
+            let other_id = other.id().to_owned();
+            drop(other);
+            pass_on(&core, &store, &other_id).unwrap();
+            // Not while the vault still exists.
+            assert!(!remove_vault_in(&core.data_dir(), &store, &id).unwrap());
+
+            core.lock(None);
+            core.store().delete_vault(&id, "master").unwrap();
+            server.take_log();
+            let results = run_round(
+                &core,
+                &store,
+                vec![Job::Vault(id.clone()), Job::Removed(id.clone())],
+                None,
+            );
+            assert_eq!(results.error, None);
+            assert_eq!(
+                server.paths(),
+                BTreeSet::from([format!("{other_id}.keystead")])
+            );
+            assert!(server
+                .take_log()
+                .iter()
+                .all(|entry| entry.starts_with("DELETE")));
+        }
+
+        #[test]
+        fn an_unreachable_server_changes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            note(&core, "offline");
+            core.mirror().take_recorded();
+            server.set_offline(true);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap_err().code(),
+                "unsupported:sync_offline"
+            );
+            assert_eq!(
+                scan_on(&core, &store).error.as_deref(),
+                Some("unsupported:sync_offline")
+            );
+            server.set_offline(false);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+        }
+
+        #[test]
+        fn a_vault_on_the_server_is_offered_and_adopted() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let made = VaultStore::new(dir.path().join("phone"));
+            let mut new = made
+                .create_vault_with_params("Vom Handy", "handy", KdfParams::insecure_for_tests())
+                .unwrap();
+            add_note(&mut new, "n");
+            upload(&server, &new);
+            let new_id = new.id().to_owned();
+            scan_on(&core, &store);
+            let offers = core.mirror().offers(&core);
+            assert_eq!(offers.len(), 1);
+            assert_eq!(offers[0].vault_id, new_id);
+            assert_eq!(offers[0].name, "Vom Handy");
+            let info = adopt_in(&core, &store, &new_id).unwrap();
+            assert_eq!(info.id, new_id);
+            assert_eq!(
+                fs::read(vault_path_of(&core, &new_id)).unwrap(),
+                fs::read(new.path()).unwrap()
+            );
+            assert_eq!(base_on(&core, &new_id), pair(&head_of_path(new.path())));
+        }
+
+        // ---- the PC on the server and the phone on the same server ----
+
+        fn phone_link() -> LinkState {
+            LinkState::new(KEY.into(), "Keystead".into(), 1, true)
+        }
+
+        /// The phone's, the server's and the PC's copy are the same write,
+        /// and both sides' bases record it.
+        fn assert_converged_on(core: &Core, phone: &Core, server: &MemRemote, id: &str) {
+            let server_file =
+                VaultFile::parse(&server.file(&format!("{id}.keystead")).unwrap()).unwrap();
+            let server_head = sync::head_of(&server_file);
+            assert_eq!(head_of_path(&vault_path_of(core, id)), server_head);
+            assert_eq!(head_of_path(&vault_path_of(phone, id)), server_head);
+            assert_eq!(base_on(core, id), pair(&server_head));
+            let phone_base = sync_base::load(&phone.data_dir(), id, KEY).unwrap();
+            assert_eq!(
+                (phone_base.revision, phone_base.digest),
+                (server_head.revision, server_head.digest.clone())
+            );
+            assert_eq!(names(core), names(phone));
+        }
+
+        #[test]
+        fn edits_go_back_and_forth_with_the_phone_on_the_server() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            note(&core, "vom PC");
+            run_queued_on(&core, &store);
+            let folder = RemoteDirFolder::new(Arc::clone(&server));
+
+            let phone = phone_core(dir.path());
+            let mut link = phone_link();
+            folder_sync::sync_folder(&phone, &folder, &mut link, 2).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Imported);
+            phone.unlock(&id, "master").unwrap();
+
+            phone_note(&phone, "vom Handy");
+            folder_sync::sync_vault(&phone, &folder, &mut link, &id, 3).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Pushed);
+            scan_on(&core, &store);
+            assert_eq!(names(&core), ["vom Handy", "vom PC"]);
+            assert_converged_on(&core, &phone, &server, &id);
+
+            note(&core, "wieder PC");
+            run_queued_on(&core, &store);
+            folder_sync::sync_vault(&phone, &folder, &mut link, &id, 4).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Updated);
+            assert_converged_on(&core, &phone, &server, &id);
+
+            // Several rounds more, each side in turn.
+            for round in 0..3 {
+                phone_note(&phone, &format!("Handy {round}"));
+                folder_sync::sync_vault(&phone, &folder, &mut link, &id, 10 + round).unwrap();
+                assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Pushed);
+                scan_on(&core, &store);
+                note(&core, &format!("PC {round}"));
+                run_queued_on(&core, &store);
+                folder_sync::sync_vault(&phone, &folder, &mut link, &id, 20 + round).unwrap();
+                assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Updated);
+                assert_converged_on(&core, &phone, &server, &id);
+            }
+            assert!(sync_conflict::conflicts_for_page(&core, Some(&id))
+                .unwrap()
+                .is_empty());
+        }
+
+        #[test]
+        fn both_edited_is_a_conflict_on_the_side_that_comes_second_on_the_server() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let folder = RemoteDirFolder::new(Arc::clone(&server));
+            let phone = phone_core(dir.path());
+            let mut link = phone_link();
+            folder_sync::sync_folder(&phone, &folder, &mut link, 2).unwrap();
+            phone.unlock(&id, "master").unwrap();
+
+            // The PC writes first: the phone finds the conflict, keeps its
+            // own state; the PC takes it.
+            phone_note(&phone, "Handy 1");
+            note(&core, "PC 1");
+            run_queued_on(&core, &store);
+            folder_sync::sync_vault(&phone, &folder, &mut link, &id, 3).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Conflict);
+            let seen = sync_conflict::recorded_digests(&phone.data_dir(), &id);
+            folder_sync::resolve_conflict(
+                &phone,
+                &folder,
+                &mut link,
+                &id,
+                Some(&id),
+                Keep::Local,
+                (&seen.0, &seen.1),
+                4,
+            )
+            .unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Pushed);
+            scan_on(&core, &store);
+            assert_converged_on(&core, &phone, &server, &id);
+            assert_eq!(names(&core), ["Handy 1"]);
+            // The PC's state went to the phone's conflict copy on the server.
+            let copies = conflict_copies_of(&store.top_files().unwrap());
+            assert_eq!(copies.len(), 1);
+            assert_eq!(core.mirror().copies(&core).len(), 1);
+
+            // The phone writes first: the PC finds the conflict.
+            phone_note(&phone, "Handy 2");
+            folder_sync::sync_vault(&phone, &folder, &mut link, &id, 5).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Pushed);
+            note(&core, "PC 2");
+            run_queued_on(&core, &store);
+            assert_eq!(
+                sync_conflict::conflicts_for_page(&core, Some(&id))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let seen = sync_conflict::recorded_digests(&core.data_dir(), &id);
+            let record =
+                sync_conflict::verified_record(&core.data_dir(), &id, (&seen.0, &seen.1)).unwrap();
+            resolve_in(&core, &store, &record, Keep::Remote, AT).unwrap();
+            folder_sync::sync_vault(&phone, &folder, &mut link, &id, 6).unwrap();
+            assert_eq!(phone_outcome(&link, &id), PhoneOutcome::UpToDate);
+            assert_converged_on(&core, &phone, &server, &id);
+            assert_eq!(names(&core), ["Handy 1", "Handy 2"]);
+        }
+
+        /// A server that ignores `If-Match`: the PC's write goes over the
+        /// phone's that came in between – but the phone still has its state
+        /// and finds a conflict; nothing is lost without the user seeing it.
+        #[test]
+        fn a_server_ignoring_if_match_never_loses_a_write_silently() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            server.ignore_if_match(true);
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let folder = Arc::new(RemoteDirFolder::new(Arc::clone(&server)));
+            let phone = phone_core(dir.path());
+            let link = Arc::new(Mutex::new(phone_link()));
+            folder_sync::sync_folder(&phone, &*folder, &mut lock(&link), 2).unwrap();
+            phone.unlock(&id, "master").unwrap();
+
+            // The PC edits and reads the server's copy; right before its
+            // write, the phone pushes its own edit (verified, its base).
+            phone_note(&phone, "Handy");
+            note(&core, "PC");
+            core.mirror().take_recorded();
+            let name = format!("{id}.keystead");
+            {
+                let (phone, folder, link, id) = (
+                    Arc::clone(&phone),
+                    Arc::clone(&folder),
+                    Arc::clone(&link),
+                    id.clone(),
+                );
+                server.before_put(&name, move || {
+                    folder_sync::sync_vault(&phone, &*folder, &mut lock(&link), &id, 3).unwrap();
+                    assert_eq!(phone_outcome(&lock(&link), &id), PhoneOutcome::Pushed);
+                });
+            }
+            // The server lets the PC's write go over the phone's.
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let phone_state = fs::read(vault_path_of(&phone, &id)).unwrap();
+            assert_ne!(server.file(&name).unwrap(), phone_state);
+
+            // The phone's next look: a conflict (its write is not taken
+            // over), and its state is still there.
+            folder_sync::sync_vault(&phone, &*folder, &mut lock(&link), &id, 4).unwrap();
+            assert_eq!(phone_outcome(&lock(&link), &id), PhoneOutcome::Conflict);
+            assert_eq!(fs::read(vault_path_of(&phone, &id)).unwrap(), phone_state);
+            assert_eq!(names(&phone), ["Handy"]);
+            assert_eq!(
+                sync_conflict::conflicts_for_page(&phone, Some(&id))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            // Kept by the phone: the PC takes it, the PC's edit goes to a
+            // conflict copy – each step visible, nothing lost.
+            let seen = sync_conflict::recorded_digests(&phone.data_dir(), &id);
+            folder_sync::resolve_conflict(
+                &phone,
+                &*folder,
+                &mut lock(&link),
+                &id,
+                Some(&id),
+                Keep::Local,
+                (&seen.0, &seen.1),
+                5,
+            )
+            .unwrap();
+            scan_on(&core, &store);
+            assert_eq!(names(&core), ["Handy"]);
+            assert_converged_on(&core, &phone, &server, &id);
+            assert_eq!(conflict_copies_of(&store.top_files().unwrap()).len(), 1);
         }
     }
 }

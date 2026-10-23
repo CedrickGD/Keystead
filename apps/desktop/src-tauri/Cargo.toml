@@ -35,12 +35,35 @@ zeroize = "1.9.1"
 # Ids of the user's generator presets (`src/generator.rs`, both
 # platforms); the version the core already uses.
 uuid = { version = "1.27.0", features = ["v4"] }
+# Server sync (stage 2c, `src/remote/`, both platforms): an own thin WebDAV
+# client. reqwest without its defaults: rustls with ring (the crypto
+# provider installed as the process default, as the updater does), HTTP/1.1
+# only; the desktop table below adds the system proxy. The client is the
+# async one, driven on a small runtime of the WebDAV client's own
+# (`remote::webdav`): only it has a read timeout without a total one.
+# Its TLS configuration is always built by `remote::tls` (desktop: the
+# platform verifier; Android: the webpki roots, so the platform verifier –
+# which would need JNI set-up there – is never used).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+http = "1"
+# The WebDAV client's runtime (reqwest's own; listed for the features used).
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+# PROPFIND answers (no DTDs, see `remote::dav_xml`); the version the lock
+# already has.
+quick-xml = "0.42.0"
+# Paths in WebDAV URLs and hrefs.
+percent-encoding = "2.3.2"
+# The mirror's version token of a folder copy and the pinned certificate's
+# fingerprint; the version the core already uses.
+sha2 = "0.11.0"
 
 # Desktop only (Windows, Linux, macOS): everything the phone has no use for –
 # browser bridge, terminal UI, tray, single instance, updater, the website
-# icon fetcher and the leaked-password check (both need TLS: no reqwest on
-# the phone, its rustls platform verifier would need JNI set-up there and
-# the phone has no INTERNET permission anyway).
+# icon fetcher and the leaked-password check (the phone's only network use
+# is the server sync, whose client `remote::tls` builds; no other reqwest
+# client on the phone – its rustls platform verifier would need JNI set-up
+# there).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 keystead-bridge = { path = "../../../crates/keystead-bridge" }
 keystead-tui = { path = "../../../crates/keystead-tui" }
@@ -58,18 +81,19 @@ tauri-plugin-process = "2"
 # `rustls-no-provider` → ring is installed as the process default first (as
 # the plugin does).
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# The server sync's certificate check on the desktop (`remote::tls`): the
+# system's trust store, as reqwest itself uses it.
+rustls-platform-verifier = "0.7.1"
 # The icon fetcher reads the system/environment proxy settings with the same
 # matcher reqwest uses (`system-proxy` above) – to skip sites a proxy would
 # handle instead of going around it. Already compiled for reqwest.
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
-http = "1"
 # Website icons: decoders for what sites serve as favicons (no SVG); resized
 # to 64×64 and stored as PNG. `png` is already compiled for Tauri.
 image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp"] }
 # The icon fetcher's DNS lookup, parallel downloads and per-site deadline
 # (tokio is Tauri's runtime; listed for the features used directly).
 tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 time = { version = "0.3", features = ["formatting"] }
 # Opens websites and the data folder with the system handler (ShellExecuteW
@@ -99,6 +123,9 @@ tauri-plugin-opener = "2"
 # (Its iOS side has no cipher, only pass/fail: not used there.)
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-biometric = "2.5"
+# The server sync's trust anchors on the phone (`remote::tls`): Mozilla's
+# root store, compiled in – no JNI set-up for the platform verifier.
+webpki-roots = "1.0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Probe for the AppIndicator library before creating the tray icon.
@@ -120,3 +147,5 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Certificates of the in-process WebDAV test server (`remote::test_server`).
+rcgen = "0.14.10"
