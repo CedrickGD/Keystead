@@ -51,7 +51,7 @@ import { useToast } from "../../components/Toasts";
 import { useConfirm } from "../../components/Confirm";
 import { Button, Segmented, Select, Switch } from "../../components/Controls";
 import { useOpenImport } from "../../components/import/ImportDialog";
-import { extensionDownloadUrl, releasesUrl } from "../../lib/links";
+import { RELEASES_URL, extensionDownloadUrl, releasesUrl } from "../../lib/links";
 import { isPhonePlatform } from "../../lib/phone";
 import { clearRecoveryUnconfirmed } from "../../lib/recoveryMarker";
 import { Logo } from "../../components/Logo";
@@ -1077,6 +1077,7 @@ function AboutSection() {
   const { info, settings, updateSettings } = useApp();
   const update = useUpdate();
   const updateErrorText = useUpdateErrorText();
+  const copy = useCopy();
   const channelId = useId();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -1156,6 +1157,27 @@ function AboutSection() {
               ]}
               className="setting-select"
             />
+          </SettingRow>
+          <SettingRow
+            title={t("update.manualTitle")}
+            description={
+              <>
+                {t("update.manualDesc")} <code className="path selectable">{RELEASES_URL}</code>
+              </>
+            }
+          >
+            <div className="setting-actions">
+              <Button variant="secondary" icon={<ExternalLink />} onClick={() => openExternal(RELEASES_URL)}>
+                {t("update.openReleases")}
+              </Button>
+              <Button
+                variant="ghost"
+                icon={<Copy />}
+                onClick={() => void copy(RELEASES_URL, { label: t("update.releasesLink"), sensitive: false })}
+              >
+                {t("common.copy")}
+              </Button>
+            </div>
           </SettingRow>
         </>
       )}

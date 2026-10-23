@@ -1084,4 +1084,8 @@ export const en: Record<MessageKey, string> = {
   "update.channelDesc": "Beta versions get new features sooner; stable versions come less often.",
   "update.channelBeta": "Beta versions",
   "update.channelStable": "Stable versions only",
+  "update.manualTitle": "Download manually",
+  "update.manualDesc": "If the update check cannot get through (for example because Keystead's connection to GitHub is blocked): the setup, the portable ZIP and the browser extension are on the releases page.",
+  "update.openReleases": "Open releases on GitHub",
+  "update.releasesLink": "Release link",
 };

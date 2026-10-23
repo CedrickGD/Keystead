@@ -1530,6 +1530,14 @@ code {
   line-height: 1.5;
 }
 
+/* Two or more controls side by side in a setting row (e.g. open + copy). */
+.setting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .setting-control {
   flex: none;
   display: flex;
