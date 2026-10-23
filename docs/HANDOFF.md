@@ -960,6 +960,19 @@ Stufe 2a in 8 und 9):
     nach einer beim Entsperren abgelehnten Kopie bis zum nächsten Sync
     weiter „Updated“ (das Ergebnis des Syncs, nicht des Entsperrens).
 
+12. **Beta zum Testen am Handy** (2026-10-23, Branch `claude/beta-phone`,
+    auf Wunsch des Besitzers): `claude/mobile-android` mit `claude/generator`
+    und `claude/releases-link` (PR #13) zusammengeführt und mit `[release]`
+    als Beta veröffentlicht (APK + Windows + Erweiterung). Konflikte:
+    Einstellungen (Spiegel/Fingerabdruck und Generator-Vorlagen – Speichern
+    über `change_settings`, `from_the_page` behält `deviceUnlock` und die
+    Vorlagen), Befehlsliste (`#[cfg(desktop)]` für die Generator-Befehle),
+    Einstellungsseite (Releases-Knopf: Handy eigener, PC „Manuell
+    herunterladen“), Doku. Geprüft: fmt, clippy (Windows + aarch64-Android),
+    `cargo test --workspace`, `node --test` (95/95), `tsc`, `npm run build`.
+    `main` und die drei Feature-Branches sind unverändert; PR #13 ist
+    weiterhin offen.
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
