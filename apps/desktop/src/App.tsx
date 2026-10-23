@@ -21,6 +21,8 @@ import { BreachesProvider } from "./state/breaches";
 import { FolderSyncProvider } from "./state/sync";
 import { DeviceUnlockProvider, skipNextAutoPrompt } from "./state/deviceUnlock";
 import { MirrorProvider } from "./state/mirror";
+import { SyncConflictsProvider } from "./state/syncConflicts";
+import { FolderOfferHost } from "./components/FolderOfferDialog";
 import { PairingModal } from "./screens/PairingModal";
 import { FileDropProvider } from "./components/import/FileDrop";
 import { isPhonePlatform, useKeepFocusedFieldVisible, usePhoneLayout } from "./lib/phone";
@@ -341,20 +343,25 @@ function AppRoot({
       <div className="app-frame">
         {/* New versions: above the main window and the unlock screen. The phone has no in-app updates. */}
         {!mobile && (screen === "main" || screen === "unlock") && <UpdateBanner />}
-        {/* A new recovery key that was never confirmed as stored (lost to a lock / reload). */}
-        {!ctx.info.readOnly && screen === "main" && vault && <RecoveryReminder key={vault.id} />}
+        {/* A new recovery key that was never confirmed as stored (lost to a lock / reload); recovery keys are PC-only. */}
+        {!mobile && screen === "main" && vault && <RecoveryReminder key={vault.id} />}
         <div className="app-frame-body">
           {screen === "welcome" && <WelcomeScreen />}
           {screen === "unlock" && <UnlockScreen focusSignal={unlockFocus} />}
           {screen === "main" && vault && (
             <IconsProvider key={vault.id}>
               <BreachesProvider key={vault.id}>
-                <MainScreen key={vault.id} />
+                {/* Both platforms: a sync conflict of the open vault asks which state counts. */}
+                <SyncConflictsProvider key={vault.id}>
+                  <MainScreen key={vault.id} />
+                </SyncConflictsProvider>
               </BreachesProvider>
             </IconsProvider>
           )}
         </div>
       </div>
+      {/* Desktop: a new vault in the cloud folder (e.g. made on the phone) – taken only when the user says so. */}
+      {!mobile && (screen === "main" || screen === "unlock") && !currentPairing && <FolderOfferHost />}
       {currentPairing && (
         <PairingModal
           key={currentPairing.requestId}

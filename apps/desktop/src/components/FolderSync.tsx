@@ -1,14 +1,17 @@
 // Building blocks of the phone's cloud-folder sync UI ("Cloud-folder sync
 // (phone)" in docs/ARCHITECTURE.md): the way a vault reaches the phone, the
-// status line of the unlock screen and the per-vault results. The state and
-// actions come from `useFolderSync()` (state/sync.tsx).
+// status line of the unlock screen, the per-vault results and the prompt to
+// pick a read-only linked folder again (stage 2b: the phone writes its
+// changes back). The state and actions come from `useFolderSync()`
+// (state/sync.tsx).
 
 import { useCallback, useEffect, useState } from "react";
-import { CloudOff, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
+import { CloudOff, FolderOpen, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
 import { ApiError } from "../lib/api";
 import type { FolderStatus, SyncFileResult } from "../lib/types";
 import { useT, type MessageKey } from "../i18n";
 import { useFolderSync } from "../state/sync";
+import { Button } from "./Controls";
 
 /** The text of an error code the sync recorded (`lastError`, a file's `error`). */
 export function useSyncErrorText(): (code: string) => string {
@@ -44,9 +47,60 @@ export function useRelativeTimeTick(active: boolean): void {
   }, [active]);
 }
 
+/** The outcomes after which the phone has a usable copy of the vault. */
+export const USABLE_OUTCOMES: readonly SyncFileResult["outcome"][] = [
+  "imported",
+  "updated",
+  "upToDate",
+  "pcOlder",
+  "missing",
+  "pushed",
+  "conflict",
+  "notWritable",
+  "localOnly",
+];
+
 /** Whether the phone has a usable copy of this file's vault. */
 export function isUsable(file: SyncFileResult): boolean {
-  return ["imported", "updated", "upToDate", "pcOlder", "missing"].includes(file.outcome);
+  return USABLE_OUTCOMES.includes(file.outcome);
+}
+
+/** A folder is linked, but only for reading: the phone's changes do not reach the PC. */
+export function needsRelink(status: FolderStatus | null): boolean {
+  return status?.linked === true && !status.writable && !folderLost(status);
+}
+
+/**
+ * Linked read-only (a link from before stage 2b, or the cloud app granted
+ * no write access): the phone's changes stay on the phone until the folder
+ * is picked again – the system picker opens at the linked folder.
+ */
+export function RelinkBanner() {
+  const { t } = useT();
+  const folderSync = useFolderSync();
+  if (!folderSync || !needsRelink(folderSync.status)) return null;
+  const { busy, link } = folderSync;
+  return (
+    <div className="callout callout-warning relink-banner" role="status">
+      <TriangleAlert />
+      <div className="relink-banner-body">
+        <strong>{t("sync.relink.title")}</strong>
+        <span>{t("sync.relink.text")}</span>
+        <div>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<FolderOpen />}
+            loading={busy === "link"}
+            disabled={busy !== null && busy !== "link"}
+            onClick={() => void link()}
+          >
+            {t("sync.relink.button")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** The status's lost-folder error (the user has to pick the folder again). */
@@ -154,6 +208,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
         </button>
       </div>
       {selected?.outcome === "pcOlder" && <p className="sync-line-note">{t("sync.pcOlderHint")}</p>}
+      {needsRelink(status) && <p className="sync-line-note">{t("sync.relink.short")}</p>}
     </div>
   );
 }

@@ -105,6 +105,18 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.mirror_remote_gone":
     "This vault's copy was removed from the cloud folder. Keystead does not put it back on its own – choose the folder again to have it written.",
   "error.input.vault_exists": "This vault already exists on this PC.",
+  "error.unsupported.sync_write_unverified":
+    "The copy in the cloud folder did not read back correctly after writing. Keystead tries again with the next sync – your changes stay on the phone.",
+  "error.unsupported.sync_name_taken":
+    "The cloud app created the vault file under another name. Keystead wrote nothing – check the folder in the cloud app.",
+  "error.unsupported.sync_not_writable":
+    "Keystead may not write to the cloud folder. Pick the folder again and tap “Allow”.",
+  "error.unsupported.sync_local_changed":
+    "The vault was just changed on the phone. Keystead compares it again with the next sync.",
+  "error.unsupported.sync_conflict_password":
+    "This state still has the old master password and cannot be kept. Take the other state.",
+  "error.unsupported.sync_conflict_changed":
+    "The vault changed once more meanwhile. Keystead has checked it again.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -170,10 +182,13 @@ export const en: Record<MessageKey, string> = {
   "welcome.featBrowser": "Browser integration",
   "welcome.featBrowserDesc": "Fill logins right in Chrome, Edge or Brave.",
   "welcome.defaultVaultName": "Personal",
-  "welcome.phoneSubtitle": "Your password vault from your PC – encrypted and at hand on the go.",
+  "welcome.phoneSubtitle": "Your password vault – encrypted and at hand on the go.",
   "welcome.phoneFeatLocalDesc": "No Keystead server, no account – the app does not even have internet access.",
-  "welcome.phoneFeatLookup": "Look up & copy",
-  "welcome.phoneFeatLookupDesc": "Passwords, 2FA codes and notes at hand – editing happens on your PC.",
+  "welcome.phoneFeatLookup": "Look up, copy, edit",
+  "welcome.phoneFeatLookupDesc": "Passwords, 2FA codes and notes at hand – changes reach your PC through the cloud folder.",
+  "welcome.or": "or",
+  "welcome.phoneCreateTitle": "Create a new vault",
+  "welcome.phoneCreateDesc": "Right here on the phone – with a cloud folder it reaches your PC later too.",
 
   "wizard.stepVault": "Vault",
   "wizard.stepImport": "Import",
@@ -193,6 +208,9 @@ export const en: Record<MessageKey, string> = {
   "wizard.nameRequired": "Please enter a name.",
   "wizard.noRecoveryTitle": "Remember your master password.",
   "wizard.noRecoveryText": "It is not stored anywhere and cannot be reset. Without it or a recovery key, your data is lost.",
+  "wizard.noRecoveryTextPhone": "It is not stored anywhere and cannot be reset. You can create a recovery key later on your PC.",
+  "wizard.phoneLocalNote":
+    "The vault is on this phone only at first. Once a cloud folder is linked, Keystead writes it there – your PC then asks whether to take it.",
   "wizard.createButton": "Create vault",
   "wizard.createdTitle": "Your vault is ready",
   "wizard.createdDesc": "Now set up a safeguard for emergencies.",
@@ -866,9 +884,9 @@ export const en: Record<MessageKey, string> = {
   "settings.securityDescPhone": "Auto-lock, fingerprint and clipboard. Change the master password and recovery on your PC.",
   "settings.sync": "Sync",
   "settings.syncShort": "Sync",
-  "settings.syncDesc": "Your vaults come to this phone from a folder of your own cloud – in this direction only. Keystead changes nothing there.",
+  "settings.syncDesc": "Your vaults come to this phone through a folder of your own cloud – and your changes on the phone go back to the PC the same way.",
   "settings.syncFolder": "Cloud folder",
-  "settings.syncFolderDesc": "Keystead reads this folder at start, when you return to the app (at most once a minute) and when you ask it to.",
+  "settings.syncFolderDesc": "Keystead syncs with this folder at start, when you return to the app (at most once a minute), after every change and when you ask it to.",
   "settings.syncLast": "Last sync",
   "settings.syncVaults": "Vaults in the folder",
   "settings.syncNoFiles": "There is no vault in the folder.",
@@ -878,7 +896,7 @@ export const en: Record<MessageKey, string> = {
   "sync.stepCloudApp": "On your phone: install the Nextcloud or OneDrive app and sign in.",
   "sync.stepPhone": "Here: tap “Choose cloud folder” and pick that same folder through the cloud app – then “Use this folder” and “Allow”.",
   "sync.pickFolder": "Choose cloud folder",
-  "sync.readOnlyNote": "Keystead only reads the folder – it changes nothing there and connects to no server. Your cloud app does the transfer.",
+  "sync.folderNote": "Keystead writes only its own encrypted vault files to the folder and connects to no server. Your cloud app does the transfer.",
   "sync.linkedEmptyTitle": "No vault in the folder “{folder}” yet",
   "sync.linkedEmptyText": "Check on your PC that “Keep a copy in a cloud folder up to date” uses exactly this folder and that the cloud app has uploaded the file. Then tap “Sync now”.",
   "sync.linkedEmpty": "Folder “{folder}” linked – there is no vault in it yet.",
@@ -922,16 +940,60 @@ export const en: Record<MessageKey, string> = {
   "sync.attachmentsFailed_one": "{n} attachment missing",
   "sync.attachmentsFailed_other": "{n} attachments missing",
   "sync.passwordChanged": "Master password changed on the PC",
+  "sync.relink.title": "Changes do not reach your PC yet",
+  "sync.relink.text":
+    "For changes to reach your PC, pick the folder once more and tap “Allow” – so far Keystead may only read it. Until then your changes stay on the phone.",
+  "sync.relink.button": "Pick folder again",
+  "sync.relink.short": "Changes do not reach your PC yet – pick the folder again in the settings.",
+  "sync.relink.toast": "Saved on the phone only – it does not reach your PC yet.",
+  "sync.relink.toastAction": "Pick folder",
+  "sync.conflict.title": "Changed on the PC and on the phone",
+  "sync.conflict.text":
+    "The vault “{name}” was changed on the PC and on the phone since they last synced. Which state should count?",
+  "sync.conflict.pcState": "PC's state",
+  "sync.conflict.phoneState": "Phone's state",
+  "sync.conflict.thisDevice": "this device",
+  "sync.conflict.changed": "Changed {when}",
+  "sync.conflict.version": "Version {n}",
+  "sync.conflict.takePc": "Take the PC's state",
+  "sync.conflict.keepPc": "Keep the PC's state",
+  "sync.conflict.takePhone": "Take the phone's state",
+  "sync.conflict.keepPhone": "Keep the phone's state",
+  "sync.conflict.later": "Later",
+  "sync.conflict.passwordChangedPhone":
+    "The master password was changed on the PC. The phone's state still has the old password and cannot be kept.",
+  "sync.conflict.passwordChangedPc":
+    "The copy in the cloud folder has another master password. This PC's state cannot be kept.",
+  "sync.conflict.lostAttachments_one":
+    "If you take the phone's state, {n} attachment that only the PC has is missing afterwards. The file stays with the conflict copy.",
+  "sync.conflict.lostAttachments_other":
+    "If you take the phone's state, {n} attachments that only the PC has are missing afterwards. The files stay with the conflict copy.",
+  "sync.conflict.copyNotePhone":
+    "Nothing is lost: the other state stays on this phone as a conflict copy (not in the cloud folder). It can be restored through “Import” – which only exists on the PC.",
+  "sync.conflict.copyNotePc":
+    "Nothing is lost: the other state stays on this PC as a conflict copy (data folder, subfolder “conflicts”). Get entries back from it through Settings → Import.",
+  "sync.offer.title": "New vault in the cloud folder – take it?",
+  "sync.offer.text":
+    "This vault is not on this PC yet – for example because you created it on the phone. If you take it, it appears in the vault list; you open it with its own master password.",
+  "sync.offer.dismissNote": "“Don't take”: Keystead stops asking about this vault. The file stays in the folder.",
+  "sync.offer.changed": "Changed {when}",
+  "sync.offer.adopt": "Take",
+  "sync.offer.dismiss": "Don't take",
+  "sync.offer.adopted": "“{name}” is now on this PC – unlock it with its master password.",
+  "sync.offer.dismissed": "“{name}” will not be taken.",
+  "sync.offer.listTitle": "New vaults in the cloud folder",
+  "sync.offer.listDesc": "These vaults are in the folder but not on this PC yet (e.g. created on the phone).",
   "settings.phone": "Phone",
   "settings.phoneShort": "Phone",
   "settings.phoneDesc": "Your vaults in the Android app – through a folder of your own cloud. Keystead itself connects to no server for it.",
   "mirror.title": "Keep a copy in a cloud folder up to date",
   "mirror.desc":
-    "Keystead puts every vault you open here, encrypted, into a folder of your choice and updates it after every save. The Nextcloud or OneDrive app uploads it, the Android app takes it from there.",
+    "Keystead puts every vault you open here, encrypted, into a folder of your choice and updates it after every save. The Nextcloud or OneDrive app uploads it, the Android app takes it from there – and Keystead takes the phone's changes from there.",
   "mirror.folder": "Cloud folder",
   "mirror.changeFolder": "Change folder",
   "mirror.pickTitle": "Choose a folder in your cloud for the vault copies",
   "mirror.lastCopied": "Last updated {when}",
+  "mirror.lastPulled": "Last took changes from the phone {when}",
   "mirror.noCopyYet": "Nothing copied since the start – that happens when a vault is opened and after every save.",
   "mirror.enabledToast": "Keystead now keeps a copy up to date in “{folder}”.",
   "mirror.disabledToast": "Cloud-folder copy turned off – the files in the folder stay where they are.",
@@ -945,7 +1007,7 @@ export const en: Record<MessageKey, string> = {
   "mirror.step3Text":
     "Install the Android app (the APK from the releases), tap “Choose cloud folder” and pick the same folder through the cloud app – then “Use this folder” and “Allow”. From then on the phone fetches every new version itself.",
   "mirror.privacy":
-    "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud provider sees the vault name, revision and modification time, never the content – without your master password nobody opens the files. The phone only reads; you keep editing here.",
+    "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud provider sees the vault name, revision and modification time, never the content – without your master password nobody opens the files. You can edit here and on the phone; if a vault was changed on both, Keystead asks which state counts.",
   "settings.autoLock": "Lock automatically",
   "settings.autoLockDesc": "The vault locks after this much time without activity.",
   "settings.lockInBackground": "Lock in the background",

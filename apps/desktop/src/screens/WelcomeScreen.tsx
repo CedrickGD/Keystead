@@ -12,6 +12,7 @@ import {
   LifeBuoy,
   MonitorSmartphone,
   Plug,
+  Plus,
   Puzzle,
   RefreshCw,
   TriangleAlert,
@@ -27,6 +28,7 @@ import { RecoveryKeyReveal } from "../components/RecoveryKey";
 import { ImportFlow } from "../components/import/ImportFlow";
 import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
+import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
 import { SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
@@ -45,8 +47,12 @@ export function WelcomeScreen() {
   const [mode, setMode] = useState<Mode>("choose");
   const firstRun = vaults.length === 0;
 
-  // The read-only phone cannot create a vault (no `create_vault` there).
-  if (info.readOnly) return <PhoneWelcome />;
+  // The phone: get the vault from the cloud folder, or create one there
+  // (no import and no recovery key on the phone – both PC-only).
+  if (isPhonePlatform(info.platform)) {
+    if (mode !== "choose") return <CreateVaultWizard withImport={false} phone onBack={() => setMode("choose")} />;
+    return <PhoneWelcome onCreate={() => setMode("create")} />;
+  }
 
   if (mode !== "choose") {
     return <CreateVaultWizard withImport={mode === "import"} onBack={() => setMode("choose")} />;
@@ -119,26 +125,50 @@ export function WelcomeScreen() {
 }
 
 /**
- * The phone without a vault: what the app is, and how a vault gets here –
- * the cloud-folder sync (docs/ARCHITECTURE.md, "Cloud-folder sync
- * (phone)"): the PC keeps a copy in a folder of the user's own cloud, the
- * phone links that folder in the system picker. Once a vault has arrived
- * the app moves on to the unlock screen (App.tsx).
+ * The phone's welcome (no vault yet, or "Neuen Tresor erstellen" on the
+ * unlock screen): what the app is, and the two ways to a vault – the
+ * cloud-folder sync (docs/ARCHITECTURE.md, "Cloud-folder sync (phone)": the
+ * PC keeps a copy in a folder of the user's own cloud, the phone links that
+ * folder in the system picker) or a new vault made here (local only until
+ * a folder is linked; the PC asks before it takes it). Once a vault has
+ * arrived the app moves on to the unlock screen (App.tsx).
  */
-function PhoneWelcome() {
+function PhoneWelcome({ onCreate }: { onCreate: () => void }) {
   const { t } = useT();
+  const { vaults, showUnlock } = useApp();
+  const firstRun = vaults.length === 0;
   return (
     <div className="auth-screen">
       <div className="welcome phone-welcome">
+        {!firstRun && (
+          <button type="button" className="btn btn-ghost btn-sm welcome-back" onClick={showUnlock}>
+            <ArrowLeft />
+            {t("welcome.backToUnlock")}
+          </button>
+        )}
         <div className="welcome-hero">
           <Logo size={64} title="Keystead" />
-          <h1>{t("welcome.title")}</h1>
+          <h1>{firstRun ? t("welcome.title") : t("welcome.titleAnother")}</h1>
           <p>{t("welcome.phoneSubtitle")}</p>
         </div>
 
         <section className="welcome-slot sync-slot" data-slot="vault-source" aria-labelledby="welcome-slot-title">
           <PhoneVaultSource />
         </section>
+
+        <div className="welcome-or" aria-hidden>
+          <span>{t("welcome.or")}</span>
+        </div>
+        <button type="button" className="choice-card" onClick={onCreate}>
+          <span className="choice-icon">
+            <Plus />
+          </span>
+          <span className="choice-text">
+            <span className="choice-title">{t("welcome.phoneCreateTitle")}</span>
+            <span className="choice-desc">{t("welcome.phoneCreateDesc")}</span>
+          </span>
+          <ChevronRight className="choice-chevron" />
+        </button>
 
         <ul className="welcome-features">
           <li>
@@ -244,7 +274,7 @@ function PhoneVaultSource() {
           </Button>
         </>
       )}
-      <p className="subtle sync-note">{t("sync.readOnlyNote")}</p>
+      <p className="subtle sync-note">{t("sync.folderNote")}</p>
     </>
   );
 }
@@ -265,7 +295,11 @@ function Stepper({ steps, current }: { steps: { id: Step; label: string }[]; cur
   );
 }
 
-function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack: () => void }) {
+/**
+ * `phone`: only the vault step – no recovery key (PC-only) and no browser
+ * extension; the new vault opens right away.
+ */
+function CreateVaultWizard({ withImport, phone = false, onBack }: { withImport: boolean; phone?: boolean; onBack: () => void }) {
   const { t } = useT();
   const { vaults, enterVault } = useApp();
   const [step, setStep] = useState<Step>("vault");
@@ -277,7 +311,7 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
   const steps: { id: Step; label: string }[] = [
     { id: "vault", label: t("wizard.stepVault") },
     ...(withImport ? [{ id: "import" as Step, label: t("wizard.stepImport") }] : []),
-    { id: "recovery", label: t("wizard.stepRecovery") },
+    ...(phone ? [] : [{ id: "recovery" as Step, label: t("wizard.stepRecovery") }]),
   ];
 
   // "Anleitung" on the last step: Settings → Browser-Integration once the vault opens.
@@ -300,7 +334,7 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
           ) : (
             <span style={{ width: 32 }} />
           )}
-          <Stepper steps={steps} current={step} />
+          {steps.length > 1 ? <Stepper steps={steps} current={step} /> : <span />}
           <span style={{ width: 32 }} />
         </div>
 
@@ -308,7 +342,12 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
           <CreateVaultStep
             withImport={withImport}
             firstRun={vaults.length === 0}
+            phone={phone}
             onCreated={(info) => {
+              if (phone) {
+                enterVault(info);
+                return;
+              }
               setCreated(info);
               setStep(withImport ? "import" : "recovery");
             }}
@@ -336,14 +375,17 @@ function CreateVaultWizard({ withImport, onBack }: { withImport: boolean; onBack
 function CreateVaultStep({
   withImport,
   firstRun,
+  phone,
   onCreated,
 }: {
   withImport: boolean;
   firstRun: boolean;
+  /** The phone: no website icons (no network), the recovery key comes later on the PC. */
+  phone: boolean;
   onCreated: (info: VaultInfo) => void;
 }) {
   const { t, errorText } = useT();
-  const { settings, updateSettings } = useApp();
+  const { settings, updateSettings, phoneLayout } = useApp();
   const nameId = useId();
   const iconsId = useId();
   const [name, setName] = useState(firstRun ? t("welcome.defaultVaultName") : "");
@@ -366,7 +408,7 @@ function CreateVaultStep({
       if (masterPasswordProblem(master, finalStrength)) return;
       // Saved before the vault exists: an import in the next step starts the
       // icon fetcher ~2 s after it finishes. A failed save toasts; stay here.
-      if (firstRun && websiteIcons !== settings.websiteIcons && !(await updateSettings({ websiteIcons }))) return;
+      if (firstRun && !phone && websiteIcons !== settings.websiteIcons && !(await updateSettings({ websiteIcons }))) return;
       const info = await api.createVault(name.trim(), master.password);
       onCreated(info);
     } catch (err) {
@@ -391,7 +433,7 @@ function CreateVaultStep({
           placeholder={t("wizard.vaultNamePlaceholder")}
           onChange={(e) => setName(e.target.value)}
           maxLength={80}
-          autoFocus
+          autoFocus={!phoneLayout}
         />
       </Field>
 
@@ -406,11 +448,18 @@ function CreateVaultStep({
       <div className="callout callout-warning">
         <TriangleAlert />
         <span>
-          <strong>{t("wizard.noRecoveryTitle")}</strong> {t("wizard.noRecoveryText")}
+          <strong>{t("wizard.noRecoveryTitle")}</strong> {phone ? t("wizard.noRecoveryTextPhone") : t("wizard.noRecoveryText")}
         </span>
       </div>
 
-      {firstRun && (
+      {phone && (
+        <div className="callout callout-info">
+          <MonitorSmartphone />
+          <span>{t("wizard.phoneLocalNote")}</span>
+        </div>
+      )}
+
+      {firstRun && !phone && (
         <div className="wizard-setting">
           <SettingRow title={t("settings.websiteIcons")} description={t("wizard.websiteIconsHint")} htmlFor={iconsId}>
             <Switch id={iconsId} checked={websiteIcons} onChange={setWebsiteIcons} label={t("settings.websiteIcons")} />

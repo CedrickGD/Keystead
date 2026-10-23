@@ -1,6 +1,8 @@
 // The phone's cloud-folder sync on the UI side ("Cloud-folder sync (phone)"
 // in docs/ARCHITECTURE.md): the status (`folder_status`, `sync://status`)
-// and the three actions with their toasts. Only on the phone platform – the
+// and the three actions with their toasts; once per app start a hint when
+// an edit could not reach the folder because it is linked read-only
+// (outcome `notWritable`). Only on the phone platform – the
 // desktop has none of these commands; there `useFolderSync()` is null.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -39,7 +41,13 @@ function changedVaults(status: FolderStatus): number {
 
 /** Vault files the phone can use (everything that is not skipped or failed). */
 function usableVaults(status: FolderStatus): number {
-  return status.files.filter((f) => ["imported", "updated", "upToDate", "pcOlder"].includes(f.outcome)).length;
+  const usable = ["imported", "updated", "upToDate", "pcOlder", "pushed", "conflict", "notWritable", "localOnly"];
+  return status.files.filter((f) => usable.includes(f.outcome)).length;
+}
+
+/** A change of the phone was not written: the folder is linked read-only. */
+function blockedByReadOnlyLink(status: FolderStatus): boolean {
+  return status.linked && !status.writable && status.files.some((f) => f.outcome === "notWritable");
 }
 
 /**
@@ -63,6 +71,24 @@ export function FolderSyncProvider({
   // One subscription for the provider's life; `onStatus` may change meanwhile.
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  // The read-only hint: once per app start (the banner in the settings stays).
+  const relinkHinted = useRef(false);
+  const relinkRef = useRef<() => void>(() => undefined);
+  const hintRelink = useCallback(
+    (s: FolderStatus) => {
+      if (relinkHinted.current || s.syncing || !blockedByReadOnlyLink(s)) return;
+      relinkHinted.current = true;
+      toast.show({
+        kind: "info",
+        message: t("sync.relink.toast"),
+        duration: 10_000,
+        action: { label: t("sync.relink.toastAction"), onClick: () => relinkRef.current() },
+      });
+    },
+    [t, toast],
+  );
+  const hintRelinkRef = useRef(hintRelink);
+  hintRelinkRef.current = hintRelink;
 
   // The first status is fetched once the listener is registered: the sync at
   // start runs while the page boots, and its only event could otherwise fall
@@ -78,6 +104,7 @@ export function FolderSyncProvider({
       heard = true;
       setStatus(s);
       onStatusRef.current(s);
+      hintRelinkRef.current(s);
     });
     void subscription
       .catch(() => undefined)
@@ -148,6 +175,8 @@ export function FolderSyncProvider({
       setBusy(null);
     }
   }, [confirm, errorText, onStatus, t, toast]);
+
+  relinkRef.current = () => void link();
 
   const value = useMemo<FolderSyncApi | null>(
     () => (enabled ? { status, busy, link, sync, unlink } : null),

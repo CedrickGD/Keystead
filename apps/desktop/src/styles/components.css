@@ -1364,3 +1364,141 @@ mark {
 .chip-select svg:last-child {
   right: 8px;
 }
+
+/* ---------- Sync conflict and folder offer dialogs (stage 2b) ---------- */
+
+.conflict-sides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+:root[data-layout="phone"] .conflict-sides {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.conflict-side {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.conflict-side-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--text-2);
+}
+
+.conflict-side-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.conflict-side-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conflict-side-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.conflict-side-meta {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.conflict-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.offer-vault {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.offer-vault-name {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.offer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.offer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.offer-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.offer-row-text strong {
+  color: var(--text);
+}
+
+.offer-row-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.modal.conflict-dialog {
+  width: min(600px, 100%);
+}
+
+.conflict-dialog .modal-footer {
+  flex-wrap: wrap;
+}
+
+/* "Später" apart from the two choices. */
+.conflict-dialog .modal-footer .conflict-later {
+  margin-right: auto;
+}
+
+/* Phone: the choices one below the other, "Später" last. */
+:root[data-layout="phone"] .conflict-dialog .modal-footer {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+:root[data-layout="phone"] .conflict-dialog .modal-footer .conflict-later {
+  order: 1;
+  margin-right: 0;
+}

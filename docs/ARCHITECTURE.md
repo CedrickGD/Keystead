@@ -15,7 +15,7 @@ icons"), and – only when the user presses the button, never on its own – to
 check passwords against Have I Been Pwned, where just the first 5 hex
 characters of a password's SHA-1 leave the device (see "Leaked-password
 check").
-The Android app (read-only in its first stages, see "Mobile (Android)") has
+The Android app (read-only in its first stages, editing since stage 2b – see "Mobile (Android)") has
 no network permission at all: it reads encrypted vault copies from a
 folder of the user's own cloud that the user links through the system
 picker – the cloud's own app (Nextcloud, OneDrive) does the transfer, and
@@ -199,7 +199,7 @@ folder and copies them in, and writes the vault files it changed back
 | Read-only app | 1a (E4) | only the read commands and the phone's own were registered; since 2b the phone edits (`AppInfo.readOnly` false, `attachmentsReadOnly` true) | "Commands" below; "On the phone" under "Desktop backend ↔ frontend" |
 | Background lock, clipboard | 1a (E3) | lock after `lockInBackgroundSeconds` away (default 60 s); copied secrets cleared without reading the clipboard | "Lifecycle", "Clipboard" under "Android project"; "Background lock (phone)" |
 | Android project, APK | 1a (E1, E2, E8–E10) | committed `gen/android`, no permission, no backup, `FLAG_SECURE`, back gesture; signed APK and gates in CI | "Android project", "Build, CI and signing" |
-| Phone layout | 1b | one column, drawer, detail stacked over the list, back gesture, read-only and desktop-only gates | "Phone layout" |
+| Phone layout | 1b, 2b | one column, drawer, detail stacked over the list, back gesture, desktop-only gates; since 2b the editor, a new vault, the conflict dialog and the re-link prompt | "Phone layout" |
 | Fingerprint unlock | 1b (E5) | opt-in, default off; the master KEK sealed by the Android Keystore, no PIN/pattern fallback | "Fingerprint unlock (phone)" |
 | Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
@@ -266,8 +266,8 @@ folder and copies them in, and writes the vault files it changed back
   the lists and that paragraph in step); every other command is unknown to
   the phone's invoke handler. `app_info` answers `platform: "android"`,
   `readOnly: false`, `attachmentsReadOnly: true`, `extensionId: null`,
-  `portable: false`. (The phone UI still gates editing on `readOnly`/the
-  platform until its stage-2b package.)
+  `portable: false`. The phone UI hides only what stays PC-only ("Editing
+  on the phone (stage 2b)" under "Phone layout").
 * **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
   (default 60, `0` = at once, `null` = never; Settings → "Sperren im
   Hintergrund": Sofort / 1 min / 5 min / Nie, a row shown only on
@@ -521,10 +521,18 @@ folder and copies them in, and writes the vault files it changed back
     folder; on the phone: that same folder through the cloud app) and offers
     "Cloud-Ordner wählen"; the unlock screen has a sync status line (last
     sync, "Jetzt synchronisieren", a lost folder); Settings →
-    "Synchronisierung" (phone only): folder, last sync, per-vault result,
+    "Synchronisierung" (phone only): folder, last sync, per-vault result
+    (also the 2b outcomes `pushed`, `conflict`, `notWritable`, `localOnly`),
     "Jetzt synchronisieren", "Ordner ändern", "Verbindung trennen" (the
-    copies stay). The mock (`?platform=android`) simulates it (see "Mock"
-    below).
+    copies stay). A folder linked read-only (`linked && !writable`, e.g. a
+    link from before 2b) gets a banner at the top of that section ("Damit
+    Änderungen zum PC kommen, wähle den Ordner einmal neu", button "Ordner
+    erneut wählen" → `link_folder`, the picker opens at the linked folder),
+    a note under the unlock screen's sync line, and once per app start a
+    toast when a status reports an edit not written (`notWritable`) with
+    the same action. The welcome screen also offers "Neuen Tresor
+    erstellen" ("Phone layout"). The mock (`?platform=android`) simulates
+    it (see "Mock" below).
 * **Fingerprint unlock (phone)** – stage 1b, decision E5, opt-in
   (`Settings.deviceUnlock`, default off; `src-tauri/src/device_unlock.rs`:
   blobs and flows, platform-neutral and unit-tested on the desktop host;
@@ -653,8 +661,9 @@ folder and copies them in, and writes the vault files it changed back
   desktop window's minimum is 900 px); every phone rule is keyed on that
   attribute. `AppContext.phoneLayout` tells components. Three different
   questions, kept apart: the layout (`phoneLayout`), the platform
-  (`isPhonePlatform(info.platform)`: desktop-only features) and
-  `info.readOnly` (no editing).
+  (`isPhonePlatform(info.platform)`: desktop- and PC-only features) and
+  `info.readOnly` / `info.attachmentsReadOnly` (no editing – no platform
+  since 2b – / no attachment changes – the phone).
   * **Structure**: one column. The sidebar is a drawer (menu button in front
     of the search field and in the bar the pages – settings, security
     report, generator – get; scrim; closes on every choice, on Escape and
@@ -669,8 +678,8 @@ folder and copies them in, and writes the vault files it changed back
     `lib/layers.ts` routes it like Escape – the top layer (dialog, menu,
     drawer) closes first, even a dialog that cannot be dismissed consumes
     it; then the back handlers (`useBackHandler`, newest first). The main
-    screen's handler follows `phoneBackStep`: editor (narrow browser
-    preview only) → detail → clear the search → from a page or a filter to
+    screen's handler follows `phoneBackStep`: editor (leaves it; unsaved
+    changes ask first, like "Abbrechen") → detail → clear the search → from a page or a filter to
     "Alle Elemente" → not handled, so Android moves the app to the
     background. The unlock and welcome screens register nothing.
   * **Touch**: icon buttons, buttons, fields, menu items and drawer rows at
@@ -686,17 +695,29 @@ folder and copies them in, and writes the vault files it changed back
     width and sit above Android 13+'s own "copied" bubble. Nothing focuses a text field on its own (unlock screen, dialogs:
     the keyboard would cover the form); when the keyboard opens, the
     focused field is scrolled back into view.
-  * **Read-only** (`info.readOnly`): no "Neu", edit, favourite toggle (a
-    "Favorit" chip instead), trash / restore / delete, empty trash, folder
-    and tag management (empty folder/tag sections are left out), attachment
-    add / remove, generator (it keeps a history: `generate_password` is not
-    on the phone), import (also no drop target), master password, recovery
-    key, rename / delete vault, the recovery reminder, "Passwort vergessen?"
-    and "Neuen Tresor erstellen" on the unlock screen; the welcome screen
-    without a vault (`PhoneWelcome`) shows what the app is and, in its slot
-    `data-slot="vault-source"`, the way to a vault: "Tresor aus
-    Cloud-Ordner holen" ("Cloud-folder sync (phone)" → UI). Every write
-    action in `MainScreen.tsx` also returns early on `readOnly`.
+  * **Editing on the phone (stage 2b)**: `readOnly` is `false`, so the
+    phone has "Neu", the editor (stacked over the list like the detail,
+    with its own back step), favourite toggle, trash / restore / delete,
+    empty trash, folder and tag management, the generator (page and the
+    editor's popover) and renaming the vault. Attachments are view-only
+    (`attachmentsReadOnly`: preview, no add / remove, no "Speichern unter
+    …"). PC-only, gated on `isPhonePlatform`: master password, recovery key
+    and the recovery reminder, "Passwort vergessen?" (recovery unlock),
+    delete vault, import / export (no import launcher, no drop target).
+    The unlock screen offers "Neuen Tresor erstellen"; the welcome screen
+    (`PhoneWelcome`, also reached from there – then with "Zurück zum
+    Entsperren") shows what the app is, the way to a vault from the PC
+    ("Tresor aus Cloud-Ordner holen" in its slot
+    `data-slot="vault-source"`, "Cloud-folder sync (phone)" → UI) and,
+    after "oder", "Neuen Tresor erstellen": the create wizard with only the
+    vault step (no recovery-key step, no extension card, no website-icons
+    switch; a note that the vault stays on the phone until a folder is
+    linked and the PC then asks); the new vault opens at once. `readOnly`
+    still hides every editing control and every write action in
+    `MainScreen.tsx` returns early on it (no platform sets it any more).
+  * **Sync conflicts** (both platforms, `state/syncConflicts.tsx` mounted
+    with the open vault, `components/SyncConflictDialog.tsx`): see
+    "Conflict dialog" under "UI/UX principles".
   * **Desktop-only on the phone platform**: browser integration (settings
     section, pairing dialog), file drop (no `FileDropProvider`), import /
     export and advanced sections (data folder, portable mode, terminal),
@@ -706,7 +727,7 @@ folder and copies them in, and writes the vault files it changed back
     `pending_update`); About says "Android · Daten im App-Speicher" and
     offers "Releases auf GitHub öffnen" (`openExternal`; Android opens the
     browser – no permission needed).
-  * **Mock**: `?platform=android` (or `ios`) gives `readOnly` and the phone
+  * **Mock**: `?platform=android` (or `ios`) gives `attachmentsReadOnly` and the phone
     platform and refuses every command the phone does not register
     (`PHONE_COMMANDS` in `mock.ts`, like Tauri's "not found"), so a phone
     screen that still reaches a desktop command shows up in the console;
@@ -726,7 +747,13 @@ folder and copies them in, and writes the vault files it changed back
     fail; `simulateNewFingerprint()` invalidates every setup (reset at its
     next use), a synced password change resets that vault's setup;
     `?fingerprint=on` starts with "Privat" set up, `?fingerprint=none` /
-    `?fingerprint=notEnrolled` without a usable sensor. Narrow the
+    `?fingerprint=notEnrolled` without a usable sensor. Stage 2b: every
+    edit is "pushed" into a linked folder ~1 s later (outcome `pushed`),
+    a vault made on the phone stays local until a folder is linked;
+    `?sync=readonly` starts linked read-only (edits → `notWritable`, the
+    re-link banner and the one-time toast; "Ordner erneut wählen" makes the
+    link writable and pushes); `__keysteadMock.simulateConflict(passwordChanged?)`
+    records a conflict for the open vault (also on the PC mock). Narrow the
     browser to phone width to see the layout; a narrow window without
     `?platform` shows the phone layout with editing (the editor is stacked
     like the detail).
@@ -991,8 +1018,8 @@ updates"):
 | Tray, single instance, `--background`, portable mode | no such concepts on Android (one task, app-private storage) |
 | In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no network (above) |
 | Website-icon fetcher, leaked-password check | need the network; reqwest's platform TLS verifier would need JNI set-up; permanently off on the phone (E6) – stored icons are shown (`get_icons`) |
-| Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
-| Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs. The read-only image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
+| Master password, recovery key (`change_master_password`, `create_recovery_key`, `remove_recovery_key`, `unlock_with_recovery`), `delete_vault` | owner's decision for 2b: a new master password and the recovery key are made on the PC (the phone gets the new password with the next revision); deleting a vault stays a PC action. The phone edits items, folders, tags, the generator history and the vault name, and creates vaults (since 2b) |
+| Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they take file-dialog paths, and Android hands out `content://` URIs; the phone keeps attachments view-only (2b), so it never drops the PC's. The image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
 | The cloud-folder mirror (`mirror_status`, `folder_offers`, `adopt_folder_vault`, `dismiss_folder_vault`, `mirrorFolder`) | the PC's half of the two-way sync over a folder path; the phone's half is its linked folder (`folder_status`, …) – `sync_conflicts`/`resolve_sync_conflict` are shared |
 
@@ -1215,8 +1242,19 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   folder was set). A conflict is no error (`sync://conflict`). The UI (`state/mirror.tsx`) shows a toast
   ("Kopie im Cloud-Ordner nicht aktualisiert: …") when a new error appears
   – not again for the same one, nor after a page reload – and the settings
-  row shows it; the next change tries again. `Core::shutdown` lets the
-  worker finish what is queued (at most 3 s).
+  row shows it (with "Zuletzt aktualisiert …" and, once a pull happened,
+  "Zuletzt Änderungen vom Handy übernommen …"); the next change tries
+  again. `Core::shutdown` lets the worker finish what is queued (at most
+  3 s).
+* **Offers in the UI** (`state/mirror.tsx`: `folder_offers` once, then
+  `mirror://offers`; `components/FolderOfferDialog.tsx`): on the unlock and
+  main screens a dialog asks "Neuer Tresor im Cloud-Ordner – übernehmen?"
+  with the vault's name and change time – "Übernehmen" (`adopt_folder_vault`,
+  then the vault list is read again and a toast says to unlock it with its
+  own master password), "Nicht übernehmen" (`dismiss_folder_vault`, never
+  asked again), the X / Escape puts it off until the next start. Settings →
+  Handy lists the same offers ("Neue Tresore im Cloud-Ordner") with both
+  buttons. Never shown while a pairing request is open.
 * **The phone's side**: see "Cloud-folder sync (phone)". A new master
   password reaches the phone with the next revision (it sees the changed
   KDF salt). A vault file above 64 MiB is written but skipped by the phone.
@@ -2196,7 +2234,12 @@ flows show, while the app's default is `stable`), `&updateSpeed=slow` keeps the 
 on screen (a normal install "restarts" by reloading with the new version), and
 `window.__keysteadMock` offers `triggerPairing(name?)`, `simulateTimeoutLock()`,
 `simulateExternalChange()`, `simulateUnlockRequest()`,
-`simulateUpdate(portable?)`, for the desktop's cloud-folder mirror
+`simulateUpdate(portable?)`, for the two-way sync `simulateConflict(passwordChanged?)`
+(a conflict for the open vault, phone or PC – on the PC with one attachment
+only the PC has), `simulatePhonePush()` (PC: a note "Neu vom Handy" arrives
+in the open vault, `vault://changed`, `lastPulledAt`) and
+`simulatePhoneNewVault()` (PC: "Handy-Tresor" appears in the folder – the
+offer dialog; adopted it opens with `demo`), for the desktop's cloud-folder mirror
 `simulateMirrorFolderLost(lost?)` (the copies fail with
 `unsupported:mirror_folder_missing` until called with `false`; `?mirror=on`
 starts with the folder set, the folder dialog picks
@@ -3011,7 +3054,8 @@ are not involved (`ItemSummary` is unchanged).
 * **Desktop commands** (all take `pageVaultId` – another open vault or
   none → `locked` –, all count as user activity, results wiped after
   serialization like `list_items`; the phone registers only the read-only
-  `reveal_attachment`, the rest is `#[cfg(desktop)]`):
+  `reveal_attachment`, the rest is `#[cfg(desktop)]` – attachments stay
+  view-only on the phone in 2b, `AppInfo.attachmentsReadOnly`):
   * `add_attachment(itemId, path)` † → `ItemListEntry`: the page passes the
     path the native open dialog chose (a blank one →
     `invalid_input:path_required`); the backend checks the page's vault
@@ -3074,7 +3118,9 @@ are not involved (`ItemSummary` is unchanged).
   below the list "Datei anhängen …" (native open dialog, then
   `add_attachment`; disabled with a hint at 10) and the limits. A paperclip
   chip with the count sits in the detail header. Trashed items show the
-  list read-only (preview and save, no add or remove; hidden when empty).
+  list read-only (preview and save, no add or remove; hidden when empty);
+  so does the phone for every item (`AppInfo.attachmentsReadOnly`: preview
+  only, no "Speichern unter …").
   The editor has no attachments. The answers replace the item's entry in
   the list (no refetch); `locked` → unlock screen, `not_found` / `conflict`
   → `list_items` is refetched, other errors are toasts. The export dialog
@@ -3769,11 +3815,31 @@ The extension's security model and file roles are in
 * Attachments belong to the saved item: a section "Anhänge" in the detail
   pane after the custom fields (name, size, date; "Vorschau" for images,
   "Speichern unter …", "Entfernen"; "Datei anhängen …" below), a paperclip
-  chip with the count in the detail header, read-only on trashed items; the
+  chip with the count in the detail header, read-only on trashed items and on the phone; the
   editor has no attachments section. Files go only through the native
   open / save dialogs, a preview is hidden again like a revealed secret,
   and the export dialog says that no export contains attachments (a backup
   is the data directory). List rows show no attachments.
+* Conflict dialog (two-way cloud-folder sync, both platforms –
+  `components/SyncConflictDialog.tsx`, `state/syncConflicts.tsx`,
+  `lib/syncConflict.mjs`): while a vault is open the provider fetches
+  `sync_conflicts` and follows `sync://conflict` (an event also brings back
+  a dialog put off with "Später"). One conflict at a time: "Am PC und am
+  Handy geändert", the vault name, both states as cards ("Stand vom PC",
+  "Stand vom Handy", "dieses Gerät" on this side's) with the change time in
+  plain words and the revision as "Version n". Buttons in the same words
+  on both devices – you take the other side's state and keep your own:
+  phone "Stand vom PC übernehmen" (`remote`) / "Stand vom Handy behalten"
+  (`local`), PC "Stand vom PC behalten" (`local`) / "Stand vom Handy
+  übernehmen" (`remote`) – plus "Später" (closes until the next event or
+  unlock). `passwordChanged` hides exactly the `local` button (the backend
+  refuses it: `unsupported:sync_conflict_password`) and says why; on the PC
+  `lostAttachments` warns what taking the phone's state drops. A note says
+  the losing state stays as a conflict copy on this device (PC: data
+  folder, `conflicts`, restorable through Settings → Importieren; phone:
+  import is PC-only). Errors are toasts; `unsupported:sync_conflict_changed`
+  just fetches the list again. On the phone the buttons stack, "Später"
+  last.
 * Calm, clean design: system font stack (Segoe UI Variable / Inter
   fallback), 8-px spacing grid, 1 accent colour (blue `#3b82f6`-ish), soft
   borders, no gradients, light + dark theme via CSS variables, follows

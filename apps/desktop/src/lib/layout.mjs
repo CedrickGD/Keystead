@@ -31,7 +31,7 @@ export function isPhoneLayout(platform, narrow) {
 /**
  * What the Android back gesture does on the main screen once no dialog,
  * menu or drawer is open (those close first, as with Escape – lib/layers.ts):
- *   "editor" – leave the editor (narrow browser preview only; the phone is read-only),
+ *   "editor" – leave the editor (asks first when there are unsaved changes),
  *   "detail" – back from the item to the list,
  *   "search" – clear the search,
  *   "home"   – from a page (settings, report, generator) or a filter to all items,

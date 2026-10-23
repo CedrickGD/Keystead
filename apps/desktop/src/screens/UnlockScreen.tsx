@@ -6,6 +6,7 @@ import { useApp } from "../state/app";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
 import { SyncStatusLine } from "../components/FolderSync";
+import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
 import {
   autoPromptAllowed,
@@ -53,6 +54,7 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
   const vault = vaults.find((v) => v.id === vaultId) ?? vaults[0];
   // Phone: the cloud-folder sync (null on the desktop).
   const folderSync = useFolderSync();
+  const phone = isPhonePlatform(info.platform);
   const passwordChangedOnPc = Boolean(
     folderSync?.status?.files.some((f) => f.vaultId === vault?.id && f.passwordChanged),
   );
@@ -222,12 +224,14 @@ export function UnlockScreen({ focusSignal }: { focusSignal: number }) {
               </div>
             )}
 
-            {/* Both set a new master password or create a vault: not on the read-only phone. */}
+            {/* "Passwort vergessen?" sets a new master password: PC-only (like the recovery key). */}
             {!info.readOnly && (
               <div className="unlock-links">
-                <button type="button" className="btn-link" onClick={() => setMode("recovery")}>
-                  {t("unlock.forgot")}
-                </button>
+                {!phone && (
+                  <button type="button" className="btn-link" onClick={() => setMode("recovery")}>
+                    {t("unlock.forgot")}
+                  </button>
+                )}
                 <button type="button" className="btn-link" onClick={showWelcome}>
                   <Plus size={14} style={{ verticalAlign: "-2px", marginRight: 4 }} />
                   {t("unlock.createNew")}

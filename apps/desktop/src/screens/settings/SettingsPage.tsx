@@ -63,9 +63,11 @@ import { useFolderSync } from "../../state/sync";
 import { useDeviceUnlock } from "../../state/deviceUnlock";
 import { useMirror } from "../../state/mirror";
 import {
+  RelinkBanner,
   SyncFileList,
   SyncSteps,
   folderLost,
+  needsRelink,
   useRelativeTimeTick,
   useSyncErrorText,
 } from "../../components/FolderSync";
@@ -194,8 +196,8 @@ function SecuritySection() {
   // The background lock exists on the phone only (the desktop ignores the
   // setting); the Windows session lock only on the desktop.
   const phone = isPhonePlatform(info.platform);
-  // Master password and recovery key change the vault: not on the phone.
-  const readOnly = info.readOnly;
+  // Master password and recovery key: PC-only (the phone edits items only).
+  const readOnly = info.readOnly || phone;
 
   const autoLockOptions = [1, 5, 15, 30, 60, 240, 0];
   if (!autoLockOptions.includes(settings.autoLockMinutes)) autoLockOptions.unshift(settings.autoLockMinutes);
@@ -742,7 +744,8 @@ function VaultSection({ items }: { items: ItemListEntry[] }) {
   const { t, tp, locale, errorText } = useT();
   const toast = useToast();
   const { info, vault, setVault, refreshVaults, showUnlock } = useApp();
-  // Renaming and deleting change the vault; the folder button needs a file manager.
+  // Renaming changes the vault (both platforms); deleting it is PC-only; the
+  // folder button needs a file manager.
   const readOnly = info.readOnly;
   const desktop = !isPhonePlatform(info.platform);
   const nameId = useId();
@@ -819,7 +822,7 @@ function VaultSection({ items }: { items: ItemListEntry[] }) {
           </Button>
         )}
       </SettingRow>
-      {!readOnly && (
+      {!readOnly && desktop && (
         <SettingRow title={t("danger.delete")} description={t("danger.deleteDesc")}>
           <Button variant="danger-outline" onClick={() => setDeleteOpen(true)}>
             {t("danger.deleteOpen")}
@@ -914,6 +917,11 @@ function SyncSection() {
         </SettingRow>
       ) : (
         <>
+          {needsRelink(status) && (
+            <div className="setting-row stacked">
+              <RelinkBanner />
+            </div>
+          )}
           <SettingRow
             title={t("settings.syncFolder")}
             description={
@@ -997,7 +1005,7 @@ function PhoneSection() {
   const mirror = useMirror();
   const { settings } = useApp();
   const status = mirror?.status ?? null;
-  useRelativeTimeTick(Boolean(status?.lastMirroredAt));
+  useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt));
   if (!mirror) return null;
   const folder = settings.mirrorFolder;
   const on = folder !== null;
@@ -1023,6 +1031,11 @@ function PhoneSection() {
                   ? t("mirror.lastCopied", { when: `${formatRelative(status.lastMirroredAt)} · ${formatDateTime(status.lastMirroredAt)}` })
                   : t("mirror.noCopyYet")}
               </span>
+              {status?.lastPulledAt && (
+                <span className="mirror-state">
+                  {t("mirror.lastPulled", { when: `${formatRelative(status.lastPulledAt)} · ${formatDateTime(status.lastPulledAt)}` })}
+                </span>
+              )}
               {status?.lastError && (
                 <span className="callout callout-warning mirror-error" role="status">
                   <TriangleAlert />
@@ -1035,6 +1048,41 @@ function PhoneSection() {
           <Button variant="secondary" icon={<FolderOpen />} loading={mirror.busy} onClick={() => void mirror.choose()}>
             {t("mirror.changeFolder")}
           </Button>
+        </SettingRow>
+      )}
+      {on && mirror.offers.length > 0 && (
+        <SettingRow title={t("sync.offer.listTitle")} description={t("sync.offer.listDesc")} stacked>
+          <ul className="offer-list">
+            {mirror.offers.map((offer) => (
+              <li key={offer.vaultId} className="offer-row">
+                <span className="offer-row-text">
+                  <strong className="truncate">{offer.name}</strong>
+                  <span className="subtle">
+                    {t("sync.offer.changed", { when: formatRelative(offer.updatedAt) })} · {formatDateTime(offer.updatedAt)}
+                  </span>
+                </span>
+                <span className="offer-row-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={mirror.offerBusy !== null}
+                    onClick={() => void mirror.dismiss(offer)}
+                  >
+                    {t("sync.offer.dismiss")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={mirror.offerBusy === offer.vaultId}
+                    disabled={mirror.offerBusy !== null && mirror.offerBusy !== offer.vaultId}
+                    onClick={() => void mirror.adopt(offer)}
+                  >
+                    {t("sync.offer.adopt")}
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
         </SettingRow>
       )}
       <div className="setting-row stacked">
@@ -1207,8 +1255,7 @@ const SECTION_ALIASES: Record<string, string> = { appearance: "general", termina
 export function SettingsPage({ initialSection, items }: { initialSection?: string; items: ItemListEntry[] }) {
   const { t } = useT();
   const { info } = useApp();
-  // The phone: no browser integration, import/export or desktop extras; its
-  // vault section has nothing to offer while the vault is read-only.
+  // The phone: no browser integration, import/export or desktop extras.
   const desktop = !isPhonePlatform(info.platform);
   const shown = {
     // The phone's cloud-folder sync, and the desktop's copies for it.

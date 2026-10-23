@@ -5,7 +5,8 @@
 // Two demo vaults ("Privat", "Arbeit"), master password "demo" for both.
 // URL parameters: `?mock=empty` starts without any vault (first-run screen).
 // `?platform=android` (or `ios`) pretends to be the phone app: `AppInfo`
-// says so (`readOnly`, no extension id), only the phone's commands exist
+// says so (`attachmentsReadOnly`, no extension id; since stage 2b the phone
+// edits and creates vaults), only the phone's commands exist
 // (`PHONE_COMMANDS`; any other one fails like an unknown command), the UI
 // takes its phone layout (narrow the window as well to see it at phone
 // size) and the background lock (`lockInBackgroundSeconds`) runs on the
@@ -40,6 +41,22 @@
 // password change (`simulatePcPasswordChange()`) resets that vault's setup.
 // `?fingerprint=on` starts with "Privat" set up, `?fingerprint=none` /
 // `?fingerprint=notEnrolled` without a usable sensor.
+// Stage 2b (two-way sync): the phone writes its changes back – every edit of
+// a vault is "pushed" into the folder ~1 s later (outcome `pushed`, the next
+// sync finds it up to date); a vault created on the phone stays local until
+// a folder is linked. `?sync=readonly` (phone) starts linked like
+// `?sync=linked`, but read-only (a link from before 2b): edits are not
+// written (`notWritable`, the settings show the re-link banner, the first
+// such edit a toast), "Ordner erneut wählen" makes the link writable and
+// pushes them. `__keysteadMock.simulateConflict(passwordChanged?)` records a
+// conflict for the open vault (`sync://conflict`, phone or PC; on the PC
+// with one attachment only the PC has); resolving it keeps one side (keeping
+// the other side's state adds a note "Aus dem anderen Stand").
+// `simulatePhonePush()` (PC) brings an edit from the phone into the open
+// vault (a note "Neu vom Handy", `vault://changed`, `lastPulledAt`);
+// `simulatePhoneNewVault()` (PC) puts a vault made on the phone into the
+// mirror folder: the offer dialog asks (`mirror://offers`), "Übernehmen"
+// adds "Handy-Tresor" (master password "demo") to the vault list.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -62,6 +79,7 @@ import type {
   DeviceUnlockStatus,
   ExportFormat,
   Folder,
+  FolderOffer,
   FolderStatus,
   GeneratedPassword,
   GeneratedPasswordInfo,
@@ -79,6 +97,7 @@ import type {
   SecretField,
   SessionState,
   Settings,
+  SyncConflict,
   SyncFileResult,
   TotpCode,
   UpdateInfo,
@@ -141,6 +160,8 @@ interface MockState {
   sync: MockSync;
   mirror: MockMirror;
   deviceUnlock: MockDeviceUnlock;
+  /** Recorded sync conflicts (both platforms), by vault id. */
+  conflicts: Map<string, SyncConflict>;
 }
 
 /** The phone's fingerprint unlock (see the header comment). */
@@ -161,21 +182,25 @@ export type MockFingerprintResult = "ok" | "cancel" | "fail" | "lockout";
 /** The desktop's cloud-folder mirror (see the header comment). */
 interface MockMirror {
   lastMirroredAt: number | null;
+  lastPulledAt: number | null;
   lastError: string | null;
   /** The copies fail: the folder is not there. */
   lost: boolean;
+  /** Vaults in the folder this PC does not have (`simulatePhoneNewVault`). */
+  offers: FolderOffer[];
 }
 
 /** The phone's linked cloud folder (see the header comment). */
 interface MockSync {
-  link: { folderName: string; linkedAt: number } | null;
+  /** `writable`: false for a read-only link (`?sync=readonly`, a link from before stage 2b). */
+  link: { folderName: string; linkedAt: number; writable: boolean } | null;
   lastSyncAt: number | null;
   lastError: string | null;
   files: SyncFileResult[];
   syncing: boolean;
   /** The PC's copies in the folder, by vault id. */
   folder: Map<string, { revision: number; password: string; newNotes: number }>;
-  /** The revisions of the phone's copies. */
+  /** The revisions of the phone's copies (higher than the folder's: edits not written yet). */
   phone: Map<string, number>;
   /** The next sync finds the folder's permission revoked. */
   lost: boolean;
@@ -327,7 +352,7 @@ function initState(): MockState {
       portable: false,
       platform: phone ? platform : "windows",
       extensionId: phone ? null : EXTENSION_ID,
-      readOnly: phone,
+      readOnly: false,
       attachmentsReadOnly: phone,
     },
     browsers: [
@@ -342,10 +367,17 @@ function initState(): MockState {
       : [{ id: "c-7f3a", name: "Chrome – DESKTOP-4F2K9", createdAt: now - 32 * DAY, lastSeenAt: now - 2 * 3_600_000 }],
     pairings: new Map(),
     lastActivity: now,
-    sync: initSync(phone && params.get("sync") === "linked", empty, now),
-    mirror: { lastMirroredAt: null, lastError: null, lost: false },
+    sync: initSync(phone ? params.get("sync") : null, empty, now),
+    mirror: { lastMirroredAt: null, lastPulledAt: null, lastError: null, lost: false, offers: [] },
     deviceUnlock: initDeviceUnlock(phone ? params.get("fingerprint") : null, empty),
+    conflicts: new Map(),
   };
+}
+
+/** The mock runs as the phone app (`?platform=android` / `ios`). */
+function isPhone(): boolean {
+  const platform = getState().appInfo.platform;
+  return platform === "android" || platform === "ios";
 }
 
 function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock {
@@ -358,7 +390,9 @@ function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock
   };
 }
 
-function initSync(linked: boolean, empty: boolean, now: number): MockSync {
+/** `mode`: `?sync=` – "linked", "readonly" (linked without write access) or none. */
+function initSync(mode: string | null, empty: boolean, now: number): MockSync {
+  const linked = mode === "linked" || mode === "readonly";
   const folder = new Map([
     [PRIVATE_VAULT_ID, { revision: 42, password: DEMO_PASSWORD, newNotes: 0 }],
     [WORK_VAULT_ID, { revision: 17, password: DEMO_PASSWORD, newNotes: 0 }],
@@ -375,7 +409,7 @@ function initSync(linked: boolean, empty: boolean, now: number): MockSync {
     lost: false,
   };
   if (linked) {
-    sync.link = { folderName: "Keystead", linkedAt: now - 3 * DAY };
+    sync.link = { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: mode !== "readonly" };
     sync.lastSyncAt = now - 4 * 60_000;
     // `?mock=empty`: linked before the PC's copies arrived – they are in the
     // folder now, and the sync at start brings them.
@@ -632,6 +666,12 @@ export interface MockDevHelpers {
   simulateFolderLost: () => void;
   /** Desktop mirror: the copies fail as if the cloud folder were gone (`false`: it is back). */
   simulateMirrorFolderLost: (lost?: boolean) => void;
+  /** Two-way sync: a conflict for the open vault (phone or PC); `passwordChanged`: the folder's copy has another master password. */
+  simulateConflict: (passwordChanged?: boolean) => void;
+  /** PC: the phone's edit arrives through the folder (a note "Neu vom Handy" in the open vault). */
+  simulatePhonePush: () => void;
+  /** PC: a vault made on the phone appears in the mirror folder (the offer dialog asks). */
+  simulatePhoneNewVault: () => void;
   /** Fingerprint unlock: what the next "system prompt" does (default "ok"). */
   setFingerprintResult: (result: MockFingerprintResult) => void;
   /** Fingerprint unlock: a new fingerprint was enrolled – every setup is reset at its next use. */
@@ -672,6 +712,9 @@ function installDevHelpers(): void {
       getState().mirror.lost = lost;
       scheduleMirrorPass();
     },
+    simulateConflict: (passwordChanged = false) => mockSimulateConflict(passwordChanged),
+    simulatePhonePush: () => mockPhonePush(),
+    simulatePhoneNewVault: () => mockPhoneNewVault(),
     setFingerprintResult: (result: MockFingerprintResult) => {
       getState().deviceUnlock.next = result;
     },
@@ -960,7 +1003,7 @@ function mirrorStatus(): MirrorStatus {
   return {
     folder: s.settings.mirrorFolder,
     lastMirroredAt: s.mirror.lastMirroredAt,
-    lastPulledAt: null,
+    lastPulledAt: s.mirror.lastPulledAt,
     lastError: s.mirror.lastError,
   };
 }
@@ -972,7 +1015,7 @@ function scheduleMirrorPass(): void {
   window.clearTimeout(mirrorTimer);
   mirrorTimer = window.setTimeout(() => {
     const s = getState();
-    if (!s.settings.mirrorFolder || !s.unlockedId || s.appInfo.readOnly) return;
+    if (!s.settings.mirrorFolder || !s.unlockedId || isPhone()) return;
     const before = JSON.stringify(mirrorStatus());
     if (s.mirror.lost) {
       s.mirror.lastError = "unsupported:mirror_folder_missing";
@@ -1240,7 +1283,7 @@ function folderStatus(): FolderStatus {
   const sync = getState().sync;
   return {
     linked: sync.link !== null,
-    writable: sync.link !== null,
+    writable: sync.link?.writable ?? false,
     syncing: sync.syncing,
     folderName: sync.link?.folderName ?? null,
     linkedAt: sync.link?.linkedAt ?? null,
@@ -1332,13 +1375,36 @@ async function mockSyncFolder(): Promise<FolderStatus> {
       }
       outcome = "updated";
     } else if (copy.revision < phoneRevision) {
-      outcome = "pcOlder";
+      // The phone's edits not written yet (stage 2b): written now, unless the link is read-only.
+      if (sync.link?.writable) {
+        copy.revision = phoneRevision;
+        outcome = "pushed";
+      } else {
+        outcome = "notWritable";
+      }
     } else {
       outcome = "upToDate";
       passwordChanged = previous.some((f) => f.vaultId === id && f.revision === copy.revision && f.passwordChanged);
     }
-    if (outcome !== "pcOlder") sync.phone.set(id, copy.revision);
-    files.push({ ...syncResult(id, copy.revision, outcome, passwordChanged), attachmentsCopied: attachments });
+    if (outcome !== "notWritable") sync.phone.set(id, copy.revision);
+    const revision = outcome === "notWritable" ? phoneRevision ?? copy.revision : copy.revision;
+    files.push({ ...syncResult(id, revision, outcome, passwordChanged), attachmentsCopied: attachments });
+  }
+  // Vaults made on the phone that the folder does not have yet.
+  for (const [id, vault] of s.vaults) {
+    if (sync.folder.has(id)) continue;
+    const revision = sync.phone.get(id) ?? 1;
+    if (sync.link?.writable) {
+      sync.folder.set(id, { revision, password: vault.password, newNotes: 0 });
+      sync.phone.set(id, revision);
+      files.push(syncResult(id, revision, "pushed", false));
+    } else {
+      files.push(syncResult(id, revision, "notWritable", false));
+    }
+  }
+  for (const id of s.conflicts.keys()) {
+    const file = files.find((f) => f.vaultId === id);
+    if (file) file.outcome = "conflict";
   }
   sync.files = files;
   sync.lastSyncAt = now;
@@ -1903,9 +1969,9 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const next = { ...validateSettings(args.settings, s.settings), deviceUnlock: s.settings.deviceUnlock };
       const folderChanged = next.mirrorFolder !== s.settings.mirrorFolder;
       // The phone ignores the field (no mirror there).
-      if (folderChanged && next.mirrorFolder && !s.appInfo.readOnly) checkMirrorFolder(next.mirrorFolder);
+      if (folderChanged && next.mirrorFolder && !isPhone()) checkMirrorFolder(next.mirrorFolder);
       s.settings = next;
-      if (folderChanged && !s.appInfo.readOnly) {
+      if (folderChanged && !isPhone()) {
         s.mirror.lastMirroredAt = null;
         s.mirror.lastError = null;
         emit("mirror://status", mirrorStatus());
@@ -1985,13 +2051,40 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return clone(s.appInfo);
     }
 
+    case "sync_conflicts": {
+      const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+      if (!vault || optStr(args, "pageVaultId") !== vault.info.id) fail("locked");
+      const conflict = s.conflicts.get(vault.info.id);
+      return conflict ? [clone(conflict)] : [];
+    }
+
+    case "resolve_sync_conflict":
+      if (optStr(args, "pageVaultId") !== s.unlockedId) fail("locked");
+      await sleep(500);
+      return mockResolveConflict(str(args, "vaultId"), str(args, "keep"));
+
+    case "folder_offers":
+      return clone(s.mirror.offers);
+
+    case "adopt_folder_vault":
+      await sleep(400);
+      return mockAdoptFolderVault(str(args, "vaultId"));
+
+    case "dismiss_folder_vault": {
+      const vaultId = str(args, "vaultId");
+      s.mirror.offers = s.mirror.offers.filter((o) => o.vaultId !== vaultId);
+      emit("mirror://offers", clone(s.mirror.offers));
+      return null;
+    }
+
     case "folder_status":
       return folderStatus();
 
     case "link_folder": {
-      // The system picker; the user picks the PC's folder in the cloud app.
+      // The system picker; the user picks the PC's folder in the cloud app
+      // (and grants write access – the link is writable from now on).
       await sleep(700);
-      s.sync.link = { folderName: "Keystead", linkedAt: Date.now() };
+      s.sync.link = { folderName: "Keystead", linkedAt: Date.now(), writable: true };
       s.sync.lost = false;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
@@ -2110,21 +2203,280 @@ const PHONE_COMMANDS = new Set([
   "enable_device_unlock",
   "disable_device_unlock",
   "unlock_with_device",
+  // Stage 2b: the phone edits (`gui.rs` registers these on both platforms).
+  "create_vault",
+  "save_item",
+  "get_item_for_edit",
+  "set_favorite",
+  "trash_item",
+  "restore_item",
+  "delete_item",
+  "empty_trash",
+  "save_folder",
+  "delete_folder",
+  "rename_tag",
+  "delete_tag",
+  "totp_code",
+  "rename_vault",
+  "generate_password",
+  "remember_generated",
+  "generator_history",
+  "reveal_generated",
+  "copy_generated",
+  "clear_generator_history",
+  "generator_presets",
+  "save_generator_preset",
+  "delete_generator_preset",
+  "set_default_generator_preset",
+  "sync_conflicts",
+  "resolve_sync_conflict",
+]);
+
+/** Phone: commands that change a vault – its edit is pushed into the linked folder a moment later. */
+const PHONE_PUSH_TRIGGERS = new Set([
+  "create_vault",
+  "save_item",
+  "set_favorite",
+  "trash_item",
+  "restore_item",
+  "delete_item",
+  "empty_trash",
+  "save_folder",
+  "delete_folder",
+  "rename_tag",
+  "delete_tag",
+  "rename_vault",
+  "remember_generated",
+  "clear_generator_history",
 ]);
 
 export async function mockInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
   // Simulate IPC latency so loading states are exercised.
   await sleep(20 + Math.random() * 60);
-  if (getState().appInfo.readOnly && !PHONE_COMMANDS.has(command)) {
+  if (isPhone() && !PHONE_COMMANDS.has(command)) {
     // Tauri rejects a command its handler does not know with a plain message.
     console.warn(`[mock] the phone app has no command ${command}`);
     fail(`Command ${command} not found`);
   }
   const result = (await dispatch(command, args)) as T;
   // The phone has no icon fetcher (no network); it shows stored icons only.
-  if (ICON_FETCH_TRIGGERS.has(command) && !getState().appInfo.readOnly) scheduleIconFetch();
+  if (ICON_FETCH_TRIGGERS.has(command) && !isPhone()) scheduleIconFetch();
   if (MIRROR_TRIGGERS.has(command)) scheduleMirrorPass();
+  if (PHONE_PUSH_TRIGGERS.has(command) && isPhone()) {
+    const id = command === "create_vault" ? (result as VaultInfo).id : getState().unlockedId;
+    if (id) mockPhoneEdit(id);
+  }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Two-way sync (stage 2b, see the header comment)
+// ---------------------------------------------------------------------------
+
+const pushTimers = new Map<string, number>();
+
+/** Phone: vault `id` changed – a new revision, written to the linked folder ~1 s later (like `push_soon`). */
+function mockPhoneEdit(id: string): void {
+  const sync = getState().sync;
+  const folderRevision = sync.folder.get(id)?.revision ?? 0;
+  sync.phone.set(id, Math.max(sync.phone.get(id) ?? 0, folderRevision) + 1);
+  window.clearTimeout(pushTimers.get(id));
+  pushTimers.set(
+    id,
+    window.setTimeout(() => {
+      pushTimers.delete(id);
+      mockPushVault(id);
+    }, 1_000),
+  );
+}
+
+/** One push of the phone's copy of `id` (no link: it stays local). */
+function mockPushVault(id: string): void {
+  const s = getState();
+  const sync = s.sync;
+  const vault = s.vaults.get(id);
+  const revision = sync.phone.get(id);
+  if (!sync.link || sync.lost || !vault || revision === undefined || s.conflicts.has(id)) return;
+  let outcome: SyncFileResult["outcome"];
+  if (sync.link.writable) {
+    const copy = sync.folder.get(id);
+    if (copy) copy.revision = revision;
+    else sync.folder.set(id, { revision, password: vault.password, newNotes: 0 });
+    outcome = "pushed";
+  } else {
+    outcome = "notWritable";
+  }
+  const result = syncResult(id, revision, outcome, false);
+  sync.files = sync.files.some((f) => f.vaultId === id)
+    ? sync.files.map((f) => (f.vaultId === id ? result : f))
+    : [...sync.files, result];
+  emitSyncStatus();
+}
+
+/** `simulateConflict`: both copies of the open vault changed since they last agreed. */
+function mockSimulateConflict(passwordChanged: boolean): void {
+  const s = getState();
+  const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+  if (!vault) {
+    console.warn("[mock] simulateConflict needs an open vault");
+    return;
+  }
+  const now = Date.now();
+  const id = vault.info.id;
+  const phone = isPhone();
+  const folderRevision = s.sync.folder.get(id)?.revision ?? 42;
+  const conflict: SyncConflict = {
+    vaultId: id,
+    vaultName: vault.info.name,
+    localRevision: folderRevision + 1,
+    remoteRevision: folderRevision + 2,
+    // The phone's edit a while ago, the PC's just now (or the other way round on the PC).
+    localUpdatedAt: phone ? now - 25 * 60_000 : now - 8 * 60_000,
+    remoteUpdatedAt: phone ? now - 8 * 60_000 : now - 25 * 60_000,
+    passwordChanged,
+  };
+  if (!phone) conflict.lostAttachments = 1;
+  s.conflicts.set(id, conflict);
+  if (phone && s.sync.link) {
+    s.sync.files = s.sync.files.map((f) => (f.vaultId === id ? { ...f, outcome: "conflict" } : f));
+    emitSyncStatus();
+  }
+  emit("sync://conflict", [clone(conflict)]);
+}
+
+/** `resolve_sync_conflict`: keeps one side; the other side's state shows up as a note. */
+function mockResolveConflict(vaultId: string, keep: string): VaultInfo {
+  const s = getState();
+  const vault = openVault();
+  if (vault.info.id !== vaultId) fail("locked");
+  const conflict = s.conflicts.get(vaultId);
+  if (!conflict) fail("not_found");
+  if (keep !== "local" && keep !== "remote") fail("invalid_input:keep");
+  if (keep === "local" && conflict.passwordChanged) fail("unsupported:sync_conflict_password");
+  s.conflicts.delete(vaultId);
+  const now = Date.now();
+  if (keep === "remote") {
+    vault.data.items.push({
+      id: uuid(),
+      type: "note",
+      name: "Aus dem anderen Stand",
+      folderId: null,
+      favorite: false,
+      notes: "Diese Notiz kam mit dem übernommenen Stand.",
+      tags: [],
+      login: null,
+      card: null,
+      identity: null,
+      fields: [],
+      passwordHistory: [],
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    emit("vault://changed", {});
+  }
+  touch(vault);
+  if (isPhone() && s.sync.link) {
+    const revision = Math.max(conflict.localRevision, conflict.remoteRevision) + (keep === "local" ? 1 : 0);
+    s.sync.phone.set(vaultId, revision);
+    const copy = s.sync.folder.get(vaultId);
+    if (copy) copy.revision = revision;
+    s.sync.files = s.sync.files.map((f) =>
+      f.vaultId === vaultId ? syncResult(vaultId, revision, keep === "local" ? "pushed" : "updated", false) : f,
+    );
+    emitSyncStatus();
+  }
+  emit("sync://conflict", []);
+  return clone(vault.info);
+}
+
+/** PC, `simulatePhonePush`: the folder brings the phone's edit of the open vault. */
+function mockPhonePush(): void {
+  const s = getState();
+  const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+  if (isPhone() || !vault) {
+    console.warn("[mock] simulatePhonePush needs the PC mock with an open vault");
+    return;
+  }
+  const now = Date.now();
+  vault.data.items.push({
+    id: uuid(),
+    type: "note",
+    name: "Neu vom Handy",
+    folderId: null,
+    favorite: false,
+    notes: "Diese Notiz wurde am Handy angelegt und kam über den Cloud-Ordner.",
+    tags: [],
+    login: null,
+    card: null,
+    identity: null,
+    fields: [],
+    passwordHistory: [],
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  });
+  touch(vault);
+  if (s.settings.mirrorFolder) {
+    s.mirror.lastPulledAt = now;
+    s.mirror.lastMirroredAt = now;
+    emit("mirror://status", mirrorStatus());
+  }
+  emit("vault://changed", {});
+}
+
+const PHONE_VAULT_ID = "c4d5e6f7-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+
+/** PC, `simulatePhoneNewVault`: a vault made on the phone appears in the mirror folder. */
+function mockPhoneNewVault(): void {
+  const s = getState();
+  if (isPhone()) {
+    console.warn("[mock] simulatePhoneNewVault needs the PC mock");
+    return;
+  }
+  if (s.vaults.has(PHONE_VAULT_ID) || s.mirror.offers.some((o) => o.vaultId === PHONE_VAULT_ID)) return;
+  s.mirror.offers = [...s.mirror.offers, { vaultId: PHONE_VAULT_ID, name: "Handy-Tresor", revision: 3, updatedAt: Date.now() - 5 * 60_000 }];
+  emit("mirror://offers", clone(s.mirror.offers));
+}
+
+function mockAdoptFolderVault(vaultId: string): VaultInfo {
+  const s = getState();
+  const offer = s.mirror.offers.find((o) => o.vaultId === vaultId);
+  if (!offer) fail("not_found");
+  if (s.vaults.has(vaultId)) fail("invalid_input:vault_exists");
+  const now = Date.now();
+  const vault: MockVault = {
+    info: { id: vaultId, name: offer.name, path: vaultPath(vaultId, s.appInfo.portable), createdAt: offer.updatedAt, updatedAt: offer.updatedAt, hasRecoveryKey: false },
+    password: DEMO_PASSWORD,
+    recoveryKey: null,
+    data: {
+      items: [
+        {
+          id: uuid(),
+          type: "note",
+          name: "Am Handy erstellt",
+          folderId: null,
+          favorite: false,
+          notes: "Dieser Tresor wurde am Handy angelegt und vom PC übernommen.",
+          tags: [],
+          login: null,
+          card: null,
+          identity: null,
+          fields: [],
+          passwordHistory: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        },
+      ],
+      folders: [],
+      generatorHistory: [],
+    },
+  };
+  s.vaults.set(vaultId, vault);
+  s.mirror.offers = s.mirror.offers.filter((o) => o.vaultId !== vaultId);
+  emit("mirror://offers", clone(s.mirror.offers));
+  return clone(vault.info);
 }
 
 /** Commands after which the real app may load website icons. */

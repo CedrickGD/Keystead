@@ -229,8 +229,8 @@ function AttachmentRow({
 /**
  * The item's attachments: preview (images), "Speichern unter …" and
  * "Entfernen" per file, "Datei anhängen …" below. A trashed item shows its
- * files read-only (preview and save still work, nothing changes); so does a
- * read-only vault (the phone), which has no "Speichern unter …" either.
+ * files read-only (preview and save still work, nothing changes); so does
+ * the phone (`attachmentsReadOnly`), which has no "Speichern unter …" either.
  */
 function Attachments({
   item,
@@ -436,8 +436,10 @@ export interface ItemViewProps {
   onAddAttachment: () => void;
   onSaveAttachment: (attachment: AttachmentListEntry) => void;
   onRemoveAttachment: (attachment: AttachmentListEntry) => void;
-  /** The vault cannot be changed here (the phone): no favourite toggle, edit, trash or attachment changes. */
+  /** The vault cannot be changed here: no favourite toggle, edit, trash or attachment changes. */
   readOnly: boolean;
+  /** Attachments cannot be added or removed here (the phone: previews only). */
+  attachmentsReadOnly: boolean;
   /** "Speichern unter …" for attachments (a native save dialog: desktop only). */
   canSaveAttachments: boolean;
   /** Phone layout: back to the list (an arrow in front of the title). */
@@ -458,6 +460,7 @@ export function ItemView({
   onSaveAttachment,
   onRemoveAttachment,
   readOnly,
+  attachmentsReadOnly,
   canSaveAttachments,
   onBack,
 }: ItemViewProps) {
@@ -608,7 +611,7 @@ export function ItemView({
         <Attachments
           item={item}
           attaching={attaching}
-          vaultReadOnly={readOnly}
+          vaultReadOnly={readOnly || attachmentsReadOnly}
           canSave={canSaveAttachments}
           onAdd={onAddAttachment}
           onSave={onSaveAttachment}

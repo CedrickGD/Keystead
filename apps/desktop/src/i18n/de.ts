@@ -106,6 +106,18 @@ export const de = {
   "error.unsupported.mirror_remote_gone":
     "Die Kopie dieses Tresors wurde aus dem Cloud-Ordner entfernt. Keystead legt sie nicht von selbst neu an – wähle den Ordner erneut, damit sie wieder geschrieben wird.",
   "error.input.vault_exists": "Diesen Tresor gibt es auf diesem PC schon.",
+  "error.unsupported.sync_write_unverified":
+    "Die Kopie im Cloud-Ordner ließ sich nach dem Schreiben nicht richtig zurücklesen. Keystead versucht es bei der nächsten Synchronisierung wieder – deine Änderungen bleiben auf dem Handy.",
+  "error.unsupported.sync_name_taken":
+    "Die Cloud-App hat die Tresor-Datei unter einem anderen Namen angelegt. Keystead hat nichts geschrieben – prüfe den Ordner in der Cloud-App.",
+  "error.unsupported.sync_not_writable":
+    "Keystead darf in den Cloud-Ordner nicht schreiben. Wähle den Ordner einmal neu und tippe auf „Zulassen“.",
+  "error.unsupported.sync_local_changed":
+    "Der Tresor wurde auf dem Handy gerade geändert. Keystead gleicht ihn bei der nächsten Synchronisierung ab.",
+  "error.unsupported.sync_conflict_password":
+    "Dieser Stand hat noch das alte Master-Passwort und kann deshalb nicht behalten werden. Übernimm den anderen Stand.",
+  "error.unsupported.sync_conflict_changed":
+    "Der Tresor hat sich inzwischen noch einmal geändert. Keystead hat ihn neu geprüft.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -176,10 +188,13 @@ export const de = {
   "welcome.featBrowser": "Browser-Integration",
   "welcome.featBrowserDesc": "Logins direkt in Chrome, Edge oder Brave ausfüllen.",
   "welcome.defaultVaultName": "Privat",
-  "welcome.phoneSubtitle": "Dein Passwort-Tresor vom PC – verschlüsselt und unterwegs griffbereit.",
+  "welcome.phoneSubtitle": "Dein Passwort-Tresor – verschlüsselt und unterwegs griffbereit.",
   "welcome.phoneFeatLocalDesc": "Kein Keystead-Server, kein Konto – die App hat nicht einmal Internetzugriff.",
-  "welcome.phoneFeatLookup": "Nachschlagen & kopieren",
-  "welcome.phoneFeatLookupDesc": "Passwörter, 2FA-Codes und Notizen griffbereit – bearbeitet wird am PC.",
+  "welcome.phoneFeatLookup": "Nachschlagen, kopieren, bearbeiten",
+  "welcome.phoneFeatLookupDesc": "Passwörter, 2FA-Codes und Notizen griffbereit – Änderungen kommen über den Cloud-Ordner auch auf den PC.",
+  "welcome.or": "oder",
+  "welcome.phoneCreateTitle": "Neuen Tresor erstellen",
+  "welcome.phoneCreateDesc": "Direkt hier auf dem Handy – mit einem Cloud-Ordner kommt er später auch auf den PC.",
 
   "wizard.stepVault": "Tresor",
   "wizard.stepImport": "Import",
@@ -199,6 +214,10 @@ export const de = {
   "wizard.nameRequired": "Bitte gib einen Namen ein.",
   "wizard.noRecoveryTitle": "Merke dir dein Master-Passwort gut.",
   "wizard.noRecoveryText": "Es wird nirgends gespeichert und kann nicht zurückgesetzt werden. Ohne Passwort oder Wiederherstellungsschlüssel sind deine Daten verloren.",
+  "wizard.noRecoveryTextPhone":
+    "Es wird nirgends gespeichert und kann nicht zurückgesetzt werden. Einen Wiederherstellungsschlüssel kannst du später am PC erstellen.",
+  "wizard.phoneLocalNote":
+    "Der Tresor liegt zuerst nur auf diesem Handy. Ist ein Cloud-Ordner verbunden, schreibt Keystead ihn dorthin – der PC fragt dann, ob er ihn übernehmen soll.",
   "wizard.createButton": "Tresor erstellen",
   "wizard.createdTitle": "Dein Tresor ist bereit",
   "wizard.createdDesc": "Jetzt noch eine Absicherung für den Notfall einrichten.",
@@ -886,9 +905,9 @@ export const de = {
   "settings.securityDescPhone": "Automatisches Sperren, Fingerabdruck und Zwischenablage. Master-Passwort und Wiederherstellung änderst du am PC.",
   "settings.sync": "Synchronisierung",
   "settings.syncShort": "Sync",
-  "settings.syncDesc": "Deine Tresore kommen aus einem Ordner deiner eigenen Cloud aufs Handy – nur in diese Richtung. Keystead ändert dort nichts.",
+  "settings.syncDesc": "Deine Tresore kommen über einen Ordner deiner eigenen Cloud aufs Handy – und deine Änderungen auf dem Handy auf demselben Weg zurück zum PC.",
   "settings.syncFolder": "Cloud-Ordner",
-  "settings.syncFolderDesc": "Keystead liest diesen Ordner beim Start, wenn du in die App zurückkehrst (höchstens einmal pro Minute) und auf Knopfdruck.",
+  "settings.syncFolderDesc": "Keystead gleicht diesen Ordner beim Start ab, wenn du in die App zurückkehrst (höchstens einmal pro Minute), nach jeder Änderung und auf Knopfdruck.",
   "settings.syncLast": "Letzte Synchronisierung",
   "settings.syncVaults": "Tresore im Ordner",
   "settings.syncNoFiles": "Im Ordner liegt kein Tresor.",
@@ -898,7 +917,7 @@ export const de = {
   "sync.stepCloudApp": "Auf dem Handy: Die Nextcloud- oder OneDrive-App installieren und anmelden.",
   "sync.stepPhone": "Hier: „Cloud-Ordner wählen“ tippen und denselben Ordner über die Cloud-App auswählen – dann „Diesen Ordner verwenden“ und „Zulassen“.",
   "sync.pickFolder": "Cloud-Ordner wählen",
-  "sync.readOnlyNote": "Keystead liest den Ordner nur – es ändert dort nichts und verbindet sich mit keinem Server. Die Übertragung übernimmt deine Cloud-App.",
+  "sync.folderNote": "Keystead schreibt in den Ordner nur seine eigenen, verschlüsselten Tresor-Dateien und verbindet sich mit keinem Server. Die Übertragung übernimmt deine Cloud-App.",
   "sync.linkedEmptyTitle": "Im Ordner „{folder}“ liegt noch kein Tresor",
   "sync.linkedEmptyText": "Prüfe am PC, ob „Kopie im Cloud-Ordner aktuell halten“ genau diesen Ordner nutzt und die Cloud-App die Datei schon hochgeladen hat. Tippe dann auf „Jetzt synchronisieren“.",
   "sync.linkedEmpty": "Ordner „{folder}“ verbunden – darin liegt noch kein Tresor.",
@@ -942,16 +961,60 @@ export const de = {
   "sync.attachmentsFailed_one": "{n} Anhang fehlt",
   "sync.attachmentsFailed_other": "{n} Anhänge fehlen",
   "sync.passwordChanged": "Master-Passwort am PC geändert",
+  "sync.relink.title": "Änderungen kommen noch nicht zum PC",
+  "sync.relink.text":
+    "Damit Änderungen zum PC kommen, wähle den Ordner einmal neu und tippe auf „Zulassen“ – bisher darf Keystead dort nur lesen. Deine Änderungen bleiben so lange auf dem Handy.",
+  "sync.relink.button": "Ordner erneut wählen",
+  "sync.relink.short": "Änderungen kommen noch nicht zum PC – wähle den Ordner in den Einstellungen einmal neu.",
+  "sync.relink.toast": "Nur auf dem Handy gespeichert – kommt noch nicht zum PC.",
+  "sync.relink.toastAction": "Ordner wählen",
+  "sync.conflict.title": "Am PC und am Handy geändert",
+  "sync.conflict.text":
+    "Der Tresor „{name}“ wurde am PC und am Handy geändert, seit beide zuletzt abgeglichen wurden. Welcher Stand soll gelten?",
+  "sync.conflict.pcState": "Stand vom PC",
+  "sync.conflict.phoneState": "Stand vom Handy",
+  "sync.conflict.thisDevice": "dieses Gerät",
+  "sync.conflict.changed": "Geändert {when}",
+  "sync.conflict.version": "Version {n}",
+  "sync.conflict.takePc": "Stand vom PC übernehmen",
+  "sync.conflict.keepPc": "Stand vom PC behalten",
+  "sync.conflict.takePhone": "Stand vom Handy übernehmen",
+  "sync.conflict.keepPhone": "Stand vom Handy behalten",
+  "sync.conflict.later": "Später",
+  "sync.conflict.passwordChangedPhone":
+    "Das Master-Passwort wurde am PC geändert. Der Stand vom Handy hat noch das alte Passwort und kann deshalb nicht behalten werden.",
+  "sync.conflict.passwordChangedPc":
+    "Die Kopie im Cloud-Ordner hat ein anderes Master-Passwort. Der Stand dieses PCs kann deshalb nicht behalten werden.",
+  "sync.conflict.lostAttachments_one":
+    "Übernimmst du den Stand vom Handy, fehlt danach {n} Anhang, der nur hier am PC hängt. Die Datei bleibt bei der Konfliktkopie erhalten.",
+  "sync.conflict.lostAttachments_other":
+    "Übernimmst du den Stand vom Handy, fehlen danach {n} Anhänge, die nur hier am PC hängen. Die Dateien bleiben bei der Konfliktkopie erhalten.",
+  "sync.conflict.copyNotePhone":
+    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy (nicht im Cloud-Ordner). Wiederherstellen lässt er sich über „Importieren“ – das gibt es nur am PC.",
+  "sync.conflict.copyNotePc":
+    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem PC (Datenordner, Unterordner „conflicts“). Einträge daraus holst du über Einstellungen → Importieren zurück.",
+  "sync.offer.title": "Neuer Tresor im Cloud-Ordner – übernehmen?",
+  "sync.offer.text":
+    "Diesen Tresor gibt es auf diesem PC noch nicht – zum Beispiel, weil du ihn am Handy erstellt hast. Übernimmst du ihn, erscheint er in der Tresor-Liste; du öffnest ihn mit seinem eigenen Master-Passwort.",
+  "sync.offer.dismissNote": "„Nicht übernehmen“: Keystead fragt nicht mehr nach diesem Tresor. Die Datei im Ordner bleibt liegen.",
+  "sync.offer.changed": "Geändert {when}",
+  "sync.offer.adopt": "Übernehmen",
+  "sync.offer.dismiss": "Nicht übernehmen",
+  "sync.offer.adopted": "„{name}“ ist jetzt auf diesem PC – entsperre ihn mit seinem Master-Passwort.",
+  "sync.offer.dismissed": "„{name}“ wird nicht übernommen.",
+  "sync.offer.listTitle": "Neue Tresore im Cloud-Ordner",
+  "sync.offer.listDesc": "Diese Tresore liegen im Ordner, aber noch nicht auf diesem PC (z. B. am Handy erstellt).",
   "settings.phone": "Handy",
   "settings.phoneShort": "Handy",
   "settings.phoneDesc": "Deine Tresore in der Android-App – über einen Ordner deiner eigenen Cloud. Keystead selbst verbindet sich dafür mit keinem Server.",
   "mirror.title": "Kopie im Cloud-Ordner aktuell halten",
   "mirror.desc":
-    "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt in einen Ordner deiner Wahl und aktualisiert ihn nach jedem Speichern. Die Nextcloud- oder OneDrive-App lädt ihn hoch, die Android-App holt ihn von dort.",
+    "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt in einen Ordner deiner Wahl und aktualisiert ihn nach jedem Speichern. Die Nextcloud- oder OneDrive-App lädt ihn hoch, die Android-App holt ihn von dort – und Änderungen vom Handy übernimmt Keystead von dort.",
   "mirror.folder": "Cloud-Ordner",
   "mirror.changeFolder": "Ordner ändern",
   "mirror.pickTitle": "Ordner in deiner Cloud für die Tresor-Kopien wählen",
   "mirror.lastCopied": "Zuletzt aktualisiert {when}",
+  "mirror.lastPulled": "Zuletzt Änderungen vom Handy übernommen {when}",
   "mirror.noCopyYet": "Seit dem Start noch nichts kopiert – das passiert beim Öffnen eines Tresors und nach jedem Speichern.",
   "mirror.enabledToast": "Keystead hält jetzt eine Kopie in „{folder}“ aktuell.",
   "mirror.disabledToast": "Kopie im Cloud-Ordner ausgeschaltet – die Dateien im Ordner bleiben liegen.",
@@ -965,7 +1028,7 @@ export const de = {
   "mirror.step3Text":
     "Installiere die Android-App (die APK aus den Releases), tippe auf „Cloud-Ordner wählen“ und wähle denselben Ordner über die Cloud-App – dann „Diesen Ordner verwenden“ und „Zulassen“. Danach holt das Handy jede neue Version selbst.",
   "mirror.privacy":
-    "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud-Anbieter sieht Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Das Handy liest nur; bearbeiten kannst du weiterhin hier.",
+    "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud-Anbieter sieht Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Bearbeiten kannst du hier und auf dem Handy; wurde ein Tresor auf beiden geändert, fragt Keystead, welcher Stand gilt.",
   "settings.autoLock": "Automatisch sperren",
   "settings.autoLockDesc": "Nach dieser Zeit ohne Aktivität wird der Tresor gesperrt.",
   "settings.lockInBackground": "Sperren im Hintergrund",

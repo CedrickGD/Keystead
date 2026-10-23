@@ -762,3 +762,42 @@
   max-width: none;
   font-size: 14px;
 }
+
+/* Stage 2b: the phone's welcome also offers a new vault ("oder" between the two ways). */
+.phone-welcome .choice-card {
+  width: 100%;
+}
+
+.welcome-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 16px 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.welcome-or::before,
+.welcome-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Linked read-only: the phone's changes do not reach the PC until the folder is picked again. */
+.relink-banner {
+  width: 100%;
+}
+
+.relink-banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.relink-banner-body .btn {
+  margin-top: 4px;
+}

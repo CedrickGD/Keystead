@@ -47,11 +47,13 @@ export function MainScreen() {
   const copy = useCopy();
   const copySecret = useCopySecret();
   const { vault, lock, showUnlock, info, phoneLayout } = useApp();
-  // The phone: nothing in the vault changes here (no write command exists
-  // there), and the desktop's file dialogs are missing. Every write action
-  // below returns early on `readOnly` as well – the UI hides them anyway.
+  // `readOnly`: no write command exists (no platform since stage 2b, kept
+  // for safety); every write action below returns early on it as well. The
+  // phone edits items but not attachments (`attachmentsReadOnly`: previews
+  // only), and has neither import nor the desktop's file dialogs.
   const readOnly = info.readOnly;
   const mobile = isPhonePlatform(info.platform);
+  const attachmentsReadOnly = readOnly || info.attachmentsReadOnly;
   // Via a ref: `reload` must not change (and refetch) with every context update.
   const showUnlockRef = useRef(showUnlock);
   showUnlockRef.current = showUnlock;
@@ -76,7 +78,7 @@ export function MainScreen() {
     importSeq.current += 1;
     setImportDialog({ request: path ? { path, seq: importSeq.current, others } : null });
   }, []);
-  useFileDropTarget((path, others) => openImport(path, others), !readOnly);
+  useFileDropTarget((path, others) => openImport(path, others), !readOnly && !mobile);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Phone layout: the sidebar is a drawer (menu button in the list header
   // and the page bar); Escape and the back gesture close it like a menu.
@@ -421,7 +423,7 @@ export function MainScreen() {
   };
 
   const addAttachment = async (item: ItemListEntry) => {
-    if (attaching || readOnly) return;
+    if (attaching || attachmentsReadOnly) return;
     let path: string | null;
     try {
       path = await pickAttachmentFile(t("attachments.pickTitle"));
@@ -472,7 +474,7 @@ export function MainScreen() {
   };
 
   const removeAttachment = async (attachment: AttachmentListEntry) => {
-    if (readOnly) return;
+    if (attachmentsReadOnly) return;
     const ok = await confirm({
       title: t("attachments.removeTitle"),
       message: t("attachments.removeText", { name: attachment.name }),
@@ -721,6 +723,7 @@ export function MainScreen() {
           onSaveAttachment={(attachment) => void saveAttachment(attachment)}
           onRemoveAttachment={(attachment) => void removeAttachment(attachment)}
           readOnly={readOnly}
+          attachmentsReadOnly={attachmentsReadOnly}
           canSaveAttachments={!mobile}
           onBack={phoneLayout ? () => setSelectedId(null) : undefined}
         />
@@ -764,7 +767,7 @@ export function MainScreen() {
   }
 
   return (
-    <ImportLauncherContext.Provider value={readOnly ? null : openImport}>
+    <ImportLauncherContext.Provider value={readOnly || mobile ? null : openImport}>
       <div className={`shell ${drawerShown ? "drawer-open" : ""}`}>
         <Sidebar
           vaultName={vault?.name ?? ""}
