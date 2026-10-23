@@ -655,9 +655,184 @@ fn run_sync(
         incoming: &incoming,
         data_dir,
     };
-    let result = sync_entries(&ctx, &link.files, only);
+    let result = sync_entries(&ctx, &link.files, only).and_then(|files| {
+        flush_outbox(&ctx)?;
+        Ok(files)
+    });
     let _ = fs::remove_dir_all(&incoming);
     result.map(|files| (files, writable))
+}
+
+// ---------------------------------------------------------------------------
+// Conflict copies waiting for the folder (`<data>/sync/outbox.json`)
+// ---------------------------------------------------------------------------
+
+/// A conflict copy in `<data>/conflicts/` that the folder has not got yet
+/// as the phone's conflict copy: the folder could not be written when it
+/// was made (no write permission, an error), or an unlock made it
+/// (`sync_trial::settle`) – the next sync writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingCopy {
+    vault_id: String,
+    /// Its file name in `<data>/conflicts/`.
+    copy: String,
+}
+
+/// Held while the outbox changes (an unlock queues, a sync writes).
+static OUTBOX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn outbox_lock() -> std::sync::MutexGuard<'static, ()> {
+    OUTBOX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn outbox_path(data_dir: &Path) -> PathBuf {
+    sync_dir(data_dir).join("outbox.json")
+}
+
+/// Read leniently: missing or damaged → none.
+fn load_outbox(data_dir: &Path) -> Vec<PendingCopy> {
+    match fs::read(outbox_path(data_dir)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            log(format_args!("the conflict copy outbox is unreadable: {e}"));
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_outbox(data_dir: &Path, pending: &[PendingCopy]) -> AppResult<()> {
+    if pending.is_empty() {
+        return match fs::remove_file(outbox_path(data_dir)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        };
+    }
+    fs::create_dir_all(sync_dir(data_dir))?;
+    let mut bytes = serde_json::to_vec_pretty(pending).map_err(CoreError::from)?;
+    bytes.push(b'\n');
+    format::write_atomic(&outbox_path(data_dir), &bytes, false)?;
+    Ok(())
+}
+
+/// Whether `name` is a conflict copy of vault `id` as
+/// `sync_conflict::keep_conflict_copy` names them
+/// (`<id>.keystead.conflict-<digits and dashes>`): nothing else is read
+/// from `<data>/conflicts/` for the folder.
+fn is_conflict_copy_of(name: &str, id: &str) -> bool {
+    sync_base::valid_id(id)
+        && name
+            .strip_prefix(&format!("{id}.{}.conflict-", format::VAULT_EXTENSION))
+            .is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            })
+}
+
+/// Queues the conflict copy at `copy` (in `<data>/conflicts/`) of vault
+/// `id` for the folder: the next sync writes it there as the phone's
+/// conflict copy (best effort).
+pub fn queue_folder_copy(data_dir: &Path, id: &str, copy: &Path) {
+    let Some(name) = copy.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    if !is_conflict_copy_of(name, id) {
+        return;
+    }
+    let _outbox = outbox_lock();
+    let mut pending = load_outbox(data_dir);
+    if pending.iter().any(|p| p.copy == name) {
+        return;
+    }
+    pending.push(PendingCopy {
+        vault_id: id.to_owned(),
+        copy: name.to_owned(),
+    });
+    if let Err(e) = save_outbox(data_dir, &pending) {
+        log(format_args!(
+            "could not queue a conflict copy for the folder: {}",
+            e.code()
+        ));
+    }
+}
+
+/// Creates the phone's conflict copy of vault `id` with `bytes` in the
+/// folder, named after `now` – or the next seconds, if a copy of that
+/// second is already there.
+fn write_conflict_copy_at(
+    folder: &dyn RemoteFolder,
+    id: &str,
+    bytes: &[u8],
+    now: i64,
+) -> AppResult<()> {
+    let mut last = None;
+    for n in 0..5 {
+        let name = sync::phone_conflict_file_name(id, now + n * 1000);
+        match folder.write_conflict_copy(&name, bytes) {
+            Ok(()) => return Ok(()),
+            Err(e) if has_code(&e, NAME_TAKEN) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| AppError::unsupported(NAME_TAKEN)))
+}
+
+/// Writes the queued conflict copies into the folder (when it may be
+/// written); the ones that could not be written stay queued, ones whose
+/// file is gone are dropped. Only a folder that cannot be read any more is
+/// an error.
+fn flush_outbox(ctx: &Ctx<'_>) -> AppResult<()> {
+    if !ctx.writable {
+        return Ok(());
+    }
+    let _outbox = outbox_lock();
+    let pending = load_outbox(&ctx.data_dir);
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let dir = sync_conflict::conflicts_dir(&ctx.data_dir);
+    let mut left = Vec::new();
+    let mut lost = None;
+    for copy in pending {
+        if lost.is_some() {
+            left.push(copy);
+            continue;
+        }
+        if !is_conflict_copy_of(&copy.copy, &copy.vault_id) {
+            continue;
+        }
+        let bytes = match fs::read(dir.join(&copy.copy)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                log(format_args!("could not read a queued conflict copy: {e}"));
+                left.push(copy);
+                continue;
+            }
+        };
+        match write_conflict_copy_at(ctx.folder, &copy.vault_id, &bytes, now_ms()) {
+            Ok(()) => log("wrote a queued conflict copy into the folder"),
+            Err(e) => {
+                log(format_args!(
+                    "could not write a queued conflict copy into the folder: {}",
+                    e.code()
+                ));
+                if is_access_lost(&e) {
+                    lost = Some(e);
+                }
+                left.push(copy);
+            }
+        }
+    }
+    if let Err(e) = save_outbox(&ctx.data_dir, &left) {
+        log(format_args!(
+            "could not update the conflict copy outbox: {}",
+            e.code()
+        ));
+    }
+    lost.map_or(Ok(()), Err)
 }
 
 fn sync_entries(
@@ -1004,12 +1179,23 @@ fn sync_vault_file(
         }
         (Some((file, _)), Some(local_head)) => {
             let base = sync_base::load(data_dir, id, ctx.tree);
+            let at_base = base.as_ref().is_some_and(|b| b.is(local_head));
             match sync_base::decide_copies(core, file, &remote_file, base.as_ref(), &[]) {
                 SyncDecision::OtherVault => Plan::OtherVault,
                 // A write that opened here before and did not descend from
                 // the phone's copy: a conflict, never on trial again.
                 SyncDecision::PullUnverified
                     if trial.diverged.as_ref() == Some(&remote_version) =>
+                {
+                    Plan::Conflict
+                }
+                // Another master password: on trial only over a copy the
+                // folder already had (the base) – over edits of the phone's
+                // it is a conflict, as on the PC. On trial, the unlock with
+                // the new password would put the phone's copy aside (the
+                // side with the old password never wins) without asking.
+                SyncDecision::PullUnverified
+                    if !at_base && password_changed(file, &remote_file) =>
                 {
                     Plan::Conflict
                 }
@@ -1332,10 +1518,21 @@ fn copy_blobs_from(
         }
     };
     let (mut copied, mut failures) = (0, 0);
+    // At most this much per call (the bounds of a conflict copy's blobs): a
+    // folder filled with blob-shaped files fills no phone; the next sync
+    // goes on where this one stopped (blobs already there are skipped).
+    let mut total: u64 = 0;
     for entry in entries.iter().filter(|e| !e.dir) {
         let Some(attachment_id) = attachments::blob_id_of_file_name(&entry.name) else {
             continue;
         };
+        if copied >= sync_conflict::CONFLICT_BLOBS_MAX_COUNT
+            || total >= sync_conflict::CONFLICT_BLOBS_MAX_BYTES
+        {
+            log("stopped copying blobs: too many for one sync");
+            failures += 1;
+            break;
+        }
         let local = attachments::blob_path(local_dir, attachment_id);
         let local_size = fs::metadata(&local)
             .ok()
@@ -1354,7 +1551,10 @@ fn copy_blobs_from(
                     .map_err(AppError::from)
                     .and_then(|()| Ok(format::write_atomic(&local, &bytes, false)?));
                 match stored {
-                    Ok(()) => copied += 1,
+                    Ok(()) => {
+                        copied += 1;
+                        total += bytes.len() as u64;
+                    }
                     Err(e) => {
                         log(format_args!("could not store an attachment: {}", e.code()));
                         failures += 1;
@@ -1588,21 +1788,33 @@ pub fn resolve_conflict(
     }
 }
 
-/// Writes the losing side's vault file `bytes` of vault `id` into the
-/// folder as the phone's conflict copy (best effort: the copy in
-/// `<data>/conflicts/` is there in any case).
-fn write_folder_copy(folder: &dyn RemoteFolder, writable: bool, id: &str, bytes: &[u8], now: i64) {
-    if !writable {
-        log("the conflict copy stays on the phone: the folder may not be written");
-        return;
+/// Writes the losing side's vault file `bytes` of vault `id` – kept as
+/// `copy` in `<data>/conflicts/` – into the folder as the phone's conflict
+/// copy. Only the vault file: its blobs stay with the copy on the phone
+/// (see "Conflict copies" in docs/ARCHITECTURE.md). A folder that may not
+/// be written (or a write that fails) queues it for the next sync
+/// ([`queue_folder_copy`]).
+fn write_folder_copy(
+    folder: &dyn RemoteFolder,
+    writable: bool,
+    data_dir: &Path,
+    id: &str,
+    copy: &Path,
+    bytes: &[u8],
+    now: i64,
+) {
+    if writable {
+        match write_conflict_copy_at(folder, id, bytes, now) {
+            Ok(()) => return,
+            Err(e) => log(format_args!(
+                "could not write the conflict copy into the folder: {}",
+                e.code()
+            )),
+        }
+    } else {
+        log("the conflict copy waits on the phone: the folder may not be written");
     }
-    let name = sync::phone_conflict_file_name(id, now);
-    if let Err(e) = folder.write_conflict_copy(&name, bytes) {
-        log(format_args!(
-            "could not write the conflict copy into the folder: {}",
-            e.code()
-        ));
-    }
+    queue_folder_copy(data_dir, id, copy);
 }
 
 fn resolve_in(
@@ -1677,7 +1889,15 @@ fn resolve_in(
                     ));
                 }
             }
-            write_folder_copy(folder, link.writable, id, &remote_bytes, now);
+            write_folder_copy(
+                folder,
+                link.writable,
+                &data_dir,
+                id,
+                &kept,
+                &remote_bytes,
+                now,
+            );
             let info = {
                 let mut st = core.state();
                 let vault = st
@@ -1702,14 +1922,22 @@ fn resolve_in(
         }
         Keep::Remote => {
             let local_blobs = attachments::dir_for(&local_path);
-            sync_conflict::keep_conflict_copy(
+            let kept = sync_conflict::keep_conflict_copy(
                 &data_dir,
                 id,
                 &local_bytes,
                 Some(&local_blobs),
                 now,
             )?;
-            write_folder_copy(folder, link.writable, id, &local_bytes, now);
+            write_folder_copy(
+                folder,
+                link.writable,
+                &data_dir,
+                id,
+                &kept,
+                &local_bytes,
+                now,
+            );
             let with_attachments = remote.version >= format::FORMAT_VERSION_ATTACHMENTS;
             copy_attachments(folder, &top, id, &local_path, incoming, with_attachments)?;
             let info = install_resolved(
@@ -2219,7 +2447,9 @@ mod tests {
         // until then its salt proves nothing: the fingerprint setup stays.
         assert!(kept_path(&core.data_dir(), &vault_id).is_file());
         assert!(fingerprint_set_up());
-        assert_eq!(unlock("pc-pw").unwrap_err().code(), "wrong_password");
+        // (The old password would open the kept copy instead and make the
+        // folder's a conflict: `the_old_password_after_a_change_on_the_pc_…`.)
+        assert_eq!(unlock("falsch").unwrap_err().code(), "wrong_password");
         assert!(kept_path(&core.data_dir(), &vault_id).is_file());
         assert!(fingerprint_set_up());
         unlock("neu").unwrap();
@@ -3665,9 +3895,8 @@ mod tests {
         let r = s.sync(2);
         assert_eq!(r.outcome, Outcome::Updated);
         assert!(r.password_changed);
-        // The old password no longer opens it; the new one does, and the
-        // copy is confirmed (it descends from the phone's).
-        assert!(open_on_phone(&s.core, &s.id).is_err());
+        // The new password opens it, and the copy is confirmed (it
+        // descends from the phone's).
         unlock_copy(&s.core, &s.id, |st| st.unlock(&s.id, "neu")).unwrap();
         assert!(!on_trial(&s.core.data_dir(), &s.id));
         assert_eq!(s.core.read(names_of).unwrap(), ["danach", "vom PC"]);
@@ -3675,5 +3904,145 @@ mod tests {
         assert!(sync_conflict::list(&s.core.data_dir(), None)
             .unwrap()
             .is_empty());
+    }
+
+    /// Review M2 through the sync: the old password after a new one on the
+    /// PC (or a copy someone put into the folder with a password of their
+    /// own) opens the phone's own state; the folder's copy is a conflict
+    /// the user decides – taking it locks the vault, the new password
+    /// opens it.
+    #[test]
+    fn the_old_password_after_a_change_on_the_pc_keeps_the_phone_state() {
+        let mut s = two_sides();
+        s.core.lock(None);
+        let phone_copy = fs::read(s.local_path()).unwrap();
+        s.v.change_master_password("pc-pw", "neu").unwrap();
+        note(&mut s.v, "danach");
+        s.pc.mirror(&s.v);
+        assert_eq!(s.sync(2).outcome, Outcome::Updated);
+        assert!(on_trial(&s.core.data_dir(), &s.id));
+
+        open_on_phone(&s.core, &s.id).unwrap();
+        assert_eq!(fs::read(s.local_path()).unwrap(), phone_copy);
+        assert_eq!(s.core.read(names_of).unwrap(), ["vom PC"]);
+        // The next sync finds the conflict (checked: another password).
+        let r = s.sync(3);
+        assert_eq!(r.outcome, Outcome::Conflict);
+        assert!(r.password_changed);
+        assert!(s.conflicts()[0].password_changed);
+        assert_eq!(fs::read(s.local_path()).unwrap(), phone_copy);
+        // Taking the PC's state locks; the new password opens it.
+        s.resolve(Keep::Remote).unwrap();
+        assert!(s.core.state().vault.is_none());
+        unlock_copy(&s.core, &s.id, |st| st.unlock(&s.id, "neu")).unwrap();
+        assert_eq!(s.core.read(names_of).unwrap(), ["danach", "vom PC"]);
+    }
+
+    /// Review M1: no base (the first sync with this folder), edits on the
+    /// phone, and the folder's copy is newer with another master password:
+    /// a conflict – never on trial, where the unlock with the new password
+    /// would put the phone's edits aside without asking.
+    #[test]
+    fn a_new_password_without_a_base_is_a_conflict_over_phone_edits() {
+        let mut s = two_sides();
+        edit_on_phone(&s.core, "vom Handy");
+        let local = fs::read(s.local_path()).unwrap();
+        sync_base::remove(&s.core.data_dir(), &s.id).unwrap();
+        s.v.change_master_password("pc-pw", "neu").unwrap();
+        note(&mut s.v, "danach");
+        s.pc.mirror(&s.v);
+        for locked in [false, true] {
+            if locked {
+                s.core.lock(None);
+            }
+            let r = s.sync(2);
+            assert_eq!(r.outcome, Outcome::Conflict, "locked: {locked}");
+            assert!(r.password_changed);
+            assert_eq!(fs::read(s.local_path()).unwrap(), local);
+            assert!(!on_trial(&s.core.data_dir(), &s.id));
+        }
+        // The phone's own password opens its own state; the conflict is
+        // shown (the PC's state can only be taken, not overwritten).
+        open_on_phone(&s.core, &s.id).unwrap();
+        assert_eq!(s.core.read(names_of).unwrap(), ["vom Handy", "vom PC"]);
+        let conflicts = s.conflicts();
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].password_changed);
+    }
+
+    /// Review M1: a copy with a new password that went on trial over the
+    /// base and does not descend from it (a 2.0.x PC): the unlock puts the
+    /// phone's copy aside – the user is told, and the next sync writes it
+    /// into the folder as the phone's conflict copy (once the folder may be
+    /// written; only once).
+    #[test]
+    fn a_copy_put_aside_at_the_unlock_goes_to_the_folder() {
+        let mut s = two_sides();
+        s.core.lock(None);
+        let phone_copy = fs::read(s.local_path()).unwrap();
+        s.v.change_master_password("pc-pw", "neu").unwrap();
+        s.pc.mirror(&s.v);
+        let stripped = with_proof(&s.remote_path(), None);
+        fs::write(s.remote_path(), &stripped).unwrap();
+        assert_eq!(s.sync(2).outcome, Outcome::Updated);
+        assert!(on_trial(&s.core.data_dir(), &s.id));
+
+        unlock_copy(&s.core, &s.id, |st| st.unlock(&s.id, "neu")).unwrap();
+        assert_eq!(fs::read(s.local_path()).unwrap(), stripped);
+        let copies = sync_conflict::list(&s.core.data_dir(), Some(&s.id)).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(fs::read(&copies[0].path).unwrap(), phone_copy);
+        assert!(s.core.emitted().iter().any(|(name, payload)| {
+            name == crate::sync_trial::EVENT_NOTICE
+                && payload["kind"] == crate::sync_trial::NOTICE_KEPT_ASIDE
+        }));
+
+        let in_folder = |s: &TwoSides| -> Vec<Vec<u8>> {
+            fs::read_dir(&s.pc.folder)
+                .unwrap()
+                .map(|e| e.unwrap())
+                .filter(|e| {
+                    sync::vault_id_of_phone_conflict_copy(&e.file_name().to_string_lossy())
+                        == Some(s.id.as_str())
+                })
+                .map(|e| fs::read(e.path()).unwrap())
+                .collect()
+        };
+        // A folder the phone may not write: it waits.
+        s.folder.writable.set(false);
+        s.push(3);
+        assert!(in_folder(&s).is_empty());
+        let outbox = s.core.data_dir().join("sync/outbox.json");
+        assert!(outbox.exists());
+        // Writable: written, once.
+        s.folder.writable.set(true);
+        s.push(4);
+        assert_eq!(in_folder(&s), std::slice::from_ref(&phone_copy));
+        assert!(!outbox.exists());
+        s.push(5);
+        assert_eq!(in_folder(&s).len(), 1);
+    }
+
+    #[test]
+    fn only_conflict_copies_are_queued_for_the_folder() {
+        let id = "29a9e366-e89d-4f3f-8c15-814a2200224b";
+        assert!(is_conflict_copy_of(
+            &format!("{id}.keystead.conflict-20261023-140509"),
+            id
+        ));
+        assert!(is_conflict_copy_of(
+            &format!("{id}.keystead.conflict-20261023-140509-2"),
+            id
+        ));
+        for name in [
+            format!("{id}.keystead"),
+            format!("{id}.keystead.conflict-"),
+            format!("{id}.keystead.conflict-2026/../x"),
+            format!("{id}.keystead.conflict-20261023-140509.attachments"),
+            "other.keystead.conflict-20261023-140509".to_owned(),
+        ] {
+            assert!(!is_conflict_copy_of(&name, id), "{name}");
+        }
+        assert!(!is_conflict_copy_of("../x.keystead.conflict-1", "../x"));
     }
 }

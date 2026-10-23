@@ -196,6 +196,18 @@ function AppRoot({
     [t, toast],
   );
   useEffect(() => subscribeEffect(events.onUnlockRequest(() => setUnlockFocus((n) => n + 1))), []);
+  // An unlock put a synced copy aside, or kept this device's state over a copy
+  // that needs another master password: never only a log line.
+  useEffect(
+    () =>
+      subscribeEffect(
+        events.onSyncNotice((notice) => {
+          const key = notice.kind === "keptOwn" ? "sync.notice.keptOwn" : "sync.notice.keptAside";
+          toast.show({ kind: "info", message: t(key, { name: notice.vaultName }), duration: 12000, carry: true });
+        }),
+      ),
+    [t, toast],
+  );
 
   const updateSettings = useCallback(
     async (patch: Partial<Settings>) => {

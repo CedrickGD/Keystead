@@ -115,6 +115,8 @@ export const en: Record<MessageKey, string> = {
     "The vault was just changed on the phone. Keystead compares it again with the next sync.",
   "error.unsupported.sync_conflict_password":
     "This state still has the old master password and cannot be kept. Take the other state.",
+  "error.unsupported.sync_conflict_blobs_too_many":
+    "The conflict copy would have more attachments than Keystead keeps (over 10,000 files or 2 GB). Keystead stopped before anything in the vault changed – check the attachments.",
   "error.unsupported.sync_conflict_changed":
     "The vault changed once more meanwhile. Keystead has checked it again.",
   "error.unsupported.sync_remote_changed":
@@ -260,7 +262,7 @@ export const en: Record<MessageKey, string> = {
   "unlock.masterPassword": "Master password",
   "unlock.button": "Unlock",
   "unlock.wrongPassword": "Wrong master password. Please try again.",
-  "unlock.passwordChangedOnPc": "Wrong master password. This vault's master password was changed on the PC – use the new one.",
+  "unlock.passwordChangedOnPc": "Wrong master password. The copy from the PC has another master password – if you changed it on the PC, use the new one.",
   "unlock.forgot": "Forgot password?",
   "unlock.createNew": "Create new vault",
   "unlock.footer": "Encrypted locally, no cloud",
@@ -967,9 +969,9 @@ export const en: Record<MessageKey, string> = {
   "sync.conflict.keepPhone": "Keep the phone's state",
   "sync.conflict.later": "Later",
   "sync.conflict.passwordChangedPhone":
-    "The master password was changed on the PC. The phone's state still has the old password and cannot be kept.",
+    "The copy from the PC has another master password – usually because it was changed on the PC. The phone's state still has the old password and cannot be kept. Only take the PC's state if you know the new password – otherwise “Later”.",
   "sync.conflict.passwordChangedPc":
-    "The copy in the cloud folder has another master password. This PC's state cannot be kept.",
+    "The copy in the cloud folder has another master password. This PC's state cannot be kept. Only take it if you know its password – otherwise “Later”.",
   "sync.conflict.lostPcAttachments_one":
     "If you choose the phone's state, {n} attachment that only the PC's state has is missing afterwards. The file stays with the conflict copy.",
   "sync.conflict.lostPcAttachments_other":
@@ -979,9 +981,13 @@ export const en: Record<MessageKey, string> = {
   "sync.conflict.lostPhoneAttachments_other":
     "If you choose the PC's state, {n} attachments that only the phone's state has are missing afterwards. The files stay with the conflict copy.",
   "sync.conflict.copyNotePhone":
-    "Nothing is lost: the other state stays on this phone as a conflict copy and is also put into the cloud folder – the PC offers to restore it (Settings → Phone).",
+    "Nothing is lost: the other state stays on this phone as a conflict copy and is also put into the cloud folder – the PC offers to restore it (Settings → Phone). Its attachments stay only with the copy on the phone; the PC brings back the entries.",
   "sync.conflict.copyNotePc":
     "Nothing is lost: the other state stays on this PC as a conflict copy (data folder, subfolder “conflicts”). Get entries back from it through Settings → Import.",
+  "sync.notice.keptAside":
+    "“{name}”: the new state has another master password and does not build on this device's previous state. The previous state is kept as a conflict copy – from the phone also in the cloud folder, where the PC offers to restore it.",
+  "sync.notice.keptOwn":
+    "“{name}”: the copy in the cloud folder needs another master password than the one you typed. Keystead opened this device's own state – nothing is lost. Keystead then asks which state should count.",
   "sync.offer.title": "New vault in the cloud folder – take it?",
   "sync.offer.text":
     "This vault is not on this PC yet – for example because you created it on the phone. If you take it, it appears in the vault list; you open it with its own master password.",
@@ -995,7 +1001,7 @@ export const en: Record<MessageKey, string> = {
   "sync.offer.listDesc": "These vaults are in the folder but not on this PC yet (e.g. created on the phone).",
   "sync.copies.listTitle": "Conflict copies from the phone",
   "sync.copies.listDesc":
-    "When the phone resolved a conflict, it did not keep this state and put it into the cloud folder. “Restore” opens the import – you choose which entries come back into the open vault.",
+    "When the phone resolved a conflict, it did not keep this state and put it into the cloud folder. “Restore” opens the import – you choose which entries come back into the open vault. Attachments do not come along; they stay with the conflict copy on the phone.",
   "sync.copies.vault": "Vault “{name}” · version {n}",
   "sync.copies.restore": "Restore",
   "sync.copies.dismiss": "Hide",

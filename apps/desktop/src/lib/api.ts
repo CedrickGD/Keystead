@@ -34,6 +34,7 @@ import type {
   SessionState,
   Settings,
   SyncConflict,
+  SyncNotice,
   Strength,
   TotpCode,
   UpdateInfo,
@@ -396,6 +397,8 @@ export const events = {
   /** Both platforms: the open vault's checked sync conflicts changed (`[]`: none). */
   onSyncConflict: (handler: (conflicts: SyncConflict[]) => void) =>
     subscribe<SyncConflict[]>("sync://conflict", handler),
+  /** Both platforms: an unlock put a synced copy aside or kept this device's state (`SyncNotice`). */
+  onSyncNotice: (handler: (notice: SyncNotice) => void) => subscribe<SyncNotice>("sync://notice", handler),
   /** Phone: the cloud-folder sync started or ended, or the folder was (un)linked. */
   onSyncStatus: (handler: (status: FolderStatus) => void) => subscribe<FolderStatus>("sync://status", handler),
   /** Phone: the app left the foreground (Android `onPause`); revealed values are hidden. */

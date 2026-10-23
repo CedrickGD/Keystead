@@ -652,6 +652,21 @@ export interface SyncConflict {
   remoteDigest: string;
 }
 
+/**
+ * Something an unlock did with a synced copy that the user has to know about
+ * (`sync://notice`, both platforms; shown as a toast). No secrets.
+ * `keptAside`: this device's previous copy (another master password, edits the
+ * new copy does not descend from) was kept as a conflict copy – on the phone
+ * also in the cloud folder. `keptOwn`: the folder's copy needs another master
+ * password than the one typed; this device's own state was opened and the
+ * folder's copy becomes a conflict.
+ */
+export interface SyncNotice {
+  kind: "keptAside" | "keptOwn";
+  vaultId: string;
+  vaultName: string;
+}
+
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
 export interface MirrorStatus {
   /** `Settings.mirrorFolder`; null = off. */

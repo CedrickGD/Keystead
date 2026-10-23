@@ -116,6 +116,8 @@ export const de = {
     "Der Tresor wurde auf dem Handy gerade geändert. Keystead gleicht ihn bei der nächsten Synchronisierung ab.",
   "error.unsupported.sync_conflict_password":
     "Dieser Stand hat noch das alte Master-Passwort und kann deshalb nicht behalten werden. Übernimm den anderen Stand.",
+  "error.unsupported.sync_conflict_blobs_too_many":
+    "Die Konfliktkopie hätte mehr Anhänge als Keystead aufbewahrt (über 10.000 Dateien oder 2 GB). Keystead hat abgebrochen, bevor sich etwas am Tresor geändert hat – prüfe die Anhänge.",
   "error.unsupported.sync_conflict_changed":
     "Der Tresor hat sich inzwischen noch einmal geändert. Keystead hat ihn neu geprüft.",
   "error.unsupported.sync_remote_changed":
@@ -269,7 +271,7 @@ export const de = {
   "unlock.masterPassword": "Master-Passwort",
   "unlock.button": "Entsperren",
   "unlock.wrongPassword": "Falsches Master-Passwort. Bitte versuche es erneut.",
-  "unlock.passwordChangedOnPc": "Falsches Master-Passwort. Das Master-Passwort dieses Tresors wurde am PC geändert – nutze das neue.",
+  "unlock.passwordChangedOnPc": "Falsches Master-Passwort. Die Kopie vom PC hat ein anderes Master-Passwort – hast du es am PC geändert, nutze das neue.",
   "unlock.forgot": "Passwort vergessen?",
   "unlock.createNew": "Neuen Tresor erstellen",
   "unlock.footer": "Lokal verschlüsselt, ohne Cloud",
@@ -988,9 +990,9 @@ export const de = {
   "sync.conflict.keepPhone": "Stand vom Handy behalten",
   "sync.conflict.later": "Später",
   "sync.conflict.passwordChangedPhone":
-    "Das Master-Passwort wurde am PC geändert. Der Stand vom Handy hat noch das alte Passwort und kann deshalb nicht behalten werden.",
+    "Die Kopie vom PC hat ein anderes Master-Passwort – meist, weil es am PC geändert wurde. Der Stand vom Handy hat noch das alte Passwort und kann deshalb nicht behalten werden. Übernimm den Stand vom PC nur, wenn du das neue Passwort kennst – sonst „Später“.",
   "sync.conflict.passwordChangedPc":
-    "Die Kopie im Cloud-Ordner hat ein anderes Master-Passwort. Der Stand dieses PCs kann deshalb nicht behalten werden.",
+    "Die Kopie im Cloud-Ordner hat ein anderes Master-Passwort. Der Stand dieses PCs kann deshalb nicht behalten werden. Übernimm sie nur, wenn du ihr Passwort kennst – sonst „Später“.",
   "sync.conflict.lostPcAttachments_one":
     "Wählst du den Stand vom Handy, fehlt danach {n} Anhang, den nur der Stand vom PC hat. Die Datei bleibt bei der Konfliktkopie erhalten.",
   "sync.conflict.lostPcAttachments_other":
@@ -1000,9 +1002,13 @@ export const de = {
   "sync.conflict.lostPhoneAttachments_other":
     "Wählst du den Stand vom PC, fehlen danach {n} Anhänge, die nur der Stand vom Handy hat. Die Dateien bleiben bei der Konfliktkopie erhalten.",
   "sync.conflict.copyNotePhone":
-    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy und wird zusätzlich in den Cloud-Ordner gelegt – der PC bietet an, ihn wiederherzustellen (Einstellungen → Handy).",
+    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy und wird zusätzlich in den Cloud-Ordner gelegt – der PC bietet an, ihn wiederherzustellen (Einstellungen → Handy). Seine Anhänge bleiben nur bei der Kopie auf dem Handy; am PC kommen die Einträge zurück.",
   "sync.conflict.copyNotePc":
     "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem PC (Datenordner, Unterordner „conflicts“). Einträge daraus holst du über Einstellungen → Importieren zurück.",
+  "sync.notice.keptAside":
+    "„{name}“: Der neue Stand hat ein anderes Master-Passwort und baut nicht auf dem bisherigen Stand dieses Geräts auf. Der bisherige Stand ist als Konfliktkopie aufbewahrt – vom Handy aus auch im Cloud-Ordner, wo der PC anbietet, ihn wiederherzustellen.",
+  "sync.notice.keptOwn":
+    "„{name}“: Die Kopie im Cloud-Ordner braucht ein anderes Master-Passwort als das eingegebene. Keystead hat den eigenen Stand dieses Geräts geöffnet – nichts ist verloren. Danach fragt Keystead, welcher Stand gelten soll.",
   "sync.offer.title": "Neuer Tresor im Cloud-Ordner – übernehmen?",
   "sync.offer.text":
     "Diesen Tresor gibt es auf diesem PC noch nicht – zum Beispiel, weil du ihn am Handy erstellt hast. Übernimmst du ihn, erscheint er in der Tresor-Liste; du öffnest ihn mit seinem eigenen Master-Passwort.",
@@ -1016,7 +1022,7 @@ export const de = {
   "sync.offer.listDesc": "Diese Tresore liegen im Ordner, aber noch nicht auf diesem PC (z. B. am Handy erstellt).",
   "sync.copies.listTitle": "Konfliktkopien vom Handy",
   "sync.copies.listDesc":
-    "Das Handy hat bei einem Konflikt diesen Stand nicht behalten und ihn in den Cloud-Ordner gelegt. „Wiederherstellen“ öffnet den Import – du wählst, welche Einträge in den geöffneten Tresor zurückkommen.",
+    "Das Handy hat bei einem Konflikt diesen Stand nicht behalten und ihn in den Cloud-Ordner gelegt. „Wiederherstellen“ öffnet den Import – du wählst, welche Einträge in den geöffneten Tresor zurückkommen. Anhänge kommen dabei nicht mit; sie bleiben bei der Konfliktkopie auf dem Handy.",
   "sync.copies.vault": "Tresor „{name}“ · Version {n}",
   "sync.copies.restore": "Wiederherstellen",
   "sync.copies.dismiss": "Ausblenden",

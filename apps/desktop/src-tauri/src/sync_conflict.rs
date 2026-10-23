@@ -504,11 +504,31 @@ pub fn keep_conflict_copy(
 pub const BLOB_MAX_BYTES: u64 =
     attachments::ATTACHMENT_MAX_BYTES + attachments::BLOB_OVERHEAD as u64;
 
+/// At most this many blobs go with one conflict copy: 1,000 items with
+/// the most attachments one item may have
+/// (`attachments::ATTACHMENTS_PER_ITEM_MAX`) – far beyond a real vault.
+pub const CONFLICT_BLOBS_MAX_COUNT: u32 = 1_000 * attachments::ATTACHMENTS_PER_ITEM_MAX as u32;
+/// At most this many bytes of blobs go with one conflict copy: 100 of the
+/// largest attachments (`attachments::ATTACHMENT_MAX_BYTES`, ~2 GiB).
+pub const CONFLICT_BLOBS_MAX_BYTES: u64 = 100 * BLOB_MAX_BYTES;
+/// Error code: the blob folder of a conflict copy holds more blobs (or
+/// bytes) than [`CONFLICT_BLOBS_MAX_COUNT`] / [`CONFLICT_BLOBS_MAX_BYTES`]:
+/// the copy stopped there (the vault file and the blobs copied so far
+/// stay) – nothing fills the disk.
+pub const CONFLICT_BLOBS_TOO_MANY: &str = "sync_conflict_blobs_too_many";
+
 /// Copies the blob files of `from` into `to` (created when there is one):
 /// only `<id>.bin` files of at most [`BLOB_MAX_BYTES`] that look like a
 /// blob (`attachments::looks_like_blob`) – a folder the cloud app or the
-/// user filled with other things fills no disk here. Returns how many.
+/// user filled with other things fills no disk here – and at most
+/// [`CONFLICT_BLOBS_MAX_COUNT`] blobs of [`CONFLICT_BLOBS_MAX_BYTES`]
+/// together: beyond that it stops with
+/// `unsupported:sync_conflict_blobs_too_many`. Returns how many.
 pub fn copy_blobs(from: &Path, to: &Path) -> AppResult<u32> {
+    copy_blobs_bounded(from, to, CONFLICT_BLOBS_MAX_COUNT, CONFLICT_BLOBS_MAX_BYTES)
+}
+
+fn copy_blobs_bounded(from: &Path, to: &Path, max_count: u32, max_bytes: u64) -> AppResult<u32> {
     use std::io::Read as _;
     let entries = match fs::read_dir(from) {
         Ok(entries) => entries,
@@ -516,6 +536,7 @@ pub fn copy_blobs(from: &Path, to: &Path) -> AppResult<u32> {
         Err(e) => return Err(e.into()),
     };
     let mut copied = 0;
+    let mut total: u64 = 0;
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
@@ -525,9 +546,16 @@ pub fn copy_blobs(from: &Path, to: &Path) -> AppResult<u32> {
         if attachments::blob_id_of_file_name(name).is_none() || !entry.file_type()?.is_file() {
             continue;
         }
-        if entry.metadata()?.len() > BLOB_MAX_BYTES {
+        let size = entry.metadata()?.len();
+        if size > BLOB_MAX_BYTES {
             log(format_args!("not kept: {name} is too large for a blob"));
             continue;
+        }
+        if copied >= max_count || total.saturating_add(size) > max_bytes {
+            log(format_args!(
+                "a conflict copy's blobs stopped after {copied} ({total} bytes): too many"
+            ));
+            return Err(AppError::unsupported(CONFLICT_BLOBS_TOO_MANY));
         }
         let mut blob = Vec::new();
         fs::File::open(entry.path())?
@@ -540,6 +568,7 @@ pub fn copy_blobs(from: &Path, to: &Path) -> AppResult<u32> {
         fs::create_dir_all(to)?;
         format::write_atomic(&to.join(name), &blob, false)?;
         copied += 1;
+        total += blob.len() as u64;
     }
     Ok(copied)
 }
@@ -652,6 +681,36 @@ mod tests {
 
         // Nothing but a vault id names a file.
         assert!(keep_conflict_copy(&data, "../x", b"x", None, AT).is_err());
+    }
+
+    /// Review L5: a blob folder with more than the bound stops the copy
+    /// with an error instead of filling the disk.
+    #[test]
+    fn too_many_blobs_stop_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        fs::create_dir_all(&from).unwrap();
+        for n in 0..5 {
+            fs::write(
+                from.join(format!("{n}b5d7c1e-8f2a-4d3b-9c6e-1a2b3c4d5e6f.bin")),
+                blob_bytes(),
+            )
+            .unwrap();
+        }
+        let size = blob_bytes().len() as u64;
+        // Within both bounds: all of them.
+        let to = dir.path().join("all");
+        assert_eq!(copy_blobs_bounded(&from, &to, 5, 5 * size).unwrap(), 5);
+        // One too many by count, or by bytes: stopped and reported.
+        for (count, bytes) in [(4, 5 * size), (5, 4 * size + 1)] {
+            let to = dir.path().join(format!("cut-{count}-{bytes}"));
+            let err = copy_blobs_bounded(&from, &to, count, bytes).unwrap_err();
+            assert_eq!(err.code(), format!("unsupported:{CONFLICT_BLOBS_TOO_MANY}"));
+            assert_eq!(fs::read_dir(&to).unwrap().count(), 4);
+        }
+        // The real bounds follow the attachment limits.
+        assert_eq!(CONFLICT_BLOBS_MAX_COUNT, 10_000);
+        const { assert!(CONFLICT_BLOBS_MAX_BYTES > 2_000_000_000) };
     }
 
     #[test]

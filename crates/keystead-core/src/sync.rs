@@ -189,8 +189,13 @@ impl SyncBase {
 pub const SYNC_PROOF_KEY: &str = "syncProof";
 /// The proof format this build writes and verifies (`v`).
 pub const SYNC_PROOF_VERSION: u64 = 1;
-/// At most this many ancestors (newest first); older ones drop off.
-pub const SYNC_PROOF_MAX_ANCESTORS: usize = 64;
+/// At most this many ancestors (newest first); older ones drop off. Each
+/// save adds one, so this is how many writes one side may make before the
+/// other side's base drops out of the proof (then: a conflict, never a
+/// silent pull). 512 digests are ~34 KB of header and ~37 KB of MAC input
+/// per write – small next to `VAULT_FILE_MAX_BYTES`; the MAC encodes the
+/// count as `be64`, so the bound is the format's, not the encoding's.
+pub const SYNC_PROOF_MAX_ANCESTORS: usize = 512;
 /// Domain separation of the MAC input.
 const PROOF_DOMAIN: &[u8] = b"keystead-sync-proof:1";
 /// HKDF `info` of the proof key.
@@ -220,9 +225,17 @@ fn is_digest(s: &str) -> bool {
 /// The proof `file` carries, unverified – `None` without one, or with one
 /// of another version or out of bounds (more than
 /// [`SYNC_PROOF_MAX_ANCESTORS`] ancestors, anything but lowercase hex
-/// digests).
+/// digests). The bounds are checked on the parsed header value before any
+/// ancestor is copied out of it: an oversized list is refused without
+/// allocating its strings again.
 pub fn proof_of(file: &VaultFile) -> Option<SyncProof> {
     let value = file.extra.0.get(SYNC_PROOF_KEY)?;
+    let ancestors = value.get("ancestors")?.as_array()?;
+    if ancestors.len() > SYNC_PROOF_MAX_ANCESTORS
+        || !ancestors.iter().all(|a| a.as_str().is_some_and(is_digest))
+    {
+        return None;
+    }
     let proof = SyncProof::deserialize(value).ok()?;
     let ok = proof.v == SYNC_PROOF_VERSION
         && proof.ancestors.len() <= SYNC_PROOF_MAX_ANCESTORS
@@ -888,7 +901,9 @@ mod tests {
             list(&["h", "x", "a", "b", "c", "d"])
         );
         assert_eq!(next_lineage(&["a"], &[&own]), list(&["a", "b", "c"]));
-        let long: Vec<String> = (0..200).map(|n| format!("{n:064x}")).collect();
+        let long: Vec<String> = (0..SYNC_PROOF_MAX_ANCESTORS + 100)
+            .map(|n| format!("{n:064x}"))
+            .collect();
         let next = next_lineage(&["h"], &[&long]);
         assert_eq!(next.len(), SYNC_PROOF_MAX_ANCESTORS);
         assert_eq!(next[0], "h");
@@ -992,8 +1007,25 @@ mod tests {
         v2.v = 2;
         assert_eq!(proof_of(&with_proof(&genuine, &v2)), None);
         let mut many = proof.clone();
-        many.ancestors = (0..65).map(|n| format!("{n:064x}")).collect();
+        many.ancestors = (0..=SYNC_PROOF_MAX_ANCESTORS)
+            .map(|n| format!("{n:064x}"))
+            .collect();
         assert_eq!(proof_of(&with_proof(&genuine, &many)), None);
+        // Exactly at the bound is still a proof (it does not verify: edited).
+        many.ancestors.pop();
+        assert!(proof_of(&with_proof(&genuine, &many)).is_some());
+        // Ancestors that are not digests, or not strings at all.
+        for bad in [
+            serde_json::json!([1, 2]),
+            serde_json::json!(["F".repeat(64)]),
+            serde_json::json!("not a list"),
+        ] {
+            let mut value = serde_json::to_value(&proof).unwrap();
+            value["ancestors"] = bad.clone();
+            let mut f = genuine.clone();
+            f.extra.0.insert(SYNC_PROOF_KEY.into(), value);
+            assert_eq!(proof_of(&f), None, "{bad}");
+        }
         // Not an object at all.
         let mut garbage = genuine.clone();
         garbage

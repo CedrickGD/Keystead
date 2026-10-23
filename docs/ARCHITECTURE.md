@@ -303,6 +303,9 @@ folder and copies them in, and writes the vault files it changed back
     folder's copy was about to replace its copy; the push after it looks
     again), `unsupported:sync_conflict_password` (`resolve_sync_conflict`
     with `keep: "local"` for a folder copy with another master password),
+    `unsupported:sync_conflict_blobs_too_many` (a conflict copy's blob
+    folder holds more than 10,000 blobs or ~2 GiB – `CONFLICT_BLOBS_MAX_*`;
+    the copy stopped there, the resolution did not happen; both platforms),
     `unsupported:sync_conflict_changed` (either copy changed since the
     conflict was recorded, or the digests the dialog passed are not the
     recorded ones – it was synced again; fetch `sync_conflicts` anew),
@@ -373,7 +376,12 @@ folder and copies them in, and writes the vault files it changed back
     **update** (with the vault open: checked and stored at once, the
     previous file kept as `.bak`; locked: only **on trial**, below; never
     over an edit the phone saved since the sync read its copy,
-    `sync_local_changed`); only the phone's changed → **push** (below); the
+    `sync_local_changed`; a copy with **another master password** (KDF salt
+    or parameters) goes on trial only over a phone copy that **is** the sync
+    base – over edits of the phone's, or without a base, it is a conflict
+    with `passwordChanged`, as on the PC: at the unlock with the new
+    password the old password's copy would otherwise be put aside without
+    asking); only the phone's changed → **push** (below); the
     same write → nothing (the base is recorded); anything else – both
     changed, no base and nothing proven, a newer copy without (valid) proof
     or from another branch, however high its revision – → **conflict**
@@ -424,9 +432,26 @@ folder and copies them in, and writes the vault files it changed back
     side's vault file is kept as a conflict copy in `<data>/conflicts/` **and**
     written into the folder as `<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`
     (`sync::phone_conflict_file_name`; the plugin's `writeConflictCopy` only
-    creates, never writes over a file; best effort – the phone's copy is
-    there in any case), which the PC lists and offers to restore (the phone
-    has no import). **Keep the PC's** (`remote`): the phone's blobs go with
+    creates, never writes over a file; a copy of the same second there → the
+    next seconds), which the PC lists and offers to restore (the phone has
+    no import). A folder that may not be written (or a failed write) queues
+    it: `<data>/sync/outbox.json` (`[{ vaultId, copy }]`, the copy's file
+    name in `<data>/conflicts/`; camelCase, no secrets, read leniently) –
+    every later sync with a writable folder writes the queued copies and
+    drops them (a copy whose file is gone is dropped too). **Only the vault
+    file** goes into the folder: the conflict copy's blobs stay in
+    `<data>/conflicts/<copy>.attachments/` on the phone, and the PC's
+    restore brings back the entries only – the Keystead import carries no
+    attachments at all (it re-encrypts items into the open vault; blobs are
+    sealed with the source vault's key and id), so writing the blobs into
+    the folder would give the PC nothing it could restore. The dialog
+    (`sync.conflict.copyNotePhone`) and the PC's list
+    (`sync.copies.listDesc`) say so. A conflict copy's blobs are bounded
+    (`sync_conflict::copy_blobs`: at most 10,000 blobs – 1,000 items with
+    the 10 attachments one item may have – and ~2 GiB – 100 of the largest
+    attachments; beyond that `unsupported:sync_conflict_blobs_too_many`,
+    nothing filled the disk); the copy-in of the folder's blobs stops at the
+    same bounds per sync (the rest counts as failed, the next sync goes on). **Keep the PC's** (`remote`): the phone's blobs go with
     its conflict copy, the PC's blobs are copied, its file replaces the
     phone's (the base becomes its head) and the open session is replaced by
     one of the new copy – another master password: the copy goes on trial
@@ -494,15 +519,24 @@ folder and copies them in, and writes the vault files it changed back
     parameters and the same password (or fingerprint KEK) opens the kept
     copy (`kept_copy_opens`, from a scratch store `<data>/sync/probe`,
     removed again; one extra key derivation for a wrong password while a
-    copy is on trial) → rejected as above. A copy with another master
-    password stays on trial until that password opens it. Known limits:
-    `rejected` remembers one write, so a forger who keeps changing the
-    nonce gets each variant on trial again (each costs one fallback at the
-    next unlock, the kept copy survives); a forged copy with another salt
-    cannot be told from a genuine new password – it stays on trial (the
-    unlock screen says "changed on the PC") until the PC's next copy beats
-    the kept revision. The fingerprint setup is never judged by a copy on
-    trial (`sync_trial::on_trial`): the sync, `device_unlock_status` and
+    copy is on trial) → rejected as above. A copy with **another salt**
+    (or KDF parameters) whose password the user does not type never locks
+    them out: when the typed password (or the fingerprint's KEK) does not
+    open it but opens the kept copy, the kept copy is put back and opened
+    (the same unlock), that write is remembered as `diverged` (not
+    rejected: it may be a genuine new password the user has not learned
+    yet) – the sync after the unlock records the conflict with
+    `passwordChanged`, whose dialog says to take it only with its password
+    – and the user is told (`sync://notice`, `keptOwn`). The new password of
+    a genuine change still opens the copy on trial. Known limit: `rejected`
+    remembers one write, so a forger who keeps changing the nonce gets each
+    variant on trial again (each costs one fallback at the next unlock, the
+    kept copy survives). The fingerprint setup is never judged by a copy on
+    trial (`sync_trial::on_trial`; true only while the vault file on disk
+    **is** the unconfirmed write – a record whose write never reached the
+    disk, the process ended between recording the trial and writing the
+    copy, is stale and cleaned up when the file on disk is the kept copy or
+    nothing was kept): the sync, `device_unlock_status` and
     the unlock leave a setup with another salt alone, the unlock answers
     `unsupported:device_unlock_needs_password`; once that copy opens with
     the password (`confirm`), a setup for another salt is reset. With the vault open, its keys check
@@ -521,8 +555,10 @@ folder and copies them in, and writes the vault files it changed back
     on trial again (a conflict instead). Only a kept copy the new master
     key cannot open (the password was changed on the other side; the side
     with the old password never wins) is not put back: it is kept in
-    `<data>/conflicts/` and the new copy confirmed. A copy the user chose in
-    a conflict (`Trial.chosen`) is confirmed without this check.
+    `<data>/conflicts/` (on the phone also queued for the folder, see
+    "Conflicts") and the new copy confirmed – and the user is told
+    (`sync://notice`, `keptAside`), never only in the log. A copy the user
+    chose in a conflict (`Trial.chosen`) is confirmed without this check.
     **Unlock and sync racing** (`sync_trial::unlock_copy`,
     `Core::install_vault_checked`): the session is installed only if the
     file on disk is still the write it opened – checked under the state
@@ -1384,6 +1420,8 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   `<data_dir>/sync/outgoing/` only while a push hands a vault file to the
   folder plugin; `<data_dir>/sync/conflicts.json` – the recorded conflicts
   of the two-way sync (no secrets, see "Conflicts" there);
+  `<data_dir>/sync/outbox.json` – conflict copies in `<data_dir>/conflicts/`
+  the cloud folder has not got yet (no secrets, see "Conflicts" there);
   `<data_dir>/sync/trial/<vault-id>.json` (+ `<vault-id>.keystead`, the copy
   that opened before) – a synced copy that has not opened yet, a rejected
   write of the folder's copy, or one that did not descend from this
@@ -1499,10 +1537,16 @@ files, settings, plain-text exports) share this.
     (`sync::head_of`, lowercase hex SHA-256 over `"keystead-sync:1\0" ‖
     payload.ciphertext ‖ "\0" ‖ wrappedKey.nonce ‖ "\0" ‖
     wrappedKey.ciphertext`, the base64 strings) of the writes this write
-    descends from, **newest first**, at most 64
-    (`SYNC_PROOF_MAX_ANCESTORS`; older ones drop off); `mac` = lowercase
-    hex HMAC-SHA256. Anything else (another `v`, more than 64 ancestors,
-    not 64 lowercase hex digits, not an object) counts as no proof.
+    descends from, **newest first**, at most 512
+    (`SYNC_PROOF_MAX_ANCESTORS`; older ones drop off – one side may save 512
+    times before the other side's base drops out of the proof, which then
+    is a conflict, never a silent pull; 512 digests are ~34 KB of header);
+    `mac` = lowercase hex HMAC-SHA256. Anything else (another `v`, more
+    than 512 ancestors, not 64 lowercase hex digits, not an object) counts
+    as no proof; `proof_of` checks the count and the shape on the parsed
+    header value before it copies any ancestor out (the header itself is
+    bounded by the vault file's 64 MiB). The MAC encodes the count as
+    `be64` – no limit of the encoding.
   * Key: `K_sync = HKDF-SHA256(IKM = the vault key (32 B), salt = none
     (32 zero bytes), info = "keystead-sync-lineage:1")`, one 32-byte block
     (`crypto::hkdf_sha256`, built on the `hmac`/`sha2` crates).
@@ -2390,6 +2434,14 @@ or `…/releases` without a version).
   resolved or gone); the payload is the open vault's checked conflicts
   (`[]` without one). The UI shows the conflict dialog while a vault is
   open.
+* `sync://notice` – payload `SyncNotice` `{ kind, vaultId, vaultName }` –
+  both platforms: an unlock did something with a copy on trial the user has
+  to know about (`kind`: `keptAside` – this device's previous copy, with
+  another master password and edits the new copy does not descend from,
+  was kept as a conflict copy, on the phone also for the folder;
+  `keptOwn` – the folder's copy needs another master password than the one
+  typed, this device's own state was opened and the folder's copy becomes
+  a conflict). `App.tsx` shows it as a toast (`sync.notice.*`).
 * `app://suspended` – payload `{}` – phone only: the app left the
   foreground (`WindowEvent::Suspended`, the activity's `onPause`).
   `useRevealedValue` hides revealed secrets and attachment previews on it,
