@@ -752,17 +752,24 @@ fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
 /// generator presets and the default preset to the preset commands,
 /// `syncServer` to `set_sync_server` / `clear_sync_server` (they test the
 /// server and store or remove its password) – except that a new
-/// `mirrorFolder` replaces the server (one method per PC).
+/// `mirrorFolder` replaces the server (one method per PC), and only from a
+/// page that knew the server: a page that read the settings before
+/// `set_sync_server` still has the old folder and no server, and its save
+/// must not bring the folder back over the server (its `mirrorFolder` is
+/// ignored then).
 fn from_the_page(mut page: Settings, stored: &Settings) -> Settings {
     page.device_unlock = stored.device_unlock;
     page.generator_presets = stored.generator_presets.clone();
     page.generator_default = stored.generator_default.clone();
-    page.sync_server = if page.mirror_folder.is_some() && page.mirror_folder != stored.mirror_folder
-    {
-        None
+    let picks_folder = page.mirror_folder.is_some() && page.mirror_folder != stored.mirror_folder;
+    if stored.sync_server.is_some() && page.sync_server != stored.sync_server {
+        page.mirror_folder = stored.mirror_folder.clone();
+        page.sync_server = stored.sync_server.clone();
+    } else if picks_folder {
+        page.sync_server = None;
     } else {
-        stored.sync_server.clone()
-    };
+        page.sync_server = stored.sync_server.clone();
+    }
     page
 }
 
@@ -1011,14 +1018,27 @@ mod tests {
             Some(server.clone())
         );
         assert_eq!(from_the_page(page, &Settings::default()).sync_server, None);
-        // ... but a new cloud folder replaces it (one method per PC).
+        // ... but a new cloud folder from a page that knew the server
+        // replaces it (one method per PC) ...
         let page = Settings {
             mirror_folder: Some("/home/max/Nextcloud/Keystead".into()),
+            sync_server: Some(server.clone()),
             ..Settings::default()
         };
         let saved = from_the_page(page.clone(), &stored);
         assert_eq!(saved.sync_server, None);
         assert_eq!(saved.mirror_folder, page.mirror_folder);
+        // ... while a page that read the settings before the server was set
+        // (the old folder, no server) undoes nothing.
+        let stale = Settings {
+            mirror_folder: Some("/home/max/Nextcloud/Keystead".into()),
+            language: keystead_core::settings::Language::En,
+            ..Settings::default()
+        };
+        let saved = from_the_page(stale, &stored);
+        assert_eq!(saved.sync_server, Some(server.clone()));
+        assert_eq!(saved.mirror_folder, None);
+        assert_eq!(saved.language, keystead_core::settings::Language::En);
         // The same folder again (stored with it somehow) keeps it.
         let both = Settings {
             mirror_folder: page.mirror_folder.clone(),

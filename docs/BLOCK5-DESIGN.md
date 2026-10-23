@@ -1,4 +1,4 @@
-<!-- Arbeitsdokument, Stand 2026-10-16 (Entscheidungstabelle und Stand-Vermerke 2026-10-17, Stufe 2b 2026-10-23). Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
+<!-- Arbeitsdokument, Stand 2026-10-16 (Entscheidungstabelle und Stand-Vermerke 2026-10-17, Stufen 2b und 2c 2026-10-23). Entwurf aus fünf Leseberichten (Tauri-Backend, Core, UI, Android-Plattform, CI/Doku), drei unabhängigen Entwürfen (Sicherheit / Nutzer / Wartbarkeit) und einer Zusammenführung; dazu eine iOS-Recherche. Die Entscheidungen des Besitzers stehen oben; der Rest ist Entwurfstext mit Begründungen. Umgesetzte Teile wandern nach ARCHITECTURE.md. -->
 
 # Block 5 „Mobile“ – Entwurf und Entscheidungen
 
@@ -13,7 +13,7 @@
 | E3 | Sperre im Hintergrund | Standard 1 Minute, einstellbar (Sofort / 1 min / 5 min / Nie) |
 | E4 | Stufe 1 und 2a | Handy nur lesend. **Stand 2026-10-23 (Stufe 2b umgesetzt):** das Handy bearbeitet jetzt – Einträge (anlegen, ändern, Papierkorb, wiederherstellen, endgültig löschen), Favoriten, Ordner, Tags, Tresor umbenennen und neu anlegen; Anhänge bleiben am Handy nur ansehbar; Master-Passwort, Wiederherstellungsschlüssel, Tresor löschen, Import und Export bleiben am PC |
 | E5 | Fingerabdruck | Opt-in, Standard aus; Plugin-Rust-API wenn verifiziert, sonst eigenes Kotlin-Plugin. **Stand 2026-10-17:** umgesetzt mit (a), `tauri-plugin-biometric` 2.5 (`biometric_cipher`), `allowDeviceCredential = false` |
-| E6 | Netz | Stufe 1 ohne INTERNET-Berechtigung; ab Stufe 2 Update-Hinweis über das Mini-Kotlin-Plugin; Website-Icons und HIBP auf Android dauerhaft aus. **Stand 2026-10-17 (Entscheidung der Umsetzungsläufe, zur Bestätigung):** die App bleibt auch ab Stufe 2 **ohne INTERNET** – kein Update-Hinweis, kein `fetchText` im Kotlin-Plugin; „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Opener gibt den Link an den Browser, dafür braucht die App keine Berechtigung); das Hauptmanifest deklariert keine Berechtigung, das APK-Gate prüft das gemergte Manifest |
+| E6 | Netz | Stufe 1 ohne INTERNET-Berechtigung; ab Stufe 2 Update-Hinweis über das Mini-Kotlin-Plugin; Website-Icons und HIBP auf Android dauerhaft aus. **Stand 2026-10-17 (Entscheidung der Umsetzungsläufe, zur Bestätigung):** die App bleibt auch ab Stufe 2 **ohne INTERNET** – kein Update-Hinweis, kein `fetchText` im Kotlin-Plugin; „Über Keystead“ bietet „Releases auf GitHub öffnen“ (der Opener gibt den Link an den Browser, dafür braucht die App keine Berechtigung); das Hauptmanifest deklariert keine Berechtigung, das APK-Gate prüft das gemergte Manifest **Stand 2026-10-23 (Besitzer, Stufe 2c): aufgehoben für den Server-Abgleich** – die App bekommt `INTERNET` (nur für einen WebDAV-Server, den der Nutzer verbindet) und `ACCESS_NETWORK_STATE` („Nur über WLAN“), sonst keine Berechtigung (Positivliste im APK-Gate); Update-Hinweis, Website-Icons und HIBP bleiben am Handy aus |
 | E7 | Desktop-Seite des Syncs | neue Einstellung „Kopie im Cloud-Ordner aktuell halten“. **Stand 2026-10-17:** umgesetzt (`mirrorFolder`, Einstellungen → Handy), samt Anhang-Ordner |
 | E8 | Backup | `allowBackup="false"` + dataExtractionRules |
 | E9 | CI | Android bei jedem Push mitbauen |
@@ -24,6 +24,12 @@
 | E14 | Neuer Tresor im Ordner (PC) | **2026-10-23:** der PC fragt, bevor er einen Tresor aus dem Cloud-Ordner übernimmt, den er nicht hat (z. B. am Handy angelegt): Angebot „Übernehmen“ / „Nicht übernehmen“, nie still |
 | E15 | Tresor am Handy anlegen | **2026-10-23:** erlaubt, auch ohne verbundenen Ordner (bleibt bis dahin nur auf dem Handy, `localOnly`; wird geschrieben, sobald ein beschreibbarer Ordner verbunden ist) |
 | E16 | Anhänge am Handy | **2026-10-23:** nur ansehen (kein Anhängen, Speichern, Entfernen); ein Bearbeiten am Handy behält die Anhänge des PCs |
+| E17 | Sync für jeden (Stufe 2c) | **2026-10-23:** viele Anbieter, über WLAN und mobile Daten, jeder wählt selbst (mit oder ohne Konto). Reihenfolge: **WebDAV zuerst** (Nextcloud, ownCloud, NAS wie UGREEN/Synology, Koofr, GMX/WEB.DE, MagentaCLOUD …), danach Google Drive + Dropbox (OAuth, der Besitzer registriert kostenlose Entwickler-Apps), OneDrive, evtl. direkt PC↔Handy im WLAN. Der Ordner-Weg bleibt; nie ein Keystead-Server. **Umgesetzt:** WebDAV auf beiden Seiten (ARCHITECTURE „Server sync (WebDAV)“) |
+| E18 | Server-Passwort | App-Passwort empfohlen; gespeichert je Server-Ordner unter `sync/credentials/` – Windows DPAPI, Android eigener Keystore-Schlüssel (AES-GCM, nur bei entsperrtem Handy, nicht der Fingerabdruck-Schlüssel), Linux/macOS nur im Speicher (nach Neustart erneut fragen); nie in `settings.json`/`link.json`, nie im Log, nie zurück an die Oberfläche |
+| E19 | Zertifikate | nur `https` (Debug-Builds auch `http` zu `localhost`/`10.0.2.2`); System-Vertrauen oder **genau ein** vom Nutzer bestätigtes Zertifikat (SHA-256-Fingerabdruck, z. B. beim NAS); ändert es sich, fragt Keystead erneut; keine Weiterleitungen |
+| E20 | Eine Methode | am PC entweder Cloud-Ordner oder Server (das eine ersetzt das andere), am Handy eine Verbindung; gemischt geht trotzdem (PC über den Nextcloud-Ordner, Handy per WebDAV in denselben Ordner) |
+| E21 | Server-Ordner | wird nie von selbst angelegt – nur über „Ordner anlegen“ im Formular; Keystead legt dort nur seine Dateien im Layout des Cloud-Ordners ab und löscht nur, was der PC-Spiegel auch im Ordner löscht (alte Anhänge, eine entfernte Tresorkopie) |
+| E22 | Wann (Server) | Handy wie beim Ordner, dazu Pause nach Serverfehlern 1 → 2 → 5 → 15 min für automatische Abgleiche („Jetzt synchronisieren“ immer); „Nur über WLAN synchronisieren“ Standard **aus**; PC prüft den Server alle 60 s (Ordner: 20 s) plus bei Fokus und Entsperren; kein Hintergrunddienst |
 
 ---
 
@@ -143,6 +149,18 @@ Grundlage für alles: der Core kennt nur Dateipfade; `write_atomic` (Temp-Datei 
 - **Konfliktdialog** (Handy und PC gleich, in einfachen Worten): „Der Tresor wurde am PC und am Handy geändert, seit beide zuletzt abgeglichen wurden.“ Knöpfe: [Stand vom PC übernehmen] / [Stand vom Handy behalten] / [Später]. Die verlierende Seite wird als `<id>.keystead.conflict-<Datum>` im jeweiligen Datenordner behalten (nie im Cloud-Ordner) und ist über den bestehenden Import mit Dublettenprüfung nachholbar. **Kein automatischer Merge** – das wäre neuer Core-Code mit Regeln für Ordner/Tags/Icons/Historie/Anhänge. Rollback: eine ältere Remote-Revision wird nie still eingespielt.
 - Cloud-Datei ist **untrusted input**: Größenlimit 64 MiB, `parse` + KDF-Grenzen vor jedem Schreiben in `vaults/`; Header-Felder (`kdf`, `wrappedKey`, `name`) sind nicht authentifiziert, aber die AAD bindet `id:revision` – ohne Schlüssel kein Klartext. Der Cloud-Anbieter sieht Tresorname (Klartext im Header!), Revision und Änderungszeiten – das muss in die Doku.
 - Passwortwechsel nur am PC (Handy-UI hat die Zeile nicht), damit `KeyChanged` nur in eine Richtung auftritt.
+
+### Stufe 2c – Server-Abgleich (WebDAV), 2026-10-23
+
+Wunsch des Besitzers: Abgleich für jeden, ohne Cloud-App, über WLAN und
+mobile Daten (E17–E22). Umgesetzt als eigene, schlanke WebDAV-Schicht unter
+den unveränderten Engines (Entscheidungsregel, `syncProof`, Probe, Konflikte):
+`remote::Remote` mit `RemoteDirFolder` (Handy) und `RemoteStore` (PC-Spiegel),
+WebDAV-Client auf reqwest mit eigenem TLS (Positivliste, Pinning), Passwort
+nach E18, Oberfläche „Abgleich über“ am PC und „Mit Server verbinden (WebDAV)“
+am Handy. Vertrag: ARCHITECTURE „Remote backends“, „Server sync (WebDAV)“,
+„Server credentials“, „Network (stage 2c)“. Danach: Google Drive + Dropbox
+(weitere `Remote`-Implementierungen mit OAuth), OneDrive.
 
 ### Alternativen (verworfen / aufgeschoben)
 

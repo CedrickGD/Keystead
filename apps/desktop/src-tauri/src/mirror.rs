@@ -390,16 +390,19 @@ fn copy_blobs_out(
     Ok((names, copied))
 }
 
-/// Copies the store's blobs of vault `id` that `local_dir` lacks (or whose
-/// size differs) into it, before a pull – the store is untrusted input:
-/// only `<id>.bin` files of a blob's shape and size (the key is in the
-/// vault, so nothing is decrypted here). Returns how many were copied.
+/// Copies the store's blobs of vault `id` that `local_dir` lacks into it,
+/// before a pull – the store is untrusted input: only `<id>.bin` files of a
+/// blob's shape and size (the key is in the vault, so nothing is decrypted
+/// here). A blob never changes under its id, so a local one is replaced only
+/// when it does not even look like a blob (damaged) – never because the
+/// store's has another size (a hostile server could otherwise swap a blob
+/// before the vault file is checked). Returns how many were copied.
 fn copy_blobs_in(store: &dyn MirrorStore, id: &str, local_dir: &Path) -> AppResult<u32> {
     let mut copied = 0;
     for (name, size) in store.blob_names(id)? {
         let target = local_dir.join(&name);
         let local = file_len(&target);
-        if local.is_some() && (size.is_none() || size == local) {
+        if local.is_some() && (size.is_none() || size == local || local_blob_intact(&target)) {
             continue;
         }
         if size.is_some_and(|size| size > BLOB_MAX_BYTES) {
@@ -478,6 +481,11 @@ fn read_copy(path: &Path) -> FolderCopy {
         Ok(_) => FolderCopy::TooLarge,
         Err(e) => FolderCopy::Unreadable(io_err(path, e)),
     }
+}
+
+/// Whether the local blob at `path` has a blob's shape (it is kept then).
+pub(crate) fn local_blob_intact(path: &Path) -> bool {
+    fs::read(path).is_ok_and(|bytes| attachments::looks_like_blob(&bytes))
 }
 
 fn file_len(path: &Path) -> Option<u64> {
@@ -2202,6 +2210,21 @@ impl MirrorTracker {
         std::mem::take(&mut *lock(&self.recorded))
     }
 
+    /// Keeps `jobs` for the next round that runs (a pause after server
+    /// errors, no usable server): the last job per vault wins, as in a
+    /// round, and one scan is enough – so the list stays small.
+    fn defer(&self, jobs: Vec<Job>) {
+        let mut deferred = lock(&self.deferred);
+        for job in jobs {
+            deferred.retain(|d| match (d.vault_id(), job.vault_id()) {
+                (Some(a), Some(b)) => a != b,
+                (None, None) => false,
+                _ => true,
+            });
+            deferred.push(job);
+        }
+    }
+
     fn reset(&self) {
         *lock(&self.progress) = Progress::default();
         lock(&self.backoff).reset();
@@ -2413,7 +2436,7 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
     let _pass = lock(&tracker.pass);
     let method = method_of(&core.state().settings);
     if method.is_some() && !lock(&tracker.backoff).allows_now() {
-        lock(&tracker.deferred).extend(jobs);
+        tracker.defer(jobs);
         return;
     }
     let jobs: Vec<Job> = std::mem::take(&mut *lock(&tracker.deferred))
@@ -2427,10 +2450,12 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
             Ok(store) => Some(store),
             Err(e) => {
                 // No password (any more), an unusable URL: nothing to do
-                // until the server is set again; the new start waits too.
+                // until the server is set again; the new start and the jobs
+                // (a removal among them) wait too.
                 if relinked {
                     tracker.relinked.store(true, Ordering::SeqCst);
                 }
+                tracker.defer(jobs);
                 let results = Results {
                     error: Some(e.code()),
                     ..Results::default()
@@ -4543,6 +4568,83 @@ mod tests {
                 }
             }
             server.write(&format!("{id}.keystead"), &fs::read(v.path()).unwrap());
+        }
+
+        #[test]
+        fn an_intact_blob_is_never_replaced_by_the_servers_copy() {
+            // A blob never changes under its id: a server offering another
+            // size for it (a hostile swap before the vault file is checked)
+            // changes nothing; only a local blob that is no blob any more is
+            // replaced.
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            let item = note(&core, "Ausweis");
+            let a = core
+                .mutate(|v| v.add_attachment(&item, "scan.png", b"\x89PNG fake scan"))
+                .unwrap();
+            let local_dir = attachments::dir_for(&core.store().vault_path(&id));
+            let local = local_dir.join(format!("{}.bin", a.id));
+            let genuine = fs::read(&local).unwrap();
+            let mut swapped = genuine.clone();
+            swapped.push(0);
+            server.write(
+                &format!("{}/{}.bin", remote::blob_dir_name(&id), a.id),
+                &swapped,
+            );
+            assert_eq!(copy_blobs_in(&store, &id, &local_dir).unwrap(), 0);
+            assert_eq!(fs::read(&local).unwrap(), genuine);
+            // Damaged here: the server's copy (a blob's shape) comes in.
+            fs::write(&local, b"damaged").unwrap();
+            assert_eq!(copy_blobs_in(&store, &id, &local_dir).unwrap(), 1);
+            assert_eq!(fs::read(&local).unwrap(), swapped);
+        }
+
+        #[test]
+        fn jobs_wait_while_the_server_cannot_be_used() {
+            // No password for the server (Linux/macOS after a restart): no
+            // request, the code as the status's error – and the jobs, a
+            // removal among them, wait for the next round instead of being
+            // dropped (the last one per vault, one scan).
+            let dir = tempfile::tempdir().unwrap();
+            let settings = Settings {
+                sync_server: Some(SyncServer {
+                    url: "https://127.0.0.1:9/".into(),
+                    user: "max".into(),
+                    folder: "Keystead".into(),
+                    cert_sha256: None,
+                    cas: true,
+                }),
+                ..Settings::default()
+            };
+            let core = core_with_open_vault(dir.path(), settings);
+            let _ = core.mirror().take_recorded();
+            process_round(
+                &core,
+                vec![
+                    Job::Vault("a".into()),
+                    Job::Removed("b".into()),
+                    Job::Scan,
+                    Job::Vault("b".into()),
+                    Job::Scan,
+                ],
+                None,
+            );
+            assert_eq!(
+                *lock(&core.mirror().deferred),
+                [Job::Vault("a".into()), Job::Vault("b".into()), Job::Scan]
+            );
+            process_round(&core, vec![Job::Removed("a".into())], None);
+            assert_eq!(
+                *lock(&core.mirror().deferred),
+                [Job::Vault("b".into()), Job::Scan, Job::Removed("a".into())]
+            );
+            assert_eq!(
+                core.mirror().status(&core).last_error.as_deref(),
+                Some("unsupported:sync_credentials_missing")
+            );
         }
 
         #[test]

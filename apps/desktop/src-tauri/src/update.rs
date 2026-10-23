@@ -18,7 +18,7 @@
 //! Only installed copies update themselves (`canInstall`): the portable
 //! build gets a link to the release page instead.
 //!
-//! The phone has no in-app updates (no network in this stage): only the
+//! The phone has no in-app updates (no update check there): only the
 //! release facts (`REPO_URL`, the endpoints, `release_url`, `UpdateInfo`,
 //! `version_label`) are compiled there – for the About page and a later
 //! update hint –, everything that talks to the plugin is `#[cfg(desktop)]`.

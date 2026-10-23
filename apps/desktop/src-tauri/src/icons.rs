@@ -1,7 +1,7 @@
 //! Website icons (see "Website icons" in docs/ARCHITECTURE.md): the stored
 //! icons of a vault for the UI (`get_icons`) and the browser bridge, and the
 //! loader's view of the vault session ([`IconTracker`], part of `Core`).
-//! The loading itself – desktop only, the phone has no network – lives in
+//! The loading itself – desktop only, the phone does not load icons – lives in
 //! [`fetch`].
 
 use std::collections::BTreeMap;

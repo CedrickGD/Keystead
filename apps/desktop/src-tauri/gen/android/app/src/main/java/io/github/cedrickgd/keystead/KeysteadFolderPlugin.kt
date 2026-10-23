@@ -189,7 +189,8 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   // The network the app would use now: { kind } – "wifi" (Wi-Fi or
-  // Ethernet), "cellular", "other" or "none".
+  // Ethernet, or another network that is not metered – a VPN over Wi-Fi
+  // shows only its own transport), "cellular", "other" or "none".
   @Command
   fun networkKind(invoke: Invoke) {
     val manager = activity.getSystemService(ConnectivityManager::class.java)
@@ -199,6 +200,7 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
       caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
         caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "wifi"
       caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+      caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) -> "wifi"
       else -> "other"
     }
     invoke.resolve(JSObject().apply { put("kind", kind) })

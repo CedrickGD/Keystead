@@ -1642,7 +1642,13 @@ fn copy_blobs_from(
             .ok()
             .filter(|m| m.is_file())
             .map(|m| m.len());
-        if local_size.is_some() && (entry.size.is_none() || entry.size == local_size) {
+        // A blob never changes under its id: an intact one stays (the
+        // folder's copy with another size may be a hostile swap).
+        if local_size.is_some()
+            && (entry.size.is_none()
+                || entry.size == local_size
+                || fs::read(&local).is_ok_and(|bytes| attachments::looks_like_blob(&bytes)))
+        {
             continue;
         }
         if entry.size.is_some_and(|size| size > BLOB_MAX_BYTES) {

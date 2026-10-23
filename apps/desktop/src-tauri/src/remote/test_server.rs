@@ -388,11 +388,12 @@ fn serve(state: &Mutex<State>, stream: &mut (impl Read + Write)) -> Option<()> {
                 st.next += 1;
                 let tag = st.next;
                 let created = st.files.insert(path, (request.body, tag)).is_none();
+                // A body with 201, as `rclone serve webdav` and Apache send.
                 respond(
                     stream,
                     if created { 201 } else { 204 },
                     &[("ETag", etag(tag))],
-                    b"",
+                    if created { b"Created" } else { b"" },
                 );
             }
         }
@@ -403,7 +404,7 @@ fn serve(state: &Mutex<State>, stream: &mut (impl Read + Write)) -> Option<()> {
                 respond(stream, 409, &[], b"");
             } else {
                 st.dirs.insert(path);
-                respond(stream, 201, &[], b"");
+                respond(stream, 201, &[], b"Created");
             }
         }
         "DELETE" => {

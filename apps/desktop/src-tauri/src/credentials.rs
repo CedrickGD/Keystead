@@ -115,14 +115,29 @@ impl Credentials {
     }
 
     /// Stores `password` for the server folder `key` (replacing one stored
-    /// before).
+    /// before). A platform that cannot seal it right now (a Keystore that
+    /// refuses, DPAPI failing) keeps it in memory only – logged by code, the
+    /// app asks again after a restart; linking still works.
     pub fn store(&self, data_dir: &Path, key: &str, password: &Zeroizing<String>) -> AppResult<()> {
         let hash = key_hash(key);
         if let Some(sealer) = self.sealer() {
-            let mut bytes = vec![VERSION];
-            bytes.extend(sealer.seal(&hash, password.as_bytes())?);
-            fs::create_dir_all(dir(data_dir))?;
-            format::write_atomic(&path(data_dir, &hash), &bytes, false)?;
+            match sealer.seal(&hash, password.as_bytes()) {
+                Ok(sealed) => {
+                    let mut bytes = vec![VERSION];
+                    bytes.extend(sealed);
+                    fs::create_dir_all(dir(data_dir))?;
+                    format::write_atomic(&path(data_dir, &hash), &bytes, false)?;
+                }
+                Err(e) => {
+                    log(format_args!(
+                        "the server password is kept in memory only: {}",
+                        e.code()
+                    ));
+                    // An older sealed password of this server must not
+                    // come back after a restart.
+                    let _ = fs::remove_file(path(data_dir, &hash));
+                }
+            }
         }
         lock(&self.memory).insert(hash, password.clone());
         Ok(())
@@ -390,6 +405,37 @@ mod tests {
     #[test]
     fn sealed_credentials_survive_a_restart() {
         round_trip(Some(Arc::new(Mirror)), true);
+    }
+
+    /// A platform store that refuses to seal (a vendor's Keystore, no
+    /// secure lock screen).
+    struct Refusing;
+
+    impl Sealer for Refusing {
+        fn seal(&self, _context: &str, _plain: &[u8]) -> AppResult<Vec<u8>> {
+            Err(AppError::io("keystore unavailable"))
+        }
+        fn open(&self, _context: &str, _sealed: &[u8]) -> AppResult<Zeroizing<Vec<u8>>> {
+            Err(AppError::io("keystore unavailable"))
+        }
+    }
+
+    #[test]
+    fn a_store_that_cannot_seal_keeps_the_password_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        // An older sealed password of the server goes, so it cannot come
+        // back after a restart.
+        Credentials::new(Some(Arc::new(Mirror)))
+            .store(data, KEY, &pw("alt"))
+            .unwrap();
+        assert!(path(data, &key_hash(KEY)).exists());
+        let credentials = Credentials::new(Some(Arc::new(Refusing)));
+        credentials.store(data, KEY, &pw("neu")).unwrap();
+        assert_eq!(credentials.require(data, KEY).unwrap().as_str(), "neu");
+        assert!(!path(data, &key_hash(KEY)).exists());
+        let restarted = Credentials::new(Some(Arc::new(Refusing)));
+        assert_eq!(restarted.load(data, KEY).unwrap(), None);
     }
 
     #[test]

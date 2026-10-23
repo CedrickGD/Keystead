@@ -2,7 +2,8 @@
 
 Keystead (formerly VaultX) is a local-only, Bitwarden-like password manager:
 Tauri 2 desktop app (Rust + React), terminal UI, and a Chromium MV3 extension that
-talks to the app via Native Messaging. **No server, no cloud.** The owner is German;
+talks to the app via Native Messaging. **No Keystead server** – vaults sync only
+through the user's own cloud folder or WebDAV server (stage 2c). The owner is German;
 talk to them in German and ask when a request is ambiguous.
 
 Start with `docs/HANDOFF.md` (current state, open work) and `docs/ARCHITECTURE.md`
@@ -66,8 +67,12 @@ clippy lints break CI otherwise).
   `gen/android/keystore.properties` never enter the repo (keystore in
   `CedrickGD/keys/keystead/`, CI secrets `ANDROID_KEYSTORE_BASE64`,
   `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`; certificate SHA-256 in
-  `build.yml`/README); the main manifest stays without `INTERNET` (debug
-  manifest only). **Never rename `.github/workflows/build.yml`**: its run
+  `build.yml`/README); the main manifest has exactly `INTERNET` (the WebDAV
+  sync – the only network code on the phone) and `ACCESS_NETWORK_STATE`, no
+  cleartext (`network_security_config.xml`); the APK gate allows only the
+  permissions in `ANDROID_PERMISSIONS` (`android-apk.mjs`). The server
+  password lives only in `credentials.rs` (DPAPI / Keystore), never in
+  settings, logs or the webview. **Never rename `.github/workflows/build.yml`**: its run
   number is the APK `versionCode`, a renamed workflow counts from 1 again and
   installed apps refuse every later APK.
 - Security posture to preserve: secrets never reach the webview except on explicit

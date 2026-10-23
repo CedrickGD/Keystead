@@ -73,11 +73,12 @@ pub fn key_of(server: &SyncServer) -> AppResult<String> {
 }
 
 /// The server for a sync, with its stored password
-/// (`unsupported:sync_credentials_missing` without one).
+/// (`unsupported:sync_credentials_missing` without one) and the `If-Match`
+/// answer of its set-up (no probe write per sync).
 pub fn open(core: &Core, server: &SyncServer) -> AppResult<WebDavRemote> {
     let key = key_of(server)?;
     let password = core.credentials().require(&core.data_dir(), &key)?;
-    WebDavRemote::new(&config_of(server, password))
+    Ok(WebDavRemote::new(&config_of(server, password))?.with_cas(server.cas))
 }
 
 /// A server [`connect`] reached: what is stored of it, its folder's key

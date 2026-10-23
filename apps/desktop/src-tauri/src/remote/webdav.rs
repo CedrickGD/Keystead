@@ -57,6 +57,18 @@ pub const BAD_FOLDER: &str = "server_folder";
 pub const DEFAULT_FOLDER: &str = "Keystead";
 /// The file of the `If-Match` probe (never one of the layout's names).
 const CAS_PROBE: &str = ".keystead-cas-probe";
+/// What a status answer (`MKCOL`, the probe's `PUT` and `DELETE`) may carry
+/// as a body – some servers send a short text or HTML page with 201/204
+/// (rclone: "Created"); it is read and dropped.
+const ACK_MAX: u64 = 64 * 1024;
+/// A request gets this long, plus [`MIN_RATE`] for its body, before it is
+/// given up (`sync_offline`): the read timeout alone lets a server that
+/// sends a byte every 29 s hold a sync – and the link or setting changes
+/// that wait for it – for ever.
+const REQUEST_BASE: std::time::Duration = std::time::Duration::from_secs(120);
+/// Bytes per second a transfer must reach on average once
+/// [`REQUEST_BASE`] has passed.
+const MIN_RATE: u64 = 16 * 1024;
 
 /// Characters escaped in a path segment.
 const SEGMENT: &AsciiSet = &CONTROLS
@@ -331,6 +343,14 @@ impl WebDavRemote {
         })
     }
 
+    /// The `If-Match` answer the connection test found when the server was
+    /// set up (`SyncServer.cas`): a sync's probe then needs no `PUT` of the
+    /// probe file (one per sync and push otherwise).
+    pub fn with_cas(self, cas: bool) -> Self {
+        let _ = self.cas.set(cas);
+        self
+    }
+
     /// `path` (relative, validated by the caller) in the folder; `dir`: as
     /// a folder (trailing `/`).
     fn url(&self, path: &str, dir: bool) -> Url {
@@ -363,11 +383,19 @@ impl WebDavRemote {
             .request(method, url)
             .headers(headers)
             .basic_auth(&self.user, Some(self.password.as_str()));
+        // The upload and the answer's headers: the base time plus the body
+        // at the minimum rate.
+        let upload = body.as_ref().map_or(0, |b| b.len() as u64);
+        let send_limit = REQUEST_BASE + std::time::Duration::from_secs(upload / MIN_RATE);
         if let Some(body) = body {
             request = request.body(body);
         }
+        let started = std::time::Instant::now();
         self.runtime.block_on(async move {
-            let mut response = request.send().await.map_err(|e| network_error(&e))?;
+            let mut response = tokio::time::timeout(send_limit, request.send())
+                .await
+                .map_err(|_| AppError::unsupported(OFFLINE))?
+                .map_err(|e| network_error(&e))?;
             let status = response.status();
             let headers = response.headers().clone();
             let mut bytes = Vec::new();
@@ -380,6 +408,14 @@ impl WebDavRemote {
                         return Err(AppError::unsupported(too_large));
                     }
                     bytes.extend_from_slice(&chunk);
+                    // A trickle: below the minimum rate once the base time
+                    // has passed.
+                    let elapsed = started.elapsed();
+                    if elapsed > REQUEST_BASE
+                        && (bytes.len() as u64) < MIN_RATE * (elapsed - REQUEST_BASE).as_secs()
+                    {
+                        return Err(AppError::unsupported(OFFLINE));
+                    }
                 }
             }
             Ok((status, headers, bytes))
@@ -459,14 +495,21 @@ impl WebDavRemote {
             url.clone(),
             headers,
             Some(Vec::new()),
-            0,
+            ACK_MAX,
             BAD_RESPONSE,
         )?;
         if status == StatusCode::PRECONDITION_FAILED {
             return Ok(true);
         }
         if status.is_success() {
-            let _ = self.send(Method::DELETE, url, HeaderMap::new(), None, 0, BAD_RESPONSE);
+            let _ = self.send(
+                Method::DELETE,
+                url,
+                HeaderMap::new(),
+                None,
+                ACK_MAX,
+                BAD_RESPONSE,
+            );
         }
         Ok(false)
     }
@@ -503,8 +546,14 @@ impl WebDavRemote {
             path.push('/');
             url.set_path(&path);
             let method = Method::from_bytes(b"MKCOL").map_err(|_| AppError::invalid("method"))?;
-            let (status, _, _) =
-                self.send(method, url.clone(), HeaderMap::new(), None, 0, BAD_RESPONSE)?;
+            let (status, _, _) = self.send(
+                method,
+                url.clone(),
+                HeaderMap::new(),
+                None,
+                ACK_MAX,
+                BAD_RESPONSE,
+            )?;
             if !(status.is_success() || status == StatusCode::METHOD_NOT_ALLOWED) {
                 return Err(status_error(status, Op::WriteTop));
             }
@@ -550,7 +599,7 @@ impl WebDavRemote {
                         .get(LOCATION)
                         .and_then(|l| l.to_str().ok())
                         .and_then(|l| base.join(l).ok())
-                        .filter(|l| l.host() == base.host() && check_url(l).is_ok()),
+                        .filter(|l| l.origin() == base.origin() && check_url(l).is_ok()),
                 );
             }
             if status != StatusCode::UNAUTHORIZED {

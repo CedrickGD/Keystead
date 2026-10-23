@@ -15,12 +15,14 @@ icons"), and – only when the user presses the button, never on its own – to
 check passwords against Have I Been Pwned, where just the first 5 hex
 characters of a password's SHA-1 leave the device (see "Leaked-password
 check").
-The Android app (read-only in its first stages, editing since stage 2b – see "Mobile (Android)") has
-no network permission at all: it reads encrypted vault copies from a
-folder of the user's own cloud that the user links through the system
-picker – the cloud's own app (Nextcloud, OneDrive) does the transfer, and
-the provider sees the encrypted file with its plain-text header (vault
-name, revision, times), never its content.
+The Android app (read-only in its first stages, editing since stage 2b – see "Mobile (Android)")
+syncs encrypted vault copies with the PC through a folder of the user's own
+cloud that the user links through the system picker – the cloud's own app
+(Nextcloud, OneDrive) does the transfer – or, since stage 2c, directly with
+a WebDAV server of the user's (see "Server sync (WebDAV)"; then the PC can
+use the same server instead of a folder). The provider sees the encrypted
+files with their plain-text header (vault name, revision, times), never
+their content. The phone goes online only to such a server.
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -204,30 +206,33 @@ folder and copies them in, and writes the vault files it changed back
 | Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
 | Desktop mirror | 2a (E7), 2b | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder; since 2b it takes the phone's edits back (scans, pull, conflicts) and offers vaults made on the phone | "Cloud-folder mirror (desktop) and phone link" |
-| No network | 1a–2a (E6) | no `INTERNET` permission, no update check | "No network, and why" below |
+| Network | 1a–2b: none (E6); 2c: the server sync | `INTERNET` + `ACCESS_NETWORK_STATE` for a WebDAV server the user links, nothing else; still no update check | "Network (stage 2c)" below; "Server sync (WebDAV)" |
 
-* **No network, and why**: the APK requests **no `INTERNET` permission**,
-  in every stage so far – also not from stage 2 on, as decision E6 had
-  planned for a "new version" hint through a small Kotlin plugin (dropped
-  by the implementation run of 2026-10-17; for the owner to confirm). Why:
-  the phone needs no network for its job – the user's cloud app moves the
-  files and Keystead only reads its folder through the system's document
-  provider, with no Keystead server anywhere; without the permission
-  Android gives the app no network socket at all, so no bug in the page or
-  in a dependency can send anything over the network by itself; the
-  promise is checkable – the merged manifest of every CI build is gated on
-  it (`android-apk.mjs verify`), and anyone can read it with `aapt2 dump
-  badging`; and the app's own network code (the website-icon fetcher, the
-  leaked-password check and the update check on reqwest, whose platform
-  TLS verifier would panic on Android without JNI set-up) is not built for
-  the phone, so there are no TLS or proxy settings that could be wrong.
-  The price: no update check – About offers "Releases auf GitHub
-  öffnen" (`openExternal`: the opener plugin hands the link to the
-  browser, which needs no permission of Keystead's) and the user installs
-  the newer APK over the old one ("Build, CI and signing" → Updates); no
-  website-icon fetcher (the icons the PC stored in the vault are shown);
-  no leaked-password check. Only the debug manifest adds `INTERNET`, for
-  `tauri android dev` (below).
+* **Network (stage 2c)** – decision E6 revised by the owner on
+  2026-10-23 (sync for everyone, over Wi-Fi and mobile data): the APK
+  requests `INTERNET`, for the server sync only, and `ACCESS_NETWORK_STATE`,
+  for "Nur über WLAN synchronisieren" (whether the phone is on Wi-Fi); the
+  merged manifest adds androidx.biometric's `USE_BIOMETRIC` /
+  `USE_FINGERPRINT` and androidx.core's signature-protected receiver
+  permission – nothing else (the APK gate's allowlist `ANDROID_PERMISSIONS`,
+  `android-apk.mjs`, refuses any other). The only network code on the phone
+  is the WebDAV client (`remote::webdav`, "Server sync (WebDAV)"), and it runs
+  only for a server the user linked; a phone that syncs through a cloud
+  folder sends nothing. Its TLS is Rust's own (`remote::tls`: rustls with the
+  webpki roots – the platform verifier, which would need JNI set-up, is never
+  used there – or exactly the one leaf certificate the user confirmed; a unit
+  test, `on_the_phone_only_this_module_builds_an_http_client`, keeps every
+  other HTTP client off the phone). `res/xml/network_security_config.xml`
+  forbids cleartext and user-installed CAs for everything Android's own stack
+  would do (the WebView loads only the app's pages). Still desktop-only: the
+  update check (About offers "Releases auf GitHub öffnen" – `openExternal`
+  hands the link to the browser – and the user installs the newer APK over
+  the old one, "Build, CI and signing" → Updates), the website-icon fetcher
+  (the icons the PC stored are shown) and the leaked-password check. Up to
+  stage 2b the APK had no `INTERNET` permission at all (no socket, a promise
+  checkable in the manifest); since 2c the manifest still shows exactly what
+  the app may do, and the debug manifest adds nothing (`tauri android dev`
+  gets cleartext from the debug network config, below).
 
 * **Entry point and gates**: the Android shell (`MainActivity`, a
   `TauriActivity`) loads `libkeystead_lib.so` and calls `keystead_lib::run()`
@@ -326,6 +331,16 @@ folder and copies them in, and writes the vault files it changed back
   * lock reasons only the phone sends (`vault://locked`): `background`
     (the background lock) and `keyChanged` (a synced copy of the open vault
     has a new master password);
+  * server sync (stage 2c, "Server sync (WebDAV)"; both platforms) –
+    `unsupported:sync_offline`, `sync_auth_failed`, `sync_not_writable`,
+    `sync_server_folder_missing`, `sync_server_not_webdav`,
+    `sync_server_quota`, `sync_server_error`, `sync_server_response`,
+    `sync_server_certificate`, `sync_remote_changed`, `sync_file_missing`
+    (see "Remote backends"), `sync_credentials_missing` (no stored password
+    for the server – enter it again), `invalid_input:webdav_config`,
+    `invalid_input:server_url`, `invalid_input:server_folder`,
+    `invalid_input:server_link`; not errors but `FolderStatus.skipped`:
+    `sync_wifi_only`, `sync_backoff`;
   * the desktop mirror's codes (`invalid_input:mirror_folder`,
     `invalid_input:mirror_folder_data_dir`,
     `unsupported:mirror_folder_missing`, `unsupported:mirror_other_password`,
@@ -486,10 +501,14 @@ folder and copies them in, and writes the vault files it changed back
     there; the folder's top level was listed before the vault file was
     read, so for a copy with attachments – format version 2 – a blob folder
     missing from that listing is looked up in a fresh one: the PC may have
-    added the vault's first attachment meanwhile); blobs the phone lacks or whose size differs (a blob never
-    changes under its id) are copied – only names `<id>.bin` with a blob's
-    shape (`attachments::looks_like_blob`: magic bytes, size; nothing is
+    added the vault's first attachment meanwhile); blobs the phone lacks are
+    copied – only names `<id>.bin` with a blob's shape
+    (`attachments::looks_like_blob`: magic bytes, size; nothing is
     decrypted) – and stored **before** the phone's vault file is replaced.
+    A blob never changes under its id: one the phone has is replaced only
+    when it does not look like a blob any more (damaged), never because the
+    folder's has another size (since stage 2c – a hostile server could
+    otherwise swap a blob before the vault file is checked).
     Blobs the vault no longer references are left to the core's sweep (on
     unlock, and after a reload of the open vault: an hour after they
     arrived). Vaults the folder no longer has stay on the phone ("missing").
@@ -743,8 +762,9 @@ folder and copies them in, and writes the vault files it changed back
   * **Manifest**: the plugin's library adds its `BiometricActivity` and
     androidx.biometric's `USE_BIOMETRIC` / `USE_FINGERPRINT` (normal
     permissions, granted at install) to the **merged** manifest; the app's
-    own `AndroidManifest.xml` still declares none, and nothing adds
-    `INTERNET` (the APK gate checks the merged result).
+    own `AndroidManifest.xml` declares only `INTERNET` and
+    `ACCESS_NETWORK_STATE` (stage 2c), and the APK gate checks the merged
+    result against its allowlist.
   * **Known limits**: the "reset" note lives in memory (after the process
     ends the vault just has no fingerprint unlock any more – the switch
     shows it off); the plugin's `status` asks Android about *weak*
@@ -870,15 +890,19 @@ itself, like on the desktop, for the navigation and new-window hooks); the
 CSP and everything else are inherited unchanged. CI adds
 `bundle.android.versionCode` (below). Hardening on top of the template,
 guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
-* `AndroidManifest.xml`: **no permission at all** – in particular no
-  `INTERNET` (the phone is offline by design; website icons, the leaked-
-  password check and update checks do not exist there). The merged
-  manifest of the APK gets `USE_BIOMETRIC` and `USE_FINGERPRINT` from the
-  biometric plugin's androidx.biometric (fingerprint unlock, above) and
-  androidx.core's signature-protected `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`
-  – never `INTERNET`. Only
-  `src/debug/AndroidManifest.xml` adds `INTERNET`, because `tauri android
-  dev` loads the UI from the Vite dev server on the PC. `allowBackup=
+* `AndroidManifest.xml`: exactly two permissions – `INTERNET` (the server
+  sync, stage 2c) and `ACCESS_NETWORK_STATE` ("Nur über WLAN") – and
+  `android:networkSecurityConfig="@xml/network_security_config"`
+  (`res/xml/network_security_config.xml`: `cleartextTrafficPermitted="false"`,
+  the system's trust anchors only, no `user` certificates, no domain
+  overrides). The merged manifest of the APK adds `USE_BIOMETRIC` and
+  `USE_FINGERPRINT` from the biometric plugin's androidx.biometric
+  (fingerprint unlock, above) and androidx.core's signature-protected
+  `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` – the APK gate allows exactly
+  these five. `src/debug/AndroidManifest.xml` adds nothing; debug builds
+  replace the network config with `src/debug/res/xml/network_security_config.xml`
+  (cleartext allowed), because `tauri android dev` loads the UI from the Vite
+  dev server on the PC over plain HTTP. `allowBackup=
   "false"` plus `dataExtractionRules` (`res/xml/data_extraction_rules.xml`
   excludes every domain for cloud backup and device-to-device transfer:
   `root`, `file`, `database`, `sharedpref`, `external` and the
@@ -1037,12 +1061,12 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   build --apk --target aarch64` for phones (release build: R8, signed with
   the release key when `keystore.properties` exists, else with the debug
   key), `npx tauri android dev` with a running emulator (UI from the Vite
-  dev server – the reason for the debug manifest's `INTERNET`; not tried
+  dev server – the reason for the debug network config's cleartext; not tried
   in this project yet). The APK lands in
   `gen/android/app/build/outputs/apk/universal/<debug|release>/
   app-universal-<debug|release>.apk` (the "universal" flavour holds just
-  the ABIs that were built). The debug APK has `INTERNET` from the debug
-  manifest, is debuggable, keeps the Rust debug symbols (~200 MB) and is
+  the ABIs that were built). The debug APK allows cleartext (debug network
+  config), is debuggable, keeps the Rust debug symbols (~200 MB) and is
   signed with the debug key. Local builds keep Tauri's default
   `versionCode` (`major*1e6 + minor*1e3 + patch`, 2000001 for 2.0.1) –
   higher than any CI build's, so uninstall such a build before installing
@@ -1100,16 +1124,18 @@ updates"):
   APK that cannot update installed apps), `zipalign -c -P 16 -v 4` (native
   libraries aligned for devices with 16 KB memory pages), `aapt2 dump
   badging` (package `io.github.cedrickgd.keystead`, the expected
-  versionName and versionCode, minSdk 29, no `android.permission.INTERNET`,
-  also not as `<uses-permission-sdk-23>`, not debuggable, `arm64-v8a`
-  code). The step summary shows the APK's
+  versionName and versionCode, minSdk 29, only the permissions of
+  `ANDROID_PERMISSIONS` – `INTERNET`, `ACCESS_NETWORK_STATE`,
+  `USE_BIOMETRIC`, `USE_FINGERPRINT` and the package's
+  `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, also checked as
+  `<uses-permission-sdk-23>` –, not debuggable, `arm64-v8a` code). The step summary shows the APK's
   SHA-256 and the signer certificate. The artifact `Keystead-<version>-
   android` holds `Keystead-<version>-android.apk`; the release job
   attaches it to the release.
-* **Updates**: the phone has no updater and no update check – it stays
-  without the `INTERNET` permission (the "new version" hint through a
-  Kotlin plugin that decision E6 planned for stage 2 was dropped for that;
-  About links to the releases page). The user downloads the newer APK from the releases page
+* **Updates**: the phone has no updater and no update check (the "new
+  version" hint through a Kotlin plugin that decision E6 planned for stage 2
+  was dropped; the network permission of stage 2c serves the server sync
+  only; About links to the releases page). The user downloads the newer APK from the releases page
   and installs it over the old one; the package installer checks
   certificate and versionCode, the app's data stays. `latest.json` and the
   `updater-beta` channel stay desktop-only.
@@ -1121,8 +1147,8 @@ updates"):
 | Browser bridge, extension, pairing (`browser_status`, `respond_pairing`, …) | Native Messaging exists for desktop browsers only; the phone's counterpart is an Autofill service (stage 3) |
 | Terminal UI, `open_terminal`, `open_data_dir`, `open_extension_dir` | no terminal, no file manager to show a path in |
 | Tray, single instance, `--background`, portable mode | no such concepts on Android (one task, app-private storage) |
-| In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no network (above) |
-| Website-icon fetcher, leaked-password check | need the network; reqwest's platform TLS verifier would need JNI set-up; permanently off on the phone (E6) – stored icons are shown (`get_icons`) |
+| In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no update check on the phone (above) |
+| Website-icon fetcher, leaked-password check | they use reqwest's platform TLS verifier, which would need JNI set-up; permanently off on the phone (E6, unchanged by 2c) – stored icons are shown (`get_icons`) |
 | Master password, recovery key (`change_master_password`, `create_recovery_key`, `remove_recovery_key`, `unlock_with_recovery`), `delete_vault` | owner's decision for 2b: a new master password and the recovery key are made on the PC (the phone gets the new password with the next revision); deleting a vault stays a PC action. The phone edits items, folders, tags, the generator history and the vault name, and creates vaults (since 2b) |
 | Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they take file-dialog paths, and Android hands out `content://` URIs; the phone keeps attachments view-only (2b), so it never drops the PC's. The image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
@@ -1285,8 +1311,10 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   reads revision N, the PC writes N+1 without an attachment and removes its
   blob before the phone lists the folder – the phone then has N without
   that attachment until its next sync brings N+1.
-* **Pull** (`mirror::pull`): the folder's blobs the PC lacks (same checks)
-  are copied into `vaults/<id>.keystead.attachments/` first; then, under
+* **Pull** (`mirror::pull`): the folder's blobs the PC lacks (same checks;
+  a local blob is replaced only when it no longer looks like a blob, never
+  because the folder's has another size – `copy_blobs_in`) are copied into
+  `vaults/<id>.keystead.attachments/` first; then, under
   the state lock, the trial lock and the vault file's lock
   (`format::lock_vault_file` – no save of the app or the terminal UI
   interleaves) and only if the PC's file is still the one the decision was
@@ -1401,7 +1429,8 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 
 The I/O seam both engines use for a server; the engines' logic
 (`keystead_core::sync::decide`, sync proof, trial, conflicts) is unchanged.
-Built and tested, **not wired to settings, commands or the UI yet**.
+Wired to the phone's link and the PC's setting in "Server sync (WebDAV)"
+below.
 
 * `remote::Remote` (`Send + Sync`, blocking): `key()` (what bases and the
   link are recorded for – `webdav:<normalized folder URL>`, never
@@ -1444,14 +1473,26 @@ Built and tested, **not wired to settings, commands or the UI yet**.
   hrefs only the folder itself or one entry in it – same origin, no `..`,
   encoded slashes, `\`, NUL), `GET` (capped by `Content-Length` and by
   counting), `PUT` with `If-Match` / `If-None-Match: *`, `MKCOL`, `DELETE`.
-  Connect 15 s, read 30 s, no total timeout, no redirects, Basic auth;
+  Connect 15 s, read 30 s; a request is given up (`sync_offline`) after
+  120 s plus 16 KiB/s of its upload, and a download that stays below
+  16 KiB/s on average once 120 s have passed – a server sending a byte
+  every 29 s cannot hold a sync, nor the link and setting changes that wait
+  for it, for ever. A status answer (`MKCOL`, the probe's `PUT`/`DELETE`)
+  may carry a body of up to 64 KiB (rclone, Apache: "Created"), read and
+  dropped. No redirects, Basic auth;
   `https` only (debug builds also `http` to `localhost` and `10.0.2.2`),
   no credentials in the URL. The probe's `If-Match` test (`PUT` of
   `.keystead-cas-probe` with an ETag no file has: 412 → `cas`, a write
-  that went through is removed again). The connection test
+  that went through is removed again) runs in the connection test only; a
+  sync takes the answer stored with the server (`SyncServer.cas`,
+  `WebDavRemote::with_cas`), so it never writes the probe file. A server
+  without `If-Match` (`rclone serve webdav` is one) loses the atomicity of
+  the PC's push only (the phone reads again right before a write); the sync
+  proof still turns a write over another one into a conflict. The
+  connection test
   (`WebDavRemote::test` → `WebDavTest { ok, code, certificate,
-  suggestedUrl, folderMissing, writable, cas }`) suggests a same-host
-  redirect target or Nextcloud's `/remote.php/dav/files/<user>/` for a bare
+  suggestedUrl, folderMissing, writable, cas }`) suggests a redirect
+  target of the same origin (scheme, host and port) or Nextcloud's `/remote.php/dav/files/<user>/` for a bare
   host only if it answers as a WebDAV folder; `create_folder` is
   "Ordner anlegen" (never done by a sync).
 * TLS (`remote::tls`, the only place on the phone that builds an HTTP
@@ -1465,6 +1506,177 @@ Built and tested, **not wired to settings, commands or the UI yet**.
   TLS with an rcgen certificate, hostile answers) and an in-memory server
   (`remote::mem::MemRemote`: ETags, preconditions, offline, cut uploads, a
   server ignoring `If-Match`) under both engines and across them.
+
+## Server sync (WebDAV)
+
+Stage 2c (the owner's decision of 2026-10-23: sync for everyone, many
+providers, over Wi-Fi and mobile data, each user chooses; `BLOCK5-DESIGN.md`
+E6 revised, E17–E22): instead of a cloud folder, either side keeps its copies
+in a folder on a WebDAV server of the user's – Nextcloud, ownCloud, a NAS
+(Synology, UGREEN, QNAP), Koofr, GMX/WEB.DE, MagentaCLOUD, `rclone serve
+webdav` … No Keystead server, no account with Keystead; only the encrypted
+vault files travel, in the cloud folder's layout (`<id>.keystead`,
+`<id>.keystead.attachments/<id>.bin`, the phone's conflict copies), so the
+methods mix (the PC through the Nextcloud desktop client's folder, the phone
+through WebDAV to the same folder). The engines are the folder's – decision
+rule, sync proof, trial and conflicts unchanged –; only the I/O goes through
+`remote::Remote` ("Remote backends" above). Google Drive, Dropbox (OAuth) and
+OneDrive come later as further `Remote`s.
+
+* **The server** (`keystead_core::settings::SyncServer { url, user, folder,
+  certSha256, cas }`, camelCase, no password): `url` as entered (a server, or
+  a WebDAV folder on it; the client checks it – `https`, debug builds also
+  `http` to `localhost`, `127.0.0.1`, `[::1]` and `10.0.2.2`; no user info,
+  query or fragment → `invalid_input:server_url`), `folder` below it (default
+  "Keystead"; segments without `.`, `..`, `\` or control characters →
+  `invalid_input:server_folder`), `certSha256` the leaf certificate the user
+  confirmed (lowercase hex), `cas` whether the server honoured `If-Match`
+  when it was set up. Its key – what the password, the sync bases, the
+  results and the phone's link are recorded for – is `webdav:<normalized
+  folder URL>` (`sync_server::key_of`); never credentials.
+* **Connecting** (`sync_server::connect`, both platforms): the connection
+  test (`WebDavRemote::test`, "Remote backends") must pass – its code
+  otherwise, nothing changes –; then the password is stored under the
+  folder's key ("Server credentials"). The page sends the password only
+  with `webdav_test`, `webdav_create_folder`, `link_webdav` and
+  `set_sync_server` (`WebDavConfig { url, user, password, folder,
+  certSha256 }`; deserialized into `Zeroizing`, never serialized, its `Debug`
+  without it); no command returns it. A sync never creates the folder
+  (`sync_server_folder_missing`); only "Ordner anlegen" does.
+* **Phone** (`mobile::sync`, `sync_server::{link_server, target}`):
+  `link_webdav(config)` replaces the link like `link_folder` – the new link
+  is saved first, then a folder's permission is given back or another
+  server's password removed (`sync_server::forget_password`), and the
+  conflicts of another folder key are forgotten – and syncs. `LinkState` has
+  `kind` (`"folder"`, the default for links of older versions, or
+  `"webdav"`) and `server`; for a server `treeUri` is its folder's key and
+  `folderName` its folder. Every sync, push and resolution opens the link's
+  target (`sync_server::target`: a server with its stored password –
+  `unsupported:sync_credentials_missing` without one; a link whose server
+  has another key than `treeUri` → `invalid_input:server_link`) and runs
+  `folder_sync` over `remote::folder::RemoteDirFolder`. Triggers as for the
+  folder (start, resume at most every 60 s, 3 s after an edit, at once on
+  `Suspended`, "Jetzt synchronisieren"). **Automatic** syncs and pushes of a
+  server link wait (`sync_server::Backoff`) after an error of the server –
+  `sync_offline`, `sync_server_error`, `sync_server_response`,
+  `sync_server_quota`, `sync_auth_failed` (a server that locks accounts
+  after failed logins is not asked every minute), `sync_server_certificate`,
+  `sync_server_not_webdav`, `sync_server_folder_missing` – for 1, 2, 5, then
+  15 minutes (the monotonic and the wall clock both count, a phone's
+  monotonic clock stands still while it sleeps; any sync that reaches the
+  server ends the pause; errors of single files do not start one); and with
+  "Nur über WLAN synchronisieren" (`Settings.syncWifiOnly`, default off)
+  while the phone is not on Wi-Fi or Ethernet (the folder plugin's
+  `networkKind`, from `ConnectivityManager`'s active network – no network
+  I/O; an unmetered network without these transports, e.g. a VPN over
+  Wi-Fi, counts as Wi-Fi). A push that waits is dropped – the phone's copy stays newer, and the
+  next sync that runs pushes it. `FolderStatus` says why (`skipped`:
+  `sync_wifi_only`, `sync_backoff`) and when the pause ends (`retryAt`, ms).
+  `sync_now` and linking always run. No background service, as for the
+  folder.
+* **PC** (`mirror.rs`, `Settings.syncServer`): one method per PC –
+  `set_sync_server(config)` connects, sets `syncServer` and clears
+  `mirrorFolder`; a new `mirrorFolder` from the page clears `syncServer` –
+  but only from a page that knew the server (its `syncServer` is the
+  stored one): a page that read the settings before `set_sync_server`
+  still has the old folder and no server, and its `mirrorFolder` is ignored
+  (`commands::from_the_page`, which otherwise keeps the stored server: the
+  page cannot set, change or remove it); `clear_sync_server` turns it off. A
+  server that is replaced or turned off loses its stored password
+  (`mirror::server_setting_changed`). The passes are those of the folder over
+  a `RemoteStore` (`MirrorStore` over `WebDavRemote`), kept across rounds in
+  `MirrorTracker` (its stamps and the damaged-copy timer) and built anew when
+  the server or its password changes (`folder_changed`, also for the same
+  server with a new password). The worker scans every `SCAN_INTERVAL_REMOTE`
+  (60 s; every listing is a request) instead of 20 s, plus on focus and
+  unlock. After a server error (the codes above) the rounds pause like the
+  phone's (`Backoff`): jobs that come meanwhile wait in
+  `MirrorTracker.deferred` and run with the next round – nothing is lost,
+  saving never blocks; the periodic scan is skipped; setting the server again
+  ends the pause. A missing password (Linux/macOS after a restart) or an
+  unusable URL makes every round report its code (`lastError`) without any
+  request; its jobs – a removal among them – wait in `deferred` as well
+  (the last job per vault, one scan). `MirrorStatus` has `kind` (`"folder"`/`"webdav"`/`null`),
+  `server`, `passwordKept` (Windows: `true`; elsewhere the password is asked
+  again after a restart) and `retryAt`. Offers, the phone's conflict copies,
+  adoption and conflicts work as for the folder, against the server
+  (`folder_offers`, `adopt_folder_vault`, `restore_folder_conflict_copy`,
+  `resolve_sync_conflict`, …). After `set_sync_server` / `clear_sync_server`
+  the page reads the settings again (`AppContext.reloadSettings`), so a
+  stale `mirrorFolder` in the page never undoes the choice.
+* **What the server sees**: the login, the file names (vault and attachment
+  ids), sizes, times and ETags, and the vault files' plain-text header (vault
+  name, revision, times, KDF parameters) – never an item, an attachment's
+  name or a key. A hostile server can withhold, delay or replay files – denial
+  of service or an older copy, which the sync decision rule, the sync proof
+  and the copies on trial keep from replacing anything newer or from being
+  taken unproven; its answers are bounded ("Remote backends").
+* **UI** (`components/WebDavForm.tsx`, both platforms): server address,
+  user name, app password (the form recommends one, and says where the
+  password is kept), folder (default "Keystead"); "Verbindung testen" →
+  `webdav_test`: an untrusted certificate shows subject, issuer, validity
+  and the SHA-256 fingerprint with "Diesem Zertifikat vertrauen" (the
+  fingerprint goes into the config and is tested again; it belongs to the
+  address it was confirmed for – another address drops it), a suggested URL
+  with "Übernehmen", a missing folder with "Ordner anlegen"
+  (`webdav_create_folder`), an error as its text; once the test passed,
+  "Verbinden" (phone `link_webdav`, PC `set_sync_server`). The password lives
+  in the dialog's state only. **Phone**, Settings → Synchronisierung: without
+  a link "Cloud-Ordner wählen" and "Mit Server verbinden (WebDAV)" (Google
+  Drive and Dropbox named as "bald"); a server link shows its URL, user and
+  folder with "Server ändern" – "Passwort erneut eingeben" after
+  `sync_credentials_missing` or `sync_auth_failed` – and "Stattdessen
+  Cloud-Ordner", "Nur über WLAN synchronisieren", why an automatic sync
+  waited; a folder link offers "Stattdessen WebDAV-Server"; the welcome
+  screen offers both ways (`PhoneServerDialog` in `components/FolderSync.tsx`),
+  the unlock screen's sync line says why a sync waited. **PC**, Settings →
+  Synchronisierung: "Abgleich über" Kein Abgleich / Cloud-Ordner /
+  WebDAV-Server (the folder dialog or the server form; "Kein Abgleich" turns
+  the current one off), the folder or the server with its status (last copy,
+  last pull, error, pause); Settings → Handy keeps the offers, the phone's
+  conflict copies and the three steps.
+* **Mock** (`?platform=…` as usual): the server form answers by the URL –
+  "demo" connects, "selfsigned" first asks to trust its certificate, "fail"
+  refuses the login, "demo-missing" lacks the folder until "Ordner anlegen",
+  anything else is offline; `?sync=server` (phone) and `?mirror=server` (PC)
+  start with a demo server.
+* **Error codes**: see "Remote backends"; also
+  `unsupported:sync_credentials_missing`, `invalid_input:webdav_config`,
+  `invalid_input:server_url`, `invalid_input:server_folder`,
+  `invalid_input:server_link`.
+
+### Server credentials (`src-tauri/src/credentials.rs`)
+
+* One password per server folder, under the folder's key:
+  `<data_dir>/sync/credentials/<first 32 hex digits of SHA-256(key)>.bin` (a
+  version byte, then the sealed bytes; the name tells nothing about the
+  server). Never in `settings.json` or `link.json`, never logged, never back
+  to the webview.
+* Sealed by the platform (`trait Sealer`, the key hash bound to the sealed
+  bytes): **Windows** DPAPI (`CryptProtectData`, the user's login secret, no
+  prompt, `CRYPTPROTECT_UI_FORBIDDEN`, the key hash as additional entropy –
+  another Windows user or another PC, e.g. a portable copy, cannot open it;
+  the app then asks again); **Android** the Kotlin plugin
+  `KeysteadSecretPlugin` (`mobile::secret`, plugin `keystead-secret`, no
+  capability grants it to the webview): AES-256-GCM with a key made inside
+  the Android Keystore (alias `keystead-sync-credential`, no user
+  authentication per use – the sync runs in the app's background –, but
+  `setUnlockedDeviceRequired(true)`: usable only while the phone is
+  unlocked; not the fingerprint unlock's key, no shared preferences), the
+  key hash as associated data, off the UI thread, nothing logged (unit tests
+  in `gui.rs` guard the file); **Linux/macOS** none yet – memory only
+  (`Credentials::persistent` is false, `MirrorStatus.passwordKept` says so).
+  A platform store that cannot seal right now (a vendor Keystore that
+  refuses, DPAPI failing) does not block connecting: the password is kept
+  in memory only (logged by code; an older file of that server is removed)
+  and asked for again after a restart.
+* A password is `Zeroizing` in memory and, once loaded, kept there while the
+  app runs (the sync may need it while the phone is locked, when the Keystore
+  key is not usable). A file that cannot be opened (another user, a reset
+  Keystore, damaged) counts as none (logged by code only) →
+  `unsupported:sync_credentials_missing`; the UI asks for it again. On
+  Android it crosses the plugin bridge as a JSON string (Kotlin strings
+  cannot be wiped).
 
 ## Data locations (`keystead_core::paths`)
 
@@ -1535,6 +1747,13 @@ Built and tested, **not wired to settings, commands or the UI yet**.
   losing side's blobs beside it in `<copy>.attachments/`. The phone also
   writes the losing side into the cloud folder as
   `<vault-id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`.
+* Server sync (stage 2c, both platforms): `<data_dir>/sync/credentials/<32 hex>.bin`
+  – the server's password, sealed (Windows DPAPI, Android Keystore; Linux
+  and macOS keep it in memory only), one file per server folder, named after
+  the first 32 hex digits of the SHA-256 of the folder's key (see "Server
+  credentials"). The phone's server link is in `sync/link.json` (`kind`
+  `"webdav"`, `server` – no password); the PC's server is
+  `Settings.syncServer`.
 * Desktop, when turned on: the copies in `Settings.mirrorFolder` (outside
   the data directory; `<id>.keystead` and `<id>.keystead.attachments/`, see
   "Cloud-folder mirror (desktop) and phone link") – the app keeps working on
@@ -2296,6 +2515,11 @@ interface Settings {
   mirrorFolder: string | null;               // desktop: "Kopie im Cloud-Ordner aktuell halten" – the folder (absolute path) with the encrypted copies of the vaults
                                              // opened in the app, for the phone; null = off (default). A changed value is checked before saving
                                              // (see "Cloud-folder mirror (desktop) and phone link"). The phone ignores it
+  syncServer: SyncServer | null;             // desktop: the WebDAV server instead of the folder (stage 2c, "Server sync (WebDAV)"); null = none (default).
+                                             // { url, user, folder = "Keystead", certSha256: string|null, cas: boolean } – no password. Only set_sync_server /
+                                             // clear_sync_server change it; save_settings keeps the stored value, except that a new mirrorFolder clears it
+                                             // (one method per PC). Loading drops one without a URL, an empty folder becomes "Keystead". The phone ignores it
+  syncWifiOnly: boolean;                     // mobile: automatic syncs with a server only on Wi-Fi ("Nur über WLAN synchronisieren"); default false
   generatorPresets: GeneratorPreset[];       // the user's presets { id, name, options: GeneratorOptions }; default []; built-ins are not stored
   generatorDefault: string;                  // id of the default preset (built-in or user); default "standard"
 }
@@ -2309,8 +2533,9 @@ written as `null` and read back as `null`. `mirrorFolder`: a path is kept
 as written; empty (or only spaces) counts as `null`.
 On the phone the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
 `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
-`updateChannel`, `mirrorFolder`) are kept but do nothing, as do the two
-mobile fields on the desktop (see "Mobile (Android)").
+`updateChannel`, `mirrorFolder`, `syncServer`) are kept but do nothing, as
+do the mobile fields on the desktop (`lockInBackgroundSeconds`,
+`deviceUnlock`, `syncWifiOnly`; see "Mobile (Android)").
 `generatorPresets` is parsed preset by preset (`id` and `name` must be
 strings; `options` field by field via `GeneratorOptions::from_json_lenient`,
 so a value of a later version costs only that field). Loading and saving
@@ -2978,7 +3203,7 @@ itself, **directly from the websites** (no icon service, no proxy), in the
 background, and keeps them **inside the encrypted vault** – loose files would
 reveal which sites the user has accounts with. `Settings.websiteIcons`
 (default on) switches the loading off; stored icons are still shown. The
-loader (`icons/fetch.rs`) is desktop-only; the phone (no network) only
+loader (`icons/fetch.rs`) is desktop-only; the phone (no icon fetcher) only
 shows the icons stored in the vault (`get_icons`).
 
 * **Model** (`VaultData.icons`, `#[serde(default)]` – older vaults open
@@ -3646,7 +3871,7 @@ old one, see "Mobile (Android)"). `tauri-plugin-updater` 2 +
   then the gates of `.github/scripts/android-apk.mjs verify` (signature –
   on publishing builds exactly the release certificate
   `ANDROID_RELEASE_CERT_SHA256` –, 16 KB alignment, package, versionName/
-  versionCode, minSdk, no `INTERNET`, not debuggable, arm64) and the
+  versionCode, minSdk, only the allowed permissions, not debuggable, arm64) and the
   artifact `Keystead-<version>-android` with
   `Keystead-<version>-android.apk`.
 * **release** (tags `v*`, or pushes whose commit message contains

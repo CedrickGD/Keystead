@@ -16,10 +16,12 @@
 //!   read saw, `If-None-Match: *` for a file that must not exist yet. A
 //!   precondition that fails is `unsupported:sync_remote_changed`
 //!   ([`CHANGED`]) – the engines look again. A server that ignores the
-//!   preconditions loses the atomicity only: the engines still read the
-//!   copy again before a write and the authenticated ancestry (sync proof)
-//!   turns a write that went over another one into a conflict on the other
-//!   side, never into a silent pull.
+//!   preconditions (`SyncServer.cas` false; `rclone serve webdav` is one)
+//!   loses the atomicity only: the phone still reads the copy again right
+//!   before a write (the PC's server store relies on the precondition), and
+//!   the authenticated ancestry (sync proof) turns a write that went over
+//!   another one into a conflict on the other side, never into a silent
+//!   pull.
 //! * Errors are codes (`unsupported:<code>`), never URLs or credentials.
 //!
 //! Backends: [`webdav::WebDavRemote`] (any WebDAV server: Nextcloud,
