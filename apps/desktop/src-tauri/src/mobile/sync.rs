@@ -1,11 +1,21 @@
 //! The phone's cloud-folder sync on top of [`crate::folder_sync`]: the
-//! Kotlin plugin `KeysteadFolderPlugin` (gen/android) as the
-//! [`RemoteFolder`], the commands `folder_status`, `link_folder`,
-//! `sync_now` and `unlink_folder` (plus the phone's side of the shared
-//! `resolve_sync_conflict`, [`resolve`]), the automatic sync at start and
-//! whenever the app comes back to the foreground (at most every
-//! [`AUTO_SYNC_INTERVAL`]), and the push after an edit ([`push_soon`]).
-//! See "Cloud-folder sync (phone)" in docs/ARCHITECTURE.md.
+//! Kotlin plugin `KeysteadFolderPlugin` (gen/android) – or, for a server
+//! link (stage 2c), `remote::folder::RemoteDirFolder` over the WebDAV
+//! client with the password from `crate::credentials` – as the
+//! [`RemoteFolder`] of every sync, push and resolution
+//! ([`crate::sync_server::target`]); the commands `folder_status`,
+//! `link_folder`, `link_webdav`, `sync_now` and `unlink_folder` (plus the
+//! phone's side of the shared `resolve_sync_conflict`, [`resolve`]), the
+//! automatic sync at start and whenever the app comes back to the
+//! foreground (at most every [`AUTO_SYNC_INTERVAL`]), and the push after an
+//! edit ([`push_soon`]). See "Cloud-folder sync (phone)" and "Server sync
+//! (WebDAV)" in docs/ARCHITECTURE.md.
+//!
+//! * Automatic syncs and pushes of a server link wait after server errors
+//!   (`sync_server::Backoff`: 1, 2, 5, then 15 minutes) and – with
+//!   "Nur über WLAN synchronisieren" (`Settings.syncWifiOnly`) – while the
+//!   phone is not on Wi-Fi (the folder plugin's `networkKind`); the status
+//!   says why (`skipped`). `sync_now` and linking always sync.
 //!
 //! * The plugin is called from Rust only: no capability grants
 //!   `keystead-folder:*` to the webview, and Tauri checks the ACL for every
@@ -33,11 +43,13 @@ use keystead_core::model::VaultInfo;
 use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-use crate::commands::{run, CmdResult, Shared};
+use crate::commands::{parse, run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
-use crate::folder_sync::{self, FolderStatus, LinkState, RemoteFolder};
+use crate::folder_sync::{self, FolderStatus, LinkKind, LinkState, RemoteFolder};
+use crate::remote::webdav::WebDavConfig;
 use crate::state::{log, Core};
 use crate::sync_conflict::{self, Keep};
+use crate::sync_server::{self, Backoff, LinkTarget};
 
 /// The plugin's name (`plugin:keystead-folder|…` – never granted to the
 /// webview).
@@ -50,6 +62,8 @@ const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// An edit is written to the folder this long after the last one (one
 /// write for a burst of edits); leaving the app writes at once.
 const PUSH_DELAY: Duration = Duration::from_secs(3);
+/// `skipped`: "Nur über WLAN" is on and the phone is not on Wi-Fi.
+pub const SKIPPED_WIFI_ONLY: &str = "sync_wifi_only";
 
 /// The sync's shared state (managed by Tauri).
 pub struct SyncState {
@@ -64,6 +78,10 @@ pub struct SyncState {
     syncing: AtomicBool,
     /// The push thread's queue ([`push_soon`], [`flush_pushes`]).
     pushes: Mutex<Option<Sender<PushRequest>>>,
+    /// The pause of automatic syncs after server errors (server links).
+    backoff: Mutex<Backoff>,
+    /// Why the last automatic sync or push did not run (`skipped`).
+    skipped: Mutex<Option<String>>,
 }
 
 /// What the push thread is asked to do.
@@ -123,6 +141,8 @@ pub fn start(app: &AppHandle, core: &Core) {
         last_sync: Mutex::new(None),
         syncing: AtomicBool::new(false),
         pushes: Mutex::new(Some(tx)),
+        backoff: Mutex::new(Backoff::default()),
+        skipped: Mutex::new(None),
     });
     let push_app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -161,6 +181,9 @@ pub fn auto_sync(app: &AppHandle) {
             let Some(mut link) = lock(&state.link).clone() else {
                 return;
             };
+            if skip_automatic(&app, &core, &state, &link) {
+                return;
+            }
             if let Err(e) = sync_locked(&app, &core, &state, &mut link) {
                 log(format_args!("automatic sync failed: {}", e.code()));
             }
@@ -244,11 +267,17 @@ fn run_pushes(app: &AppHandle, ids: BTreeSet<String>) {
         emit_status(app, &core, &state);
         return;
     };
+    // A server that failed shortly before, or mobile data with "Nur über
+    // WLAN": the edits wait for the next sync (it pushes them).
+    if skip_automatic(app, &core, &state, &link) {
+        return;
+    }
     state.syncing.store(true, Ordering::SeqCst);
     emit_status(app, &core, &state);
-    let tree = link.tree_uri.clone();
+    let target = link.clone();
+    let mut failed = None;
     for id in &ids {
-        let result = with_folder(app, &core, &tree, |folder| {
+        let result = with_folder(app, &core, &target, |folder| {
             folder_sync::sync_vault(&core, folder, &mut link, id, now_ms())
         });
         if let Err(e) = result {
@@ -256,9 +285,11 @@ fn run_pushes(app: &AppHandle, ids: BTreeSet<String>) {
             // The folder cannot be reached: the rest waits for the next
             // sync.
             link.last_error = Some(e.code());
+            failed = Some(e.code());
             break;
         }
     }
+    record_backoff(&state, &link, failed.as_deref());
     store_link(&core, &state, &link);
     state.syncing.store(false, Ordering::SeqCst);
     emit_status(app, &core, &state);
@@ -267,10 +298,59 @@ fn run_pushes(app: &AppHandle, ids: BTreeSet<String>) {
 fn status(core: &Core, state: &SyncState) -> FolderStatus {
     let mut status = FolderStatus::of(lock(&state.link).as_ref());
     status.syncing = state.syncing.load(Ordering::SeqCst);
-    if !status.linked {
+    if status.linked {
+        status.skipped = lock(&state.skipped).clone();
+        status.retry_at = lock(&state.backoff).retry_at_ms();
+    } else {
         status.files = folder_sync::local_only_results(core);
     }
     status
+}
+
+/// Whether an automatic sync or push of `link` waits (a server link only):
+/// the server failed shortly before ([`Backoff`]), or "Nur über WLAN" is on
+/// and the phone is not on Wi-Fi. Records and announces why.
+fn skip_automatic(app: &AppHandle, core: &Core, state: &SyncState, link: &LinkState) -> bool {
+    if link.kind != LinkKind::Webdav {
+        return false;
+    }
+    let reason = if !lock(&state.backoff).allows_now() {
+        Some(sync_server::SKIPPED_BACKOFF)
+    } else if core.state().settings.sync_wifi_only && !on_wifi(app) {
+        Some(SKIPPED_WIFI_ONLY)
+    } else {
+        None
+    };
+    let Some(reason) = reason else {
+        return false;
+    };
+    let before = lock(&state.skipped).replace(reason.to_owned());
+    if before.as_deref() != Some(reason) {
+        emit_status(app, core, state);
+    }
+    true
+}
+
+/// After a sync or push of `link` ran: no reason to skip any more, and the
+/// pause after server errors (server links only).
+fn record_backoff(state: &SyncState, link: &LinkState, error: Option<&str>) {
+    *lock(&state.skipped) = None;
+    if link.kind == LinkKind::Webdav {
+        lock(&state.backoff).record_now(error);
+    }
+}
+
+/// Whether the phone is on Wi-Fi (or Ethernet) right now – the folder
+/// plugin's `networkKind`. Unknown counts as not.
+#[cfg(target_os = "android")]
+fn on_wifi(app: &AppHandle) -> bool {
+    app.try_state::<android::FolderPlugin>()
+        .is_some_and(|plugin| plugin.network_kind().is_ok_and(|kind| kind == "wifi"))
+}
+
+#[cfg(not(target_os = "android"))]
+fn on_wifi(_app: &AppHandle) -> bool {
+    false
 }
 
 fn emit_status(app: &AppHandle, core: &Core, state: &SyncState) {
@@ -297,13 +377,15 @@ fn sync_locked(
 ) -> AppResult<()> {
     state.syncing.store(true, Ordering::SeqCst);
     emit_status(app, core, state);
-    let tree = link.tree_uri.clone();
-    let result = with_folder(app, core, &tree, |folder| {
+    let target = link.clone();
+    let result = with_folder(app, core, &target, |folder| {
         folder_sync::sync_folder(core, folder, link, now_ms()).map(|_| ())
     });
     if let Err(e) = &result {
         link.last_error = Some(e.code());
     }
+    let error = result.as_ref().err().map(AppError::code);
+    record_backoff(state, link, error.as_deref());
     store_link(core, state, link);
     *lock(&state.last_sync) = Some((Instant::now(), SystemTime::now()));
     state.syncing.store(false, Ordering::SeqCst);
@@ -311,9 +393,23 @@ fn sync_locked(
     result
 }
 
+/// Runs `f` with the folder of `link`: a server's through the WebDAV
+/// client, a cloud app's through the plugin.
+fn with_folder<T>(
+    app: &AppHandle,
+    core: &Core,
+    link: &LinkState,
+    f: impl FnOnce(&dyn RemoteFolder) -> AppResult<T>,
+) -> AppResult<T> {
+    match sync_server::target(core, link)? {
+        LinkTarget::Server(folder) => f(&*folder),
+        LinkTarget::Folder(tree) => with_plugin_folder(app, core, &tree, f),
+    }
+}
+
 /// Runs `f` with the folder `tree` through the plugin.
 #[cfg(target_os = "android")]
-fn with_folder<T>(
+fn with_plugin_folder<T>(
     app: &AppHandle,
     core: &Core,
     tree: &str,
@@ -331,13 +427,23 @@ fn with_folder<T>(
 }
 
 #[cfg(not(target_os = "android"))]
-fn with_folder<T>(
+fn with_plugin_folder<T>(
     _app: &AppHandle,
     _core: &Core,
     _tree: &str,
     _f: impl FnOnce(&dyn RemoteFolder) -> AppResult<T>,
 ) -> AppResult<T> {
     Err(unsupported_platform())
+}
+
+/// The link `previous` is replaced or removed: a cloud app's folder gets
+/// its permission back, a server's password is forgotten (unless the new
+/// link uses the same server folder, `keep`).
+fn forget_link(app: &AppHandle, core: &Core, previous: &LinkState, keep: Option<&str>) {
+    match previous.kind {
+        LinkKind::Folder => release_folder(app, &previous.tree_uri),
+        LinkKind::Webdav => sync_server::forget_password(core, &previous.tree_uri, keep),
+    }
 }
 
 fn unsupported_platform() -> AppError {
@@ -366,34 +472,69 @@ pub async fn folder_status(app: AppHandle, core: Shared<'_>) -> CmdResult<Folder
 /// restarts, links it in place of the previous one and syncs. `null` when
 /// the picker was closed without a choice. A failed first sync is not an
 /// error: the status says so (`lastError`). Linking another folder forgets
-/// the recorded conflicts (they were about the old one).
+/// the recorded conflicts (they were about the old one); a server link it
+/// replaces forgets its password.
 #[tauri::command]
 pub async fn link_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Option<FolderStatus>> {
     core.touch_activity();
     let current = lock(&sync_state(&app)?.link)
         .as_ref()
+        .filter(|l| l.kind == LinkKind::Folder)
         .map(|l| l.tree_uri.clone());
     let Some(picked) = pick_folder(&app, current).await? else {
         return Ok(None);
     };
     run(&core, true, move |c| {
-        let state = sync_state(&app)?;
-        let _guard = lock(&state.guard);
-        let previous = lock(&state.link).clone();
-        let mut link = LinkState::new(picked.tree, picked.name, now_ms(), picked.writable);
-        link.save(&c.data_dir())?;
-        *lock(&state.link) = Some(link.clone());
-        if let Some(old) = previous.filter(|old| old.tree_uri != link.tree_uri) {
-            release_folder(&app, &old.tree_uri);
-            if let Err(e) = sync_conflict::clear_conflicts(&c.data_dir()) {
-                log(format_args!("could not forget the conflicts: {}", e.code()));
-            }
-            sync_conflict::emit_conflicts(c);
-        }
-        let _ = sync_locked(&app, c, &state, &mut link);
-        Ok(Some(status(c, &state)))
+        let link = LinkState::new(picked.tree, picked.name, now_ms(), picked.writable);
+        replace_link(&app, c, link).map(Some)
     })
     .await
+}
+
+/// `link_webdav(config)` → [`FolderStatus`]: links the phone to a folder on
+/// a WebDAV server (stage 2c) in place of the previous link and syncs. The
+/// connection test must pass (its code otherwise, e.g.
+/// `unsupported:sync_server_folder_missing` or
+/// `unsupported:sync_server_certificate` – nothing changes then); the
+/// password is stored sealed by the Android Keystore (`crate::credentials`)
+/// and never returned. A failed first sync is not an error (`lastError`).
+#[tauri::command]
+pub async fn link_webdav(
+    app: AppHandle,
+    core: Shared<'_>,
+    config: serde_json::Value,
+) -> CmdResult<FolderStatus> {
+    run(&core, true, move |c| {
+        let cfg: WebDavConfig = parse(config, sync_server::BAD_CONFIG)?;
+        let link = sync_server::link_server(c, &cfg, now_ms())?;
+        replace_link(&app, c, link)
+    })
+    .await
+}
+
+/// Makes `link` the phone's link (the previous one forgotten – its folder
+/// permission given back, or its server password removed – and its
+/// conflicts if it was another folder) and syncs.
+fn replace_link(app: &AppHandle, core: &Core, mut link: LinkState) -> AppResult<FolderStatus> {
+    let state = sync_state(app)?;
+    let _guard = lock(&state.guard);
+    let previous = lock(&state.link).clone();
+    link.save(&core.data_dir())?;
+    *lock(&state.link) = Some(link.clone());
+    lock(&state.backoff).reset();
+    *lock(&state.skipped) = None;
+    if let Some(old) = previous.filter(|old| old.tree_uri != link.tree_uri || old.kind != link.kind)
+    {
+        forget_link(app, core, &old, Some(&link.tree_uri));
+        if old.tree_uri != link.tree_uri {
+            if let Err(e) = sync_conflict::clear_conflicts(&core.data_dir()) {
+                log(format_args!("could not forget the conflicts: {}", e.code()));
+            }
+            sync_conflict::emit_conflicts(core);
+        }
+    }
+    let _ = sync_locked(app, core, &state, &mut link);
+    Ok(status(core, &state))
 }
 
 /// Syncs now (waits for a sync already running). Errors with the sync's
@@ -413,9 +554,10 @@ pub async fn sync_now(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatu
     .await
 }
 
-/// Forgets the folder: gives the permission back and removes `link.json`
-/// and the recorded conflicts. The vault copies stay on the phone (and
-/// stop being synced).
+/// Forgets the folder or server: gives the folder's permission back (a
+/// server: removes its stored password) and removes `link.json` and the
+/// recorded conflicts. The vault copies stay on the phone (and stop being
+/// synced).
 #[tauri::command]
 pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatus> {
     run(&core, true, move |c| {
@@ -423,8 +565,10 @@ pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Folder
         let _guard = lock(&state.guard);
         let previous = lock(&state.link).take();
         LinkState::remove(&c.data_dir())?;
+        lock(&state.backoff).reset();
+        *lock(&state.skipped) = None;
         if let Some(old) = previous {
-            release_folder(&app, &old.tree_uri);
+            forget_link(&app, c, &old, None);
         }
         sync_conflict::emit_conflicts(c);
         emit_status(&app, c, &state);
@@ -450,8 +594,8 @@ pub fn resolve(
     let mut link = lock(&state.link)
         .clone()
         .ok_or_else(|| AppError::unsupported("folder_not_linked"))?;
-    let tree = link.tree_uri.clone();
-    let result = with_folder(app, core, &tree, |folder| {
+    let target = link.clone();
+    let result = with_folder(app, core, &target, |folder| {
         folder_sync::resolve_conflict(
             core,
             folder,
@@ -576,6 +720,11 @@ mod android {
         size: u64,
     }
 
+    #[derive(Deserialize)]
+    struct Network {
+        kind: String,
+    }
+
     #[derive(Serialize)]
     struct WriteArgs<'a> {
         tree: &'a str,
@@ -635,6 +784,14 @@ mod android {
                 }
                 Err(e) => Err(plugin_error(e)),
             }
+        }
+
+        /// `wifi`, `cellular`, `other` or `none` (see the plugin).
+        pub fn network_kind(&self) -> AppResult<String> {
+            self.0
+                .run_mobile_plugin::<Network>("networkKind", ())
+                .map(|n| n.kind)
+                .map_err(plugin_error)
         }
 
         pub fn release(&self, tree: &str) -> AppResult<()> {

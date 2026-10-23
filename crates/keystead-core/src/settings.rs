@@ -107,6 +107,19 @@ pub struct Settings {
     /// ignores it. Loading only drops an empty value; the app checks the
     /// folder when it is set.
     pub mirror_folder: Option<String>,
+    /// Desktop: the WebDAV server the app keeps its vault copies on instead
+    /// of a cloud folder (stage 2c) – one method per PC: setting it clears
+    /// [`Settings::mirror_folder`] and the other way round. No password:
+    /// that is kept apart (`credentials` of the app). Only the app's
+    /// `set_sync_server` / `clear_sync_server` change it (`save_settings`
+    /// keeps the stored value). The phone ignores it (its server is part
+    /// of its link). Loading drops one without a URL.
+    pub sync_server: Option<SyncServer>,
+    /// Phone: automatic syncs with a server run only on Wi-Fi (or
+    /// Ethernet), not on mobile data ("Nur über WLAN synchronisieren";
+    /// default off). A sync the user starts always runs. The desktop app
+    /// ignores it.
+    pub sync_wifi_only: bool,
     /// The user's generator presets (the built-in ones live in code, see
     /// [`generator::builtin_presets`]). Normalised on load/save: invalid or
     /// duplicate ones are dropped, at most [`GENERATOR_PRESETS_MAX`].
@@ -134,10 +147,41 @@ impl Default for Settings {
             lock_in_background_seconds: Some(DEFAULT_LOCK_IN_BACKGROUND_SECONDS),
             device_unlock: false,
             mirror_folder: None,
+            sync_server: None,
+            sync_wifi_only: false,
             generator_presets: Vec::new(),
             generator_default: generator::PRESET_STANDARD.to_owned(),
         }
     }
+}
+
+/// The folder name a WebDAV server's sync uses unless the user gives
+/// another.
+pub const DEFAULT_SYNC_FOLDER: &str = "Keystead";
+
+fn default_sync_folder() -> String {
+    DEFAULT_SYNC_FOLDER.to_owned()
+}
+
+/// A WebDAV server the vault copies are kept on (`Settings.syncServer`,
+/// and the phone's link). No secrets: the password is stored apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncServer {
+    /// The server URL as the user entered it (checked by the app).
+    pub url: String,
+    pub user: String,
+    /// The folder below `url` (default [`DEFAULT_SYNC_FOLDER`]).
+    #[serde(default = "default_sync_folder")]
+    pub folder: String,
+    /// SHA-256 (hex) of the server certificate the user confirmed, if the
+    /// system does not trust it.
+    #[serde(default)]
+    pub cert_sha256: Option<String>,
+    /// The server honoured `If-Match` when it was set up (atomic checks
+    /// before each write).
+    #[serde(default)]
+    pub cas: bool,
 }
 
 /// Deserialises `key` from `obj` into `target`, keeping the current value if
@@ -203,6 +247,8 @@ impl Settings {
         );
         take(&obj, "deviceUnlock", &mut s.device_unlock);
         take(&obj, "mirrorFolder", &mut s.mirror_folder);
+        take(&obj, "syncServer", &mut s.sync_server);
+        take(&obj, "syncWifiOnly", &mut s.sync_wifi_only);
         if let Some(serde_json::Value::Array(presets)) = obj.get("generatorPresets") {
             s.generator_presets = presets.iter().filter_map(preset_lenient).collect();
         }
@@ -237,6 +283,18 @@ impl Settings {
             .is_some_and(|folder| folder.trim().is_empty())
         {
             self.mirror_folder = None;
+        }
+        if self
+            .sync_server
+            .as_ref()
+            .is_some_and(|server| server.url.trim().is_empty())
+        {
+            self.sync_server = None;
+        }
+        if let Some(server) = self.sync_server.as_mut() {
+            if server.folder.trim().is_empty() {
+                server.folder = default_sync_folder();
+            }
         }
         let mut presets: Vec<GeneratorPreset> = Vec::new();
         for preset in &self.generator_presets {
@@ -327,6 +385,8 @@ mod tests {
         assert_eq!(s.lock_in_background_seconds, Some(60));
         assert!(!s.device_unlock);
         assert_eq!(s.mirror_folder, None);
+        assert_eq!(s.sync_server, None);
+        assert!(!s.sync_wifi_only);
     }
 
     #[test]
@@ -440,6 +500,88 @@ mod tests {
         let json = serde_json::to_value(Settings::default()).unwrap();
         assert!(json["mirrorFolder"].is_null());
         assert!(json.get("mirrorFolder").is_some());
+    }
+
+    #[test]
+    fn sync_server_parses_and_falls_back() {
+        let s = Settings::from_json_lenient(
+            r#"{"syncServer":{"url":"https://cloud.example/remote.php/dav/files/max/","user":"max","folder":"Tresore","certSha256":"ab12","cas":true},"syncWifiOnly":true}"#,
+        );
+        assert_eq!(
+            s.sync_server,
+            Some(SyncServer {
+                url: "https://cloud.example/remote.php/dav/files/max/".into(),
+                user: "max".into(),
+                folder: "Tresore".into(),
+                cert_sha256: Some("ab12".into()),
+                cas: true,
+            })
+        );
+        assert!(s.sync_wifi_only);
+        // Missing optional fields: the default folder, no pin, no CAS.
+        let s = Settings::from_json_lenient(
+            r#"{"syncServer":{"url":"https://dav.example/","user":"max"}}"#,
+        );
+        let server = s.sync_server.unwrap();
+        assert_eq!(server.folder, DEFAULT_SYNC_FOLDER);
+        assert_eq!(server.cert_sha256, None);
+        assert!(!server.cas);
+        // An empty folder becomes the default one.
+        let s = Settings::from_json_lenient(
+            r#"{"syncServer":{"url":"https://dav.example/","user":"max","folder":" "}}"#,
+        );
+        assert_eq!(s.sync_server.unwrap().folder, DEFAULT_SYNC_FOLDER);
+        // Off: null, missing, no URL, the wrong shape; a password is never
+        // part of it (an unknown key is ignored, and never written back).
+        for json in [
+            r#"{"syncServer":null}"#,
+            "{}",
+            r#"{"syncServer":{"url":"  ","user":"max"}}"#,
+            r#"{"syncServer":{"user":"max"}}"#,
+            r#"{"syncServer":"https://dav.example/"}"#,
+            r#"{"syncServer":{"url":"https://dav.example/","user":7}}"#,
+        ] {
+            assert_eq!(
+                Settings::from_json_lenient(json).sync_server,
+                None,
+                "{json}"
+            );
+        }
+        let s = Settings::from_json_lenient(
+            r#"{"syncServer":{"url":"https://dav.example/","user":"max","password":"geheim"}}"#,
+        );
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("geheim"));
+        assert!(!json.contains("password"));
+        assert!(!Settings::from_json_lenient(r#"{"syncWifiOnly":"yes"}"#).sync_wifi_only);
+        // Defaults, and the shape written.
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert!(json["syncServer"].is_null());
+        assert_eq!(json["syncWifiOnly"], false);
+        let with = Settings {
+            sync_server: Some(SyncServer {
+                url: "https://dav.example/".into(),
+                user: "max".into(),
+                folder: "Keystead".into(),
+                cert_sha256: None,
+                cas: false,
+            }),
+            ..Settings::default()
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(
+            json["syncServer"],
+            serde_json::json!({
+                "url": "https://dav.example/", "user": "max", "folder": "Keystead",
+                "certSha256": null, "cas": false
+            })
+        );
+        // The strict deserializer (Tauri `save_settings`) as well.
+        let strict: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(strict, with);
+        let strict: Settings =
+            serde_json::from_str(r#"{"syncServer":{"url":" ","user":"x"}}"#).unwrap();
+        assert_eq!(strict.normalized().sync_server, None);
     }
 
     #[test]
@@ -601,7 +743,9 @@ mod tests {
         assert!(v["mirrorFolder"].is_null());
         assert_eq!(v["generatorPresets"], serde_json::json!([]));
         assert_eq!(v["generatorDefault"], "standard");
-        assert_eq!(v.as_object().unwrap().len(), 17);
+        assert!(v["syncServer"].is_null());
+        assert_eq!(v["syncWifiOnly"], false);
+        assert_eq!(v.as_object().unwrap().len(), 19);
     }
 
     #[test]
@@ -640,6 +784,14 @@ mod tests {
             lock_in_background_seconds: None,
             device_unlock: true,
             mirror_folder: Some("/home/max/Nextcloud/Keystead".into()),
+            sync_server: Some(SyncServer {
+                url: "https://dav.example/".into(),
+                user: "max".into(),
+                folder: "Keystead".into(),
+                cert_sha256: Some("00ff".into()),
+                cas: true,
+            }),
+            sync_wifi_only: true,
             generator_presets: vec![preset("p-1", "Bank")],
             generator_default: "p-1".into(),
         };

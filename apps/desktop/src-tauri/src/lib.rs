@@ -39,6 +39,9 @@ mod attachments;
 #[cfg(desktop)]
 mod bridge;
 mod commands;
+// The sync server's password (stage 2c, both platforms): DPAPI on Windows,
+// the Android Keystore on the phone, memory only elsewhere.
+mod credentials;
 // The phone's fingerprint unlock (blobs and flows); platform-neutral, so
 // its unit tests run on the desktop host too.
 #[cfg(any(mobile, test))]
@@ -77,6 +80,10 @@ mod state;
 // through `sync_trial::unlock_copy`).
 mod sync_base;
 mod sync_conflict;
+// Server sync (stage 2c, both platforms): the server ↔ the client's
+// configuration, connecting, the pause after server errors, the commands
+// `webdav_test` / `webdav_create_folder`.
+mod sync_server;
 mod sync_trial;
 #[cfg(desktop)]
 mod tray;

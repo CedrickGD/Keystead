@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app's network policy (stage 2c; android:networkSecurityConfig in
+     AndroidManifest.xml): no plain HTTP, only the system's trust anchors (no
+     user-installed CAs). The server sync's own TLS is Rust's (rustls with
+     the webpki roots, or the certificate the user confirmed) and does not go
+     through this; it covers everything Android's own network stack would do
+     (the WebView, any library). Debug builds replace it with
+     src/debug/res/xml/network_security_config.xml (cleartext for the Vite dev
+     server of `tauri android dev`). A unit test in src-tauri/src/gui.rs
+     guards this file. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

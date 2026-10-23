@@ -109,6 +109,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use keystead_core::attachments;
 use keystead_core::format::{self, VaultFile};
 use keystead_core::model::{now_ms, VaultInfo};
+use keystead_core::settings::SyncServer;
 use keystead_core::sync::{self, RemoteProof, SyncBase, SyncDecision, SyncHead, VaultHeader};
 use keystead_core::vault::CopyCheck;
 use keystead_core::Error as CoreError;
@@ -372,14 +373,35 @@ impl FileResult {
     }
 }
 
+/// What the phone is linked to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkKind {
+    /// A folder of a cloud app, through the system picker (Android: the
+    /// folder plugin) – every link before stage 2c.
+    #[default]
+    Folder,
+    /// A folder on a WebDAV server (stage 2c; `remote::webdav`).
+    Webdav,
+}
+
 /// The linked folder (`<data>/sync/link.json`). No secrets: the folder's
 /// address and name, times, and the vault ids, names and revisions the
-/// last sync found.
+/// last sync found; for a server its URL, user and folder – the password
+/// is kept apart (`crate::credentials`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkState {
-    /// The folder's address (Android: the tree URI the app holds a
-    /// persisted permission for).
+    /// A cloud app's folder or a server (a link of an older version: a
+    /// folder).
+    #[serde(default)]
+    pub kind: LinkKind,
+    /// The server ([`LinkKind::Webdav`] only).
+    #[serde(default)]
+    pub server: Option<SyncServer>,
+    /// The folder's address – what the sync bases are recorded for
+    /// (Android: the tree URI the app holds a persisted permission for; a
+    /// server: its folder's key, `webdav:<normalized folder URL>`).
     pub tree_uri: String,
     /// The folder's display name.
     pub folder_name: String,
@@ -408,6 +430,8 @@ pub struct LinkState {
 impl LinkState {
     pub fn new(tree_uri: String, folder_name: String, linked_at: i64, writable: bool) -> Self {
         LinkState {
+            kind: LinkKind::Folder,
+            server: None,
             tree_uri,
             folder_name,
             linked_at,
@@ -416,6 +440,17 @@ impl LinkState {
             last_sync_at: None,
             last_error: None,
             files: Vec::new(),
+        }
+    }
+
+    /// A link to the server folder `key` (`remote::Remote::key`) of
+    /// `server`.
+    pub fn new_server(key: String, server: SyncServer, linked_at: i64, writable: bool) -> Self {
+        let folder_name = server.folder.clone();
+        LinkState {
+            kind: LinkKind::Webdav,
+            server: Some(server),
+            ..LinkState::new(key, folder_name, linked_at, writable)
         }
     }
 
@@ -469,6 +504,10 @@ impl LinkState {
 #[serde(rename_all = "camelCase")]
 pub struct FolderStatus {
     pub linked: bool,
+    /// What the phone is linked to (`null` without a link).
+    pub kind: Option<LinkKind>,
+    /// The server of a [`LinkKind::Webdav`] link (no password).
+    pub server: Option<SyncServer>,
     /// The app may write the linked folder (`false` without one).
     pub writable: bool,
     /// A sync is running right now.
@@ -480,6 +519,13 @@ pub struct FolderStatus {
     /// Per vault file the last sync found; without a link: the phone's
     /// vaults, `localOnly` ([`local_only_results`]).
     pub files: Vec<FileResult>,
+    /// Why the last automatic sync did not run (a code:
+    /// `sync_wifi_only` – on mobile data with "Nur über WLAN"; `sync_backoff`
+    /// – the server failed shortly before), `null` once one ran.
+    pub skipped: Option<String>,
+    /// While automatic syncs wait after a server error: when the next may
+    /// run (ms since the epoch; a sync the user starts always runs).
+    pub retry_at: Option<i64>,
 }
 
 impl FolderStatus {
@@ -487,6 +533,8 @@ impl FolderStatus {
         match link {
             None => FolderStatus {
                 linked: false,
+                kind: None,
+                server: None,
                 writable: false,
                 syncing: false,
                 folder_name: None,
@@ -494,9 +542,13 @@ impl FolderStatus {
                 last_sync_at: None,
                 last_error: None,
                 files: Vec::new(),
+                skipped: None,
+                retry_at: None,
             },
             Some(link) => FolderStatus {
                 linked: true,
+                kind: Some(link.kind),
+                server: link.server.clone(),
                 writable: link.writable,
                 syncing: false,
                 folder_name: Some(link.folder_name.clone()),
@@ -504,6 +556,8 @@ impl FolderStatus {
                 last_sync_at: link.last_sync_at,
                 last_error: link.last_error.clone(),
                 files: link.files.clone(),
+                skipped: None,
+                retry_at: None,
             },
         }
     }
@@ -2256,6 +2310,56 @@ mod tests {
     }
 
     #[test]
+    fn a_server_link_round_trips_without_its_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SyncServer {
+            url: "https://cloud.example/remote.php/dav/files/max/".into(),
+            user: "max".into(),
+            folder: "Keystead".into(),
+            cert_sha256: Some("ab".repeat(32)),
+            cas: true,
+        };
+        let key = "webdav:https://cloud.example/remote.php/dav/files/max/Keystead/";
+        let link = LinkState::new_server(key.into(), server.clone(), 7, true);
+        assert_eq!(link.kind, LinkKind::Webdav);
+        assert_eq!(link.tree_uri, key);
+        assert_eq!(link.folder_name, "Keystead");
+        assert!(link.bases_seeded);
+        link.save(dir.path()).unwrap();
+        assert_eq!(LinkState::load(dir.path()), Some(link.clone()));
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join("sync/link.json")).unwrap()).unwrap();
+        assert_eq!(json["kind"], "webdav");
+        assert_eq!(json["server"]["user"], "max");
+        assert_eq!(json["server"]["certSha256"], "ab".repeat(32));
+        assert_eq!(json["server"]["cas"], true);
+        let mut keys: Vec<_> = json["server"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["cas", "certSha256", "folder", "url", "user"]);
+        // The status shows the server, never more.
+        let status = serde_json::to_value(FolderStatus::of(Some(&link))).unwrap();
+        assert_eq!(status["kind"], "webdav");
+        assert_eq!(status["server"], json["server"]);
+        assert!(status["skipped"].is_null());
+        assert!(status["retryAt"].is_null());
+        let none = serde_json::to_value(FolderStatus::of(None)).unwrap();
+        assert!(none["kind"].is_null());
+        assert!(none["server"].is_null());
+        // An unknown kind (a later version's) is no link.
+        fs::write(
+            dir.path().join("sync/link.json"),
+            r#"{"kind":"dropbox","treeUri":"u","folderName":"F","linkedAt":5}"#,
+        )
+        .unwrap();
+        assert_eq!(LinkState::load(dir.path()), None);
+    }
+
+    #[test]
     fn link_json_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(LinkState::load(dir.path()), None, "no link yet");
@@ -2285,13 +2389,17 @@ mod tests {
                 "basesSeeded",
                 "files",
                 "folderName",
+                "kind",
                 "lastError",
                 "lastSyncAt",
                 "linkedAt",
+                "server",
                 "treeUri",
                 "writable"
             ]
         );
+        assert_eq!(json["kind"], "folder");
+        assert!(json["server"].is_null());
         assert_eq!(json["files"][0]["outcome"], "updated");
         assert_eq!(json["files"][0]["passwordChanged"], true);
 
@@ -2306,6 +2414,9 @@ mod tests {
         let mut legacy = LinkState::new("u".into(), "F".into(), 5, false);
         legacy.bases_seeded = false;
         assert_eq!(loaded, legacy);
+        // ... and a folder link (`kind` is new in stage 2c).
+        assert_eq!(loaded.kind, LinkKind::Folder);
+        assert_eq!(loaded.server, None);
         // Damaged: no link (the user links again).
         fs::write(dir.path().join("sync/link.json"), b"{ not json").unwrap();
         assert_eq!(LinkState::load(dir.path()), None);

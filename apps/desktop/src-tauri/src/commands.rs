@@ -718,7 +718,14 @@ fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
             core.wake_update_checker();
         }
         core.set_minimize_to_tray(settings.minimize_to_tray);
-        if settings.mirror_folder != old.mirror_folder {
+        if settings.sync_server != old.sync_server {
+            crate::mirror::server_setting_changed(
+                core,
+                old.sync_server.as_ref(),
+                settings.sync_server.as_ref(),
+            );
+        }
+        if settings.mirror_folder != old.mirror_folder || settings.sync_server != old.sync_server {
             crate::mirror::folder_changed(core);
         }
         if old.language != settings.language {
@@ -742,11 +749,20 @@ fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
 /// the stored ones: `deviceUnlock` belongs to the fingerprint-unlock
 /// commands (they set the unlock up and remove it – the page cannot turn
 /// it on without the prompt, nor off without removing the setup), the
-/// generator presets and the default preset to the preset commands.
+/// generator presets and the default preset to the preset commands,
+/// `syncServer` to `set_sync_server` / `clear_sync_server` (they test the
+/// server and store or remove its password) – except that a new
+/// `mirrorFolder` replaces the server (one method per PC).
 fn from_the_page(mut page: Settings, stored: &Settings) -> Settings {
     page.device_unlock = stored.device_unlock;
     page.generator_presets = stored.generator_presets.clone();
     page.generator_default = stored.generator_default.clone();
+    page.sync_server = if page.mirror_folder.is_some() && page.mirror_folder != stored.mirror_folder
+    {
+        None
+    } else {
+        stored.sync_server.clone()
+    };
     page
 }
 
@@ -965,6 +981,50 @@ mod tests {
             ..Settings::default()
         };
         assert!(!from_the_page(page, &Settings::default()).device_unlock);
+    }
+
+    #[test]
+    fn the_page_keeps_the_sync_server_unless_it_picks_a_folder() {
+        let server = keystead_core::settings::SyncServer {
+            url: "https://dav.example/".into(),
+            user: "max".into(),
+            folder: "Keystead".into(),
+            cert_sha256: None,
+            cas: true,
+        };
+        let stored = Settings {
+            sync_server: Some(server.clone()),
+            ..Settings::default()
+        };
+        // The page cannot set, change or remove it ...
+        let saved = from_the_page(Settings::default(), &stored);
+        assert_eq!(saved.sync_server, Some(server.clone()));
+        let page = Settings {
+            sync_server: Some(keystead_core::settings::SyncServer {
+                url: "https://evil.example/".into(),
+                ..server.clone()
+            }),
+            ..Settings::default()
+        };
+        assert_eq!(
+            from_the_page(page.clone(), &stored).sync_server,
+            Some(server.clone())
+        );
+        assert_eq!(from_the_page(page, &Settings::default()).sync_server, None);
+        // ... but a new cloud folder replaces it (one method per PC).
+        let page = Settings {
+            mirror_folder: Some("/home/max/Nextcloud/Keystead".into()),
+            ..Settings::default()
+        };
+        let saved = from_the_page(page.clone(), &stored);
+        assert_eq!(saved.sync_server, None);
+        assert_eq!(saved.mirror_folder, page.mirror_folder);
+        // The same folder again (stored with it somehow) keeps it.
+        let both = Settings {
+            mirror_folder: page.mirror_folder.clone(),
+            ..stored
+        };
+        assert_eq!(from_the_page(page, &both).sync_server, Some(server));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug builds only (merged into src/main/AndroidManifest.xml by Gradle):
-     `tauri android dev` loads the UI from the Vite dev server on the PC,
-     which needs the network. Release builds have no INTERNET permission at
-     all – keep it that way. -->
+<!-- Debug builds only (merged into src/main/AndroidManifest.xml by Gradle).
+     Since stage 2c the main manifest has INTERNET itself (the server sync),
+     so nothing is added here any more; `tauri android dev`, which loads the
+     UI from the Vite dev server over plain HTTP, gets cleartext from
+     src/debug/res/xml/network_security_config.xml. Release builds permit no
+     cleartext – keep it that way. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET" />
 </manifest>

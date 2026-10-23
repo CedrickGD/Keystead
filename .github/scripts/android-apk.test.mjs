@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   ANDROID_MIN_SDK,
   ANDROID_PACKAGE,
+  ANDROID_PERMISSIONS,
   apkProblems,
   decodeKeystore,
   formatFingerprint,
@@ -101,7 +102,11 @@ test("badging fields", () => {
     "io.github.cedrickgd.keystead.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
     "android.permission.INTERNET",
   ]);
-  assert.match(apkProblems({ badging: sdk23, signers: [DEBUG_HEX], expect })[0], /INTERNET/);
+  assert.deepEqual(apkProblems({ badging: sdk23, signers: [DEBUG_HEX], expect }), []);
+  const storage = parseBadging(
+    BADGING.replace("application-label", "uses-permission-sdk-23: name='android.permission.READ_EXTERNAL_STORAGE'\napplication-label"),
+  );
+  assert.match(apkProblems({ badging: storage, signers: [DEBUG_HEX], expect })[0], /READ_EXTERNAL_STORAGE/);
   // `maxSdkVersion` after the name does not hide a permission either.
   assert.deepEqual(
     parseBadging("uses-permission: name='android.permission.INTERNET' maxSdkVersion='32'\n").permissions,
@@ -137,7 +142,29 @@ test("the release gates", () => {
   assert.match(problems({ versionCode: "2000001" })[0], /versionCode is 2000001, expected 4242/);
   assert.match(problems({ versionCode: null })[0], /versionCode is missing/);
   assert.match(problems({ minSdk: 24 })[0], /minSdk is 24, expected 29/);
-  assert.match(problems({ permissions: [...badging.permissions, "android.permission.INTERNET"] })[0], /INTERNET/);
+  // Only the allowed permissions (stage 2c: the network for the server
+  // sync, the fingerprint unlock's) – the APK of 2.0.1-beta.20 had the last
+  // three of them.
+  const allowed = [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.USE_BIOMETRIC",
+    "android.permission.USE_FINGERPRINT",
+    "io.github.cedrickgd.keystead.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+  ];
+  assert.deepEqual(ANDROID_PERMISSIONS, allowed);
+  assert.deepEqual(problems({ permissions: allowed }), []);
+  for (const extra of [
+    "android.permission.READ_CONTACTS",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_NETWORK_STATE",
+    "android.permission.FOREGROUND_SERVICE",
+    "com.example.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+  ]) {
+    const found = problems({ permissions: [...allowed, extra] });
+    assert.equal(found.length, 1, extra);
+    assert.ok(found[0].includes(extra), found[0]);
+  }
   assert.match(problems({ debuggable: true })[0], /debuggable/);
   assert.match(problems({ nativeCode: ["x86_64"] })[0], /no native code for arm64-v8a \(has: x86_64\)/);
   assert.deepEqual(apkProblems({ badging, signers: [DEBUG_HEX], expect: { ...expect, abi: null } }), []);

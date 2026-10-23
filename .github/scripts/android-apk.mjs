@@ -18,8 +18,8 @@
 //     release key, so a wrong keystore secret never produces an APK that
 //     cannot update installed apps), 16 KB page alignment of the native
 //     libraries (`zipalign -c -P 16 -v 4`) and the manifest (`aapt2 dump
-//     badging`): package, versionName, versionCode, minSdk, no INTERNET
-//     permission, not debuggable, the ABI. Prints the APK's SHA-256 and the
+//     badging`): package, versionName, versionCode, minSdk, only the
+//     permissions of ANDROID_PERMISSIONS, not debuggable, the ABI. Prints the APK's SHA-256 and the
 //     signer certificate (also into $GITHUB_STEP_SUMMARY when set).
 
 import { spawnSync } from "node:child_process";
@@ -32,6 +32,21 @@ import { pathToFileURL } from "node:url";
 export const ANDROID_PACKAGE = "io.github.cedrickgd.keystead";
 /** `bundle.android.minSdkVersion` in tauri.android.conf.json (Android 10). */
 export const ANDROID_MIN_SDK = 29;
+/**
+ * The only permissions the APK may request (the merged manifest; anything
+ * else fails the gate – see "Android project" in docs/ARCHITECTURE.md):
+ * INTERNET for the server sync (stage 2c, WebDAV), ACCESS_NETWORK_STATE for
+ * "Nur über WLAN synchronisieren", USE_BIOMETRIC / USE_FINGERPRINT from
+ * androidx.biometric (fingerprint unlock) and androidx.core's
+ * signature-protected receiver permission.
+ */
+export const ANDROID_PERMISSIONS = [
+  "android.permission.INTERNET",
+  "android.permission.ACCESS_NETWORK_STATE",
+  "android.permission.USE_BIOMETRIC",
+  "android.permission.USE_FINGERPRINT",
+  `${ANDROID_PACKAGE}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,
+];
 
 /** A SHA-256 certificate fingerprint as 64 lowercase hex digits ("B7:3D:…" or "b73d…"). */
 export function normalizeFingerprint(text) {
@@ -96,8 +111,10 @@ export function apkProblems({ badging, signers, expect }) {
   differs("versionName", badging.versionName, expect.versionName);
   differs("versionCode", badging.versionCode, expect.versionCode);
   differs("minSdk", badging.minSdk, expect.minSdk);
-  if (badging.permissions.includes("android.permission.INTERNET")) {
-    problems.push("the APK requests android.permission.INTERNET – the phone app is offline (only debug builds may have it)");
+  for (const permission of badging.permissions) {
+    if (!ANDROID_PERMISSIONS.includes(permission)) {
+      problems.push(`the APK requests ${permission} – only ${ANDROID_PERMISSIONS.join(", ")} are allowed`);
+    }
   }
   if (badging.debuggable) problems.push("the APK is debuggable");
   if (expect.abi && !badging.nativeCode.includes(expect.abi)) {

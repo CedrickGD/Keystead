@@ -15,13 +15,19 @@
 // ever created, never written over; never a blob, and no file of the
 // folder is ever deleted, renamed or moved. Provider
 // calls can be slow (a cloud app may download or upload a file first), so
-// they run on a thread of their own, never on the UI thread. A unit test
-// in src-tauri/src/gui.rs guards this file.
+// they run on a thread of their own, never on the UI thread.
+//
+// Besides the folder, the sync asks one thing of the system here:
+// `networkKind` – whether the phone is on Wi-Fi or mobile data right now
+// ("Nur über WLAN synchronisieren" for a server link; ACCESS_NETWORK_STATE,
+// no network I/O). A unit test in src-tauri/src/gui.rs guards this file.
 package io.github.cedrickgd.keystead
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
@@ -180,6 +186,22 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
       put("read", held?.isReadPermission == true)
       put("write", held?.isWritePermission == true)
     })
+  }
+
+  // The network the app would use now: { kind } – "wifi" (Wi-Fi or
+  // Ethernet), "cellular", "other" or "none".
+  @Command
+  fun networkKind(invoke: Invoke) {
+    val manager = activity.getSystemService(ConnectivityManager::class.java)
+    val caps = manager?.activeNetwork?.let { manager.getNetworkCapabilities(it) }
+    val kind = when {
+      caps == null -> "none"
+      caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "wifi"
+      caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+      else -> "other"
+    }
+    invoke.resolve(JSObject().apply { put("kind", kind) })
   }
 
   @Command

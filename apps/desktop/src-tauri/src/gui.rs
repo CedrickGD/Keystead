@@ -6,8 +6,8 @@
 //! services the phone does without; the phone registers the vault commands
 //! except the desktop-only ones (master password, recovery key, deleting a
 //! vault, attachment changes, import/export) plus its own – the
-//! cloud-folder sync and the fingerprint unlock (see "On the phone" under
-//! "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
+//! cloud-folder and server sync and the fingerprint unlock (see "On the
+//! phone" under "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -97,8 +97,10 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
                 .open_js_links_on_click(false)
                 .build(),
         )
-        // The cloud-folder sync's Kotlin plugin (Rust-only as well).
-        .plugin(crate::mobile::sync::plugin());
+        // The cloud-folder sync's Kotlin plugin and the Keystore plugin for
+        // the server password (Rust-only as well).
+        .plugin(crate::mobile::sync::plugin())
+        .plugin(crate::mobile::secret::plugin());
     // Fingerprint unlock: the Android Keystore behind the system prompt
     // (`mobile::biometric`; Rust-only as well – no `biometric:` grant).
     #[cfg(target_os = "android")]
@@ -197,6 +199,12 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mirror::dismiss_folder_conflict_copy,
             crate::sync_conflict::sync_conflicts,
             crate::sync_conflict::resolve_sync_conflict,
+            crate::sync_server::webdav_test,
+            crate::sync_server::webdav_create_folder,
+            #[cfg(desktop)]
+            crate::mirror::set_sync_server,
+            #[cfg(desktop)]
+            crate::mirror::clear_sync_server,
             #[cfg(desktop)]
             commands::browser_status,
             #[cfg(desktop)]
@@ -232,6 +240,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mobile::sync::folder_status,
             #[cfg(mobile)]
             crate::mobile::sync::link_folder,
+            #[cfg(mobile)]
+            crate::mobile::sync::link_webdav,
             #[cfg(mobile)]
             crate::mobile::sync::sync_now,
             #[cfg(mobile)]
@@ -320,6 +330,9 @@ fn setup(app: &AppHandle, background: bool) {
     });
     let core = Core::new(app.clone(), store, settings.clone());
     app.manage(Arc::clone(&core));
+    // The server password is sealed by the Android Keystore from now on.
+    #[cfg(mobile)]
+    crate::mobile::secret::install(app, &core);
     // The cloud-folder mirror's worker: before anything can open a vault.
     #[cfg(desktop)]
     crate::mirror::spawn(&core);
@@ -547,6 +560,7 @@ mod tests {
                     "clipboard-manager:",
                     "opener:",
                     "keystead-folder:",
+                    "keystead-secret:",
                     "biometric:",
                 ] {
                     assert!(!id.starts_with(plugin), "{file}: {id}");
@@ -712,6 +726,7 @@ mod tests {
             "copyFile",
             "writeFile",
             "writeConflictCopy",
+            "networkKind",
         ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),
@@ -719,20 +734,101 @@ mod tests {
             );
         }
         assert!(source_registers_the_folder_plugin());
+        // The Wi-Fi check: the active network's transports, nothing more.
+        let network = &folder[folder.find("fun networkKind").unwrap()..];
+        let network = &network[..network.find("\n  }").unwrap()];
+        assert!(network.contains("getNetworkCapabilities"));
+        assert!(network.contains("TRANSPORT_WIFI"));
+        assert!(network.contains("TRANSPORT_CELLULAR"));
 
+        // The server password's plugin: AES-256-GCM in the Android
+        // Keystore, no authentication per use but only while the phone is
+        // unlocked, the associated data bound, nothing logged, off the UI
+        // thread, Rust-only.
+        let secret = include_str!(
+            "../gen/android/app/src/main/java/io/github/cedrickgd/keystead/KeysteadSecretPlugin.kt"
+        );
+        assert!(secret.contains(
+            "class KeysteadSecretPlugin(private val activity: Activity) : Plugin(activity)"
+        ));
+        assert!(secret.contains(r#"private const val KEYSTORE = "AndroidKeyStore""#));
+        assert!(secret.contains(r#"private const val ALIAS = "keystead-sync-credential""#));
+        assert!(secret.contains(r#"private const val TRANSFORMATION = "AES/GCM/NoPadding""#));
+        assert!(secret.contains("KeyProperties.BLOCK_MODE_GCM"));
+        assert!(secret.contains(".setKeySize(256)"));
+        assert!(secret.contains(".setUserAuthenticationRequired(false)"));
+        assert!(secret.contains(".setUnlockedDeviceRequired(true)"));
+        assert!(secret.contains(".setRandomizedEncryptionRequired(true)"));
+        assert_eq!(secret.matches("cipher.updateAAD(").count(), 2);
+        assert!(secret.contains("Executors.newSingleThreadExecutor()"));
+        for never in [
+            "Log.",
+            "println",
+            "printStackTrace",
+            "EncryptedSharedPreferences",
+            "SharedPreferences",
+            "setUserAuthenticationParameters",
+            "BiometricPrompt",
+        ] {
+            assert!(!secret.contains(never), "{never}");
+        }
+        for command in ["seal", "open"] {
+            assert!(
+                secret.contains(&format!("fun {command}(invoke: Invoke)")),
+                "{command}"
+            );
+        }
+        let secret_rs = include_str!("mobile/secret.rs");
+        assert!(secret_rs.contains(r#""io.github.cedrickgd.keystead","#));
+        assert!(secret_rs.contains(r#""KeysteadSecretPlugin","#));
+        assert!(secret_rs.contains(r#"pub const PLUGIN_NAME: &str = "keystead-secret";"#));
+
+        // The network (stage 2c): exactly INTERNET (the server sync) and
+        // ACCESS_NETWORK_STATE (the Wi-Fi check), no cleartext, the system's
+        // trust anchors only (the sync's TLS is Rust's own anyway).
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains(r#"android:allowBackup="false""#));
         assert!(manifest.contains(r#"android:dataExtractionRules="@xml/data_extraction_rules""#));
         assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
         assert!(manifest.contains(r#"android.webkit.WebView.EnableSafeBrowsing""#));
+        let permissions: BTreeSet<&str> = manifest
+            .split("<uses-permission")
+            .skip(1)
+            .map(|rest| {
+                let name = &rest[rest.find(r#"android:name=""#).unwrap() + 14..];
+                &name[..name.find('"').unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            permissions,
+            BTreeSet::from([
+                "android.permission.INTERNET",
+                "android.permission.ACCESS_NETWORK_STATE",
+            ])
+        );
+        assert_eq!(manifest.matches("<uses-permission").count(), 2);
+        assert!(!manifest.contains("uses-permission-sdk-23"));
         assert!(
-            !manifest.contains("uses-permission"),
-            "no permission at all"
+            manifest.contains(r#"android:networkSecurityConfig="@xml/network_security_config""#)
         );
         assert!(!manifest.contains("android:debuggable"));
-        // Only debug builds (`tauri android dev`) may reach the network.
+        let network =
+            include_str!("../gen/android/app/src/main/res/xml/network_security_config.xml");
+        assert!(network.contains(r#"<base-config cleartextTrafficPermitted="false">"#));
+        assert!(network.contains(r#"<certificates src="system" />"#));
+        assert!(!network.contains(r#"src="user""#));
+        assert!(!network.contains("<domain-config"));
+        assert!(!network.contains("<debug-overrides"));
+        assert_eq!(network.matches("<certificates").count(), 1);
+        // Debug builds (`tauri android dev` loads the UI from the Vite dev
+        // server over plain HTTP) add no permission, only cleartext.
         let debug = include_str!("../gen/android/app/src/debug/AndroidManifest.xml");
-        assert!(debug.contains("android.permission.INTERNET"));
+        assert!(!debug.contains("<uses-permission"));
+        let debug_network =
+            include_str!("../gen/android/app/src/debug/res/xml/network_security_config.xml");
+        assert!(debug_network.contains(r#"<base-config cleartextTrafficPermitted="true">"#));
+        assert!(debug_network.contains(r#"<certificates src="system" />"#));
+        assert!(!debug_network.contains(r#"src="user""#));
 
         let rules = include_str!("../gen/android/app/src/main/res/xml/data_extraction_rules.xml");
         assert!(rules.contains("<cloud-backup"));
@@ -912,6 +1008,7 @@ mod tests {
             BTreeSet::from([
                 "folder_status",
                 "link_folder",
+                "link_webdav",
                 "sync_now",
                 "unlink_folder",
                 "device_unlock_status",
@@ -931,6 +1028,8 @@ mod tests {
             "rename_vault",
             "generate_password",
             "totp_code",
+            "webdav_test",
+            "webdav_create_folder",
         ] {
             assert!(phone.contains(name), "{name} must be on the phone");
         }
@@ -951,6 +1050,8 @@ mod tests {
             "check_update",
             "check_pwned_vault",
             "browser_status",
+            "set_sync_server",
+            "clear_sync_server",
         ] {
             assert!(!phone.contains(name), "{name} must stay desktop-only");
         }

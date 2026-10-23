@@ -314,8 +314,9 @@ jobs:
 
       # Gates (.github/scripts/android-apk.mjs): valid signature – on
       # publishing builds exactly the release certificate –, 16 KB page
-      # alignment, package, versionName/versionCode, minSdk 29, no INTERNET
-      # permission, not debuggable, arm64 code.
+      # alignment, package, versionName/versionCode, minSdk 29, only the
+      # allowed permissions (ANDROID_PERMISSIONS: the network for the server
+      # sync, the fingerprint unlock's), not debuggable, arm64 code.
       - name: Check and package the APK
         env:
           VERSION: ${{ steps.version.outputs.version }}

@@ -276,6 +276,8 @@ pub struct Core {
     /// Website icon fetcher: told when a vault opens, closes or changes
     /// (see `crate::icons`). Never locked together with `state`.
     icons: crate::icons::IconTracker,
+    /// The sync server's password (see `crate::credentials`).
+    credentials: crate::credentials::Credentials,
     /// "Kopie im Cloud-Ordner aktuell halten": told when a vault opens,
     /// changes or is deleted (see `crate::mirror`); the copies are written
     /// on its own thread.
@@ -348,6 +350,7 @@ impl Core {
             #[cfg(desktop)]
             import_slot: Mutex::new(ImportSlot::default()),
             icons: crate::icons::IconTracker::default(),
+            credentials: crate::credentials::Credentials::platform(),
             #[cfg(desktop)]
             mirror: crate::mirror::MirrorTracker::default(),
             lock_epoch: AtomicU64::new(0),
@@ -357,6 +360,11 @@ impl Core {
     /// The website icon fetcher's session tracker.
     pub fn icons(&self) -> &crate::icons::IconTracker {
         &self.icons
+    }
+
+    /// The sync server's stored password (both platforms).
+    pub fn credentials(&self) -> &crate::credentials::Credentials {
+        &self.credentials
     }
 
     /// The cloud-folder mirror's queue and status (desktop).

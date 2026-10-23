@@ -12,7 +12,10 @@
 //!   `RustStdoutStderr`), so nothing extra is installed. Never log secrets.
 //! * **Cloud-folder sync** (`sync`): the Kotlin folder plugin, the sync
 //!   commands, the automatic sync at start and resume and the push after
-//!   an edit (two-way, see `crate::folder_sync`).
+//!   an edit (two-way, see `crate::folder_sync`) – or a WebDAV server's
+//!   folder (stage 2c, `crate::sync_server`).
+//! * **Server password** (`secret`): sealed by the Android Keystore through
+//!   the Kotlin plugin `KeysteadSecretPlugin` (see `crate::credentials`).
 //! * **Fingerprint unlock** (`biometric`): the Android Keystore through
 //!   `tauri-plugin-biometric` and the device-unlock commands (see
 //!   `crate::device_unlock`).
@@ -32,6 +35,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt as _;
 use crate::state::log;
 
 pub mod biometric;
+pub mod secret;
 pub mod sync;
 
 /// Sets the data directory and installs the clipboard backend. Must run

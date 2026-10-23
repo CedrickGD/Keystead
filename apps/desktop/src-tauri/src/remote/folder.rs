@@ -23,18 +23,16 @@ use crate::error::{AppError, AppResult};
 use crate::folder_sync::{RemoteEntry, RemoteFolder, NAME_TAKEN};
 
 /// A server's folder as the phone's sync sees it.
-// Wired to the phone's link in a later step of stage 2c (WP4).
-#[cfg_attr(not(test), expect(dead_code))]
 pub struct RemoteDirFolder<R: Remote> {
     remote: R,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 impl<R: Remote> RemoteDirFolder<R> {
     pub fn new(remote: R) -> Self {
         RemoteDirFolder { remote }
     }
 
+    #[cfg(test)]
     pub fn remote(&self) -> &R {
         &self.remote
     }

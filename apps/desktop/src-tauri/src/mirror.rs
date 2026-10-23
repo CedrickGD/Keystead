@@ -94,6 +94,18 @@
 //! * A folder inside the data directory, or one that looks like a
 //!   Keystead vaults folder, is refused – when it is set
 //!   ([`check_setting`]) and before every pass.
+//! * **A WebDAV server instead of the folder** (stage 2c,
+//!   `Settings.syncServer`; one method per PC – setting one clears the
+//!   other): the same passes over a [`RemoteStore`] of the server's folder
+//!   (`remote::webdav`, the password from `crate::credentials`), kept
+//!   alive across rounds (its stamps and the damaged-copy timer live in
+//!   it) and rebuilt when the server or its password changes
+//!   (`set_sync_server`, `clear_sync_server`). Scans every
+//!   [`SCAN_INTERVAL_REMOTE`]; after a server error (`sync_offline`, a
+//!   failed login, …) the rounds pause 1, 2, 5, then 15 minutes
+//!   (`sync_server::Backoff`) – changes made meanwhile wait and go out with
+//!   the next round (`retryAt` in the status); setting the server again
+//!   ends the pause.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -108,7 +120,7 @@ use sha2::{Digest as _, Sha256};
 
 use keystead_core::format::{self, VaultFile, VAULT_EXTENSION};
 use keystead_core::model::{now_ms, VaultInfo};
-use keystead_core::settings::Settings;
+use keystead_core::settings::{Settings, SyncServer};
 use keystead_core::sync::{
     self, RemoteProof, SyncBase, SyncDecision, SyncHead, VAULT_FILE_MAX_BYTES,
 };
@@ -119,12 +131,14 @@ use serde::Serialize;
 use crate::attachments::{is_dialog_path, is_inside};
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
+use crate::remote::webdav::WebDavConfig;
 use crate::remote::{self, Precondition, Remote};
 use crate::state::{log, Core};
 use crate::sync_base::{self, decide_copies, sync_dir};
 use crate::sync_conflict::{
     self, conflict_changed, install_resolved, set_record, ConflictRecord, Keep, CONFLICT_PASSWORD,
 };
+use crate::sync_server::{self, Backoff};
 use crate::sync_trial::{
     begin_trial, kept_path, remember_rejected, trial_lock, FileVersion, Trial, COPY_REJECTED,
 };
@@ -179,6 +193,8 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 /// Without other jobs, the worker scans the folder this often (files whose
 /// size and time did not change since are not read again).
 pub const SCAN_INTERVAL: Duration = Duration::from_secs(20);
+/// The same with a WebDAV server (every listing is a request).
+pub const SCAN_INTERVAL_REMOTE: Duration = Duration::from_secs(60);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -514,7 +530,7 @@ fn conflict_copies_of(files: &BTreeMap<String, Stamp>) -> Vec<String> {
 /// The other side of the mirror: the cloud folder ([`FsStore`]) or a server
 /// ([`RemoteStore`]). Every path is built from a vault id and a blob name
 /// the caller validated; the layout is the cloud folder's.
-trait MirrorStore {
+trait MirrorStore: Send + Sync {
     /// What the sync bases are recorded for: the folder as set
     /// (`Settings.mirrorFolder`), or the server's key (`webdav:<url>`).
     fn key(&self) -> &str;
@@ -689,13 +705,9 @@ impl MirrorStore for FsStore {
 /// How long a damaged copy on a server must stay the same damaged copy
 /// before the PC's replaces it (an upload that is still running, or a
 /// server that shows a file before it is complete).
-// Used by `RemoteStore` only, which is wired up in WP5.
-#[cfg_attr(not(test), expect(dead_code))]
 const DAMAGED_WAIT_MS: i64 = 60_000;
 
 /// A server's folder ([`Remote`]), e.g. WebDAV.
-// The desktop's server sync is wired up in a later step of stage 2c (WP5).
-#[cfg_attr(not(test), expect(dead_code))]
 struct RemoteStore<R: Remote> {
     remote: R,
     key: String,
@@ -707,7 +719,6 @@ struct RemoteStore<R: Remote> {
     clock: fn() -> i64,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 impl<R: Remote> RemoteStore<R> {
     fn new(remote: R) -> Self {
         let key = remote.key();
@@ -734,8 +745,6 @@ impl<R: Remote> RemoteStore<R> {
 }
 
 /// A server entry's stamp: its ETag, else its size and time.
-// Used by `RemoteStore` only, which is wired up in WP5.
-#[cfg_attr(not(test), expect(dead_code))]
 fn meta_stamp(meta: &remote::RemoteMeta) -> String {
     meta.etag
         .clone()
@@ -1641,16 +1650,10 @@ pub fn adopt(core: &Core, vault_id: &str) -> AppResult<VaultInfo> {
     if !sync_base::valid_id(vault_id) {
         return Err(not_found(&format!("vault {vault_id}")));
     }
-    let folder = core
-        .state()
-        .settings
-        .mirror_folder
-        .clone()
-        .ok_or_else(|| AppError::unsupported(NOT_LINKED))?;
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
-    let data_dir = core.data_dir();
-    adopt_in(core, &FsStore::new(&folder, &data_dir), vault_id)
+    let store = current_store(core)?;
+    adopt_in(core, &*store, vault_id)
 }
 
 /// [`adopt`] from `store` (the caller holds the pass lock).
@@ -1811,19 +1814,6 @@ fn scan_conflict_copies(core: &Core, store: &dyn MirrorStore, names: Vec<String>
     tracker.set_copies(core, copies);
 }
 
-/// The mirror folder as set, checked (`unsupported:folder_not_linked`
-/// without one).
-fn checked_folder(core: &Core) -> AppResult<String> {
-    let folder = core
-        .state()
-        .settings
-        .mirror_folder
-        .clone()
-        .ok_or_else(|| AppError::unsupported(NOT_LINKED))?;
-    check_folder(Path::new(&folder), &core.data_dir())?;
-    Ok(folder)
-}
-
 /// `restore_folder_conflict_copy(fileName)` → its path: copies the
 /// phone's conflict copy `file_name` (a readable vault file of the vault
 /// its name says, at most `sync::VAULT_FILE_MAX_BYTES`) into
@@ -1834,12 +1824,12 @@ pub fn restore_copy(core: &Core, file_name: &str) -> AppResult<String> {
     if sync::vault_id_of_phone_conflict_copy(file_name).is_none() {
         return Err(not_found(file_name));
     }
-    let folder = checked_folder(core)?;
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
     let data_dir = core.data_dir();
-    let store = FsStore::new(&folder, &data_dir);
-    let (_, bytes) = read_conflict_copy(&store, file_name).ok_or_else(|| not_found(file_name))?;
+    let store = current_store(core)?;
+    store.check()?;
+    let (_, bytes) = read_conflict_copy(&*store, file_name).ok_or_else(|| not_found(file_name))?;
     let dir = sync_conflict::conflicts_dir(&data_dir);
     fs::create_dir_all(&dir)?;
     let path = (1..)
@@ -1921,22 +1911,11 @@ pub fn resolve_conflict(
     if keep == Keep::Local && record.conflict.password_changed {
         return Err(AppError::unsupported(CONFLICT_PASSWORD));
     }
-    let folder = core
-        .state()
-        .settings
-        .mirror_folder
-        .clone()
-        .ok_or_else(|| AppError::unsupported(NOT_LINKED))?;
     let tracker = core.mirror();
     let result = {
         let _pass = lock(&tracker.pass);
-        resolve_in(
-            core,
-            &FsStore::new(&folder, &core.data_dir()),
-            &record,
-            keep,
-            now,
-        )
+        let store = current_store(core)?;
+        resolve_in(core, &*store, &record, keep, now)
     };
     if let Err(e) = &result {
         let code = e.code();
@@ -2100,12 +2079,32 @@ impl Job {
     }
 }
 
+/// How the PC keeps its copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MirrorKind {
+    /// A cloud folder (`Settings.mirrorFolder`).
+    Folder,
+    /// A WebDAV server (`Settings.syncServer`).
+    Webdav,
+}
+
 /// `mirror_status`, `mirror://status`. No secrets.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MirrorStatus {
-    /// The folder (`Settings.mirrorFolder`); `null` = off.
+    /// `folder`, `webdav`, or `null` = off.
+    pub kind: Option<MirrorKind>,
+    /// The folder (`Settings.mirrorFolder`); `null` without one.
     pub folder: Option<String>,
+    /// The server (`Settings.syncServer`, no password); `null` without one.
+    pub server: Option<SyncServer>,
+    /// A stored server password survives a restart (Windows: DPAPI);
+    /// `false`: it is asked for again after a restart (Linux, macOS).
+    pub password_kept: bool,
+    /// While the rounds pause after a server error: when the next may run
+    /// (ms since the epoch).
+    pub retry_at: Option<i64>,
     /// When a pass last succeeded in this folder (ms; since the app started
     /// or the folder was set).
     pub last_mirrored_at: Option<i64>,
@@ -2167,6 +2166,14 @@ pub struct MirrorTracker {
     copies_seen: Mutex<BTreeMap<String, (Stamp, Option<FolderConflictCopy>)>>,
     /// The folder was set (or turned off): the next round starts over.
     relinked: AtomicBool,
+    /// The server's store, kept across rounds (its stamps and damaged-copy
+    /// timer), with the server it was built for; dropped when the server
+    /// or its password changes ([`folder_changed`]).
+    server: Mutex<Option<(SyncServer, SharedStore)>>,
+    /// The pause of the rounds after server errors.
+    backoff: Mutex<Backoff>,
+    /// Jobs that came during a pause: they run with the next round.
+    deferred: Mutex<Vec<Job>>,
     /// The worker runs (`spawn`); `shutdown` waits for it.
     running: AtomicBool,
     /// Set by the worker once it has done its last job after `shutdown`.
@@ -2197,15 +2204,37 @@ impl MirrorTracker {
 
     fn reset(&self) {
         *lock(&self.progress) = Progress::default();
+        lock(&self.backoff).reset();
+        *lock(&self.server) = None;
     }
 
     /// The status for `mirror_status` / `mirror://status`. Takes the state
     /// lock (never while `progress` is held).
     pub fn status(&self, core: &Core) -> MirrorStatus {
-        let folder = core.state().settings.mirror_folder.clone();
+        let (folder, server) = {
+            let st = core.state();
+            (
+                st.settings.mirror_folder.clone(),
+                st.settings.sync_server.clone(),
+            )
+        };
+        let kind = match (&folder, &server) {
+            (Some(_), _) => Some(MirrorKind::Folder),
+            (None, Some(_)) => Some(MirrorKind::Webdav),
+            (None, None) => None,
+        };
+        let retry_at = if kind.is_some() {
+            lock(&self.backoff).retry_at_ms()
+        } else {
+            None
+        };
         let progress = lock(&self.progress).clone();
         MirrorStatus {
+            kind,
             folder,
+            server,
+            password_kept: core.credentials().persistent(),
+            retry_at,
             last_mirrored_at: progress.last_mirrored_at,
             last_pulled_at: progress.last_pulled_at,
             last_error: progress.last_error,
@@ -2214,7 +2243,7 @@ impl MirrorTracker {
 
     /// The vaults the folder offers (none while the mirror is off).
     pub fn offers(&self, core: &Core) -> Vec<FolderOffer> {
-        if core.state().settings.mirror_folder.is_none() {
+        if method_of(&core.state().settings).is_none() {
             return Vec::new();
         }
         lock(&self.offers).clone()
@@ -2236,7 +2265,7 @@ impl MirrorTracker {
     /// The phone's conflict copies in the folder (none while the mirror is
     /// off).
     pub fn copies(&self, core: &Core) -> Vec<FolderConflictCopy> {
-        if core.state().settings.mirror_folder.is_none() {
+        if method_of(&core.state().settings).is_none() {
             return Vec::new();
         }
         lock(&self.copies).clone()
@@ -2271,7 +2300,8 @@ impl MirrorTracker {
     /// status changed. A result for a folder that is no longer the
     /// setting's is dropped.
     fn record(&self, core: &Core, folder: &str, results: Results) -> bool {
-        if core.state().settings.mirror_folder.as_deref() != Some(folder) {
+        let configured = method_of(&core.state().settings).and_then(|m| m.key());
+        if configured.as_deref() != Some(folder) {
             return false;
         }
         let mut progress = lock(&self.progress);
@@ -2347,7 +2377,10 @@ pub fn spawn(core: &Arc<Core>) {
 
 fn work(core: &Weak<Core>, rx: &Receiver<Job>) {
     loop {
-        let (jobs, periodic) = match rx.recv_timeout(SCAN_INTERVAL) {
+        let interval = core
+            .upgrade()
+            .map_or(SCAN_INTERVAL, |core| scan_interval(&core.state().settings));
+        let (jobs, periodic) = match rx.recv_timeout(interval) {
             // Everything queued meanwhile goes into the same round.
             Ok(job) => (std::iter::once(job).chain(rx.try_iter()).collect(), false),
             Err(RecvTimeoutError::Timeout) => (Vec::new(), true),
@@ -2373,27 +2406,121 @@ pub(crate) fn process(core: &Core, jobs: Vec<Job>) {
 
 /// [`process`]; `scan`: `Some(cached)` scans in any case (the periodic
 /// scan: `Some(true)`, files unchanged since the last scan are not read).
+/// During a pause after server errors nothing is done: the jobs wait for
+/// the next round that runs (the periodic scan is just skipped).
 fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
-    let (folder, data_dir) = {
-        let st = core.state();
-        (
-            st.settings.mirror_folder.clone(),
-            st.store.root().to_path_buf(),
-        )
+    let method = method_of(&core.state().settings);
+    if method.is_some() && !lock(&tracker.backoff).allows_now() {
+        lock(&tracker.deferred).extend(jobs);
+        return;
+    }
+    let jobs: Vec<Job> = std::mem::take(&mut *lock(&tracker.deferred))
+        .into_iter()
+        .chain(jobs)
+        .collect();
+    let relinked = tracker.relinked.swap(false, Ordering::SeqCst);
+    let store = match &method {
+        None => None,
+        Some(method) => match store_for(core, method) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                // No password (any more), an unusable URL: nothing to do
+                // until the server is set again; the new start waits too.
+                if relinked {
+                    tracker.relinked.store(true, Ordering::SeqCst);
+                }
+                let results = Results {
+                    error: Some(e.code()),
+                    ..Results::default()
+                };
+                if method
+                    .key()
+                    .is_some_and(|key| tracker.record(core, &key, results))
+                {
+                    core.emit(EVENT_STATUS, tracker.status(core));
+                }
+                return;
+            }
+        },
     };
-    let store = folder.as_deref().map(|f| FsStore::new(f, &data_dir));
-    if tracker.relinked.swap(false, Ordering::SeqCst) {
-        start_over(core, store.as_ref().map(|s| s as &dyn MirrorStore));
+    if relinked {
+        start_over(core, store.as_deref().map(|s| s as &dyn MirrorStore));
     }
     let Some(store) = store else {
         return;
     };
-    let results = run_round(core, &store, jobs, scan_anyway);
+    let results = run_round(core, &*store, jobs, scan_anyway);
+    lock(&tracker.backoff).record_now(results.error.as_deref());
     if tracker.record(core, store.key(), results) {
         core.emit(EVENT_STATUS, tracker.status(core));
     }
+}
+
+/// A store shared across threads and rounds.
+type SharedStore = Arc<dyn MirrorStore>;
+
+/// How the settings say the copies are kept (one at a time; a folder
+/// first should both be set).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Method {
+    Folder(String),
+    Server(SyncServer),
+}
+
+impl Method {
+    /// What the sync bases and results are recorded for (`None`: a server
+    /// URL that cannot be used).
+    fn key(&self) -> Option<String> {
+        match self {
+            Method::Folder(folder) => Some(folder.clone()),
+            Method::Server(server) => sync_server::key_of(server).ok(),
+        }
+    }
+}
+
+fn method_of(settings: &Settings) -> Option<Method> {
+    match (&settings.mirror_folder, &settings.sync_server) {
+        (Some(folder), _) => Some(Method::Folder(folder.clone())),
+        (None, Some(server)) => Some(Method::Server(server.clone())),
+        (None, None) => None,
+    }
+}
+
+/// How often the worker scans without other jobs.
+fn scan_interval(settings: &Settings) -> Duration {
+    match method_of(settings) {
+        Some(Method::Server(_)) => SCAN_INTERVAL_REMOTE,
+        _ => SCAN_INTERVAL,
+    }
+}
+
+/// The store of `method`: the folder, or the server's kept store (built
+/// with the stored password when there is none for this server yet).
+fn store_for(core: &Core, method: &Method) -> AppResult<SharedStore> {
+    match method {
+        Method::Folder(folder) => Ok(Arc::new(FsStore::new(folder, &core.data_dir()))),
+        Method::Server(server) => {
+            let mut slot = lock(&core.mirror().server);
+            if let Some((built_for, store)) = slot.as_ref() {
+                if built_for == server {
+                    return Ok(Arc::clone(store));
+                }
+            }
+            let store: SharedStore = Arc::new(RemoteStore::new(sync_server::open(core, server)?));
+            *slot = Some((server.clone(), Arc::clone(&store)));
+            Ok(store)
+        }
+    }
+}
+
+/// The store of the settings (`unsupported:folder_not_linked` without
+/// one) – for the commands that work on it.
+fn current_store(core: &Core) -> AppResult<SharedStore> {
+    let method =
+        method_of(&core.state().settings).ok_or_else(|| AppError::unsupported(NOT_LINKED))?;
+    store_for(core, &method)
 }
 
 /// The passes of one round against `store` (the caller holds the pass
@@ -2490,12 +2617,13 @@ fn start_over(core: &Core, store: Option<&dyn MirrorStore>) {
     }
 }
 
-/// `mirrorFolder` was changed (set, replaced or turned off): the status
-/// starts over, the next round forgets the conflicts and offers of the
-/// previous folder, and the open vault is synced with the new folder right
-/// away, followed by a scan. The copies in a previous folder stay there;
-/// removals that failed are tried again (in a folder without that copy
-/// they have nothing to do).
+/// `mirrorFolder` or `syncServer` was changed (set, replaced or turned
+/// off), or the server's password: the status starts over (a pause after
+/// server errors ends, the server's store is built anew), the next round
+/// forgets the conflicts and offers of the previous folder, and the open
+/// vault is synced with the new folder right away, followed by a scan. The
+/// copies in a previous folder stay there; removals that failed are tried
+/// again (in a folder without that copy they have nothing to do).
 pub fn folder_changed(core: &Core) {
     let tracker = core.mirror();
     tracker.reset();
@@ -2566,6 +2694,67 @@ pub async fn dismiss_folder_conflict_copy(core: Shared<'_>, file_name: String) -
 #[tauri::command]
 pub async fn dismiss_folder_vault(core: Shared<'_>, vault_id: String) -> CmdResult<()> {
     run(&core, true, move |c| dismiss(c, &vault_id)).await
+}
+
+/// `set_sync_server(config)` → [`MirrorStatus`]: the PC keeps its copies on
+/// this WebDAV server from now on (in place of a cloud folder). The
+/// connection test must pass (its code otherwise – nothing changes); the
+/// password is stored (`crate::credentials`, never returned), the server
+/// (without it) becomes `Settings.syncServer`, `mirrorFolder` is cleared,
+/// and the mirror starts over with it ([`folder_changed`]) – also for the
+/// same server with a new password.
+pub fn set_server(core: &Arc<Core>, cfg: &WebDavConfig) -> AppResult<MirrorStatus> {
+    let server = sync_server::connect(core, cfg)?.server;
+    let (unchanged, _) = crate::commands::change_settings(core, |settings| {
+        let unchanged =
+            settings.sync_server.as_ref() == Some(&server) && settings.mirror_folder.is_none();
+        settings.sync_server = Some(server);
+        settings.mirror_folder = None;
+        Ok(unchanged)
+    })?;
+    if unchanged {
+        // The settings' side effects ran nothing: a new password.
+        folder_changed(core);
+    }
+    Ok(core.mirror().status(core))
+}
+
+/// `clear_sync_server` → [`MirrorStatus`]: no server any more – its stored
+/// password is removed (the settings' side effect). The copies on the
+/// server stay there.
+pub fn clear_server(core: &Arc<Core>) -> AppResult<MirrorStatus> {
+    crate::commands::change_settings(core, |settings| {
+        settings.sync_server = None;
+        Ok(())
+    })?;
+    Ok(core.mirror().status(core))
+}
+
+/// The side effects of a changed `syncServer` (`commands::change_settings`):
+/// the password of a server that is no longer used is removed.
+pub fn server_setting_changed(core: &Core, old: Option<&SyncServer>, new: Option<&SyncServer>) {
+    let Some(old_key) = old.and_then(|s| sync_server::key_of(s).ok()) else {
+        return;
+    };
+    let new_key = new.and_then(|s| sync_server::key_of(s).ok());
+    sync_server::forget_password(core, &old_key, new_key.as_deref());
+}
+
+#[tauri::command]
+pub async fn set_sync_server(
+    core: Shared<'_>,
+    config: serde_json::Value,
+) -> CmdResult<MirrorStatus> {
+    run(&core, true, move |c| {
+        let cfg: WebDavConfig = crate::commands::parse(config, sync_server::BAD_CONFIG)?;
+        set_server(c, &cfg)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_sync_server(core: Shared<'_>) -> CmdResult<MirrorStatus> {
+    run(&core, true, clear_server).await
 }
 
 // ---------------------------------------------------------------------------

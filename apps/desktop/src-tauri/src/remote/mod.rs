@@ -26,10 +26,6 @@
 //! ownCloud, a NAS, `rclone serve webdav`) and, in the unit tests,
 //! `mem::MemRemote`.
 
-// Wired to the phone's link (WP4) and the desktop's mirror (WP5) in later
-// steps of stage 2c; until then much of it is reached by the unit tests only.
-#![cfg_attr(not(test), expect(dead_code))]
-
 use std::sync::Arc;
 
 use keystead_core::{attachments, sync};
@@ -43,7 +39,7 @@ pub mod folder;
 #[cfg(test)]
 pub mod mem;
 #[cfg(test)]
-mod test_server;
+pub mod test_server;
 pub mod tls;
 pub mod webdav;
 
@@ -90,6 +86,8 @@ pub fn has_code(e: &AppError, code: &str) -> bool {
 /// Errors that end a whole sync (the folder or server cannot be used right
 /// now) instead of failing one file: `folder_access_lost`, `sync_offline`,
 /// `sync_auth_failed`, `sync_server_certificate`.
+// Used by the phone's engine (`folder_sync`, dead code outside Android).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn ends_sync(e: &AppError) -> bool {
     ["folder_access_lost", OFFLINE, AUTH_FAILED, CERTIFICATE]
         .iter()
@@ -153,9 +151,13 @@ pub trait Remote: Send + Sync {
     /// Writes the file `path` if `pre` holds ([`CHANGED`] otherwise).
     /// Returns its entry as the server reported it (the new ETag, if sent).
     fn put(&self, path: &str, bytes: &[u8], pre: Precondition) -> AppResult<RemoteMeta>;
-    /// Creates the attachment folder `dir` (one that exists is fine).
+    /// Creates the attachment folder `dir` (one that exists is fine). The
+    /// PC's mirror only (the phone never writes blobs).
+    #[cfg_attr(mobile, allow(dead_code))]
     fn mkcol(&self, dir: &str) -> AppResult<()>;
-    /// Removes the file (or attachment folder) `path` if `pre` holds.
+    /// Removes the file (or attachment folder) `path` if `pre` holds. The
+    /// PC's mirror only (the phone never removes anything).
+    #[cfg_attr(mobile, allow(dead_code))]
     fn delete(&self, path: &str, pre: Precondition) -> AppResult<()>;
 }
 
@@ -188,7 +190,8 @@ pub fn blob_dir_id(name: &str) -> Option<&str> {
     sync::vault_id_of_file_name(name.strip_suffix(attachments::DIR_SUFFIX)?)
 }
 
-/// `<id>.keystead.attachments` of vault `id`.
+/// `<id>.keystead.attachments` of vault `id` (the PC's mirror).
+#[cfg_attr(mobile, allow(dead_code))]
 pub fn blob_dir_name(id: &str) -> String {
     format!(
         "{id}.{}{}",
