@@ -272,6 +272,15 @@ impl VaultBackend for Backend {
         Ok(totp::totp_now(&seed)?)
     }
 
+    /// The user's default generator preset (settings in memory); the
+    /// dispatcher applies the fields the extension sends over it.
+    fn default_generator_options(&self) -> GeneratorOptions {
+        self.core
+            .upgrade()
+            .map(|core| core.state().settings.default_generator_options())
+            .unwrap_or_default()
+    }
+
     fn generate_password(&self, options: GeneratorOptions) -> Result<String, BridgeError> {
         let core = self.core()?;
         let password = generator::generate(&options)?;
@@ -282,11 +291,12 @@ impl VaultBackend for Backend {
     }
 
     /// A password the user took from the extension's suggestion (generated
-    /// with `remember: false`, i.e. `preview_password`, which stores nothing).
+    /// with `remember: false`, i.e. `preview_password`, which stores nothing)
+    /// – like the page's `remember_generated` (`generator::remember_in`).
     fn remember_generated(&self, password: &str) -> Result<(), BridgeError> {
         Ok(self
             .core()?
-            .mutate(|v| v.add_generated_password(password))?)
+            .mutate(|v| crate::generator::remember_in(v, password))?)
     }
 
     fn save_login(
@@ -509,6 +519,8 @@ pub fn pending_pairings(core: &Core) -> Vec<PairingRequest> {
 mod tests {
     use std::path::Path;
 
+    use keystead_bridge::dispatcher::generator_options_for;
+    use keystead_bridge::GeneratorOptionsPatch;
     use keystead_core::settings::Settings;
     use keystead_core::KdfParams;
 
@@ -738,6 +750,9 @@ mod tests {
 
         backend.remember_generated(&preview).unwrap();
         assert_eq!(history(&core), vec![preview.clone()]);
+        // Taken twice (e.g. filled, then copied): one use.
+        backend.remember_generated(&preview).unwrap();
+        assert_eq!(history(&core), vec![preview.clone()]);
         let generated = backend
             .generate_password(GeneratorOptions::default())
             .unwrap();
@@ -745,6 +760,67 @@ mod tests {
 
         core.lock(None);
         assert_eq!(backend.remember_generated("pw"), Err(BridgeError::Locked));
+    }
+
+    /// The extension's suggestions follow the user's default generator
+    /// preset (the dispatcher applies the fields the extension sends over
+    /// it); a deleted default falls back to "standard".
+    #[test]
+    fn suggestions_use_the_default_generator_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, backend, _test_id, _work_id) = two_vaults(dir.path());
+        let preview = |patch: Option<&str>| {
+            let patch: Option<GeneratorOptionsPatch> =
+                patch.map(|json| serde_json::from_str(json).unwrap());
+            let options =
+                generator_options_for(patch.as_ref(), backend.default_generator_options());
+            backend.preview_password(options).unwrap()
+        };
+        let digits_only = |pw: &str| pw.chars().all(|ch| ch.is_ascii_digit());
+        assert_eq!(
+            backend.default_generator_options(),
+            GeneratorOptions::default()
+        );
+        assert_eq!(preview(None).chars().count(), 20);
+
+        crate::generator::set_default_preset(&core, generator::PRESET_PIN).unwrap();
+        assert_eq!(
+            backend.default_generator_options(),
+            generator::builtin_preset(generator::PRESET_PIN)
+                .unwrap()
+                .options
+        );
+        for patch in [None, Some("{}")] {
+            let pw = preview(patch);
+            assert!(pw.len() == 6 && digits_only(&pw), "{pw}");
+        }
+        let pw = preview(Some(r#"{"length":10}"#));
+        assert!(pw.len() == 10 && digits_only(&pw), "{pw}");
+
+        // A user preset as the default; deleting it falls back.
+        let saved = crate::generator::save_preset(
+            &core,
+            None,
+            "Lang",
+            GeneratorOptions {
+                length: 40,
+                ..GeneratorOptions::default()
+            },
+        )
+        .unwrap();
+        crate::generator::set_default_preset(&core, &saved.id).unwrap();
+        assert_eq!(preview(None).chars().count(), 40);
+        crate::generator::delete_preset(&core, &saved.id).unwrap();
+        assert_eq!(
+            backend.default_generator_options(),
+            GeneratorOptions::default()
+        );
+        assert_eq!(preview(None).chars().count(), 20);
+
+        // The settings are not in the vault: the same while locked.
+        core.lock(None);
+        crate::generator::set_default_preset(&core, generator::PRESET_LONG).unwrap();
+        assert_eq!(preview(None).chars().count(), 32);
     }
 
     #[test]

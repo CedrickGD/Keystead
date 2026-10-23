@@ -11,6 +11,7 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
 | `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
 | Entwicklung | Feature-Branches (`claude/…`), Merge per PR mit Merge-Commit nach `main`. Der alte Branch `claude/quirky-archimedes-i4qa3j` ist gemergt und kann gelöscht werden. |
+| Generator | `claude/generator` (abgezweigt vom Stand 2.0.0, lokal im eigenen Worktree `Keystead-generator`): Überarbeitung des Generators, siehe „Was fertig ist“. Stand 2026-10-17: WIP-Commits mit `[skip ci]`; die ersten drei (core, backend, UI) sind schon auf `origin/claude/generator` gepusht (öffentliches Repo), die späteren (extension, docs, review fixes) nur lokal. Bereits gepushte Commits nicht umschreiben (kein squash/amend/rebase – sonst Force-Push auf einen öffentlichen Branch). Nicht gemergt, nicht veröffentlicht. |
 | Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, Android-Keystore `keystead-android-release.jks` mit Passwortdatei, README) |
 | GitHub-Secrets | `TAURI_SIGNING_PRIVATE_KEY` (Inhalt von `keys/keystead/tauri-updater.key`); für die APK `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (= `keystead`) – alle im Keystead-Repo gesetzt (die Android-Secrets am 2026-10-16) |
 
@@ -184,6 +185,108 @@ In-App-Update (sein Kanal: wie in den Einstellungen gespeichert).
   Treffers, Deckel-Test nur über `Content-Length`, Einleitungssatz in
   `ARCHITECTURE.md`) am 2026-10-15 behoben. Veröffentlicht mit beta.11 und
   vom Besitzer am 2026-10-15 in der echten App geprüft – funktioniert.
+- **Generator-Überarbeitung** (Branch `claude/generator`, noch nicht gemergt
+  und nicht veröffentlicht). Anlass: Beschwerde des Besitzers vom 2026-10-17 –
+  der Generator erzeugte bei jedem Öffnen, jeder Optionsänderung und jedem
+  Klick ein Passwort und speicherte es (bis zu 50 unbenutzte im Verlauf), der
+  Verlauf stand im Klartext in der Oberfläche (verstieß gegen die
+  Block-1-Regel), und es fehlte Anpassung. Die Entscheidungen des Besitzers
+  dazu sind umgesetzt – nicht erneut aufmachen:
+  - **Nichts automatisch**: Die Generator-Seite zeigt kein Passwort, bis
+    „Generieren“ geklickt wird (auch Enter oder Strg+G, solange der Fokus auf
+    der Seite liegt und kein Dialog offen ist). Eine Optionsänderung erzeugt
+    nichts; eine ältere Vorschau bekommt den Hinweis „Die Optionen haben sich
+    geändert …“. Das angezeigte Passwort ist eine Vorschau
+    (`generate_password` mit `remember: false`) und wird nicht gespeichert.
+    Der Editor-Popover (Link „Generieren“ am Passwortfeld) arbeitet genauso.
+  - **Verlauf nur für benutzte Passwörter** (höchstens 50, im Tresor): In den
+    Verlauf kommt ein Passwort nur, wenn es kopiert (Seite, Popover) oder per
+    „Verwenden“ in einen Eintrag übernommen wurde (`remember_generated`); in
+    der Erweiterung nach Kopieren, Ausfüllen (Popup, Kontextmenü,
+    Strg+Umschalt+9 – nur wenn ein Feld es genommen hat), „Verwenden“ eines
+    Vorschlags und „Login hinzufügen“ mit dem Passwort des Zauberstabs.
+    Dasselbe Passwort wie der neueste Eintrag wird nicht noch einmal
+    gespeichert (zweimal kopiert = eine Benutzung).
+  - **Verlauf nie im Klartext in der Oberfläche**: `generator_history`
+    liefert nur `{ id, createdAt }`, die Zeilen sind maskiert. Das Auge holt
+    ein Passwort per `reveal_generated` (wieder weg nach 30 s, bei
+    Fokusverlust, Sperre und beim Verlassen der Seite), Kopieren läuft über
+    `copy_generated` (sensibler Zwischenablage-Pfad, der Wert erreicht die
+    Seite nicht). Einträge bestehender Tresore bekommen beim Öffnen eine ID,
+    gespeichert mit dem nächsten Speichern.
+  - **Anpassung**: Länge 4–128 (`PASSWORD_MIN_LEN` jetzt 4), eigene
+    Sonderzeichen (Standard `!#$%&*+-=?@^_`, „Standard wiederherstellen“),
+    „Diese Zeichen nie verwenden“ (für alle Gruppen), Mindestanzahl für
+    Groß-, Kleinbuchstaben, Ziffern und Sonderzeichen (je 0 … Länge, Summe
+    ≤ Länge, zählt nur bei eingeschalteter Gruppe), „Mit einem Buchstaben
+    beginnen“, „Verwechselbare Zeichen vermeiden“; Passphrase: 3–20 Wörter,
+    Trennzeichen bis 8 Zeichen, Wortliste Englisch/Deutsch, Großschreibung,
+    Zahl. Probleme stehen am Feld (dieselben Codes in derselben Reihenfolge
+    wie im Core, `src/lib/generatorRules.ts`) und sperren „Generieren“;
+    darunter eine Entropie-Schätzung (Passphrasen mit den echten
+    Listengrößen 7776 / 7724).
+  - **Vorlagen**: eingebaut „Standard“, „Nur Buchstaben und Ziffern“, „PIN“
+    (6 Ziffern), „Lang und stark“ (32 Zeichen, je Gruppe mindestens 2),
+    „Passphrase“ (5 englische Wörter); eigene über das „…“-Menü der Seite
+    (Als Vorlage speichern, Änderungen speichern, Umbenennen, Löschen; bis
+    50, Name 1–40 Zeichen, kein Name doppelt) in `settings.json` (nicht
+    geheim, nicht im Tresor). Eine Vorlage ist der Standard – gewählt nur auf
+    der Generator-Seite („Als Standard verwenden“, keine Zeile in den
+    Einstellungen); ihn nutzen der Editor-Popover und die Erweiterung
+    (Vorschläge, Kontextmenü/Kürzel, Popup ohne eigene Optionen). Eine
+    gelöschte Standard-Vorlage fällt auf „Standard“ zurück. Nur die
+    Vorlagen-Befehle ändern Vorlagen und Standard; `save_settings` behält sie.
+  - **Erweiterung**: Der Popup-Generator verhält sich wie die App (nur auf
+    Klick, Vorschau-Hinweis, Kopieren/Ausfüllen). Ohne eigene Optionen gilt
+    die Standard-Vorlage der App; „Anpassen“ legt eigene Optionen für diesen
+    Browser an (`chrome.storage.local` `generatorOptions`, nur solange
+    gültig), „App-Vorlage nutzen“ entfernt sie. Gespeicherte Optionen werden
+    überall gleich über die Generator-Standards ergänzt (Popup und
+    Hintergrund-Anfragen). Jede Vorschau kommt nur einmal in den Verlauf
+    (Kopieren und danach Ausfüllen meldet sie nicht noch einmal).
+  - **Kompatibilität**: Die neuen `GeneratorOptions`-Felder haben
+    Serde-Standardwerte. `generate_password` der Bridge ohne Optionen nimmt
+    die Standard-Vorlage, gesendete Felder gelten darüber; vollständige
+    Optionen älterer Erweiterungen funktionieren weiter (notfalls über die
+    Generator-Standards). `remember_generated` und `generate_password` mit
+    `remember: true` bleiben. `status` meldet jetzt `generatorVersion: 2`;
+    gegen eine ältere App (z. B. 2.0.0, ohne das Feld) schickt die neue
+    Erweiterung keine Optionen, die jene übergehen oder ablehnen würde (Länge
+    unter 5, eigene Sonderzeichen, ausgeschlossene Zeichen, Buchstabe am
+    Anfang, mehr als 1 Groß-/Kleinbuchstabe, deutsche Wortliste): Das Popup
+    erklärt es und sperrt „Generieren“, Kontextmenü und Vorschläge sagen,
+    dass die App zu alt ist.
+  - **Deutsche Wortliste – gefunden und eingebettet**: `de-7776-v1.txt` aus
+    <https://github.com/dys2p/wordlists-de>. Lizenz an der Quelle geprüft:
+    Unlicense, CC0 oder BSD-3 nach Wahl; Keystead nutzt CC0 1.0, das passt
+    zur proprietären Lizenz. 52 Wörter wurden entfernt, damit Passphrasen
+    familientauglich bleiben (vulgär, sexuell, gewalttätig, NS-belastet,
+    abwertend) → 7724 Wörter ohne Umlaute/ß, log2 ≈ 12,915 Bit je Wort (EFF:
+    12,925). Herkunft, Commit-Stände, Prüfsummen und die entfernten Wörter
+    stehen in `crates/keystead-core/src/wordlist/README.md`, die Credits im
+    README.
+  - Geprüft (2026-10-17): fmt, clippy, `cargo test --workspace`,
+    `npm run build`, `node --test` grün; Desktop-Oberfläche und
+    Erweiterungs-Popup wurden in ihren Stufen im Browser mit Mock-Backend
+    durchgeklickt (Deutsch/Englisch). **Noch nicht in der echten App**
+    (Tauri + echte Erweiterung) geprüft. Das README-Bild
+    `docs/screenshots/keystead-generator.png` ist neu (Mock-Backend:
+    Vorschau, Vorlagen, maskierter Verlauf). Vertrag in `ARCHITECTURE.md`
+    (Core-API „generator“, „Settings“, Command-Tabelle, „Secrets and the
+    webview → Generator“, Bridge `generate_password` / `remember_generated`,
+    Erweiterung „Password suggestion“ / „Generator“, UI/UX „Generator“).
+  - Review-Fixes (2026-10-17): Sperren zählt die Sperr-Epoche jetzt unter dem
+    State-Lock hoch (vorher konnte ein Kopieren, das genau beim Sperren lief –
+    `copy_generated`, ebenso `copy_secret_field` und `copy_field` –, das
+    Passwort nach dem Sperren in der Zwischenablage hinterlassen; Test mit
+    zwei Threads); Erweiterung wie oben (vollständige gespeicherte Optionen,
+    `generatorVersion`, jede Vorschau einmal); ein selten (≈ 0,2 %) roter
+    Bridge-Test wegen EFF-Wörtern mit Bindestrich („drop-down“) zählt jetzt
+    Großbuchstaben; das Menü überspringt deaktivierte Einträge (die
+    Vorlagen-Aktionen sind wieder per Tastatur erreichbar, auch wenn „Als
+    Vorlage speichern“ gesperrt ist); EFF-Namensnennung (CC BY 4.0) jetzt auch
+    in den ausgelieferten Dateien: Einstellungen → Über Keystead und
+    `docs/LIESMICH.txt` im ZIP.
 - Browser-Erweiterung: Kopplung mit Code, Entsperren, Tresor-Auswahl/-Wechsel,
   Ausfüllen (Popup, Inline-Menü, Strg+Umschalt+L), Speichern-/Aktualisieren-
   Leiste, Generator, Clickjacking-Schutz.
@@ -267,6 +370,11 @@ Tags im Modell- und Command-Teil). Nicht erneut aufmachen.
 5. **Block 5 „Mobile“** (Wunsch des Besitzers vom 2026-10-10, Entscheidungen
    vom 2026-10-16 in `BLOCK5-DESIGN.md`): Android-App, Stand und nächste
    Schritte im nächsten Abschnitt.
+6. **Generator-Überarbeitung** (2026-10-17, Branch `claude/generator`,
+   siehe „Was fertig ist“): fertig bis auf die Prüfung in der echten App
+   (Tauri + Erweiterung). Danach entscheidet der Besitzer über PR nach
+   `main` und eine Beta mit `[release]`. Möglicher Folgeschritt: den
+   Generator der Terminal-Version angleichen (siehe „Bekannte Grenzen“).
 
 ## In Arbeit: Block 5 „Mobile“ (Branch `claude/mobile-android`)
 
@@ -1021,6 +1129,46 @@ deinstallieren.
   10 je Eintrag.
 - `Keystead.exe --cli <Unterbefehl>` öffnet eine Konsole, die sich sofort
   schließt – für Skripte `keystead-cli.exe` in einem Terminal nutzen.
+- Generator (Branch `claude/generator`):
+  - Die Terminal-Version ist nicht mit überarbeitet: Ihr Generator (`g`)
+    erzeugt beim Öffnen und bei jeder Optionsänderung einen Wert (nur im
+    Terminal sichtbar, nicht gespeichert) und speichert beim Kopieren (`c`)
+    ohne die Prüfung auf den neuesten Eintrag. Sie kennt weder Vorlagen noch
+    die Standard-Vorlage noch die neuen Optionen (eigene Sonderzeichen,
+    Ausschlüsse, Mindestanzahlen, Buchstabe am Anfang, deutsche Wortliste)
+    und nimmt die Generator-Standards; `keystead-cli generate --length`
+    erlaubt 5–128 (Core: 4–128).
+  - Der Verlauf auf der Generator-Seite aktualisiert sich nicht von selbst,
+    wenn die Erweiterung ein Passwort speichert (die Bridge sendet dafür
+    kein `vault://changed`); sichtbar nach erneutem Öffnen der Seite.
+  - „Verwenden“ im Editor-Popover speichert das Passwort sofort im Verlauf,
+    auch wenn der Eintrag danach nicht gespeichert wird („Verwenden“ zählt
+    als Benutzung, so entschieden).
+  - Vorlagen gehören zum Gerät (`settings.json`), nicht zum Tresor: kein
+    Export, kein Import. Versionen bis 2.0.0 verwerfen beim Speichern der
+    Einstellungen die eigenen Vorlagen und die Standard-Wahl; die IDs des
+    Verlaufs lassen sie beim Speichern des Tresors weg (die neue Version
+    vergibt beim Öffnen neue – harmlos).
+  - Die Erweiterung bekommt keine Vorlagenliste (die Bridge hat keine
+    Nachricht dafür): Das Popup nennt nur „Standard-Vorlage der App“, eigene
+    Optionen gelten je Browser.
+  - Erweiterungen, deren 2.0.0-Popup Generator-Optionen gespeichert hat (das
+    alte Popup speicherte jede Änderung, ohne „Anpassen“), gelten nach dem
+    Update als „Eigene Einstellungen“ und gehen der Standard-Vorlage der App
+    vor – für Vorschläge, Kontextmenü/Kürzel und „Login hinzufügen“, wie
+    schon in 2.0.0. „App-Vorlage nutzen“ im Popup setzt zurück. So
+    entschieden statt die alten Optionen still zu verwerfen; der Hinweis zur
+    Standard-Vorlage in der App sagt es.
+  - Gegen eine App vor der Überarbeitung (kein `generatorVersion` im
+    `status`) sind die neuen Optionen in der Erweiterung gesperrt, nicht
+    nachgebildet.
+  - `LICENSE` beansprucht „the Software“ ohne Ausnahme für Fremdbestandteile
+    (EFF-Wortliste CC BY 4.0, dys2p CC0); die Namensnennung steht in der App
+    (Über Keystead), in `docs/LIESMICH.txt` und im README. Ob `LICENSE` einen
+    Satz zu Drittanbieter-Inhalten bekommt, entscheidet der Besitzer.
+  - Die deutsche Wortliste hat 7724 statt 7776 Wörter (52 entfernt) – pro
+    Wort 0,01 Bit weniger als die EFF-Liste; die Anzeige rechnet mit der
+    echten Größe.
 - Erweiterung: geschlossene Shadow Roots sind nicht erreichbar (technische
   Grenze); Klicks in den ersten 500 ms nach Erscheinen werden bewusst ignoriert
   (mit Rückmeldung).

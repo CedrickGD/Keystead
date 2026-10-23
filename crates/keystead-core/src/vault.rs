@@ -24,8 +24,8 @@ use crate::icons;
 use crate::import::{self, ConflictMode, ImportPlan, ImportReport};
 use crate::matching;
 use crate::model::{
-    now_ms, AttachmentEntry, AttachmentInfo, Folder, GeneratedPassword, ItemSummary, ItemType,
-    PasswordHistoryEntry, VaultData, VaultInfo, VaultItem,
+    now_ms, AttachmentEntry, AttachmentInfo, Folder, GeneratedPassword, GeneratedPasswordInfo,
+    ItemSummary, ItemType, PasswordHistoryEntry, VaultData, VaultInfo, VaultItem,
 };
 use crate::util;
 
@@ -109,6 +109,24 @@ pub(crate) fn wipe_data(data: &mut VaultData) {
     attachments::wipe(data);
     // Unknown fields of a later format version may hold secrets too.
     data.extra.0.values_mut().for_each(import::wipe_value);
+}
+
+/// Gives every generator history entry without an id (payloads written
+/// before ids existed) or with the id of an earlier entry a fresh UUID, so
+/// each entry can be addressed by id. Runs whenever data is loaded into an
+/// [`UnlockedVault`]; the next save persists the ids. Returns how many ids
+/// were assigned.
+pub(crate) fn assign_generator_history_ids(data: &mut VaultData) -> usize {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut assigned = 0;
+    for entry in &mut data.generator_history {
+        if entry.id.is_empty() || seen.contains(&entry.id) {
+            entry.id = util::new_id();
+            assigned += 1;
+        }
+        seen.insert(entry.id.clone());
+    }
+    assigned
 }
 
 /// Overwrites the secret strings of items before the memory is freed.
@@ -251,8 +269,9 @@ impl UnlockedVault {
         file: VaultFile,
         key: SecretKey,
         master_kek: SecretKey,
-        data: VaultData,
+        mut data: VaultData,
     ) -> Self {
+        assign_generator_history_ids(&mut data);
         UnlockedVault {
             path,
             file,
@@ -295,8 +314,23 @@ impl UnlockedVault {
         &self.data.folders
     }
 
+    /// The generator history, newest first (with the passwords).
     pub fn generator_history(&self) -> &[GeneratedPassword] {
         &self.data.generator_history
+    }
+
+    /// The generator history without passwords (id and time), newest first.
+    pub fn generator_history_info(&self) -> Vec<GeneratedPasswordInfo> {
+        self.data
+            .generator_history
+            .iter()
+            .map(GeneratedPassword::info)
+            .collect()
+    }
+
+    /// One generator history entry by id.
+    pub fn generated_password(&self, id: &str) -> Option<&GeneratedPassword> {
+        self.data.generator_history.iter().find(|g| g.id == id)
     }
 
     pub fn item(&self, id: &str) -> Option<&VaultItem> {
@@ -473,7 +507,8 @@ impl UnlockedVault {
         })
     }
 
-    /// Prepends a generated password to the generator history (max 50).
+    /// Prepends a generated password to the generator history (max 50) as
+    /// an entry with a fresh id.
     pub fn add_generated_password(&mut self, password: &str) -> Result<()> {
         if password.is_empty() {
             return Err(Error::invalid("password_empty"));
@@ -483,6 +518,7 @@ impl UnlockedVault {
             data.generator_history.insert(
                 0,
                 GeneratedPassword {
+                    id: util::new_id(),
                     password: password.to_owned(),
                     created_at: now,
                 },
@@ -937,7 +973,8 @@ impl UnlockedVault {
                 Error::WrongPassword => Error::KeyChanged,
                 other => other,
             })?;
-        let data = on_disk.decrypt_payload(&key)?;
+        let mut data = on_disk.decrypt_payload(&key)?;
+        assign_generator_history_ids(&mut data);
         let mut old = std::mem::replace(&mut self.data, data);
         wipe_data(&mut old);
         self.file = on_disk;

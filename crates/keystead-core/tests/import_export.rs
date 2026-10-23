@@ -638,6 +638,7 @@ fn sample_data() -> VaultData {
         items: vec![login, note, card, identity, trashed],
         folders: vec![folder],
         generator_history: vec![GeneratedPassword {
+            id: "g-1".into(),
             password: "generated-secret".into(),
             created_at: 1,
         }],

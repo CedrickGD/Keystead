@@ -48,7 +48,11 @@
 // Like the backend, `list_items` answers items without their secrets
 // (demo/redact.ts); `reveal_secret`, `copy_secret_field`, `totp_for_item` and
 // `get_item_for_edit` hand them out one at a time. Attachments live in a side
-// store without bytes (demo/mockAttachments.ts).
+// store without bytes (demo/mockAttachments.ts). The generator works like the
+// app's: `generate_password` answers previews, only `remember_generated`
+// stores, `generator_history` is redacted (id + time) and `reveal_generated` /
+// `copy_generated` hand out one entry; the presets live in the settings
+// (demo/generator.ts has the built-in ones and the option checks).
 
 import type {
   AppInfo,
@@ -60,7 +64,10 @@ import type {
   Folder,
   FolderStatus,
   GeneratedPassword,
+  GeneratedPasswordInfo,
   GeneratorOptions,
+  GeneratorPreset,
+  GeneratorPresets,
   HealthReport,
   ImportFormat,
   ImportReport,
@@ -82,7 +89,8 @@ import type {
 import { DEFAULT_GENERATOR_OPTIONS } from "./types";
 import { totpNow } from "./demo/totp";
 import { estimateStrength } from "./demo/strength";
-import { generate } from "./demo/generator";
+import { builtinPresets, generate, normalizeOptions, validatePresetName } from "./demo/generator";
+import { GENERATOR_HISTORY_MAX, GENERATOR_PRESETS_MAX } from "./generatorRules";
 import { legacyImportItems, privateVault, workVault, type SampleVault } from "./demo/sampleData";
 import {
   MOCK_LIST_LIMIT,
@@ -302,6 +310,16 @@ function initState(): MockState {
       lockInBackgroundSeconds: 60,
       deviceUnlock: phone && params.get("fingerprint") === "on" && !empty,
       mirrorFolder: !phone && params.get("mirror") === "on" ? MOCK_MIRROR_FOLDER : null,
+      generatorPresets: empty
+        ? []
+        : [
+            {
+              id: "5d0c8a3e-1f7b-4c2d-9e6a-7b8c9d0e1f2a",
+              name: "Online-Banking",
+              options: { ...DEFAULT_GENERATOR_OPTIONS, length: 16, symbolSet: "!?#", startWithLetter: true },
+            },
+          ],
+      generatorDefault: "standard",
     },
     appInfo: {
       version: installedMockVersion(),
@@ -903,9 +921,10 @@ function parseBrowserIds(args: Record<string, unknown>): BrowserId[] {
   });
 }
 
-function validateSettings(input: unknown): Settings {
+/** `save_settings`: checked like the backend; the generator presets and the default keep their stored values. */
+function validateSettings(input: unknown, stored: Settings): Settings {
   if (!input || typeof input !== "object") fail("invalid_input:settings");
-  const s = input as Settings;
+  const s = { ...(input as Settings), generatorPresets: stored.generatorPresets, generatorDefault: stored.generatorDefault };
   if (!["system", "light", "dark"].includes(s.theme)) fail("invalid_input:theme");
   if (!["de", "en"].includes(s.language)) fail("invalid_input:language");
   if (!Number.isInteger(s.autoLockMinutes) || s.autoLockMinutes < 0) fail("invalid_input:autoLockMinutes");
@@ -975,6 +994,7 @@ const MIRROR_TRIGGERS = new Set([
   "rename_tag",
   "delete_tag",
   "generate_password",
+  "remember_generated",
   "clear_generator_history",
   "change_master_password",
   "create_recovery_key",
@@ -986,6 +1006,73 @@ const MIRROR_TRIGGERS = new Set([
   "remove_attachment",
   "clear_icons",
 ]);
+
+// Generator (see the header comment and demo/generator.ts).
+
+const BUILTIN_IDS = new Set(builtinPresets().map((p) => p.id));
+
+/** Runs a generator check; its `invalid_input:<code>` becomes the command's error. */
+function generatorCall<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("invalid_input:")) fail(err.message);
+    throw err;
+  }
+}
+
+/** `GeneratorOptions` from JSON like serde with defaults: missing fields get theirs, a wrong type is `invalid_input:options`. */
+function parseOptions(value: unknown): GeneratorOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid_input:options");
+  const input = value as Record<string, unknown>;
+  const out: GeneratorOptions = { ...DEFAULT_GENERATOR_OPTIONS };
+  const target = out as unknown as Record<string, unknown>;
+  for (const [key, fallback] of Object.entries(DEFAULT_GENERATOR_OPTIONS)) {
+    if (!(key in input)) continue;
+    const v = input[key];
+    const ok =
+      key === "kind"
+        ? v === "password" || v === "passphrase"
+        : key === "wordlist"
+          ? v === "en" || v === "de"
+          : typeof fallback === "number"
+            ? typeof v === "number" && Number.isInteger(v) && v >= 0
+            : typeof v === typeof fallback;
+    if (!ok) fail("invalid_input:options");
+    target[key] = v;
+  }
+  return out;
+}
+
+function addGenerated(vault: MockVault, password: string): void {
+  const entry: GeneratedPassword = { id: uuid(), password, createdAt: Date.now() };
+  vault.data.generatorHistory = [entry, ...vault.data.generatorHistory].slice(0, GENERATOR_HISTORY_MAX);
+  touch(vault);
+}
+
+/** The history entry `id` of the page's vault (`locked` / `not_found`). */
+function generatedEntry(args: Record<string, unknown>): GeneratedPassword {
+  const vault = pageVault(args);
+  const entry = vault.data.generatorHistory.find((g) => g.id === str(args, "id"));
+  if (!entry) fail("not_found");
+  return entry;
+}
+
+function presetOptions(id: string, user: GeneratorPreset[]): GeneratorOptions | undefined {
+  return (builtinPresets().find((p) => p.id === id) ?? user.find((p) => p.id === id))?.options;
+}
+
+function generatorPresets(): GeneratorPresets {
+  const s = getState();
+  const user = s.settings.generatorPresets;
+  const defaultId = presetOptions(s.settings.generatorDefault, user) ? s.settings.generatorDefault : "standard";
+  return clone({
+    builtin: builtinPresets(),
+    user,
+    defaultId,
+    defaultOptions: presetOptions(defaultId, user) ?? { ...DEFAULT_GENERATOR_OPTIONS },
+  });
+}
 
 let lastCopied: string | null = null;
 
@@ -1538,27 +1625,86 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     }
 
     case "generate_password": {
-      const options = { ...DEFAULT_GENERATOR_OPTIONS, ...(args.options as Partial<GeneratorOptions>) };
-      let password: string;
-      try {
-        password = generate(options);
-      } catch (err) {
-        fail(err instanceof Error && err.message.startsWith("invalid_input:") ? err.message : "invalid_input:options");
-      }
+      const options = parseOptions(args.options);
+      const password = generatorCall(() => generate(options));
+      // `remember: true` is kept for compatibility (the page sends false): into the page's vault only.
       const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
-      if (bool(args, "remember") && vault) {
-        const entry: GeneratedPassword = { password, createdAt: Date.now() };
-        vault.data.generatorHistory = [entry, ...vault.data.generatorHistory].slice(0, 50);
+      if (args.remember === true && vault && optStr(args, "pageVaultId") === vault.info.id) {
+        addGenerated(vault, password);
       }
+      s.lastActivity = Date.now();
       return password;
     }
 
+    case "remember_generated": {
+      const password = str(args, "password");
+      if (!password) fail("invalid_input:password_empty");
+      if (Array.from(password).length > 1024) fail("invalid_input:password_too_long");
+      const vault = pageVault(args);
+      // The same password as the newest entry is one use (copied twice, or copied and taken).
+      if (vault.data.generatorHistory[0]?.password !== password) addGenerated(vault, password);
+      s.lastActivity = Date.now();
+      return null;
+    }
+
     case "generator_history":
-      return clone(openVault().data.generatorHistory);
+      // Redacted like the backend: never a password.
+      return openVault().data.generatorHistory.map(({ id, createdAt }): GeneratedPasswordInfo => ({ id, createdAt }));
+
+    case "reveal_generated": {
+      const entry = generatedEntry(args);
+      await sleep(120);
+      s.lastActivity = Date.now();
+      return entry.password;
+    }
+
+    case "copy_generated": {
+      const entry = generatedEntry(args);
+      await copyText(entry.password, true);
+      s.lastActivity = Date.now();
+      return null;
+    }
 
     case "clear_generator_history":
-      openVault().data.generatorHistory = [];
+      pageVault(args).data.generatorHistory = [];
       return null;
+
+    case "generator_presets":
+      return generatorPresets();
+
+    case "save_generator_preset": {
+      const id = optStr(args, "id");
+      const options = parseOptions(args.options);
+      const user = s.settings.generatorPresets;
+      if (id !== null && BUILTIN_IDS.has(id)) fail("invalid_input:preset_id");
+      if (id !== null && !user.some((p) => p.id === id)) fail("not_found");
+      if (id === null && user.length >= GENERATOR_PRESETS_MAX) fail("invalid_input:presets_too_many");
+      const name = generatorCall(() => validatePresetName(str(args, "name")));
+      const normalized = generatorCall(() => normalizeOptions(options));
+      const presetId = id ?? uuid();
+      const lower = name.toLowerCase();
+      if (user.some((p) => p.id !== presetId && p.name.toLowerCase() === lower)) fail("invalid_input:preset_name_taken");
+      const preset: GeneratorPreset = { id: presetId, name, options: normalized };
+      s.settings.generatorPresets = id === null ? [...user, preset] : user.map((p) => (p.id === id ? preset : p));
+      return { id: presetId, presets: generatorPresets() };
+    }
+
+    case "delete_generator_preset": {
+      const id = str(args, "id");
+      if (BUILTIN_IDS.has(id)) fail("invalid_input:preset_id");
+      if (!s.settings.generatorPresets.some((p) => p.id === id)) fail("not_found");
+      s.settings.generatorPresets = s.settings.generatorPresets.filter((p) => p.id !== id);
+      // A deleted default falls back to "standard" (`Settings::normalized`).
+      if (s.settings.generatorDefault === id) s.settings.generatorDefault = "standard";
+      return generatorPresets();
+    }
+
+    case "set_default_generator_preset": {
+      const id = str(args, "id");
+      if (!BUILTIN_IDS.has(id) && !s.settings.generatorPresets.some((p) => p.id === id)) fail("not_found");
+      s.settings.generatorDefault = id;
+      return generatorPresets();
+    }
 
     case "password_strength":
       return estimateStrength(str(args, "password"));
@@ -1745,8 +1891,9 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return clone(s.settings);
 
     case "save_settings": {
-      // Only the device-unlock commands change `deviceUnlock` (like `from_the_page`).
-      const next = { ...validateSettings(args.settings), deviceUnlock: s.settings.deviceUnlock };
+      // Only the device-unlock commands change `deviceUnlock` (like `from_the_page`);
+      // `validateSettings` keeps the generator presets.
+      const next = { ...validateSettings(args.settings, s.settings), deviceUnlock: s.settings.deviceUnlock };
       const folderChanged = next.mirrorFolder !== s.settings.mirrorFolder;
       // The phone ignores the field (no mirror there).
       if (folderChanged && next.mirrorFolder && !s.appInfo.readOnly) checkMirrorFolder(next.mirrorFolder);

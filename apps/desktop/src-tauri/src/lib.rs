@@ -47,6 +47,8 @@ mod extension;
 // tests run on the desktop host too.
 #[cfg(any(mobile, test))]
 mod folder_sync;
+#[cfg(desktop)]
+mod generator;
 mod gui;
 mod icons;
 #[cfg(desktop)]

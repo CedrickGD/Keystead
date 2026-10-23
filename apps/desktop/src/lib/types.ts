@@ -183,8 +183,20 @@ export interface Folder {
   name: string;
 }
 
+/** A generator history entry inside the vault (only the mock backend holds these). */
 export interface GeneratedPassword {
+  /** UUID v4; entries of older vaults get one when the vault is opened. */
+  id: string;
   password: string;
+  createdAt: number;
+}
+
+/**
+ * A generator history entry as the page sees it (`generator_history`):
+ * never the password – `reveal_generated` / `copy_generated` address it by id.
+ */
+export interface GeneratedPasswordInfo {
+  id: string;
   createdAt: number;
 }
 
@@ -253,21 +265,41 @@ export interface MasterPasswordChanged {
 
 export type GeneratorKind = "password" | "passphrase";
 
+/** Passphrase word list: "en" = EFF large list, "de" = German list (dys2p, see the core's wordlist/README.md). */
+export type Wordlist = "en" | "de";
+
+/** `keystead_core::generator::GeneratorOptions` (see docs/ARCHITECTURE.md, "Other core modules"). */
 export interface GeneratorOptions {
   kind: GeneratorKind;
+  /** Password length, `PASSWORD_MIN_LEN`..`PASSWORD_MAX_LEN`. */
   length: number;
   uppercase: boolean;
   lowercase: boolean;
   digits: boolean;
   symbols: boolean;
+  /** Minimum counts per class, each 0..length; only count while their class is on; sum ≤ length. */
+  minUppercase: number;
+  minLowercase: number;
   minDigits: number;
   minSymbols: number;
+  /** The symbols to draw from: printable ASCII, no letter, digit or space; not empty while `symbols` is on. */
+  symbolSet: string;
+  /** Characters removed from every class. */
+  exclude: string;
+  /** Exclude I l 1 O 0 (on top of `exclude`). */
   avoidAmbiguous: boolean;
+  /** The first character is a letter. */
+  startWithLetter: boolean;
+  /** Passphrase word count, 3..20. */
   words: number;
   separator: string;
   capitalize: boolean;
   includeNumber: boolean;
+  wordlist: Wordlist;
 }
+
+/** The core's `DEFAULT_SYMBOLS`. */
+export const DEFAULT_SYMBOLS = "!#$%&*+-=?@^_";
 
 export const DEFAULT_GENERATOR_OPTIONS: GeneratorOptions = {
   kind: "password",
@@ -276,14 +308,49 @@ export const DEFAULT_GENERATOR_OPTIONS: GeneratorOptions = {
   lowercase: true,
   digits: true,
   symbols: true,
+  minUppercase: 1,
+  minLowercase: 1,
   minDigits: 1,
   minSymbols: 1,
+  symbolSet: DEFAULT_SYMBOLS,
+  exclude: "",
   avoidAmbiguous: false,
+  startWithLetter: false,
   words: 5,
   separator: "-",
   capitalize: true,
   includeNumber: true,
+  wordlist: "en",
 };
+
+/** Ids of the built-in generator presets, in display order (the core's `BUILTIN_PRESET_IDS`). */
+export const BUILTIN_PRESET_IDS = ["standard", "alnum", "pin", "long", "passphrase"] as const;
+export type BuiltinPresetId = (typeof BUILTIN_PRESET_IDS)[number];
+
+/** Named generator options: built-in (names translated by id) or the user's (`settings.generatorPresets`). */
+export interface GeneratorPreset {
+  id: string;
+  name: string;
+  options: GeneratorOptions;
+}
+
+/** Answer of `generator_presets` and of the preset commands. */
+export interface GeneratorPresets {
+  /** The built-in presets in display order; `name` is an English fallback – translate by id. */
+  builtin: GeneratorPreset[];
+  /** The user's presets, in their order. */
+  user: GeneratorPreset[];
+  /** Id of the default preset (built-in or user). */
+  defaultId: string;
+  /** Its options: what the editor's generator and the browser extension use. */
+  defaultOptions: GeneratorOptions;
+}
+
+/** Answer of `save_generator_preset`. */
+export interface SavedGeneratorPreset {
+  id: string;
+  presets: GeneratorPresets;
+}
 
 export interface Strength {
   /** 0..4 */
@@ -433,6 +500,13 @@ export interface Settings {
    * null = off (default). The phone ignores it.
    */
   mirrorFolder: string | null;
+  /**
+   * The user's generator presets and the default preset's id. Changed only by
+   * the preset commands (`save_generator_preset` …); `save_settings` keeps the
+   * stored values, so read them from `generator_presets`, not from here.
+   */
+  generatorPresets: GeneratorPreset[];
+  generatorDefault: string;
 }
 
 export type UpdateChannel = "beta" | "stable";

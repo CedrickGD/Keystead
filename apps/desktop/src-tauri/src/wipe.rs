@@ -4,7 +4,7 @@
 //! the plaintext still in it. (The serialized IPC message itself is owned
 //! by Tauri and out of reach.)
 
-use keystead_core::model::{GeneratedPassword, VaultItem};
+use keystead_core::model::VaultItem;
 use serde::{Serialize, Serializer};
 use zeroize::Zeroize;
 
@@ -69,13 +69,7 @@ impl Wipe for VaultItem {
     }
 }
 
-impl Wipe for GeneratedPassword {
-    fn wipe(&mut self) {
-        self.password.zeroize();
-    }
-}
-
-/// A single secret (`reveal_secret`).
+/// A single secret (`reveal_secret`, `reveal_generated`).
 impl Wipe for String {
     fn wipe(&mut self) {
         self.zeroize();

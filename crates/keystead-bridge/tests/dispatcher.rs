@@ -9,11 +9,14 @@ use std::thread;
 use std::time::Duration;
 
 use common::*;
-use keystead_bridge::protocol::{ListVaultsData, LoginSecret, PairData, StatusData};
+use keystead_bridge::protocol::{
+    ListVaultsData, LoginSecret, PairData, StatusData, GENERATOR_VERSION,
+};
 use keystead_bridge::{BridgeError, ClientStore, Dispatcher, DispatcherConfig, Response};
+use keystead_core::generator::{self, GeneratorOptions};
 use keystead_core::model::ItemSummary;
 use keystead_core::totp::TotpCode;
-use serde_json::json;
+use serde_json::{json, Value};
 
 struct Fixture {
     dispatcher: Arc<Dispatcher>,
@@ -79,6 +82,7 @@ fn status_without_pairing() {
         status,
         StatusData {
             app_version: "2.0.0-test".into(),
+            generator_version: GENERATOR_VERSION,
             paired: false,
             unlocked: true,
             // Not revealed to unpaired callers.
@@ -770,6 +774,97 @@ fn generate_password_options() {
         c(json!({"id": "5", "type": "generate_password", "options": {"length": "long"}})),
     );
     assert_eq!(err(&r), BridgeError::InvalidRequest);
+}
+
+/// The app's default generator preset fills in every field the extension
+/// does not send – all of them without `options` (or with `null` / `{}`).
+#[test]
+fn generate_password_uses_the_default_preset() {
+    let f = default_fixture();
+    let (cid, tok) = paired(&f);
+    let d = f.dispatcher.as_ref();
+    let c = |v| with_creds(v, &cid, &tok);
+    let generate = |options: Option<Value>, remember: bool| {
+        let mut req = json!({"id": "g", "type": "generate_password", "remember": remember});
+        if let Some(options) = options {
+            req["options"] = options;
+        }
+        let r = call(d, c(req));
+        r.data_as::<String>()
+            .unwrap_or_else(|| panic!("{:?}", r.error_code()))
+    };
+    let digits_only = |pw: &str| pw.chars().all(|ch| ch.is_ascii_digit());
+    *f.backend.default_options.lock().unwrap() = Some(
+        generator::builtin_preset(generator::PRESET_PIN)
+            .unwrap()
+            .options,
+    );
+
+    for remember in [false, true] {
+        for options in [None, Some(Value::Null), Some(json!({}))] {
+            let pw = generate(options, remember);
+            assert!(pw.len() == 6 && digits_only(&pw), "{pw}");
+        }
+    }
+    // Sent fields replace the preset's, the others stay.
+    let pw = generate(Some(json!({"length": 12})), false);
+    assert!(pw.len() == 12 && digits_only(&pw), "{pw}");
+    let pw = generate(Some(json!({"symbols": true, "minSymbols": 2})), false);
+    assert_eq!(pw.len(), 6);
+    assert!(pw
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || "!#$%&*+-=?@^_".contains(ch)));
+    assert!(
+        pw.chars().filter(|ch| !ch.is_ascii_digit()).count() >= 2,
+        "{pw}"
+    );
+    // What an older extension sends (its full option set) works as before.
+    let pw = generate(
+        Some(
+            json!({"kind": "password", "length": 16, "uppercase": true, "lowercase": true,
+            "digits": true, "symbols": false, "minDigits": 1, "minSymbols": 0}),
+        ),
+        false,
+    );
+    assert!(
+        pw.len() == 16 && pw.chars().all(|ch| ch.is_ascii_alphanumeric()),
+        "{pw}"
+    );
+    assert!(pw.chars().any(|ch| ch.is_ascii_alphabetic()), "{pw}");
+
+    // A preset whose combination with the sent fields is invalid: the
+    // fields over the generator defaults, as before presets existed.
+    *f.backend.default_options.lock().unwrap() = Some(GeneratorOptions {
+        symbols: false,
+        symbol_set: String::new(),
+        ..GeneratorOptions::default()
+    });
+    let pw = generate(Some(json!({"symbols": true, "length": 24})), false);
+    assert_eq!(pw.len(), 24);
+    assert!(pw.chars().any(|ch| !ch.is_ascii_alphanumeric()), "{pw}");
+    // Invalid either way: invalid_request.
+    let r = call(
+        d,
+        c(json!({"id": "x", "type": "generate_password", "options": {"length": 2}})),
+    );
+    assert_eq!(err(&r), BridgeError::InvalidRequest);
+
+    // A passphrase preset: the extension's password fields do not apply.
+    *f.backend.default_options.lock().unwrap() = Some(
+        generator::builtin_preset(generator::PRESET_PASSPHRASE)
+            .unwrap()
+            .options,
+    );
+    let pw = generate(Some(json!({"words": 4})), false);
+    // Four capitalised words (the preset's). Counted by their capitals: the
+    // EFF list is lowercase, but a few of its words contain '-' themselves
+    // ("drop-down"), so splitting on the separator could count five.
+    assert_eq!(
+        pw.chars().filter(char::is_ascii_uppercase).count(),
+        4,
+        "{pw}"
+    );
+    assert!(pw.contains('-'), "{pw}");
 }
 
 /// The extension's password suggestion: a preview (`remember: false`) is

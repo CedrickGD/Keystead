@@ -16,9 +16,9 @@ use zeroize::Zeroizing;
 use crate::clients::{ClientStore, PairedClient};
 use crate::error::Result;
 use crate::protocol::{
-    BridgeError, CopyData, CopyField, ExtensionInfo, IdData, ListVaultsData, LoginSecret, PairData,
-    Payload, Request, Response, StatusData, UnlockData, VaultSummary, PAIRING_TIMEOUT,
-    SEARCH_LIMIT,
+    BridgeError, CopyData, CopyField, ExtensionInfo, GeneratorOptionsPatch, IdData, ListVaultsData,
+    LoginSecret, PairData, Payload, Request, Response, StatusData, UnlockData, VaultSummary,
+    GENERATOR_VERSION, PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
 use crate::server::BridgeHandler;
 use crate::util::{lock, log};
@@ -84,6 +84,13 @@ pub trait VaultBackend: Send + Sync + 'static {
     fn get_login(&self, item_id: &str) -> std::result::Result<LoginSecret, BridgeError>;
     /// Current TOTP code of a login; `NotFound` if it has no TOTP seed.
     fn get_totp(&self, item_id: &str) -> std::result::Result<TotpCode, BridgeError>;
+    /// The options of the user's default generator preset: what
+    /// `generate_password` takes for every field the extension does not
+    /// send (see [`generator_options_for`]). Default: the generator
+    /// defaults.
+    fn default_generator_options(&self) -> GeneratorOptions {
+        GeneratorOptions::default()
+    }
     /// Generates a password (and stores it in the generator history if
     /// unlocked). Invalid options → `InvalidRequest`.
     fn generate_password(
@@ -359,6 +366,7 @@ impl Dispatcher {
                     .unzip();
                 json(&StatusData {
                     app_version: backend.app_version(),
+                    generator_version: GENERATOR_VERSION,
                     paired,
                     unlocked,
                     vault_name,
@@ -398,7 +406,8 @@ impl Dispatcher {
             Payload::GetLogin { item_id } => json(&backend.get_login(&item_id)?),
             Payload::GetTotp { item_id } => json(&backend.get_totp(&item_id)?),
             Payload::GeneratePassword { options, remember } => {
-                let options = options.unwrap_or_default();
+                let options =
+                    generator_options_for(options.as_ref(), backend.default_generator_options());
                 if remember == Some(false) {
                     json(&backend.preview_password(options)?)
                 } else {
@@ -553,6 +562,34 @@ impl Drop for Dispatcher {
 
 fn json<T: Serialize + ?Sized>(data: &T) -> std::result::Result<Value, BridgeError> {
     serde_json::to_value(data).map_err(|_| BridgeError::Internal)
+}
+
+/// The options a `generate_password` request generates with: the fields the
+/// extension sent (`patch`) over the app's default preset (`preset`, from
+/// [`VaultBackend::default_generator_options`]); no `patch` → the preset
+/// itself. Should the combination be invalid while the same fields over the
+/// plain generator defaults are fine – e.g. the extension turns `symbols` on
+/// and the preset has an empty symbol set – the defaults stand in for the
+/// preset, so a request that worked before presets existed keeps working.
+/// Otherwise the (invalid) combination is returned and generating reports
+/// its error.
+pub fn generator_options_for(
+    patch: Option<&GeneratorOptionsPatch>,
+    preset: GeneratorOptions,
+) -> GeneratorOptions {
+    let Some(patch) = patch else {
+        return preset;
+    };
+    let merged = patch.apply_to(&preset);
+    if merged.validate().is_ok() {
+        return merged;
+    }
+    let plain = patch.apply_to(&GeneratorOptions::default());
+    if plain.validate().is_ok() {
+        plain
+    } else {
+        merged
+    }
 }
 
 /// Compares two secrets without an early exit on the first difference.
@@ -724,7 +761,47 @@ impl PairingBroker {
 
 #[cfg(test)]
 mod tests {
+    use keystead_core::generator::{builtin_preset, PRESET_PIN};
+
     use super::*;
+
+    fn patch(json: &str) -> GeneratorOptionsPatch {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn request_options_apply_over_the_default_preset() {
+        let pin = builtin_preset(PRESET_PIN).unwrap().options;
+        assert_eq!(generator_options_for(None, pin.clone()), pin);
+        assert_eq!(generator_options_for(Some(&patch("{}")), pin.clone()), pin);
+        assert_eq!(
+            generator_options_for(Some(&patch(r#"{"length":12}"#)), pin.clone()),
+            GeneratorOptions {
+                length: 12,
+                ..pin.clone()
+            }
+        );
+        // Invalid over the preset, fine over the defaults: the defaults.
+        let no_symbols = GeneratorOptions {
+            symbols: false,
+            symbol_set: String::new(),
+            ..GeneratorOptions::default()
+        };
+        let symbols_on = patch(r#"{"symbols":true,"length":30}"#);
+        assert!(symbols_on.apply_to(&no_symbols).validate().is_err());
+        assert_eq!(
+            generator_options_for(Some(&symbols_on), no_symbols),
+            GeneratorOptions {
+                length: 30,
+                ..GeneratorOptions::default()
+            }
+        );
+        // Invalid either way: the combination with the preset (generating
+        // then reports its error).
+        let too_short = generator_options_for(Some(&patch(r#"{"length":2}"#)), pin.clone());
+        assert_eq!(too_short, GeneratorOptions { length: 2, ..pin });
+        assert!(too_short.validate().is_err());
+    }
 
     #[test]
     fn client_name_and_code_validation() {

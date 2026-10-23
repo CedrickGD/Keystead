@@ -154,11 +154,25 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(desktop)]
             commands::delete_tag,
             #[cfg(desktop)]
-            commands::generate_password,
+            crate::generator::generate_password,
             #[cfg(desktop)]
-            commands::generator_history,
+            crate::generator::remember_generated,
             #[cfg(desktop)]
-            commands::clear_generator_history,
+            crate::generator::generator_history,
+            #[cfg(desktop)]
+            crate::generator::reveal_generated,
+            #[cfg(desktop)]
+            crate::generator::copy_generated,
+            #[cfg(desktop)]
+            crate::generator::clear_generator_history,
+            #[cfg(desktop)]
+            crate::generator::generator_presets,
+            #[cfg(desktop)]
+            crate::generator::save_generator_preset,
+            #[cfg(desktop)]
+            crate::generator::delete_generator_preset,
+            #[cfg(desktop)]
+            crate::generator::set_default_generator_preset,
             commands::password_strength,
             #[cfg(desktop)]
             commands::totp_code,

@@ -1159,6 +1159,17 @@ function AboutSection() {
           </SettingRow>
         </>
       )}
+      {/* Attribution of the embedded word lists (EFF: CC BY 4.0 requires it in every copy). */}
+      <SettingRow
+        title={t("about.wordlists")}
+        description={
+          <>
+            {t("about.wordlistEn")}
+            <br />
+            {t("about.wordlistDe")}
+          </>
+        }
+      />
     </SettingsSection>
   );
 }

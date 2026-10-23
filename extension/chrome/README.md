@@ -29,7 +29,9 @@ from there once. `popup.html?demo=<state>&ext=notice|reloading` shows the notice
 Shortcuts (change them at `chrome://extensions/shortcuts`): `Ctrl+Shift+Y`
 popup, `Ctrl+Shift+L` fill the login for the current page, `Ctrl+Shift+9`
 generate a password into the focused field. Right-click on an input field:
-*Passwort generieren und einfügen*, *Keystead öffnen*.
+*Passwort generieren und einfügen*, *Keystead öffnen*. A password generated
+into a field goes into the vault's generator history once the field took it
+(see "Generator").
 
 ## Smart filling
 
@@ -46,10 +48,10 @@ generate a password into the focused field. Right-click on an input field:
   activation; a page focusing the field by script on load gets nothing) on the
   first new-password field shows a bubble *Starkes Passwort vorschlagen*
   beside the field (below it if there is no room): the value masked (eye to
-  reveal), *Verwenden* and ✕. The value is generated with the generator
-  options of the popup (else the app's defaults: 20 characters, all classes)
-  as a *preview* (`generate_password` with `remember: false`: not in the
-  generator history, no auto-lock activity). *Verwenden* fills the field and
+  reveal), *Verwenden* and ✕. The value is generated with the popup's own
+  generator options (else the app's default generator preset, see
+  "Generator") as a *preview* (`generate_password` with `remember: false`:
+  not in the generator history, no auto-lock activity). *Verwenden* fills the field and
   every confirmation field, marks the value as the user's own input (the save
   bar after submitting offers exactly this password) and stores it in the
   generator history of the vault it was suggested for (`remember_generated`;
@@ -130,6 +132,48 @@ generate a password into the focused field. Right-click on an input field:
   Seite blockiert Keystead-Menü* (covered/faded by the page; our layer is
   raised again and waits anew). Dropdown items show a small progress ring,
   primary buttons and the 2FA pill a thin bar while the 500 ms run.
+* **Generator** – nothing is generated or stored behind the user's back.
+  The popup's *Generator* tab shows no password until *Generieren* (or Enter
+  – not on buttons, selects and switches – or Ctrl+G); changing an option
+  only says that the shown password no longer matches ("Neu generieren"
+  takes the new options). Every password the extension asks for is a
+  *preview* (`generate_password` with `remember: false`) that the app does
+  not store. It goes into the vault's generator history only when the user
+  uses it: *Kopieren* (the app copies it, `copy_secret`, then
+  `remember_generated`), *Ausfüllen* into the page, the context menu or
+  `Ctrl+Shift+9` once a field took it, a suggestion's *Verwenden*, or
+  *Login hinzufügen* saved with the password its wand generated. Each
+  preview is reported once: after a *Kopieren* the popup's next *Kopieren*
+  or *Ausfüllen* of the same preview does not send `remember_generated`
+  again (the app 2.0.0 would store it twice). Apps before 2.0.0 ignore
+  `remember: false` (they store each preview, as before) and answer
+  `remember_generated` with `invalid_request`, which the extension takes as
+  "already stored". Options: by default the app's **default generator
+  preset** applies (picked in the app: Generator → *Als Standard
+  verwenden*) – the tab says *Standard-Vorlage der App*. *Anpassen* gives
+  this browser **own options** (start: the generator defaults), used by the
+  popup, the suggestions, the context menu / shortcut and *Login
+  hinzufügen*; *App-Vorlage nutzen* drops them again. Options the popup of
+  an extension up to 2.0.0 saved (it stored every change, without
+  *Anpassen*) count as own options after the update – the tab shows
+  *Eigene Einstellungen*, and they win over the app's default preset until
+  *App-Vorlage nutzen*. Stored options are always completed over the
+  generator defaults, in the popup and in every background request alike.
+  Against an app before the generator rework (its `status` has no
+  `generatorVersion`), own options it would ignore or reject (length below
+  5, own symbols, excluded characters, a first letter, more than one upper-
+  or lower-case letter at least, the German word list) are not sent: the
+  popup explains it and disables *Generieren*, the context menu and
+  suggestions say the app is too old. Own options: length
+  4–128, the four character groups, *Verwechselbare Zeichen vermeiden*, and
+  under *Weitere Optionen* a minimum per group, the allowed symbols, the
+  characters never to use and *Mit einem Buchstaben beginnen*; passphrases:
+  words, separator (up to 8 characters), word list (English / German),
+  capitalisation, number. Invalid combinations are explained inline (the
+  checks of the app's generator, `lib/generator.js`) and disable
+  *Generieren*; own options are stored only while valid, so suggestions keep
+  working. An entropy estimate (bits and a strength word) follows the
+  options.
 * **Popup** – logins with 2FA show a countdown ring of the current code on
   *Diese Seite* (click = copy); the code stays in the service worker
   (`popup:totp-timers` → `get_totp`, only period and seconds left reach the
@@ -152,11 +196,12 @@ accepted (*Zurück* returns to it).
 | `lib/version.js` | Extension version compare and the self-update decision (`extensionUpdateAction`); tested by `extension/tests/version.test.mjs` (`node --test extension/tests/*.test.mjs`). |
 | `lib/pending.js` | Whether a save/update prompt still belongs to the open vault (`pendingVaultState`); tested by `extension/tests/pending.test.mjs`. |
 | `lib/settings.js` | Extension settings and their defaults (`autoCopyTotp`, `suggestPasswords`); tested by `extension/tests/settings.test.mjs`. |
-| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, generator options, extension settings, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the extension version and folder the app delivers), pairing progress, pending save prompts, 2FA offers (`totp:<tabId>`: item id, site, vault, expiry – no code). |
+| `lib/generator.js` | Generator options (pure): the core's defaults and checks mirrored (`generatorIssue`, entropy), stored options read field by field (`storedOptions` / `lenientOptions`), what a `generate_password` request may carry (`requestOptions`), what an app before the generator rework would ignore (`olderAppIssue`, `GENERATOR_VERSION`); tested by `extension/tests/generator.test.mjs`. The service worker's generator traffic (previews only, `remember_generated` on use) is tested by `extension/tests/background-generator.test.mjs`, which loads `background.js` on a fake `chrome` (`extension/tests/helpers/fake-chrome.mjs`). |
+| `lib/store.js` | `chrome.storage` state (MV3 workers are stopped when idle). `local`: pairing credentials, "never save" sites, last used login per site, the popup's own generator options (`generatorOptions`: written by *Anpassen* and later changes – or, from before an update, by the popup of an extension up to 2.0.0 on every option change), extension settings, the id of the vault last unlocked here (`chosenVaultId`, written by the popup), the app's extension version a self-update reload was tried for (`extensionReloadedFor`). `session`: status (incl. the open vault's name and id, the app's `generatorVersion`, the extension version and folder the app delivers), pairing progress, pending save prompts, 2FA offers (`totp:<tabId>`: item id, site, vault, expiry – no code). |
 | `content.js` | Inline icons + dropdown, password suggestion bubble, 2FA toast and *2FA-Code einfügen*, dwell feedback, autofill, capture of submitted logins, save bar – UI in a closed shadow root; open shadow roots of the page are discovered and observed. |
 | `lib/forms.js` | Pure DOM helpers (`globalThis.KeysteadForms`): login/signup/change classification (`passwordRole`, `suggestionTargets`), one-time code fields (`findOtpFields`, `fillOtp`), composed-tree helpers for open shadow roots, filling. Loadable on its own in a test page; tested by `extension/tests/forms.test.mjs` on a small fake DOM (`extension/tests/helpers/mini-dom.mjs`). |
 | `popup.html/.css/.js` | Popup (setup guide, pairing, unlock, *Diese Seite* / *Suche* / *Generator*, add login). `popup.html?demo=<state>` renders fake data only (no storage, no native host) for design work and screenshots; states: `host_missing`, `app_unavailable`, `not_paired`, `pairing`, `paired`, `denied`, `locked`, `locked_single`, `unlocked`, `unlocked_single`, `unlocked_empty`, `not_web`, `insecure` (`_single`: one vault, else three; password `demo`). |
-| `_locales/de`, `_locales/en` | All UI strings. |
+| `_locales/de`, `_locales/en` | All UI strings (same keys and placeholders in both, checked by `extension/tests/locales.test.mjs`). |
 
 ## Security model
 
@@ -219,3 +264,8 @@ accepted (*Zurück* returns to it).
   by the desktop app (`copy_field` / `copy_secret`): excluded from clipboard
   history and cleared after the app's clipboard timeout and on lock. Stored
   passwords never reach the popup; only usernames are copied by the popup.
+* Generated passwords are previews the app does not keep: the generator
+  history only gets a password the user used (see "Generator"). The popup's
+  generator messages (`popup:generate`, `popup:copy-generated`,
+  `popup:fill-generated`) are popup-only like the others, and a page can
+  have only a suggestion it was shown remembered (by its hash, once).

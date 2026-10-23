@@ -73,6 +73,12 @@ time = { version = "0.3", features = ["formatting"] }
 # on Windows: no `cmd /c start` quoting pitfalls, no console flash).
 open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
 raw-window-handle = "0.6.2"
+# Wipes secrets in values handed to the UI and a copied secret kept for
+# clear-on-lock.
+zeroize = "1.9.1"
+# Ids of the user's generator presets (`src/generator.rs`); the version the
+# core already uses.
+uuid = { version = "1.27.0", features = ["v4"] }
 
 # Phone only (Android, iOS): the official plugins the Rust side calls (the
 # webview gets no permission for them, see `capabilities/default.json`).

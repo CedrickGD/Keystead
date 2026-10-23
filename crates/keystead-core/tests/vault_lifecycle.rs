@@ -1,12 +1,15 @@
 //! Integration tests for VaultStore / UnlockedVault: create, unlock, items,
 //! folders, passwords, recovery, conflicts, tamper detection.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use keystead_core::crypto::{b64_decode, b64_encode, SecretKey};
 use keystead_core::format::VaultFile;
-use keystead_core::model::{CardData, Folder, ItemType, LoginData, LoginUri, UriMatch, VaultItem};
+use keystead_core::model::{
+    CardData, Folder, ItemType, LoginData, LoginUri, UriMatch, VaultData, VaultItem,
+};
 use keystead_core::{Error, KdfParams, UnlockedVault, VaultStore};
 use serde_json::Value;
 
@@ -545,6 +548,120 @@ fn generator_history_is_capped() {
         .unwrap()
         .generator_history()
         .is_empty());
+}
+
+#[test]
+fn generator_history_entries_have_stable_ids() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.add_generated_password("first").unwrap();
+    v.add_generated_password("second").unwrap();
+    let ids: Vec<String> = v.generator_history().iter().map(|g| g.id.clone()).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.iter().all(|id| id.len() == 36));
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(v.generated_password(&ids[0]).unwrap().password, "second");
+    assert_eq!(v.generated_password(&ids[1]).unwrap().password, "first");
+    assert!(v.generated_password("unknown").is_none());
+    let info = v.generator_history_info();
+    assert_eq!(
+        info.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ids.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert_eq!(info[0].created_at, v.generator_history()[0].created_at);
+    // The ids survive a reopen.
+    let reopened = store.unlock(v.id(), PW).unwrap();
+    assert_eq!(
+        reopened
+            .generator_history()
+            .iter()
+            .map(|g| g.id.clone())
+            .collect::<Vec<_>>(),
+        ids
+    );
+}
+
+/// Rewrites the payload of the vault file at `path` (as another process
+/// or an older version would), optionally as the next revision.
+fn rewrite_payload(path: &Path, next_revision: bool, edit: impl FnOnce(&mut VaultData)) {
+    let mut file = VaultFile::read(path).unwrap();
+    let key = file.unwrap_key(PW).unwrap();
+    let mut data = file.decrypt_payload(&key).unwrap();
+    edit(&mut data);
+    if next_revision {
+        file.revision += 1;
+    }
+    file.encrypt_payload(&key, &data).unwrap();
+    file.write_atomic(path, false).unwrap();
+}
+
+fn stored_history_ids(path: &Path) -> Vec<String> {
+    let file = VaultFile::read(path).unwrap();
+    let key = file.unwrap_key(PW).unwrap();
+    file.decrypt_payload(&key)
+        .unwrap()
+        .generator_history
+        .iter()
+        .map(|g| g.id.clone())
+        .collect()
+}
+
+#[test]
+fn generator_history_of_older_payloads_gets_ids() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    for p in ["a", "b", "c"] {
+        v.add_generated_password(p).unwrap();
+    }
+    let id = v.id().to_owned();
+    let path = v.path().to_path_buf();
+    drop(v);
+    // An entry written before ids existed (no id → "") and a duplicate id.
+    rewrite_payload(&path, false, |data| {
+        data.generator_history[1].id.clear();
+        let dup = data.generator_history[0].id.clone();
+        data.generator_history[2].id = dup;
+    });
+    let before = stored_history_ids(&path);
+    assert!(before[1].is_empty());
+    assert_eq!(before[0], before[2]);
+
+    let mut v = store.unlock(&id, PW).unwrap();
+    let ids: Vec<String> = v.generator_history().iter().map(|g| g.id.clone()).collect();
+    assert!(ids.iter().all(|i| i.len() == 36), "{ids:?}");
+    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3);
+    // The first holder of an id keeps it.
+    assert_eq!(ids[0], before[0]);
+    assert_eq!(v.generated_password(&ids[2]).unwrap().password, "a");
+    // Only in memory until the next save …
+    assert_eq!(stored_history_ids(&path), before);
+    v.add_generated_password("d").unwrap();
+    // … which persists them.
+    let stored = stored_history_ids(&path);
+    assert_eq!(stored[1..], ids[..]);
+    assert_eq!(
+        store
+            .unlock(&id, PW)
+            .unwrap()
+            .generator_history()
+            .iter()
+            .map(|g| g.id.clone())
+            .collect::<Vec<_>>(),
+        stored
+    );
+
+    // A newer revision from an older version (ids dropped) is reloaded
+    // with fresh ids as well.
+    rewrite_payload(&path, true, |data| {
+        for g in &mut data.generator_history {
+            g.id.clear();
+        }
+    });
+    assert!(v.reload_if_changed().unwrap());
+    let reloaded: Vec<String> = v.generator_history().iter().map(|g| g.id.clone()).collect();
+    assert_eq!(reloaded.len(), 4);
+    assert!(reloaded.iter().all(|i| i.len() == 36));
+    assert_eq!(reloaded.iter().collect::<HashSet<_>>().len(), 4);
 }
 
 #[test]

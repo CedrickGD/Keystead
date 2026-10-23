@@ -56,7 +56,16 @@ lassen sich übernehmen, siehe [Alte VaultX-Tresore](#alte-vaultx-tresore).
 - **Website-Icons**: Logins zeigen automatisch das Icon ihrer Website – die App
   lädt es selbst direkt von der Website (kein Icon-Dienst) und speichert es
   verschlüsselt im Tresor; abschaltbar unter Einstellungen → Allgemein.
-- **Generator** für Passwörter und Passphrasen (EFF-Wortliste) mit Verlauf.
+- **Generator** für Passwörter und Passphrasen – in der App erzeugt er nur,
+  wenn du auf „Generieren“ klickst (oder Enter/Strg+G drückst). Länge bis
+  128 Zeichen, eigene Auswahl an Sonderzeichen, Zeichen, die nie vorkommen
+  sollen, Mindestanzahl je Zeichengruppe und auf Wunsch ein Buchstabe am
+  Anfang. **Vorlagen**: Standard, Nur Buchstaben und Ziffern, PIN, Lang und
+  stark, Passphrase – plus eigene; eine davon ist der Standard für den Editor
+  und die Browser-Erweiterung. Passphrasen aus der englischen EFF- oder einer
+  deutschen Wortliste. Der **Verlauf** behält nur Passwörter, die du kopiert
+  oder verwendet hast, und zeigt sie maskiert – erst ein Klick aufs Auge deckt
+  eines auf.
 - **Einmalcodes (TOTP/2FA)** direkt im Eintrag, kompatibel mit Google Authenticator & Co.
 - **Sicherheitsbericht**: schwache, mehrfach verwendete und alte Passwörter.
 - **Geleakte Passwörter**: auf Knopfdruck prüft der Sicherheitsbericht alle
@@ -334,7 +343,9 @@ von der App verwaltet). Den portablen Modus schaltest du unter
 - Die Oberfläche der App bekommt die Elementliste ohne Passwörter, 2FA-Schlüssel,
   Kartennummern und verborgene Felder. Ein Geheimnis lädt sie nur, wenn du es
   anzeigst (nach 30 s wieder verborgen) oder das Element bearbeitest; beim Kopieren
-  kopiert die App selbst, ohne dass der Wert die Oberfläche erreicht.
+  kopiert die App selbst, ohne dass der Wert die Oberfläche erreicht. Für den
+  Generator-Verlauf gilt dasselbe: Die Oberfläche bekommt nur Datum und Kennung
+  der Einträge.
 - Dateianhänge liegen als einzeln verschlüsselte Dateien (eigener Zufallsschlüssel
   je Anhang, gespeichert im Tresor) im Ordner neben der Tresordatei – nie im
   Klartext auf der Platte, und in keinem Export enthalten; die Oberfläche bekommt
@@ -354,6 +365,22 @@ alten Master- oder Wiederherstellungspasswort. Die frühere Zwei-Faktor-Sperre d
 Tresors wird nicht übernommen.
 
 Aus dem Quellcode bauen: siehe [Build from source](#build-from-source).
+
+### Wortlisten für Passphrasen
+
+Keystead enthält zwei Wortlisten, die unter ihren eigenen Lizenzen stehen:
+
+- Englisch: die [EFF Large Wordlist](https://www.eff.org/dice) © Electronic
+  Frontier Foundation, lizenziert unter
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); Keystead hat die
+  Würfelnummern entfernt.
+- Deutsch: `de-7776` aus [dys2p/wordlists-de](https://github.com/dys2p/wordlists-de)
+  von dys2p, genutzt unter CC0 1.0; Keystead hat 52 Wörter entfernt, damit
+  Passphrasen familientauglich bleiben.
+
+Dasselbe steht in der App unter **Einstellungen → Über Keystead** und in der
+`LIESMICH.txt` der ZIP-Version; Details in
+[crates/keystead-core/src/wordlist/README.md](crates/keystead-core/src/wordlist/README.md).
 
 ---
 
@@ -388,7 +415,15 @@ and also available in English.
 - **Website icons**: logins show their website's icon automatically – the app loads
   it itself, directly from the website (no icon service), and stores it encrypted in
   the vault; can be switched off in Settings → General.
-- **Generator** for passwords and passphrases (EFF word list), with history.
+- **Generator** for passwords and passphrases – in the app it generates only
+  when you click "Generate" (or press Enter/Ctrl+G). Length up to
+  128 characters, your own set of symbols, characters that must never appear,
+  a minimum per character group and, if you like, a letter first.
+  **Presets**: Standard, Letters and digits only, PIN, Long and strong,
+  Passphrase – plus your own; one of them is the default for the editor and
+  the browser extension. Passphrases from the English EFF or a German word
+  list. The **history** keeps only passwords you copied or used and shows
+  them masked – a click on the eye reveals one.
 - **One-time codes (TOTP/2FA)** inside items, compatible with Google Authenticator & co.
 - **Security report**: weak, reused and old passwords.
 - **Leaked passwords**: at the press of a button the security report checks all
@@ -654,7 +689,8 @@ managed by the app). `KEYSTEAD_DATA_DIR` overrides the location.
 - The app's web UI gets the item list without passwords, TOTP keys, card numbers
   and hidden fields. It loads a secret only when you reveal it (hidden again after
   30 s) or edit the item; copying is done by the app itself, the value never
-  reaches the UI.
+  reaches the UI. The same holds for the generator history: the UI gets only
+  the entries' dates and ids.
 - File attachments are stored as individually encrypted files (each under its own
   random key, kept in the vault) in the folder next to the vault file – never in
   plain text on disk, and never part of an export; the UI gets only names and
@@ -749,3 +785,19 @@ two-factor secret is not imported.
 
 Proprietary – free for personal, educational and non-commercial use; see
 [LICENSE](LICENSE). © 2026 Cedrick Grabe.
+
+### Credits – passphrase word lists
+
+- English: the [EFF large word list](https://www.eff.org/dice) © Electronic
+  Frontier Foundation, licensed under Creative Commons Attribution 4.0
+  International ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/),
+  see [eff.org/copyright](https://www.eff.org/copyright)); Keystead removed
+  the dice numbers.
+- German: based on `de-7776` from
+  [dys2p/wordlists-de](https://github.com/dys2p/wordlists-de) by dys2p,
+  used under CC0 1.0 (the list is offered under Unlicense, CC0 or BSD-3);
+  Keystead removed 52 words to keep passphrases family-friendly.
+
+The same credits ship with the app (Settings → *Über Keystead*) and in the
+portable ZIP's `LIESMICH.txt`. Details, checksums and the removed words:
+[crates/keystead-core/src/wordlist/README.md](crates/keystead-core/src/wordlist/README.md).

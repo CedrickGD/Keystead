@@ -5,7 +5,9 @@ use keystead_bridge::protocol::{
     extract_id, CopyData, CopyField, IdData, ListVaultsData, PairData, StatusData, UnlockData,
     PAIRING_TIMEOUT, SEARCH_LIMIT,
 };
-use keystead_bridge::{BridgeError, LoginSecret, Payload, Request, Response, VaultSummary};
+use keystead_bridge::{
+    BridgeError, GeneratorOptionsPatch, LoginSecret, Payload, Request, Response, VaultSummary,
+};
 use keystead_core::generator::{GeneratorKind, GeneratorOptions};
 use keystead_core::totp::TotpCode;
 use serde_json::{json, Value};
@@ -191,19 +193,69 @@ fn partial_generator_options() {
     let req =
         parse(r#"{"id":"1","type":"generate_password","options":{"length":32,"symbols":false}}"#);
     let Payload::GeneratePassword {
-        options: Some(o),
+        options: Some(patch),
         remember: None,
-    } = req.payload
+    } = req.payload.clone()
     else {
         panic!("options expected");
     };
+    // Only the fields that were sent are set; the rest comes from the base
+    // they are applied to (the app's default preset).
+    assert!(patch.sets("length") && patch.sets("symbols") && !patch.sets("words"));
+    let d = GeneratorOptions::default();
+    let o = patch.apply_to(&d);
     assert_eq!(o.length, 32);
     assert!(!o.symbols);
-    let d = GeneratorOptions::default();
     assert_eq!(
         (o.uppercase, o.words, o.kind),
         (d.uppercase, d.words, GeneratorKind::Password)
     );
+    let base = GeneratorOptions {
+        kind: GeneratorKind::Passphrase,
+        length: 6,
+        words: 7,
+        ..d.clone()
+    };
+    let o = patch.apply_to(&base);
+    assert_eq!(
+        (o.kind, o.length, o.words),
+        (GeneratorKind::Passphrase, 32, 7)
+    );
+    assert!(!o.symbols);
+    // It serialises as the fields it holds.
+    assert_eq!(
+        serde_json::to_value(&req).unwrap()["options"],
+        json!({"length": 32, "symbols": false})
+    );
+    // Unknown keys are ignored when applied; a known key with a wrong type
+    // is an invalid request, as before.
+    let req =
+        parse(r#"{"id":"1","type":"generate_password","options":{"future":[1],"length":24}}"#);
+    let Payload::GeneratePassword {
+        options: Some(patch),
+        ..
+    } = req.payload
+    else {
+        panic!("options expected");
+    };
+    assert_eq!(
+        patch.apply_to(&d),
+        GeneratorOptions {
+            length: 24,
+            ..d.clone()
+        }
+    );
+    for bad in [
+        r#"{"id":"1","type":"generate_password","options":{"length":"long"}}"#,
+        r#"{"id":"1","type":"generate_password","options":{"separator":null}}"#,
+        r#"{"id":"1","type":"generate_password","options":{"wordlist":"fr"}}"#,
+        r#"{"id":"1","type":"generate_password","options":[20]}"#,
+    ] {
+        assert!(Request::parse(bad.as_bytes()).is_err(), "{bad}");
+    }
+    // A full patch sets every field.
+    let full = GeneratorOptionsPatch::from_options(&base);
+    assert_eq!(full.apply_to(&d), base);
     let req = parse(r#"{"id":"1","type":"generate_password","options":null}"#);
     assert_eq!(
         req.payload,
@@ -312,6 +364,7 @@ fn data_shapes() {
     same_json(
         &StatusData {
             app_version: "2.0.0".into(),
+            generator_version: 2,
             paired: true,
             unlocked: false,
             vault_name: None,
@@ -319,12 +372,13 @@ fn data_shapes() {
             extension_version: None,
             extension_dir: None,
         },
-        r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null,"vaultId":null,
-            "extensionVersion":null,"extensionDir":null}"#,
+        r#"{"appVersion":"2.0.0","generatorVersion":2,"paired":true,"unlocked":false,"vaultName":null,
+            "vaultId":null,"extensionVersion":null,"extensionDir":null}"#,
     );
     same_json(
         &StatusData {
             app_version: "2.0.0".into(),
+            generator_version: 2,
             paired: true,
             unlocked: true,
             vault_name: Some("Privat".into()),
@@ -332,17 +386,18 @@ fn data_shapes() {
             extension_version: Some("2.0.0.42".into()),
             extension_dir: Some(r"C:\Users\Ann\AppData\Local\Keystead\browser-extension".into()),
         },
-        r#"{"appVersion":"2.0.0","paired":true,"unlocked":true,"vaultName":"Privat","vaultId":"v-1",
+        r#"{"appVersion":"2.0.0","generatorVersion":2,"paired":true,"unlocked":true,"vaultName":"Privat","vaultId":"v-1",
             "extensionVersion":"2.0.0.42",
             "extensionDir":"C:\\Users\\Ann\\AppData\\Local\\Keystead\\browser-extension"}"#,
     );
-    // Older apps send no extension fields: they read as null.
+    // Older apps send no extension fields (null) and no generatorVersion (0).
     let old: StatusData = serde_json::from_str(
         r#"{"appVersion":"2.0.0","paired":true,"unlocked":false,"vaultName":null,"vaultId":null}"#,
     )
     .unwrap();
     assert_eq!(old.extension_version, None);
     assert_eq!(old.extension_dir, None);
+    assert_eq!(old.generator_version, 0);
     same_json(
         &ListVaultsData {
             vaults: vec![

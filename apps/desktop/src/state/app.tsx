@@ -92,3 +92,15 @@ export function useCopySecret(): (itemId: string, field: SecretField, label: str
     [copyWithToast],
   );
 }
+
+/**
+ * Copies a generator history entry as sensitive (`copy_generated`): the
+ * backend copies it, the password never reaches the page.
+ */
+export function useCopyGenerated(): (id: string, label: string) => Promise<boolean> {
+  const copyWithToast = useCopyWithToast();
+  return useCallback(
+    (id: string, label: string) => copyWithToast(() => api.copyGenerated(id), { label, sensitive: true }),
+    [copyWithToast],
+  );
+}

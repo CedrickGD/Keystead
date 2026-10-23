@@ -4,10 +4,14 @@ import { useEscapeLayer, useOutsideClick } from "../lib/layers";
 /** Space a menu keeps from the window's edges. */
 const EDGE = 8;
 
+/** The items the keyboard can reach: disabled ones (native `disabled`, unfocusable) are skipped. */
+const ENABLED_ITEMS = "[role=menuitem]:not(:disabled), [role=menuitemradio]:not(:disabled)";
+
 /**
  * Dropdown menu anchored to its (relatively positioned) parent. Arrow keys
- * move between items, Esc / outside click close it. A menu that would stick
- * out of the window sideways (narrow windows, the phone) is moved back in.
+ * move between the enabled items, Esc / outside click close it. A menu that
+ * would stick out of the window sideways (narrow windows, the phone) is moved
+ * back in.
  */
 export function Menu({
   onClose,
@@ -32,7 +36,10 @@ export function Menu({
   useOutsideClick([ref, anchorRef], onClose);
 
   useEffect(() => {
-    ref.current?.querySelector<HTMLElement>("[role=menuitem], [role=menuitemradio]")?.focus();
+    // The first enabled item; with none the menu itself, so the arrow keys,
+    // Tab and Esc still work inside it.
+    const first = ref.current?.querySelector<HTMLElement>(ENABLED_ITEMS);
+    (first ?? ref.current)?.focus();
   }, []);
 
   // `translate` (not `transform`, which the pop-in animation uses).
@@ -53,7 +60,7 @@ export function Menu({
       return;
     }
     e.preventDefault();
-    const items = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role=menuitem], [role=menuitemradio]") ?? []);
+    const items = Array.from(ref.current?.querySelectorAll<HTMLElement>(ENABLED_ITEMS) ?? []);
     if (items.length === 0) return;
     const idx = items.indexOf(document.activeElement as HTMLElement);
     let next = 0;
@@ -69,6 +76,7 @@ export function Menu({
       className="menu"
       role="menu"
       aria-label={label}
+      tabIndex={-1}
       onKeyDown={onKeyDown}
       style={{
         top: "calc(100% + 6px)",
@@ -88,6 +96,7 @@ export function MenuItem({
   danger,
   checked,
   hint,
+  disabled,
 }: {
   icon?: ReactNode;
   children: ReactNode;
@@ -96,6 +105,7 @@ export function MenuItem({
   /** Renders as a radio item with a check mark when true. */
   checked?: boolean;
   hint?: ReactNode;
+  disabled?: boolean;
 }) {
   const radio = checked !== undefined;
   return (
@@ -105,6 +115,7 @@ export function MenuItem({
       aria-checked={radio ? checked : undefined}
       className={`menu-item ${danger ? "danger" : ""}`}
       tabIndex={-1}
+      disabled={disabled}
       onClick={onSelect}
     >
       {icon}

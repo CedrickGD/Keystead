@@ -10,8 +10,9 @@ import type {
   ExportFormat,
   Folder,
   FolderStatus,
-  GeneratedPassword,
+  GeneratedPasswordInfo,
   GeneratorOptions,
+  GeneratorPresets,
   HealthReport,
   ConflictMode,
   DeviceUnlockPrompt,
@@ -26,6 +27,7 @@ import type {
   MirrorStatus,
   PairingRequest,
   PwnedReport,
+  SavedGeneratorPreset,
   SecretField,
   SessionState,
   Settings,
@@ -185,10 +187,29 @@ export const api = {
    */
   revealAttachment: (attachmentId: string) => call<string>("reveal_attachment", { attachmentId, pageVaultId }),
 
-  generatePassword: (options: GeneratorOptions, remember: boolean) =>
-    call<string>("generate_password", { options, remember, pageVaultId }),
-  generatorHistory: () => call<GeneratedPassword[]>("generator_history"),
+  // Generator (see "Secrets and the webview → Generator"). Only on the user's
+  // click; a preview is not stored – a password the user uses (copies, takes
+  // into an item) is reported with `rememberGenerated`. The history comes
+  // back redacted; one entry is revealed or copied by id.
+  /** A preview for `options` – nothing is stored. Keep it in component state only. */
+  generatePreview: (options: GeneratorOptions) =>
+    call<string>("generate_password", { options, remember: false, pageVaultId }),
+  /** The user used a preview: into the page's vault's history (the newest entry is not repeated). */
+  rememberGenerated: (password: string) => call<null>("remember_generated", { password, pageVaultId }),
+  /** The history, newest first – ids and times only, never a password. */
+  generatorHistory: () => call<GeneratedPasswordInfo[]>("generator_history"),
+  /** One history entry's password, for an eye toggle (`useRevealedValue`). */
+  revealGenerated: (id: string) => call<string>("reveal_generated", { id, pageVaultId }),
+  /** Copies one history entry as sensitive in the backend; the value never reaches the page. */
+  copyGenerated: (id: string) => call<null>("copy_generated", { id, pageVaultId }),
   clearGeneratorHistory: () => call<null>("clear_generator_history", { pageVaultId }),
+  /** Built-in and user presets, the default preset and its options. */
+  generatorPresets: () => call<GeneratorPresets>("generator_presets"),
+  /** `id` null: a new user preset; otherwise replaces name and options of that user preset. */
+  saveGeneratorPreset: (id: string | null, name: string, options: GeneratorOptions) =>
+    call<SavedGeneratorPreset>("save_generator_preset", { id, name, options }),
+  deleteGeneratorPreset: (id: string) => call<GeneratorPresets>("delete_generator_preset", { id }),
+  setDefaultGeneratorPreset: (id: string) => call<GeneratorPresets>("set_default_generator_preset", { id }),
   passwordStrength: (password: string) => call<Strength>("password_strength", { password }),
   totpCode: (seed: string) => call<TotpCode>("totp_code", { seed }),
   copyText: (text: string, sensitive: boolean) => call<null>("copy_text", { text, sensitive }),
