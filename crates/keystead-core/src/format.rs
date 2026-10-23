@@ -732,11 +732,15 @@ fn sync_dir(_dir: &Path) {}
 /// Exclusive inter-process lock on `<vault>.lock`, held while a save
 /// checks the on-disk revision and replaces the file. Released on drop
 /// (and by the OS if the process dies).
-pub(crate) struct FileLock {
+pub struct FileLock {
     _file: File,
 }
 
-pub(crate) fn lock_vault_file(vault_path: &Path) -> Result<FileLock> {
+/// Takes the [`FileLock`] of the vault file at `vault_path` (waits up to
+/// 10 s for another process). Besides the core's own saves, the desktop's
+/// cloud-folder mirror holds it while it replaces a vault file with the
+/// folder's copy, so a save of the terminal UI cannot interleave.
+pub fn lock_vault_file(vault_path: &Path) -> Result<FileLock> {
     let lock_path = sibling(vault_path, ".lock");
     if let Some(dir) = lock_path.parent() {
         fs::create_dir_all(dir).map_err(|e| Error::io_at(dir, e))?;

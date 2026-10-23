@@ -719,6 +719,10 @@ impl Core {
         // Once per opening: the copy in the cloud folder catches up with
         // changes made while the app was closed or by another process.
         self.request_mirror(&info.id);
+        // Desktop: and the folder is looked through (the phone's edits of
+        // other vaults, vaults made on the phone).
+        #[cfg(desktop)]
+        self.mirror.request(crate::mirror::Job::Scan);
         Ok(info)
     }
 

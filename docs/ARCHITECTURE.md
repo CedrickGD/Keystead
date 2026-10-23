@@ -180,10 +180,10 @@ returned code: `0` success, `1` error, `2` invalid usage.
 ## Mobile (Android)
 
 Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
-**Stages 1a, 1b, 2a and the phone engine of 2b – the state described here –
-are an offline Android app that edits its vaults and syncs them both ways
-through the user's cloud folder** (stage 2b's PC side, UI and docs are still
-in progress, see `docs/BLOCK5-DESIGN.md`): the same Rust crate and the same
+**Stages 1a, 1b, 2a and the phone engine and PC side of 2b – the state
+described here – are an offline Android app that edits its vaults and syncs
+them both ways through the user's cloud folder** (stage 2b's UI and docs
+are still in progress, see `docs/BLOCK5-DESIGN.md`): the same Rust crate and the same
 React UI as the desktop,
 built by CI as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 /
 API 29 and later) that every release carries. It opens the vaults in its own
@@ -203,7 +203,7 @@ folder and copies them in, and writes the vault files it changed back
 | Fingerprint unlock | 1b (E5) | opt-in, default off; the master KEK sealed by the Android Keystore, no PIN/pattern fallback | "Fingerprint unlock (phone)" |
 | Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
-| Desktop mirror | 2a (E7) | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder | "Cloud-folder mirror (desktop) and phone link" |
+| Desktop mirror | 2a (E7), 2b | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder; since 2b it takes the phone's edits back (scans, pull, conflicts) and offers vaults made on the phone | "Cloud-folder mirror (desktop) and phone link" |
 | No network | 1a–2a (E6) | no `INTERNET` permission, no update check | "No network, and why" below |
 
 * **No network, and why**: the APK requests **no `INTERNET` permission**,
@@ -258,10 +258,10 @@ folder and copies them in, and writes the vault files it changed back
   password, recovery keys, `delete_vault`, attachment changes,
   import/export, the network features) and the phone's own
   (`#[cfg(mobile)]`: `folder_status`, `link_folder`, `sync_now`,
-  `unlink_folder`, `sync_conflicts`, `resolve_sync_conflict` for the
-  cloud-folder sync; `device_unlock_status`, `enable_device_unlock`,
-  `disable_device_unlock`, `unlock_with_device` for the fingerprint) are
-  registered ("**On the phone**" under "Desktop backend ↔ frontend", where
+  `unlink_folder` for the cloud-folder sync; `device_unlock_status`,
+  `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` for
+  the fingerprint) and the conflict commands both platforms share
+  (`sync_conflicts`, `resolve_sync_conflict`) are registered ("**On the phone**" under "Desktop backend ↔ frontend", where
   the table has their arguments and answers; a unit test in `gui.rs` keeps
   the lists and that paragraph in step); every other command is unknown to
   the phone's invoke handler. `app_info` answers `platform: "android"`,
@@ -320,8 +320,9 @@ folder and copies them in, and writes the vault files it changed back
     has a new master password);
   * the desktop mirror's codes (`invalid_input:mirror_folder`,
     `invalid_input:mirror_folder_data_dir`,
-    `unsupported:mirror_folder_missing`, `unsupported:mirror_newer`,
-    `unsupported:mirror_diverged`) are in "Cloud-folder mirror (desktop) and
+    `unsupported:mirror_folder_missing`, `unsupported:mirror_other_password`,
+    `unsupported:mirror_remote_older`, `unsupported:mirror_remote_gone`,
+    `invalid_input:vault_exists`) are in "Cloud-folder mirror (desktop) and
     phone link".
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
@@ -434,7 +435,9 @@ folder and copies them in, and writes the vault files it changed back
     2a sync found imported, updated or up to date at the revision the
     phone's copy still has gets that copy's head as its base.
   * **Copies on trial** (`sync_trial::Trial` in `src-tauri/src/sync_trial.rs`
-    – shared by both platforms since stage 2b –, `<data>/sync/trial/`): the
+    – shared by both platforms since stage 2b; on the PC for the copies
+    its mirror pulls while the vault is locked and for adopted vaults –,
+    `<data>/sync/trial/`): the
     folder's plain header – the revision included – is not authenticated
     without the keys, so anyone who can write the folder (a shared folder, a
     compromised cloud account, a misbehaving sync client) could raise it. A
@@ -991,7 +994,7 @@ updates"):
 | Everything that changes a vault (create, edit, trash, folders, tags, recovery key, master password, generator history, rename/delete vault) | read-only stage (E4): no write commands, so no sync conflicts before editing comes (stage 2b) |
 | Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they change the vault (read-only stage) or take file-dialog paths, and Android hands out `content://` URIs. The read-only image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
 | Windows session lock and the suspend (clock-jump) detection, `lockOnSystemLock` | replaced by the background lock |
-| The cloud-folder mirror (`mirror_status`, `mirrorFolder`) | the PC writes the folder, the phone only reads it (stage 2a, no write path back) |
+| The cloud-folder mirror (`mirror_status`, `folder_offers`, `adopt_folder_vault`, `dismiss_folder_vault`, `mirrorFolder`) | the PC's half of the two-way sync over a folder path; the phone's half is its linked folder (`folder_status`, …) – `sync_conflicts`/`resolve_sync_conflict` are shared |
 
 **iOS** is not built. The code stays iOS-compatible (gates on
 `mobile`/`desktop`, Android-only code on `target_os = "android"`,
@@ -1007,11 +1010,12 @@ of `docs/BLOCK5-DESIGN.md`.
 
 ## Cloud-folder mirror (desktop) and phone link (`src-tauri/src/mirror.rs`)
 
-"Kopie im Cloud-Ordner aktuell halten" (Block 5 stage 2a, decision E7) is
-the desktop's half of the phone's cloud-folder sync: the PC keeps encrypted
-copies of its vaults in a folder of the user's own cloud, the phone links
-that folder and copies them in ("Cloud-folder sync (phone)" under "Mobile
-(Android)"). Keystead talks to no cloud service on either side – the
+"Kopie im Cloud-Ordner aktuell halten" (Block 5 stage 2a, decision E7;
+two-way since stage 2b) is the desktop's half of the phone's cloud-folder
+sync: the PC keeps encrypted copies of its vaults in a folder of the user's
+own cloud, the phone links that folder, copies them in and writes its edits
+back ("Cloud-folder sync (phone)" under "Mobile (Android)"), and the PC
+takes those back. Keystead talks to no cloud service on either side – the
 Nextcloud or OneDrive client syncs the folder. Desktop only
 (`#[cfg(desktop)]`; the phone ignores the setting).
 
@@ -1024,9 +1028,12 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   three steps to the phone (a folder in the PC's Nextcloud/OneDrive folder,
   the cloud app on the phone, linking the folder in the phone app – with
   "Releases auf GitHub öffnen") and what the provider sees. Off → nothing is
-  written any more; the copies already in the folder stay (the phone keeps
-  using them). A new folder starts with the open vault; the old folder's
-  copies stay where they are.
+  written or read any more; the copies already in the folder stay (the phone
+  keeps using them). A new folder starts with the open vault and a scan; the
+  old folder's copies stay where they are, its conflicts and offers are
+  forgotten (bases are kept per folder: setting the same folder again keeps
+  them – except for a vault whose copy is missing there, which is written
+  again: that is how a copy removed from the folder comes back).
 * **Checks** (`mirror::check_folder`): `save_settings` checks a *changed*
   folder before anything is saved (an unchanged one is not – an offline
   cloud drive must not block saving another setting), and every pass checks
@@ -1054,43 +1061,79 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   and attachment ids), sizes and times and the vault file's plain-text
   header (vault name, revision, times, KDF parameters) – never an item, an
   attachment's name or a key.
-* **When** (`MirrorTracker` in `Core`): after every successful change of the
+* **When** (`MirrorTracker` in `Core`; one round at a time on the thread
+  `keystead-mirror`, jobs queued meanwhile are merged, the last one per
+  vault wins): a **pass** for a vault after every successful change of the
   open vault (`Core::mutate_with` – the UI's commands, the browser
   extension, the icon fetcher, import, rename, master password, recovery
-  key; also after a `conflict` reload), once whenever a vault is opened
+  key; also after a `conflict` reload), whenever a vault is opened
   (`install_vault_since`: UI, extension, recovery key, new vault – this
   catches up on changes made while the app was closed or by the terminal
   UI), when the monitor reloads the open vault after another process saved
   it (also on `KeyChanged`, right before the lock), and for the open vault
-  when the folder is set or changed. `delete_vault` removes the vault's copy
-  (`<id>.keystead` only if its header has that id, and the `<id>.bin` files
-  of its blob folder; nothing while the vault file still exists – the phone
-  then reports it as "missing" and keeps its own copy); a removal that fails
-  (the drive not mounted, the cloud app holding the file) is kept in
-  `MirrorTracker` and tried again with every later pass and when the folder
-  setting changes – while the app runs (an exit forgets it). Vaults never
-  opened in the app are not copied.
-* **A pass** (`mirror::mirror_vault` on the thread `keystead-mirror`; jobs
-  queued meanwhile are merged, the last one per vault wins): read the vault
-  file (gone → nothing to do), parse it (`VaultFile::parse`; the id must be
-  the file's), check the folder, compare with the folder's copy – missing,
-  too large, unreadable (half a download), another vault's or a lower
-  revision → written; the same write (equal bytes) → only the blobs (no
-  needless upload); a **higher** revision in the folder (another PC writing
-  into the same folder, a restored backup here) → `unsupported:mirror_newer`,
-  and another write of the **same** revision (e.g. this PC went back to a
-  backup and saved again) → `unsupported:mirror_diverged` – nothing is
-  touched (the phone would not take an older revision either), until this
-  PC saves a higher one. Except a copy the open vault's keys prove forged
-  or damaged (`UnlockedVault::check_copy`, asked under the state lock when
-  that vault is open: its KDF salt is this session's but the key or payload
-  does not authenticate – e.g. a revision raised by hand in the folder): it
-  is replaced like a damaged one. A copy of another master password cannot
-  be checked and stays. Then list the data folder's blobs – after reading the vault
-  file, so every blob that revision references is there –, copy those the
-  folder lacks or whose size differs (a blob never changes under its id;
-  only `<id>.bin` names with a blob's shape, `attachments::looks_like_blob`,
-  at most 20 MiB + 45 bytes), write the vault file (`write_atomic`), and
+  when the folder is set or changed. A **scan** of the folder on every
+  unlock, whenever the main window gets the focus (`WindowEvent::Focused`),
+  when the folder is set, and every 20 s while the app runs
+  (`SCAN_INTERVAL`; the periodic scan reads only files whose size or time –
+  or the PC's copy's – changed since the last scan). `delete_vault` removes
+  the vault's copy (`<id>.keystead` only if its header has that id, and the
+  `<id>.bin` files of its blob folder; nothing while the vault file still
+  exists – the phone then reports it as "missing" and keeps its own copy)
+  and, once that worked, its base and conflict; a removal that fails (the
+  drive not mounted, the cloud app holding the file) is kept in
+  `MirrorTracker` and tried again with every later round and when the
+  folder setting changes – while the app runs (an exit forgets it); its
+  copy is not offered meanwhile. Vaults never opened in the app are not
+  copied.
+* **A pass** (`mirror::mirror_vault`): read the vault file (gone → nothing
+  to do), parse it (`VaultFile::parse`; the id must be the file's), check
+  the folder, read the folder's copy (at most 64 MiB, parsed and validated
+  – KDF limits included; too large, unreadable, damaged or another vault's
+  file under this name → written over like a missing one). Then
+  `sync_base::decide_pair` – `keystead_core::sync::decide` with the same
+  rule on top as the phone's: the same write under another revision (a
+  header changed by hand) is pulled when raised and "older" when lowered –
+  on the heads of both copies and the vault's base for this folder
+  (`<data>/sync/base/<id>.json`, the folder key is the `mirrorFolder` path):
+  * only the PC's copy changed (or the folder has none and the vault was
+    never synced with it) → **push** (below), the written head becomes the
+    base;
+  * the same write → only the blobs (no needless upload); the base is
+    recorded;
+  * only the folder's changed → **pull** (below);
+  * both changed → a **conflict** (below); nothing is written anywhere;
+  * the folder's copy below the base while the PC's is unchanged →
+    `unsupported:mirror_remote_older` (a restored backup, a cloud app that
+    has not fetched the newest file yet) – neither taken nor replaced;
+  * the folder's copy removed after it was synced →
+    `unsupported:mirror_remote_gone` – not written again (the phone never
+    deletes files: someone removed it, or the cloud app has not put the
+    newest one there yet); setting the folder again writes it.
+  A copy the open vault's keys prove forged or damaged
+  (`UnlockedVault::check_copy`, asked under the state lock: its KDF salt is
+  this session's but the key or payload does not authenticate – e.g. a
+  revision raised by hand in the folder) is remembered as rejected
+  (`Trial::rejected`) and replaced with the PC's copy, as before stage 2b –
+  never taken and never a conflict; a rejected write is replaced on every
+  later pass too. A copy on trial on the PC (pulled while locked, adopted;
+  "Copies on trial") is never written to the folder, and only a folder copy
+  newer than the one that opened here last is pulled over it.
+* **First pass after the update to 2b** (no base for this folder yet, both
+  copies there): equal → the base is recorded. Different: before stage 2b
+  only the PC wrote the folder, so the **older** copy is what both came
+  from and serves as the base – a newer PC copy is pushed, a newer folder
+  copy (the phone pushed first) pulled; the same revision with other
+  contents is a conflict. A folder copy overwritten that way is kept as a
+  conflict copy in `<data>/conflicts/` (it might be another device's write)
+  – unless it is the PC's own previous revision (its `.bak`). So existing
+  users get no conflict from the update itself.
+* **Push**: list the data folder's blobs – after reading the vault file, so
+  every blob that revision references is there –, copy those the folder
+  lacks or whose size differs (a blob never changes under its id; only
+  `<id>.bin` names with a blob's shape, `attachments::looks_like_blob`, at
+  most 20 MiB + 45 bytes), read the folder's copy again – if it changed
+  since the decision (the phone wrote it meanwhile), nothing is written and
+  the next pass decides anew –, write the vault file (`write_atomic`), and
   only then remove the folder's `<id>.bin` files the data folder no longer
   has, and the blob folder once it is empty (anything else in it stays). A
   blob that cannot be written ends the pass before the vault file. So the
@@ -1099,12 +1142,77 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   reads revision N, the PC writes N+1 without an attachment and removes its
   blob before the phone lists the folder – the phone then has N without
   that attachment until its next sync brings N+1.
+* **Pull** (`mirror::pull`): the folder's blobs the PC lacks (same checks)
+  are copied into `vaults/<id>.keystead.attachments/` first; then, under
+  the state lock, the trial lock and the vault file's lock
+  (`format::lock_vault_file` – no save of the app or the terminal UI
+  interleaves) and only if the PC's file is still the one the decision was
+  made on: with the vault **open** its keys check the copy – `Opens` →
+  `write_atomic` (keeping the `.bak`), the session is reloaded
+  (`reload_if_changed`), unreferenced blobs are swept (an hour old),
+  `vault://changed`; `Forged` → replaced with the PC's copy (above);
+  `OtherPassword` → not taken, `unsupported:mirror_other_password`. With
+  the vault **locked** nothing proves the copy: it is stored **on trial**
+  (`sync_trial::begin_trial`: the copy that opened here is kept until the
+  new one opens with the master password; one that does not although its
+  key does is rejected and the kept copy comes back – "Copies on trial") –
+  but never one with another KDF salt or parameters
+  (`unsupported:mirror_other_password`: the PC does not take a new master
+  password from the folder; the master password is changed on the PC).
+  The folder's head becomes the base; `MirrorStatus.lastPulledAt` is set.
+* **Offers** (`FolderOffer { vaultId, name, revision, updatedAt }` from the
+  plain header): a scan lists the folder's top-level `<id>.keystead` files
+  (`sync::vault_id_of_file_name`: a cloud app's `… (1).keystead` copies,
+  hidden and other files are ignored). A vault the PC has is synced if it
+  has a base for this folder (also while locked – a pull then goes on
+  trial); one without a base waits until it is opened here. A vault the PC
+  does **not** have (made on the phone) is **never imported on its own**:
+  it is offered ("Neuer Tresor im Cloud-Ordner – übernehmen?";
+  `folder_offers`, `mirror://offers` whenever the list changes) unless the
+  user dismissed it (`dismiss_folder_vault` → `<data>/sync/dismissed.json`,
+  a sorted JSON array of vault ids). `adopt_folder_vault` takes it: its
+  blobs, then its file into `vaults/` – on trial without a kept copy (it
+  opens with its own master password, or – forged – is removed again), its
+  head as the base; refused for a vault the PC has
+  (`invalid_input:vault_exists`); adopting removes it from the dismissed
+  list.
+* **Conflicts** – the same record as the phone's (`sync_conflict.rs`,
+  `<data>/sync/conflicts.json`, see "Conflicts" under "Cloud-folder sync
+  (phone)"; forgotten when the folder changes): found by a pass, `verified`
+  once the open vault's keys checked the folder's copy (not forged) – a
+  conflict found while locked appears after the next unlock's pass. On the
+  PC `SyncConflict.lostAttachments` counts the attachments only the PC's
+  copy has (both copies decrypted with the open session's key:
+  `UnlockedVault::attachments_missing_in_copy`; 0 – omitted – when
+  unknown). `sync_conflicts` / `sync://conflict` / `resolve_sync_conflict`
+  are the phone's commands with the same contract (shared registration,
+  `sync_conflict::resolve_sync_conflict` dispatches to
+  `mirror::resolve_conflict`); "local" is the PC's copy, "remote" the
+  folder's. **Keep the folder's** (`remote`): the PC's vault file *and its
+  blob folder* are kept as a conflict copy in `<data>/conflicts/`, the
+  folder's blobs are copied, its file replaces the PC's
+  (`sync_conflict::install_resolved`: the session is replaced by one of
+  the new copy; another master password → on trial and the vault locks,
+  `keyChanged`), its head becomes the base. **Keep the PC's** (`local`):
+  refused for a folder copy with another master password
+  (`unsupported:sync_conflict_password`); the folder's vault file and its
+  blob folder are kept as the conflict copy, the open vault is saved again
+  above the folder's revision (`save_superseding`), the folder's head
+  becomes the base and the vault is pushed at once. Both need the two
+  copies the conflict was recorded for (`unsupported:sync_conflict_changed`,
+  the vault is looked at again) and a folder copy that is not forged
+  (`unsupported:sync_copy_rejected`, it is replaced); `locked` for another
+  vault than the page's open one, `not_found` without a checked conflict,
+  `unsupported:folder_not_linked` with the mirror off. "Später" is nothing:
+  the conflict comes back with the next pass.
 * **Never blocks saving**: the change returns first, the pass runs on its
   own thread. An error is logged once per distinct code and kept as
   `lastError` until a pass succeeds; `mirror://status` announces every
-  change of the status (`MirrorStatus { folder, lastMirroredAt, lastError }`,
-  also the answer of `mirror_status`; `lastMirroredAt` counts since the app
-  started or the folder was set). The UI (`state/mirror.tsx`) shows a toast
+  change of the status (`MirrorStatus { folder, lastMirroredAt,
+  lastPulledAt, lastError }`, also the answer of `mirror_status`;
+  `lastMirroredAt` – the last pass that reached the folder – and
+  `lastPulledAt` – the last pull – count since the app started or the
+  folder was set). A conflict is no error (`sync://conflict`). The UI (`state/mirror.tsx`) shows a toast
   ("Kopie im Cloud-Ordner nicht aktualisiert: …") when a new error appears
   – not again for the same one, nor after a page reload – and the settings
   row shows it; the next change tries again. `Core::shutdown` lets the
@@ -1112,6 +1220,10 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 * **The phone's side**: see "Cloud-folder sync (phone)". A new master
   password reaches the phone with the next revision (it sees the changed
   KDF salt). A vault file above 64 MiB is written but skipped by the phone.
+  Unit tests (`mirror.rs`) run the phone's engine (`folder_sync` over the
+  same directory) against the PC's: edits going back and forth, and both
+  sides editing – the conflict on the side that comes second, resolved
+  there, both converging.
 
 ## Data locations (`keystead_core::paths`)
 
@@ -1162,7 +1274,13 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   leniently – unreadable is none): the last head this side wrote to the
   folder or took from it; a base recorded for another `folder` (the phone's
   tree URI, the PC's mirror folder) counts as none. The phone records it
-  for every copy it stores or pushes and for equal copies.
+  for every copy it stores or pushes and for equal copies; the PC for every
+  copy it writes to or takes from the mirror folder and for equal copies.
+  `<data_dir>/sync/conflicts.json` and `<data_dir>/sync/trial/` (see the
+  phone's entry above) on the PC too – its conflicts and its copies on
+  trial (pulled while locked, adopted). PC only:
+  `<data_dir>/sync/dismissed.json` – the ids of folder vaults the user does
+  not want offered (a sorted JSON array, no secrets).
   `<data_dir>/conflicts/<vault-id>.keystead.conflict-<YYYYMMDD-HHMMSS>`
   (UTC; `-2`, `-3`, … for another copy in the same second) – the losing
   side's vault file of a resolved sync conflict, never in the cloud folder
@@ -1967,7 +2085,10 @@ history. The bridge's own writes are not affected.
 | `clear_icons` † | – | `number` – removes the vault's stored icons (with `websiteIcons` on they are loaded again right away) |
 | `get_settings` | – | `Settings` |
 | `save_settings` | `settings: Settings` | `Settings` – desktop: a changed `mirrorFolder` is checked first (`invalid_input:mirror_folder`, `invalid_input:mirror_folder_data_dir`, `unsupported:mirror_folder_missing`; nothing saved), then the open vault is copied into the new folder; `generatorPresets` and `generatorDefault` keep their stored values (only the preset commands change them, so a settings object the page read before cannot undo a preset change) |
-| `mirror_status` | – | **Desktop only.** `MirrorStatus { folder: string\|null, lastMirroredAt: number\|null, lastError: string\|null }` – the cloud-folder mirror ("Cloud-folder mirror (desktop) and phone link"): the folder (`Settings.mirrorFolder`), the last successful copy (ms, since the start or since the folder was set) and the last error code (`unsupported:mirror_folder_missing`, `unsupported:mirror_newer`, `unsupported:mirror_diverged`, `invalid_input:mirror_folder_data_dir`, `io:…`; `null` after a success); not user activity |
+| `mirror_status` | – | **Desktop only.** `MirrorStatus { folder: string\|null, lastMirroredAt: number\|null, lastPulledAt: number\|null, lastError: string\|null }` – the cloud-folder mirror ("Cloud-folder mirror (desktop) and phone link"): the folder (`Settings.mirrorFolder`), the last pass that reached the folder and the last pull (ms, since the start or since the folder was set) and the last error code (`unsupported:mirror_folder_missing`, `unsupported:mirror_other_password`, `unsupported:mirror_remote_older`, `unsupported:mirror_remote_gone`, `invalid_input:mirror_folder_data_dir`, `io:…`; `null` after a success); not user activity |
+| `folder_offers` | – | **Desktop only.** `FolderOffer[]` – `{ vaultId, name, revision, updatedAt }`: the vaults in the mirror folder the PC does not have (e.g. made on the phone) and the user did not dismiss, as the last scan found them (`[]` with the mirror off); no I/O, not user activity |
+| `adopt_folder_vault` | `vaultId` | **Desktop only.** `VaultInfo` – takes an offered vault from the mirror folder (blobs first, then the file into `vaults/`, on trial: it opens with its own master password; its head becomes the base; no longer dismissed). `invalid_input:vault_exists` (the PC has that vault), `not_found` (no readable copy of that id in the folder), `unsupported:folder_not_linked` (mirror off), the folder checks' codes, `corrupt:…`/`unsupported:…` of a damaged or foreign file |
+| `dismiss_folder_vault` | `vaultId` | **Desktop only.** `null` – the vault is no longer offered (`<data>/sync/dismissed.json`; `adopt_folder_vault` still takes it). `not_found` for an invalid id |
 | `browser_status` | – | `BrowserStatus { serverRunning, extensionId, extensionDir, extensionVersion, browsers: BrowserInfo[], clients: PairedClient[] }` (`extensionDir` = `<data_dir>/browser-extension`, `extensionVersion` = the embedded extension's manifest version) |
 | `register_browsers` | `browsers: string[]` (ids) | `BrowserStatus` |
 | `unregister_browsers` | `browsers: string[]` | `BrowserStatus` |
@@ -1984,14 +2105,14 @@ history. The bridge's own writes are not affected.
 | `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read and write access to the choice (read only where the provider refuses write: `writable: false`), links it in place of the previous one (whose permission is given back and whose recorded conflicts are forgotten) and syncs – pushing the phone's own vaults; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
 | `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's permission back and removes `link.json` and the recorded conflicts; the vault copies and their sync bases stay on the phone (and are no longer synced) |
-| `sync_conflicts` | `pageVaultId` | **Phone only** (the PC's from stage 2b's work package 4). `SyncConflict[]` – `{ vaultId, vaultName, localRevision, remoteRevision, localUpdatedAt, remoteUpdatedAt, passwordChanged }` ("local" = this side, "remote" = the folder's copy): the conflicts of the page's open vault that its keys checked (`locked` for another vault); no access to the folder, not user activity |
-| `resolve_sync_conflict` | `vaultId, pageVaultId, keep: "local"\|"remote"` | **Phone only** (as above). `VaultInfo` – keeps one side of the open vault's conflict, the other as a conflict copy in `<data>/conflicts/` (see "Conflicts" under "Cloud-folder sync (phone)"); `keep: "remote"` may lock the vault (`vault://locked` `keyChanged`, another master password). Errors: `locked` (not the page's open vault), `not_found` (no checked conflict), `invalid_input:keep`, `unsupported:sync_conflict_password` (`local` against a new master password), `unsupported:sync_conflict_changed`, `unsupported:sync_copy_rejected`, `unsupported:folder_not_linked`, the sync's errors |
+| `sync_conflicts` | `pageVaultId` | **Both platforms.** `SyncConflict[]` – `{ vaultId, vaultName, localRevision, remoteRevision, localUpdatedAt, remoteUpdatedAt, passwordChanged, lostAttachments? }` ("local" = this side, "remote" = the folder's copy; `lostAttachments`, PC only: how many attachments only the PC's copy has – omitted when 0 or unknown): the conflicts of the page's open vault that its keys checked (`locked` for another vault); no access to the folder, not user activity |
+| `resolve_sync_conflict` | `vaultId, pageVaultId, keep: "local"\|"remote"` | **Both platforms** (phone: the linked folder, "Conflicts" under "Cloud-folder sync (phone)"; PC: the mirror folder, "Conflicts" under "Cloud-folder mirror (desktop) and phone link" – the PC's conflict copy carries the losing side's blob folder). `VaultInfo` – keeps one side of the open vault's conflict, the other as a conflict copy in `<data>/conflicts/`; `keep: "remote"` may lock the vault (`vault://locked` `keyChanged`, another master password). Errors: `locked` (not the page's open vault), `not_found` (no checked conflict), `invalid_input:keep`, `unsupported:sync_conflict_password` (`local` against a new master password), `unsupported:sync_conflict_changed`, `unsupported:sync_copy_rejected`, `unsupported:folder_not_linked`, the sync's or mirror's errors |
 | `device_unlock_status` | – | **Phone only** (see "Fingerprint unlock (phone)"). `DeviceUnlockStatus { available: boolean, unavailableReason: "noHardware"\|"notEnrolled"\|"other"\|null, enabled: boolean, vaults: string[], invalidated: string[] }` – whether the fingerprint can be used now, `Settings.deviceUnlock`, the vaults set up and the ones reset since the start; removes blobs that no longer fit (feature off, vault gone, another salt). No prompt, not user activity |
 | `enable_device_unlock` | `prompt: { title, reason, cancel }, pageVaultId` | **Phone only.** `DeviceUnlockStatus` – the system prompt seals the open vault's master KEK, stores the blob and turns `deviceUnlock` on. `locked` (not the page's vault), `unsupported:device_unlock_unavailable` / `device_unlock_not_enrolled` (no prompt), `unsupported:device_unlock_cancelled` / `_failed` / `_lockout` / `_busy` (nothing stored) |
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
 | `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder`, `sync_conflicts`, `resolve_sync_conflict` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export and the network and desktop integrations. Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export and the network and desktop integrations. Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
 (and on the desktop the master password's: `Core::unlock` goes through
@@ -2038,14 +2159,20 @@ or `…/releases` without a version).
   Not sent for the UI's own `unlock_vault`/`create_vault`/`unlock_with_recovery`.
 * `mirror://status` – payload `MirrorStatus` (see `mirror_status`) –
   desktop only: a copy into the mirror folder succeeded or failed (sent when
-  the status changed), or the folder was set, changed or turned off. The UI
-  updates Settings → "Handy" and shows a toast when a new error appears.
+  the status changed – a pull too, `lastPulledAt`), or the folder was set,
+  changed or turned off. The UI updates Settings → "Handy" and shows a
+  toast when a new error appears.
+* `mirror://offers` – payload `FolderOffer[]` (see `folder_offers`) –
+  desktop only: the vaults the mirror folder offers changed (a scan found
+  one, it was adopted or dismissed, the folder changed). The UI asks
+  "Neuer Tresor im Cloud-Ordner – übernehmen?" and lists them in Settings
+  → "Handy".
 * `sync://status` – payload `FolderStatus` (see `folder_status`) – phone
   only: a sync started or ended, or the folder was linked or unlinked. The
   UI re-reads the vault list (a vault may have arrived) and shows the
   status.
 * `sync://conflict` – payload `SyncConflict[]` (see `sync_conflicts`) –
-  phone only for now: the recorded conflicts changed (one found, checked,
+  both platforms: the recorded conflicts changed (one found, checked,
   resolved or gone); the payload is the open vault's checked conflicts
   (`[]` without one). The UI shows the conflict dialog while a vault is
   open.

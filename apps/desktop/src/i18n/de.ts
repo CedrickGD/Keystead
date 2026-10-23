@@ -99,10 +99,13 @@ export const de = {
     "Dieser Ordner gehört zu Keystead selbst (Datenordner oder Tresor-Ordner einer Installation). Wähle einen Ordner in deiner Cloud, z. B. „Nextcloud\\Keystead“.",
   "error.unsupported.mirror_folder_missing":
     "Der Cloud-Ordner ist nicht erreichbar – wurde er verschoben oder umbenannt, oder fehlt das Laufwerk? Keystead versucht es beim nächsten Speichern wieder.",
-  "error.unsupported.mirror_newer":
-    "Im Cloud-Ordner liegt eine neuere Kopie dieses Tresors (z. B. von einem anderen PC) – Keystead ersetzt sie nicht. Lösche sie dort, wenn der Stand dieses PCs gelten soll.",
-  "error.unsupported.mirror_diverged":
-    "Im Cloud-Ordner liegt eine andere Fassung dieses Tresors mit derselben Revision (z. B. von einem anderen PC). Keystead ersetzt sie erst mit deiner nächsten Änderung hier.",
+  "error.unsupported.mirror_other_password":
+    "Die Kopie im Cloud-Ordner hat ein anderes Master-Passwort – Keystead übernimmt sie nicht. Das Master-Passwort wird nur am PC geändert.",
+  "error.unsupported.mirror_remote_older":
+    "Die Kopie im Cloud-Ordner ist älter als der zuletzt abgeglichene Stand (z. B. hat die Cloud-App sie noch nicht aktualisiert). Keystead übernimmt und ersetzt sie nicht.",
+  "error.unsupported.mirror_remote_gone":
+    "Die Kopie dieses Tresors wurde aus dem Cloud-Ordner entfernt. Keystead legt sie nicht von selbst neu an – wähle den Ordner erneut, damit sie wieder geschrieben wird.",
+  "error.input.vault_exists": "Diesen Tresor gibt es auf diesem PC schon.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",

@@ -1,33 +1,63 @@
-//! Conflict copies of the two-way cloud-folder sync (Block 5 stage 2b).
-//! When the user resolves a conflict, the losing side's vault file is not
-//! dropped: it is kept as
-//! `<data>/conflicts/<id>.keystead.conflict-<YYYYMMDD-HHMMSS>` (UTC; see
-//! `keystead_core::sync::conflict_file_name`) on the side that resolved it
-//! – never in the cloud folder, and not in `vaults/`, so no store lists it
-//! as a vault. The user can import it again (file import of a
-//! `.keystead` file). On the PC the losing side's blob folder is copied
-//! beside it (`<copy>.attachments/<attachment id>.bin`), so attachments the
-//! winning side no longer references are not lost with the hourly sweep.
-//! Platform-neutral.
+//! Conflicts of the two-way cloud-folder sync (Block 5 stage 2b) – shared
+//! by the phone's folder sync (`folder_sync.rs`) and the PC's mirror
+//! (`mirror.rs`). Platform-neutral.
+//!
+//! * The record (`<data>/sync/conflicts.json`, [`SyncConflict`] per vault
+//!   plus the digests of both writes and whether the open vault's keys
+//!   checked the folder's copy): recorded whenever a sync finds both copies
+//!   changed since the last agreed head (`keystead_core::sync::decide` →
+//!   `Diverged`), shown (`sync_conflicts`, `sync://conflict`) only once
+//!   checked, removed when a later sync finds the two sides agreeing again
+//!   or the user resolves it ([`resolve_sync_conflict`]).
+//! * Conflict copies: when the user resolves a conflict, the losing side's
+//!   vault file is not dropped: it is kept as
+//!   `<data>/conflicts/<id>.keystead.conflict-<YYYYMMDD-HHMMSS>` (UTC; see
+//!   `keystead_core::sync::conflict_file_name`) on the side that resolved
+//!   it – never in the cloud folder, and not in `vaults/`, so no store lists
+//!   it as a vault. The user can import it again (file import of a
+//!   `.keystead` file). On the PC the losing side's blob folder is copied
+//!   beside it (`<copy>.attachments/<attachment id>.bin`), so attachments
+//!   the winning side no longer references are not lost with the hourly
+//!   sweep.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use keystead_core::attachments;
-use keystead_core::format;
-use keystead_core::sync;
-
+use keystead_core::format::{self, VaultFile};
+use keystead_core::model::{now_ms, VaultInfo};
+use keystead_core::sync::{self, SyncBase, SyncHead};
+use keystead_core::vault::CopyCheck;
+use keystead_core::Error as CoreError;
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
+use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
+use crate::state::{log, Core, LockReason};
+use crate::sync_base::{self, sync_dir};
+use crate::sync_trial::{begin_trial, trial_lock, Trial};
+
+/// Error code: "keep this side" for a conflict whose folder copy has
+/// another master password – the side with the old password never wins.
+pub const CONFLICT_PASSWORD: &str = "sync_conflict_password";
+/// Error code: a copy changed since the conflict was recorded (or the
+/// folder's is gone): it was looked at again; the UI fetches the list anew.
+pub const CONFLICT_CHANGED: &str = "sync_conflict_changed";
+/// `sync://conflict` – payload `SyncConflict[]`: the open vault's checked
+/// conflicts, whenever the recorded conflicts change (both platforms).
+pub const EVENT_CONFLICT: &str = "sync://conflict";
+
+/// `unsupported:sync_conflict_changed`.
+pub fn conflict_changed() -> AppError {
+    AppError::unsupported(CONFLICT_CHANGED)
+}
 
 /// A conflict of the two-way sync, for the UI (`sync_conflicts`,
 /// `sync://conflict`): this side's copy of a vault and the folder's both
 /// changed since they last agreed (`keystead_core::sync::decide` →
 /// `Diverged`). No secrets: ids, names, revisions and times from the plain
-/// headers.
-// The PC records its own from work package 4 on.
-#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
+/// headers, and a count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConflict {
@@ -43,7 +73,334 @@ pub struct SyncConflict {
     /// parameters): this side's state cannot be kept – the side with the
     /// old password never wins.
     pub password_changed: bool,
+    /// PC: how many attachments only this side's copy has (by attachment
+    /// id; both copies decrypted with the open vault's key) – what keeping
+    /// the folder's copy drops (their blobs go with the conflict copy).
+    /// Omitted (0) when unknown, and on the phone.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lost_attachments: u32,
 }
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+// ---------------------------------------------------------------------------
+// The record (`<data>/sync/conflicts.json`)
+// ---------------------------------------------------------------------------
+
+/// A recorded conflict: what the UI gets plus the two writes it is about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictRecord {
+    #[serde(flatten)]
+    pub conflict: SyncConflict,
+    /// The heads' digests of this side's and the folder's copy.
+    pub local_digest: String,
+    pub remote_digest: String,
+    /// The open vault's keys checked the folder's copy (not forged): only
+    /// then the user is asked.
+    #[serde(default)]
+    pub verified: bool,
+}
+
+fn conflicts_path(data_dir: &Path) -> PathBuf {
+    sync_dir(data_dir).join("conflicts.json")
+}
+
+/// Read leniently: a missing or damaged file holds none.
+pub fn load_records(data_dir: &Path) -> Vec<ConflictRecord> {
+    match fs::read(conflicts_path(data_dir)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            log(format_args!("the sync conflicts are unreadable: {e}"));
+            Vec::new()
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            log(format_args!("could not read the sync conflicts: {e}"));
+            Vec::new()
+        }
+    }
+}
+
+fn save_records(data_dir: &Path, records: &[ConflictRecord]) -> AppResult<()> {
+    if records.is_empty() {
+        return clear_conflicts(data_dir);
+    }
+    fs::create_dir_all(sync_dir(data_dir))?;
+    let mut bytes = serde_json::to_vec_pretty(records).map_err(CoreError::from)?;
+    bytes.push(b'\n');
+    format::write_atomic(&conflicts_path(data_dir), &bytes, false)?;
+    Ok(())
+}
+
+/// Forgets every recorded conflict (the folder was unlinked, another one
+/// linked or – PC – the mirror folder changed).
+pub fn clear_conflicts(data_dir: &Path) -> AppResult<()> {
+    match fs::remove_file(conflicts_path(data_dir)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Records (`Some`) or forgets (`None`) the conflict of vault `id`; a
+/// change is announced as `sync://conflict`. Call without the state lock.
+pub fn set_record(core: &Core, id: &str, record: Option<ConflictRecord>) {
+    let data_dir = core.data_dir();
+    let before = load_records(&data_dir);
+    let mut records: Vec<ConflictRecord> = before
+        .iter()
+        .filter(|r| r.conflict.vault_id != id)
+        .cloned()
+        .collect();
+    records.extend(record);
+    records.sort_by(|a, b| a.conflict.vault_id.cmp(&b.conflict.vault_id));
+    if records == before {
+        return;
+    }
+    if let Err(e) = save_records(&data_dir, &records) {
+        log(format_args!(
+            "could not record the sync conflicts: {}",
+            e.code()
+        ));
+    }
+    emit_conflicts(core);
+}
+
+/// Records the conflict of vault `id` between this side's copy `local` and
+/// the folder's `remote` (each with its head). `checked_now`: the open
+/// vault's keys just checked the folder's copy (not forged); a check of the
+/// same two writes in an earlier session still counts. `lost_attachments`:
+/// see [`SyncConflict`] (kept from that earlier check when not checked
+/// now). Call without the state lock.
+pub fn record_conflict(
+    core: &Core,
+    id: &str,
+    (local, local_head): (&VaultFile, &SyncHead),
+    (remote, remote_head): (&VaultFile, &SyncHead),
+    checked_now: bool,
+    lost_attachments: u32,
+) {
+    let previous = load_records(&core.data_dir()).into_iter().find(|r| {
+        r.conflict.vault_id == id
+            && r.verified
+            && r.local_digest == local_head.digest
+            && r.remote_digest == remote_head.digest
+    });
+    let lost_attachments = match (&previous, checked_now) {
+        (Some(previous), false) => previous.conflict.lost_attachments,
+        _ => lost_attachments,
+    };
+    let record = ConflictRecord {
+        conflict: SyncConflict {
+            vault_id: id.to_owned(),
+            vault_name: local.name.clone(),
+            local_revision: local.revision,
+            remote_revision: remote.revision,
+            local_updated_at: local.updated_at,
+            remote_updated_at: remote.updated_at,
+            password_changed: password_changed(local, remote),
+            lost_attachments,
+        },
+        local_digest: local_head.digest.clone(),
+        remote_digest: remote_head.digest.clone(),
+        verified: checked_now || previous.is_some(),
+    };
+    set_record(core, id, Some(record));
+}
+
+/// The checked conflicts of vault `id`.
+fn conflicts_of(data_dir: &Path, id: &str) -> Vec<SyncConflict> {
+    load_records(data_dir)
+        .into_iter()
+        .filter(|r| r.verified && r.conflict.vault_id == id)
+        .map(|r| r.conflict)
+        .collect()
+}
+
+/// The checked record of vault `id` (`not_found` without one): what a
+/// resolution works on.
+pub fn verified_record(data_dir: &Path, id: &str) -> AppResult<ConflictRecord> {
+    load_records(data_dir)
+        .into_iter()
+        .find(|r| r.verified && r.conflict.vault_id == id)
+        .ok_or_else(|| AppError::Code("not_found".into()))
+}
+
+/// Announces the open vault's checked conflicts (`sync://conflict`; an
+/// empty list without one). Call without the state lock.
+pub fn emit_conflicts(core: &Core) {
+    let conflicts = match core.read(|v| v.id().to_owned()) {
+        Ok(id) => conflicts_of(&core.data_dir(), &id),
+        Err(_) => Vec::new(),
+    };
+    core.emit(EVENT_CONFLICT, conflicts);
+}
+
+/// `sync_conflicts(pageVaultId)`: the conflicts of the page's vault the
+/// open vault's keys checked (`locked` for another vault).
+pub fn conflicts_for_page(
+    core: &Core,
+    page_vault_id: Option<&str>,
+) -> AppResult<Vec<SyncConflict>> {
+    let id = core.state().page_vault(page_vault_id)?.id().to_owned();
+    Ok(conflicts_of(&core.data_dir(), &id))
+}
+
+/// The folder's copy has another master password than this side's (another
+/// key-derivation salt or parameters).
+pub fn password_changed(local: &VaultFile, remote: &VaultFile) -> bool {
+    local.kdf.salt != remote.kdf.salt || local.kdf_params() != remote.kdf_params()
+}
+
+// ---------------------------------------------------------------------------
+// Resolving
+// ---------------------------------------------------------------------------
+
+/// Which side of a conflict the user keeps (`resolve_sync_conflict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// This side's copy: it is saved again above the folder's revision and
+    /// written to the folder.
+    Local,
+    /// The folder's copy: it replaces this side's.
+    Remote,
+}
+
+impl Keep {
+    /// `"local"` / `"remote"`; anything else → `invalid_input:keep`.
+    pub fn parse(value: &str) -> AppResult<Keep> {
+        match value {
+            "local" => Ok(Keep::Local),
+            "remote" => Ok(Keep::Remote),
+            _ => Err(AppError::invalid("keep")),
+        }
+    }
+}
+
+/// "Keep the folder's copy": stores `bytes` (`remote`, checked as `check`
+/// by the open vault) in place of this side's copy at `path` – if that is
+/// still the write `local_digest` – and replaces the open session with one
+/// of the new copy (same master password), or locks the vault
+/// (`keyChanged`: another master password; the copy stays on trial until
+/// it opens). The folder's head becomes the base for `folder` (the phone's
+/// tree URI, the PC's mirror folder). Returns the new session's info,
+/// `None` after the lock.
+#[allow(clippy::too_many_arguments)]
+pub fn install_resolved(
+    core: &Core,
+    folder: &str,
+    id: &str,
+    path: &Path,
+    local_digest: &str,
+    bytes: &[u8],
+    remote: &VaultFile,
+    check: CopyCheck,
+) -> AppResult<Option<VaultInfo>> {
+    let data_dir = core.data_dir();
+    let (info, closed) = {
+        let mut st = core.state();
+        let _trial = trial_lock();
+        let kek = st
+            .vault
+            .as_ref()
+            .filter(|v| v.id() == id)
+            .ok_or(AppError::Locked)?
+            .master_kek();
+        let on_disk = VaultFile::read(path).ok().map(|f| sync::head_of(&f).digest);
+        if on_disk.as_deref() != Some(local_digest) {
+            return Err(conflict_changed());
+        }
+        match check {
+            CopyCheck::Opens => Trial::default().save(&data_dir, id)?,
+            _ => begin_trial(&data_dir, id, path, remote)?,
+        }
+        format::write_atomic(path, bytes, false)?;
+        let base = SyncBase::new(&sync::head_of(remote), folder, now_ms());
+        if let Err(e) = sync_base::save(&data_dir, id, &base) {
+            log(format_args!("could not record the sync base: {}", e.code()));
+        }
+        let fresh = match check {
+            CopyCheck::Opens => st
+                .store
+                .unlock_with_master_kek(id, &kek)
+                .inspect_err(|e| {
+                    log(format_args!("could not open the kept copy: {}", e.code()));
+                })
+                .ok(),
+            _ => None,
+        };
+        match fresh {
+            Some(fresh) => {
+                // Blobs the kept copy no longer references (an hour old).
+                fresh.sweep_attachments();
+                let info = fresh.info();
+                // The old session is dropped (and wiped) here.
+                st.vault = Some(fresh);
+                (Some(info), None)
+            }
+            None => {
+                core.begin_lock();
+                (None, st.vault.take())
+            }
+        }
+    };
+    match closed {
+        Some(closed) => {
+            core.finish_lock(Some(closed), Some(LockReason::KeyChanged));
+        }
+        None => core.emit_changed(),
+    }
+    Ok(info)
+}
+
+/// `sync_conflicts(pageVaultId)` → `SyncConflict[]`: the conflicts of the
+/// page's open vault that its keys checked (`locked` for another vault).
+/// No I/O on the folder. Both platforms.
+#[tauri::command]
+pub async fn sync_conflicts(
+    core: Shared<'_>,
+    page_vault_id: Option<String>,
+) -> CmdResult<Vec<SyncConflict>> {
+    run(&core, false, move |c| {
+        conflicts_for_page(c, page_vault_id.as_deref())
+    })
+    .await
+}
+
+/// `resolve_sync_conflict(vaultId, pageVaultId, keep: "local"|"remote")` →
+/// `VaultInfo`: keeps one side of the open vault's conflict; the other is
+/// kept as a conflict copy in `<data>/conflicts/`. Phone:
+/// `mobile::sync::resolve` (`folder_sync::resolve_conflict`); PC:
+/// `mirror::resolve_conflict`. Keeping the folder's copy may lock the vault
+/// (`keyChanged`: another master password).
+#[tauri::command]
+pub async fn resolve_sync_conflict(
+    app: AppHandle,
+    core: Shared<'_>,
+    vault_id: String,
+    page_vault_id: Option<String>,
+    keep: String,
+) -> CmdResult<VaultInfo> {
+    run(&core, true, move |c| {
+        let keep = Keep::parse(&keep)?;
+        #[cfg(mobile)]
+        let resolved =
+            crate::mobile::sync::resolve(&app, c, &vault_id, page_vault_id.as_deref(), keep);
+        #[cfg(desktop)]
+        let resolved = {
+            let _ = &app;
+            crate::mirror::resolve_conflict(c, &vault_id, page_vault_id.as_deref(), keep, now_ms())
+        };
+        resolved
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Conflict copies (`<data>/conflicts`)
+// ---------------------------------------------------------------------------
 
 /// `<data>/conflicts`.
 pub fn conflicts_dir(data_dir: &Path) -> PathBuf {
@@ -65,9 +422,6 @@ pub struct ConflictCopy {
 /// blob files (`<attachment id>.bin`; nothing else) are copied into the
 /// copy's own blob folder after the vault file; a blob folder that does not
 /// exist is nothing to copy.
-// Both sides' conflict resolution keeps the losing copy (stage 2b; the
-// PC's mirror from work package 4 on).
-#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn keep_conflict_copy(
     data_dir: &Path,
     id: &str,

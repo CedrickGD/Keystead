@@ -9,6 +9,7 @@ import type {
   BrowserStatus,
   ExportFormat,
   Folder,
+  FolderOffer,
   FolderStatus,
   GeneratedPasswordInfo,
   GeneratorOptions,
@@ -31,6 +32,7 @@ import type {
   SecretField,
   SessionState,
   Settings,
+  SyncConflict,
   Strength,
   TotpCode,
   UpdateInfo,
@@ -265,6 +267,22 @@ export const api = {
    * the folder, the last successful copy and the last error. Changes come as `mirror://status`.
    */
   mirrorStatus: () => call<MirrorStatus>("mirror_status"),
+  /** Desktop: the vaults in the mirror folder the PC does not have (as the last scan found them). */
+  folderOffers: () => call<FolderOffer[]>("folder_offers"),
+  /** Desktop: takes an offered vault from the mirror folder (on trial: it opens with its own master password). */
+  adoptFolderVault: (vaultId: string) => call<VaultInfo>("adopt_folder_vault", { vaultId }),
+  /** Desktop: the vault is no longer offered. */
+  dismissFolderVault: (vaultId: string) => call<null>("dismiss_folder_vault", { vaultId }),
+
+  // Sync conflicts – both platforms ("local" = this side, "remote" = the folder's copy).
+  /** The checked conflicts of the page's open vault. */
+  syncConflicts: () => call<SyncConflict[]>("sync_conflicts", { pageVaultId }),
+  /**
+   * Keeps one side of the open vault's conflict; the other becomes a conflict
+   * copy in `<data>/conflicts/`. `remote` may lock the vault (`keyChanged`).
+   */
+  resolveSyncConflict: (vaultId: string, keep: "local" | "remote") =>
+    call<VaultInfo>("resolve_sync_conflict", { vaultId, pageVaultId, keep }),
 
   /** Stored website icons of the page's vault: { [host]: "data:image/png;base64,…" } (see lib/icons.ts). */
   getIcons: () => call<Record<string, string>>("get_icons", { pageVaultId }),
@@ -355,6 +373,12 @@ export const events = {
   onVaultUnlocked: (handler: (vault: VaultInfo) => void) => subscribe<VaultInfo>("vault://unlocked", handler),
   /** Desktop: the cloud-folder mirror copied a vault, failed, or its folder changed. */
   onMirrorStatus: (handler: (status: MirrorStatus) => void) => subscribe<MirrorStatus>("mirror://status", handler),
+  /** Desktop: the vaults the mirror folder offers changed. */
+  onMirrorOffers: (handler: (offers: FolderOffer[]) => void) =>
+    subscribe<FolderOffer[]>("mirror://offers", handler),
+  /** Both platforms: the open vault's checked sync conflicts changed (`[]`: none). */
+  onSyncConflict: (handler: (conflicts: SyncConflict[]) => void) =>
+    subscribe<SyncConflict[]>("sync://conflict", handler),
   /** Phone: the cloud-folder sync started or ended, or the folder was (un)linked. */
   onSyncStatus: (handler: (status: FolderStatus) => void) => subscribe<FolderStatus>("sync://status", handler),
   /** Phone: the app left the foreground (Android `onPause`); revealed values are hidden. */

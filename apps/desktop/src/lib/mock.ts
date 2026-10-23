@@ -957,7 +957,12 @@ function checkMirrorFolder(folder: string): void {
 
 function mirrorStatus(): MirrorStatus {
   const s = getState();
-  return { folder: s.settings.mirrorFolder, lastMirroredAt: s.mirror.lastMirroredAt, lastError: s.mirror.lastError };
+  return {
+    folder: s.settings.mirrorFolder,
+    lastMirroredAt: s.mirror.lastMirroredAt,
+    lastPulledAt: null,
+    lastError: s.mirror.lastError,
+  };
 }
 
 let mirrorTimer: number | undefined;

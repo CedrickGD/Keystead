@@ -627,9 +627,11 @@ export interface FolderStatus {
 }
 
 /**
- * A conflict of the two-way sync (`sync_conflicts`, `sync://conflict`):
- * this side's copy ("local") and the folder's ("remote") both changed. No
- * secrets. `lostAttachments` only from the PC.
+ * A conflict of the two-way sync (`sync_conflicts`, `sync://conflict`, both
+ * platforms): this side's copy ("local") and the folder's ("remote") both
+ * changed. No secrets. `lostAttachments` only from the PC: how many
+ * attachments only the PC's copy has (keeping the folder's drops them;
+ * omitted when 0 or unknown).
  */
 export interface SyncConflict {
   vaultId: string;
@@ -647,10 +649,25 @@ export interface SyncConflict {
 export interface MirrorStatus {
   /** `Settings.mirrorFolder`; null = off. */
   folder: string | null;
-  /** When a copy last succeeded in this folder (ms; since the start or since the folder was set). */
+  /** When a pass last reached this folder (ms; since the start or since the folder was set). */
   lastMirroredAt: number | null;
+  /** When a pass last took the folder's copy of a vault (the phone's edits; ms, likewise). */
+  lastPulledAt: number | null;
   /** Error code of the last attempt (e.g. `unsupported:mirror_folder_missing`), null after a success. */
   lastError: string | null;
+}
+
+/**
+ * Desktop: a vault in the mirror folder the PC does not have, e.g. made on
+ * the phone (`folder_offers`, `mirror://offers`). Never imported on its
+ * own: `adopt_folder_vault` takes it, `dismiss_folder_vault` hides it.
+ * From the plain header – no secrets.
+ */
+export interface FolderOffer {
+  vaultId: string;
+  name: string;
+  revision: number;
+  updatedAt: number;
 }
 
 /**

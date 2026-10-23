@@ -1,11 +1,11 @@
 //! The phone's cloud-folder sync on top of [`crate::folder_sync`]: the
 //! Kotlin plugin `KeysteadFolderPlugin` (gen/android) as the
 //! [`RemoteFolder`], the commands `folder_status`, `link_folder`,
-//! `sync_now`, `unlink_folder`, `sync_conflicts` and
-//! `resolve_sync_conflict`, the automatic sync at start and whenever the
-//! app comes back to the foreground (at most every [`AUTO_SYNC_INTERVAL`]),
-//! and the push after an edit ([`push_soon`]). See "Cloud-folder sync
-//! (phone)" in docs/ARCHITECTURE.md.
+//! `sync_now` and `unlink_folder` (plus the phone's side of the shared
+//! `resolve_sync_conflict`, [`resolve`]), the automatic sync at start and
+//! whenever the app comes back to the foreground (at most every
+//! [`AUTO_SYNC_INTERVAL`]), and the push after an edit ([`push_soon`]).
+//! See "Cloud-folder sync (phone)" in docs/ARCHITECTURE.md.
 //!
 //! * The plugin is called from Rust only: no capability grants
 //!   `keystead-folder:*` to the webview, and Tauri checks the ACL for every
@@ -35,9 +35,9 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
-use crate::folder_sync::{self, FolderStatus, Keep, LinkState, RemoteFolder};
+use crate::folder_sync::{self, FolderStatus, LinkState, RemoteFolder};
 use crate::state::{log, Core};
-use crate::sync_conflict::SyncConflict;
+use crate::sync_conflict::{self, Keep};
 
 /// The plugin's name (`plugin:keystead-folder|…` – never granted to the
 /// webview).
@@ -385,10 +385,10 @@ pub async fn link_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Option<F
         *lock(&state.link) = Some(link.clone());
         if let Some(old) = previous.filter(|old| old.tree_uri != link.tree_uri) {
             release_folder(&app, &old.tree_uri);
-            if let Err(e) = folder_sync::clear_conflicts(&c.data_dir()) {
+            if let Err(e) = sync_conflict::clear_conflicts(&c.data_dir()) {
                 log(format_args!("could not forget the conflicts: {}", e.code()));
             }
-            folder_sync::emit_conflicts(c);
+            sync_conflict::emit_conflicts(c);
         }
         let _ = sync_locked(&app, c, &state, &mut link);
         Ok(Some(status(c, &state)))
@@ -426,64 +426,44 @@ pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Folder
         if let Some(old) = previous {
             release_folder(&app, &old.tree_uri);
         }
-        folder_sync::emit_conflicts(c);
+        sync_conflict::emit_conflicts(c);
         emit_status(&app, c, &state);
         Ok(status(c, &state))
     })
     .await
 }
 
-/// `sync_conflicts(pageVaultId)` → `SyncConflict[]`: the conflicts of the
-/// page's open vault that its keys checked (`locked` for another vault).
-/// No I/O on the folder.
-#[tauri::command]
-pub async fn sync_conflicts(
-    core: Shared<'_>,
-    page_vault_id: Option<String>,
-) -> CmdResult<Vec<SyncConflict>> {
-    run(&core, false, move |c| {
-        folder_sync::conflicts_for_page(c, page_vault_id.as_deref())
-    })
-    .await
-}
-
-/// `resolve_sync_conflict(vaultId, pageVaultId, keep: "local"|"remote")` →
-/// `VaultInfo`: keeps one side of the open vault's conflict
-/// (`folder_sync::resolve_conflict`); the other is kept as a conflict copy
-/// in `<data>/conflicts/`. Keeping the PC's copy may lock the vault
-/// (`keyChanged`: another master password).
-#[tauri::command]
-pub async fn resolve_sync_conflict(
-    app: AppHandle,
-    core: Shared<'_>,
-    vault_id: String,
-    page_vault_id: Option<String>,
-    keep: String,
-) -> CmdResult<VaultInfo> {
-    run(&core, true, move |c| {
-        let keep = Keep::parse(&keep)?;
-        let state = sync_state(&app)?;
-        let _guard = lock(&state.guard);
-        let mut link = lock(&state.link)
-            .clone()
-            .ok_or_else(|| AppError::unsupported("folder_not_linked"))?;
-        let tree = link.tree_uri.clone();
-        let result = with_folder(&app, c, &tree, |folder| {
-            folder_sync::resolve_conflict(
-                c,
-                folder,
-                &mut link,
-                &vault_id,
-                page_vault_id.as_deref(),
-                keep,
-                now_ms(),
-            )
-        });
-        store_link(c, &state, &link);
-        emit_status(&app, c, &state);
-        result
-    })
-    .await
+/// `resolve_sync_conflict` on the phone (the command is shared,
+/// `sync_conflict::resolve_sync_conflict`): keeps one side of the open
+/// vault's conflict (`folder_sync::resolve_conflict`) with the linked
+/// folder, one at a time with every other sync.
+pub fn resolve(
+    app: &AppHandle,
+    core: &Core,
+    vault_id: &str,
+    page_vault_id: Option<&str>,
+    keep: Keep,
+) -> AppResult<VaultInfo> {
+    let state = sync_state(app)?;
+    let _guard = lock(&state.guard);
+    let mut link = lock(&state.link)
+        .clone()
+        .ok_or_else(|| AppError::unsupported("folder_not_linked"))?;
+    let tree = link.tree_uri.clone();
+    let result = with_folder(app, core, &tree, |folder| {
+        folder_sync::resolve_conflict(
+            core,
+            folder,
+            &mut link,
+            vault_id,
+            page_vault_id,
+            keep,
+            now_ms(),
+        )
+    });
+    store_link(core, &state, &link);
+    emit_status(app, core, &state);
+    result
 }
 
 // ---------------------------------------------------------------------------

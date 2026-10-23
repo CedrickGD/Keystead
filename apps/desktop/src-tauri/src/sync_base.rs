@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use keystead_core::format;
 use keystead_core::model::now_ms;
-use keystead_core::sync::{self, SyncBase, SyncHead};
+use keystead_core::sync::{self, SyncBase, SyncDecision, SyncHead};
 use keystead_core::Error as CoreError;
 
 use crate::error::{AppError, AppResult};
@@ -47,8 +47,6 @@ pub fn base_path(data_dir: &Path, id: &str) -> PathBuf {
 
 /// The base of vault `id` for `folder`, `None` without one – or with one
 /// recorded for another folder.
-// The phone's two-way sync and the PC's mirror pull read it (stage 2b).
-#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn load(data_dir: &Path, id: &str, folder: &str) -> Option<SyncBase> {
     read(data_dir, id).filter(|base| base.folder == folder)
 }
@@ -98,6 +96,22 @@ pub fn remove(data_dir: &Path, id: &str) -> AppResult<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+/// `sync::decide` for two copies of one vault that are both there – with
+/// one rule on top, the same on both sides: the same write with another
+/// revision (a header changed by hand) is not "up to date": a raised
+/// revision is pulled (and then fails the checks of a copy on trial or the
+/// open vault's `check_copy`), a lowered one is older.
+pub fn decide_pair(local: &SyncHead, remote: &SyncHead, base: Option<&SyncBase>) -> SyncDecision {
+    if local.id == remote.id && local.digest == remote.digest && local.revision != remote.revision {
+        return if remote.revision > local.revision {
+            SyncDecision::PullRemote
+        } else {
+            SyncDecision::RemoteOlder
+        };
+    }
+    sync::decide(Some(local), Some(remote), base)
 }
 
 /// After this side went back from a copy it had taken from the folder
@@ -188,6 +202,39 @@ mod tests {
             remove(data, id).unwrap();
         }
         assert!(!data.join("x.json").exists());
+    }
+
+    #[test]
+    fn a_pair_with_the_same_write_under_another_revision() {
+        let base = SyncBase::new(&head(5, "d5"), TREE, 1);
+        let local = head(5, "d5");
+        // A raised revision of the same write: pulled (the checks refuse it).
+        assert_eq!(
+            decide_pair(&local, &head(9, "d5"), Some(&base)),
+            SyncDecision::PullRemote
+        );
+        assert_eq!(
+            decide_pair(&local, &head(9, "d5"), None),
+            SyncDecision::PullRemote
+        );
+        // A lowered one: older.
+        assert_eq!(
+            decide_pair(&local, &head(2, "d5"), Some(&base)),
+            SyncDecision::RemoteOlder
+        );
+        // Everything else is `decide`'s.
+        assert_eq!(
+            decide_pair(&local, &head(5, "d5"), Some(&base)),
+            SyncDecision::UpToDate
+        );
+        assert_eq!(
+            decide_pair(&local, &head(6, "d6"), Some(&base)),
+            SyncDecision::PullRemote
+        );
+        assert_eq!(
+            decide_pair(&head(6, "l6"), &head(6, "d6"), Some(&base)),
+            SyncDecision::Diverged
+        );
     }
 
     #[test]

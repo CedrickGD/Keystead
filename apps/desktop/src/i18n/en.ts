@@ -98,10 +98,13 @@ export const en: Record<MessageKey, string> = {
     "This folder belongs to Keystead itself (the data folder or the vault folder of an installation). Choose a folder in your cloud, e.g. “Nextcloud\\Keystead”.",
   "error.unsupported.mirror_folder_missing":
     "The cloud folder cannot be reached – was it moved or renamed, or is the drive missing? Keystead tries again with the next save.",
-  "error.unsupported.mirror_newer":
-    "The cloud folder holds a newer copy of this vault (from another PC, for example) – Keystead does not replace it. Delete it there if this PC's state should count.",
-  "error.unsupported.mirror_diverged":
-    "The cloud folder holds another version of this vault with the same revision (from another PC, for example). Keystead replaces it only with your next change here.",
+  "error.unsupported.mirror_other_password":
+    "The copy in the cloud folder has another master password – Keystead does not take it. The master password is changed on the PC only.",
+  "error.unsupported.mirror_remote_older":
+    "The copy in the cloud folder is older than the state both sides last agreed on (the cloud app may not have updated it yet). Keystead neither takes nor replaces it.",
+  "error.unsupported.mirror_remote_gone":
+    "This vault's copy was removed from the cloud folder. Keystead does not put it back on its own – choose the folder again to have it written.",
+  "error.input.vault_exists": "This vault already exists on this PC.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",

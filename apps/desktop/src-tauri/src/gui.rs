@@ -184,6 +184,14 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(desktop)]
             crate::mirror::mirror_status,
             #[cfg(desktop)]
+            crate::mirror::folder_offers,
+            #[cfg(desktop)]
+            crate::mirror::adopt_folder_vault,
+            #[cfg(desktop)]
+            crate::mirror::dismiss_folder_vault,
+            crate::sync_conflict::sync_conflicts,
+            crate::sync_conflict::resolve_sync_conflict,
+            #[cfg(desktop)]
             commands::browser_status,
             #[cfg(desktop)]
             commands::register_browsers,
@@ -223,10 +231,6 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(mobile)]
             crate::mobile::sync::unlink_folder,
             #[cfg(mobile)]
-            crate::mobile::sync::sync_conflicts,
-            #[cfg(mobile)]
-            crate::mobile::sync::resolve_sync_conflict,
-            #[cfg(mobile)]
             crate::mobile::biometric::device_unlock_status,
             #[cfg(mobile)]
             crate::mobile::biometric::enable_device_unlock,
@@ -243,8 +247,9 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
         .build(tauri::generate_context!())
 }
 
-/// Desktop: closing the window hides it when "minimize to tray" is on.
-/// Phone: `Suspended`/`Resumed` (the activity's `onPause`/`onResume`)
+/// Desktop: closing the window hides it when "minimize to tray" is on;
+/// getting the focus has the cloud-folder mirror look through its folder
+/// (`mirror::Job::Scan` – the phone may have written meanwhile). Phone: `Suspended`/`Resumed` (the activity's `onPause`/`onResume`)
 /// drive the background lock in the monitor, the UI's `app://suspended`
 /// and the cloud-folder sync (pushes flushed on `Suspended`, a sync on
 /// `Resumed`).
@@ -261,6 +266,12 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         if core.minimize_to_tray() && core.tray_available() {
             api.prevent_close();
             let _ = window.hide();
+        }
+    }
+    #[cfg(desktop)]
+    if let WindowEvent::Focused(true) = event {
+        if let Some(core) = window.app_handle().try_state::<Arc<Core>>() {
+            core.mirror().request(crate::mirror::Job::Scan);
         }
     }
     #[cfg(mobile)]
@@ -886,8 +897,6 @@ mod tests {
                 "link_folder",
                 "sync_now",
                 "unlink_folder",
-                "sync_conflicts",
-                "resolve_sync_conflict",
                 "device_unlock_status",
                 "enable_device_unlock",
                 "disable_device_unlock",

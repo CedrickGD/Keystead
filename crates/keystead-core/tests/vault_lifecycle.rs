@@ -1662,3 +1662,29 @@ fn check_copy_tells_genuine_forged_and_foreign_copies_apart() {
     // The new session opens its own file again.
     assert_eq!(other.check_copy(&read(&store)), CopyCheck::Opens);
 }
+
+#[test]
+fn attachments_missing_in_a_copy_are_counted() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    let id = v.id().to_owned();
+    let item = v.save_item(login("A", "a", "secret-a", "")).unwrap();
+    let read = |store: &VaultStore| VaultFile::read(&store.vault_path(&id)).unwrap();
+    let without = read(&store);
+    let first = v.add_attachment(&item.id, "a.txt", b"a").unwrap();
+    v.add_attachment(&item.id, "b.txt", b"b").unwrap();
+    // The session's own file has them all; the older copy has none.
+    assert_eq!(v.attachments_missing_in_copy(&read(&store)), Some(0));
+    assert_eq!(v.attachments_missing_in_copy(&without), Some(2));
+    // A copy that has one of them (and one this session does not know).
+    let mut other = store.unlock(&id, PW).unwrap();
+    other.remove_attachment(&first.id).unwrap();
+    other.add_attachment(&item.id, "c.txt", b"c").unwrap();
+    assert_eq!(v.attachments_missing_in_copy(&read(&store)), Some(1));
+    // Forged or of another master password: unknown.
+    let mut forged = read(&store);
+    forged.payload.ciphertext = b64_encode(&[7u8; 64]);
+    assert_eq!(v.attachments_missing_in_copy(&forged), None);
+    other.change_master_password(PW, "new-pw").unwrap();
+    assert_eq!(v.attachments_missing_in_copy(&read(&store)), None);
+}

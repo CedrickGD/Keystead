@@ -1020,6 +1020,25 @@ impl UnlockedVault {
         }
     }
 
+    /// How many of this session's attachments the copy `file` does not
+    /// have (by attachment id) – what keeping that copy over this session's
+    /// state would drop. Decrypts the copy with this session's master KEK
+    /// (nothing is kept: the payload is wiped); `None` if that does not
+    /// open it (another master password, forged, damaged). Ids and counts
+    /// only, no secrets.
+    pub fn attachments_missing_in_copy(&self, file: &VaultFile) -> Option<usize> {
+        let key = file.unwrap_key_with_kek(&self.master_kek).ok()?;
+        let mut data = file.decrypt_payload(&key).ok()?;
+        let missing = self
+            .data
+            .attachments
+            .keys()
+            .filter(|id| !data.attachments.contains_key(*id))
+            .count();
+        wipe_data(&mut data);
+        Some(missing)
+    }
+
     /// The base64 nonce of the payload this session opened (or last wrote).
     /// Every write draws a fresh one, so together with the revision it tells
     /// two writes of the vault file apart. Not secret (it is in the file's

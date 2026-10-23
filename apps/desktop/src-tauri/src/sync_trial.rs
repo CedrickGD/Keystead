@@ -156,8 +156,6 @@ impl Trial {
 /// kept, so an unlock can go back to it; an unconfirmed one is just
 /// replaced (the copy kept before it stays). Call with the trial lock; the
 /// caller then writes the copy and records the sync base for its head.
-// The PC's mirror pull stores copies on trial too (stage 2b).
-#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn begin_trial(data_dir: &Path, id: &str, path: &Path, incoming: &VaultFile) -> AppResult<()> {
     let mut trial = Trial::load(data_dir, id);
     if trial.unconfirmed.is_none() {
@@ -186,8 +184,6 @@ pub fn begin_trial(data_dir: &Path, id: &str, path: &Path, incoming: &VaultFile)
 
 /// Remembers `version` of the folder's copy of `id` as rejected (best
 /// effort). Call with the trial lock.
-// The PC's mirror pull rejects forged copies too (stage 2b).
-#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn remember_rejected(data_dir: &Path, id: &str, version: FileVersion) {
     let mut trial = Trial::load(data_dir, id);
     trial.rejected = Some(version);
