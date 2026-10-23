@@ -1,36 +1,43 @@
 //! The phone's cloud-folder sync on top of [`crate::folder_sync`]: the
 //! Kotlin plugin `KeysteadFolderPlugin` (gen/android) as the
 //! [`RemoteFolder`], the commands `folder_status`, `link_folder`,
-//! `sync_now` and `unlink_folder`, and the automatic sync at start and
-//! whenever the app comes back to the foreground (at most every
-//! [`AUTO_SYNC_INTERVAL`]). See "Cloud-folder sync (phone)" in
-//! docs/ARCHITECTURE.md.
+//! `sync_now`, `unlink_folder`, `sync_conflicts` and
+//! `resolve_sync_conflict`, the automatic sync at start and whenever the
+//! app comes back to the foreground (at most every [`AUTO_SYNC_INTERVAL`]),
+//! and the push after an edit ([`push_soon`]). See "Cloud-folder sync
+//! (phone)" in docs/ARCHITECTURE.md.
 //!
 //! * The plugin is called from Rust only: no capability grants
 //!   `keystead-folder:*` to the webview, and Tauri checks the ACL for every
-//!   `plugin:` command – the page can neither pick, list nor copy anything
-//!   itself, and the copies only ever go to `<data>/sync/incoming` (the
-//!   plugin refuses any other target as well).
+//!   `plugin:` command – the page can neither pick, list, copy nor write
+//!   anything itself; copies only ever go to `<data>/sync/incoming` and
+//!   writes only come from `<data>/sync/outgoing` (the plugin refuses
+//!   anything else as well).
 //! * A plugin call blocks until Android's UI thread has run it (the
 //!   provider work itself runs on the plugin's own thread), so it is never
-//!   made on the UI thread: the commands run on the blocking pool and the
-//!   lifecycle hook spawns a thread.
-//! * One sync or link change at a time ([`SyncState::guard`]); the link is
-//!   cached in memory and written to `<data>/sync/link.json` after each
-//!   change. Every change is announced as `sync://status`
-//!   ([`FolderStatus`]); no result carries a secret.
+//!   made on the UI thread: the commands run on the blocking pool, the
+//!   lifecycle hook spawns a thread and the pushes run on their own.
+//! * One sync, push, resolution or link change at a time
+//!   ([`SyncState::guard`]); the link is cached in memory and written to
+//!   `<data>/sync/link.json` after each change. Every change is announced
+//!   as `sync://status` ([`FolderStatus`]), a change of the recorded
+//!   conflicts as `sync://conflict`; no result carries a secret.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use keystead_core::model::VaultInfo;
 use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
-use crate::folder_sync::{self, FolderStatus, LinkState};
+use crate::folder_sync::{self, FolderStatus, Keep, LinkState, RemoteFolder};
 use crate::state::{log, Core};
+use crate::sync_conflict::SyncConflict;
 
 /// The plugin's name (`plugin:keystead-folder|…` – never granted to the
 /// webview).
@@ -40,10 +47,14 @@ pub const EVENT_STATUS: &str = "sync://status";
 /// The automatic sync (start, back in the foreground) runs at most this
 /// often; `sync_now` always runs.
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// An edit is written to the folder this long after the last one (one
+/// write for a burst of edits); leaving the app writes at once.
+const PUSH_DELAY: Duration = Duration::from_secs(3);
 
 /// The sync's shared state (managed by Tauri).
 pub struct SyncState {
-    /// Held for a whole sync or link change: one at a time.
+    /// Held for a whole sync, push, resolution or link change: one at a
+    /// time.
     guard: Mutex<()>,
     /// The linked folder (a copy of `link.json`), `None` without one.
     link: Mutex<Option<LinkState>>,
@@ -51,6 +62,16 @@ pub struct SyncState {
     /// still while the phone sleeps).
     last_sync: Mutex<Option<(Instant, SystemTime)>>,
     syncing: AtomicBool,
+    /// The push thread's queue ([`push_soon`], [`flush_pushes`]).
+    pushes: Mutex<Option<Sender<PushRequest>>>,
+}
+
+/// What the push thread is asked to do.
+enum PushRequest {
+    /// Vault `id` changed (or opened): write it after [`PUSH_DELAY`].
+    Vault(String),
+    /// The app leaves the foreground: write what waits now.
+    Flush,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -83,15 +104,33 @@ pub fn plugin() -> TauriPlugin<Wry> {
         .build()
 }
 
-/// After the core exists (`gui::setup`): loads the link and runs the first
-/// automatic sync.
+/// After the core exists (`gui::setup`): loads the link (seeding the sync
+/// bases of a link of stage 2a once, `folder_sync::seed_bases`), starts the
+/// push thread and runs the first automatic sync.
 pub fn start(app: &AppHandle, core: &Core) {
+    let mut link = LinkState::load(&core.data_dir());
+    if let Some(link) = link.as_mut() {
+        if folder_sync::seed_bases(core, link) {
+            if let Err(e) = link.save(&core.data_dir()) {
+                log(format_args!("could not save the folder link: {}", e.code()));
+            }
+        }
+    }
+    let (tx, rx) = mpsc::channel();
     app.manage(SyncState {
         guard: Mutex::new(()),
-        link: Mutex::new(LinkState::load(&core.data_dir())),
+        link: Mutex::new(link),
         last_sync: Mutex::new(None),
         syncing: AtomicBool::new(false),
+        pushes: Mutex::new(Some(tx)),
     });
+    let push_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("keystead-sync".into())
+        .spawn(move || push_worker(&push_app, &rx));
+    if let Err(e) = spawned {
+        log(format_args!("could not start the push thread: {e}"));
+    }
     auto_sync(app);
 }
 
@@ -131,16 +170,121 @@ pub fn auto_sync(app: &AppHandle) {
     }
 }
 
-fn status(state: &SyncState) -> FolderStatus {
+/// `Core::request_mirror` on the phone: vault `vault_id` changed or was
+/// opened – it is synced (pushed, or its conflict checked) [`PUSH_DELAY`]
+/// after the last such request, on the push thread. Without a linked
+/// folder only the status is announced (the vault is `localOnly`).
+pub fn push_soon(app: &AppHandle, vault_id: &str) {
+    send_push(app, PushRequest::Vault(vault_id.to_owned()));
+}
+
+/// `WindowEvent::Suspended`: what waits for [`PUSH_DELAY`] is written now
+/// (the process may be frozen or ended any moment in the background).
+pub fn flush_pushes(app: &AppHandle) {
+    send_push(app, PushRequest::Flush);
+}
+
+fn send_push(app: &AppHandle, request: PushRequest) {
+    let Some(state) = app.try_state::<SyncState>() else {
+        return;
+    };
+    let pushes = lock(&state.pushes);
+    if let Some(tx) = pushes.as_ref() {
+        let _ = tx.send(request);
+    }
+}
+
+/// The push thread: collects the vaults to sync and runs them once no new
+/// request came for [`PUSH_DELAY`] (or at once on a flush).
+fn push_worker(app: &AppHandle, rx: &Receiver<PushRequest>) {
+    let mut pending: BTreeSet<String> = BTreeSet::new();
+    let mut due: Option<Instant> = None;
+    loop {
+        let request = match due {
+            None => match rx.recv() {
+                Ok(request) => Some(request),
+                Err(_) => return,
+            },
+            Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(request) => Some(request),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    run_pushes(app, std::mem::take(&mut pending));
+                    return;
+                }
+            },
+        };
+        match request {
+            Some(PushRequest::Vault(id)) => {
+                pending.insert(id);
+                due = Some(Instant::now() + PUSH_DELAY);
+            }
+            Some(PushRequest::Flush) if !pending.is_empty() => due = Some(Instant::now()),
+            Some(PushRequest::Flush) | None => {}
+        }
+        if due.is_some_and(|at| at <= Instant::now()) {
+            due = None;
+            run_pushes(app, std::mem::take(&mut pending));
+        }
+    }
+}
+
+/// Syncs each of `ids` (one at a time with every other sync).
+fn run_pushes(app: &AppHandle, ids: BTreeSet<String>) {
+    if ids.is_empty() {
+        return;
+    }
+    let (Some(state), Some(core)) = (app.try_state::<SyncState>(), app.try_state::<Arc<Core>>())
+    else {
+        return;
+    };
+    let _guard = lock(&state.guard);
+    let Some(mut link) = lock(&state.link).clone() else {
+        // No folder: the vaults are only on the phone (`localOnly`).
+        emit_status(app, &core, &state);
+        return;
+    };
+    state.syncing.store(true, Ordering::SeqCst);
+    emit_status(app, &core, &state);
+    let tree = link.tree_uri.clone();
+    for id in &ids {
+        let result = with_folder(app, &core, &tree, |folder| {
+            folder_sync::sync_vault(&core, folder, &mut link, id, now_ms())
+        });
+        if let Err(e) = result {
+            log(format_args!("push failed: {}", e.code()));
+            // The folder cannot be reached: the rest waits for the next
+            // sync.
+            link.last_error = Some(e.code());
+            break;
+        }
+    }
+    store_link(&core, &state, &link);
+    state.syncing.store(false, Ordering::SeqCst);
+    emit_status(app, &core, &state);
+}
+
+fn status(core: &Core, state: &SyncState) -> FolderStatus {
     let mut status = FolderStatus::of(lock(&state.link).as_ref());
     status.syncing = state.syncing.load(Ordering::SeqCst);
+    if !status.linked {
+        status.files = folder_sync::local_only_results(core);
+    }
     status
 }
 
-fn emit_status(app: &AppHandle, state: &SyncState) {
-    if let Err(e) = app.emit(EVENT_STATUS, status(state)) {
+fn emit_status(app: &AppHandle, core: &Core, state: &SyncState) {
+    if let Err(e) = app.emit(EVENT_STATUS, status(core, state)) {
         log(format_args!("could not emit {EVENT_STATUS}: {e}"));
     }
+}
+
+/// Writes `link` to `link.json` and the cache.
+fn store_link(core: &Core, state: &SyncState, link: &LinkState) {
+    if let Err(e) = link.save(&core.data_dir()) {
+        log(format_args!("could not save the folder link: {}", e.code()));
+    }
+    *lock(&state.link) = Some(link.clone());
 }
 
 /// Runs a sync of `link` (the caller holds the guard), stores and announces
@@ -152,35 +296,48 @@ fn sync_locked(
     link: &mut LinkState,
 ) -> AppResult<()> {
     state.syncing.store(true, Ordering::SeqCst);
-    emit_status(app, state);
-    let result = sync_with_plugin(app, core, link);
-    if let Err(e) = link.save(&core.data_dir()) {
-        log(format_args!("could not save the folder link: {}", e.code()));
+    emit_status(app, core, state);
+    let tree = link.tree_uri.clone();
+    let result = with_folder(app, core, &tree, |folder| {
+        folder_sync::sync_folder(core, folder, link, now_ms()).map(|_| ())
+    });
+    if let Err(e) = &result {
+        link.last_error = Some(e.code());
     }
-    *lock(&state.link) = Some(link.clone());
+    store_link(core, state, link);
     *lock(&state.last_sync) = Some((Instant::now(), SystemTime::now()));
     state.syncing.store(false, Ordering::SeqCst);
-    emit_status(app, state);
+    emit_status(app, core, state);
     result
 }
 
+/// Runs `f` with the folder `tree` through the plugin.
 #[cfg(target_os = "android")]
-fn sync_with_plugin(app: &AppHandle, core: &Core, link: &mut LinkState) -> AppResult<()> {
+fn with_folder<T>(
+    app: &AppHandle,
+    core: &Core,
+    tree: &str,
+    f: impl FnOnce(&dyn RemoteFolder) -> AppResult<T>,
+) -> AppResult<T> {
     let plugin = app
         .try_state::<android::FolderPlugin>()
         .ok_or_else(unsupported_platform)?;
     let folder = android::PluginFolder {
         plugin: &plugin,
-        tree: link.tree_uri.clone(),
+        tree: tree.to_owned(),
+        data_dir: core.data_dir(),
     };
-    folder_sync::sync_folder(core, &folder, link, now_ms()).map(|_| ())
+    f(&folder)
 }
 
 #[cfg(not(target_os = "android"))]
-fn sync_with_plugin(_app: &AppHandle, _core: &Core, link: &mut LinkState) -> AppResult<()> {
-    let e = unsupported_platform();
-    link.last_error = Some(e.code());
-    Err(e)
+fn with_folder<T>(
+    _app: &AppHandle,
+    _core: &Core,
+    _tree: &str,
+    _f: impl FnOnce(&dyn RemoteFolder) -> AppResult<T>,
+) -> AppResult<T> {
+    Err(unsupported_platform())
 }
 
 fn unsupported_platform() -> AppError {
@@ -196,17 +353,20 @@ fn sync_state(app: &AppHandle) -> AppResult<tauri::State<'_, SyncState>> {
 // Commands (phone only)
 // ---------------------------------------------------------------------------
 
-/// The linked folder and what the last sync found. No I/O on the folder.
+/// The linked folder and what the last sync found (without a folder: the
+/// phone's vaults, `localOnly`). No I/O on the folder.
 #[tauri::command]
 pub async fn folder_status(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatus> {
-    run(&core, false, move |_| Ok(status(&*sync_state(&app)?))).await
+    run(&core, false, move |c| Ok(status(c, &*sync_state(&app)?))).await
 }
 
 /// Opens the system's folder picker (the user picks the folder the PC
 /// keeps its copies in, e.g. through the Nextcloud or OneDrive app), keeps
-/// read access to it across restarts, links it in place of the previous
-/// one and syncs. `null` when the picker was closed without a choice. A
-/// failed first sync is not an error: the status says so (`lastError`).
+/// read and – where the provider grants it – write access to it across
+/// restarts, links it in place of the previous one and syncs. `null` when
+/// the picker was closed without a choice. A failed first sync is not an
+/// error: the status says so (`lastError`). Linking another folder forgets
+/// the recorded conflicts (they were about the old one).
 #[tauri::command]
 pub async fn link_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Option<FolderStatus>> {
     core.touch_activity();
@@ -220,14 +380,18 @@ pub async fn link_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Option<F
         let state = sync_state(&app)?;
         let _guard = lock(&state.guard);
         let previous = lock(&state.link).clone();
-        let mut link = LinkState::new(picked.tree, picked.name, now_ms());
+        let mut link = LinkState::new(picked.tree, picked.name, now_ms(), picked.writable);
         link.save(&c.data_dir())?;
         *lock(&state.link) = Some(link.clone());
         if let Some(old) = previous.filter(|old| old.tree_uri != link.tree_uri) {
             release_folder(&app, &old.tree_uri);
+            if let Err(e) = folder_sync::clear_conflicts(&c.data_dir()) {
+                log(format_args!("could not forget the conflicts: {}", e.code()));
+            }
+            folder_sync::emit_conflicts(c);
         }
         let _ = sync_locked(&app, c, &state, &mut link);
-        Ok(Some(status(&state)))
+        Ok(Some(status(c, &state)))
     })
     .await
 }
@@ -244,14 +408,14 @@ pub async fn sync_now(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatu
             .clone()
             .ok_or_else(|| AppError::unsupported("folder_not_linked"))?;
         sync_locked(&app, c, &state, &mut link)?;
-        Ok(status(&state))
+        Ok(status(c, &state))
     })
     .await
 }
 
-/// Forgets the folder: gives the read permission back and removes
-/// `link.json`. The vault copies stay on the phone (and stop being
-/// updated).
+/// Forgets the folder: gives the permission back and removes `link.json`
+/// and the recorded conflicts. The vault copies stay on the phone (and
+/// stop being synced).
 #[tauri::command]
 pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatus> {
     run(&core, true, move |c| {
@@ -262,8 +426,62 @@ pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Folder
         if let Some(old) = previous {
             release_folder(&app, &old.tree_uri);
         }
-        emit_status(&app, &state);
-        Ok(status(&state))
+        folder_sync::emit_conflicts(c);
+        emit_status(&app, c, &state);
+        Ok(status(c, &state))
+    })
+    .await
+}
+
+/// `sync_conflicts(pageVaultId)` → `SyncConflict[]`: the conflicts of the
+/// page's open vault that its keys checked (`locked` for another vault).
+/// No I/O on the folder.
+#[tauri::command]
+pub async fn sync_conflicts(
+    core: Shared<'_>,
+    page_vault_id: Option<String>,
+) -> CmdResult<Vec<SyncConflict>> {
+    run(&core, false, move |c| {
+        folder_sync::conflicts_for_page(c, page_vault_id.as_deref())
+    })
+    .await
+}
+
+/// `resolve_sync_conflict(vaultId, pageVaultId, keep: "local"|"remote")` →
+/// `VaultInfo`: keeps one side of the open vault's conflict
+/// (`folder_sync::resolve_conflict`); the other is kept as a conflict copy
+/// in `<data>/conflicts/`. Keeping the PC's copy may lock the vault
+/// (`keyChanged`: another master password).
+#[tauri::command]
+pub async fn resolve_sync_conflict(
+    app: AppHandle,
+    core: Shared<'_>,
+    vault_id: String,
+    page_vault_id: Option<String>,
+    keep: String,
+) -> CmdResult<VaultInfo> {
+    run(&core, true, move |c| {
+        let keep = Keep::parse(&keep)?;
+        let state = sync_state(&app)?;
+        let _guard = lock(&state.guard);
+        let mut link = lock(&state.link)
+            .clone()
+            .ok_or_else(|| AppError::unsupported("folder_not_linked"))?;
+        let tree = link.tree_uri.clone();
+        let result = with_folder(&app, c, &tree, |folder| {
+            folder_sync::resolve_conflict(
+                c,
+                folder,
+                &mut link,
+                &vault_id,
+                page_vault_id.as_deref(),
+                keep,
+                now_ms(),
+            )
+        });
+        store_link(c, &state, &link);
+        emit_status(&app, c, &state);
+        result
     })
     .await
 }
@@ -277,6 +495,8 @@ pub async fn unlink_folder(app: AppHandle, core: Shared<'_>) -> CmdResult<Folder
 struct Picked {
     tree: String,
     name: String,
+    /// The provider granted write access too.
+    writable: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -306,8 +526,11 @@ fn release_folder(app: &AppHandle, tree: &str) {
 
 #[cfg(target_os = "android")]
 mod android {
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
+    use keystead_core::format;
+    use keystead_core::sync;
     use serde::{Deserialize, Serialize};
     use tauri::plugin::mobile::PluginInvokeError;
     use tauri::plugin::PluginHandle;
@@ -331,11 +554,19 @@ mod android {
     struct PickedFolder {
         tree: String,
         name: String,
+        #[serde(default)]
+        writable: bool,
     }
 
     #[derive(Serialize)]
     struct TreeArgs<'a> {
         tree: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct Access {
+        read: bool,
+        write: bool,
     }
 
     #[derive(Serialize)]
@@ -363,6 +594,19 @@ mod android {
         size: u64,
     }
 
+    #[derive(Serialize)]
+    struct WriteArgs<'a> {
+        tree: &'a str,
+        name: &'a str,
+        source: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct Written {
+        uri: String,
+        size: u64,
+    }
+
     /// The plugin's rejection codes (`invoke.reject(message, code)`) as the
     /// app's error codes.
     fn plugin_error(e: PluginInvokeError) -> AppError {
@@ -372,6 +616,10 @@ mod android {
                 Some("too_large") => AppError::unsupported(folder_sync::TOO_LARGE),
                 Some("not_found") => AppError::Code("not_found".into()),
                 Some("picker_unavailable") => AppError::unsupported("folder_picker"),
+                Some("not_writable") => AppError::unsupported(folder_sync::NOT_WRITABLE),
+                Some("name_taken") => AppError::unsupported(folder_sync::NAME_TAKEN),
+                Some("write_unverified") => AppError::unsupported(folder_sync::WRITE_UNVERIFIED),
+                Some("invalid") => AppError::invalid("folder_write"),
                 _ => AppError::io(r.message.unwrap_or_else(|| "folder plugin".into())),
             },
             other => AppError::io(other),
@@ -389,6 +637,7 @@ mod android {
                 Ok(p) => Ok(Some(Picked {
                     tree: p.tree,
                     name: p.name,
+                    writable: p.writable,
                 })),
                 Err(PluginInvokeError::InvokeRejected(r))
                     if r.code.as_deref() == Some("cancelled") =>
@@ -411,6 +660,9 @@ mod android {
     pub struct PluginFolder<'a> {
         pub plugin: &'a FolderPlugin,
         pub tree: String,
+        /// The app's data directory: a push stages its file in
+        /// `<data>/sync/outgoing`.
+        pub data_dir: PathBuf,
     }
 
     impl RemoteFolder for PluginFolder<'_> {
@@ -450,6 +702,55 @@ mod android {
                 .run_mobile_plugin::<Copied>("copyFile", args)
                 .map(|c| c.size)
                 .map_err(plugin_error)
+        }
+
+        fn writable(&self) -> AppResult<bool> {
+            let access = self
+                .plugin
+                .0
+                .run_mobile_plugin::<Access>("folderAccess", TreeArgs { tree: &self.tree })
+                .map_err(plugin_error)?;
+            if !access.read {
+                return Err(folder_sync::access_lost());
+            }
+            Ok(access.write)
+        }
+
+        /// Stages `bytes` as `<data>/sync/outgoing/<name>` (the only place
+        /// the plugin reads from), lets the plugin write it into the folder
+        /// and removes it again.
+        fn write_vault(&self, name: &str, bytes: &[u8]) -> AppResult<RemoteEntry> {
+            if sync::vault_id_of_file_name(name).is_none() {
+                return Err(AppError::invalid("folder_write"));
+            }
+            let outgoing = folder_sync::outgoing_dir(&self.data_dir);
+            fs::create_dir_all(&outgoing)?;
+            let source = outgoing.join(name);
+            format::write_atomic(&source, bytes, false)?;
+            let written = source
+                .to_str()
+                .ok_or_else(|| AppError::io("outgoing path"))
+                .and_then(|source| {
+                    self.plugin
+                        .0
+                        .run_mobile_plugin::<Written>(
+                            "writeFile",
+                            WriteArgs {
+                                tree: &self.tree,
+                                name,
+                                source,
+                            },
+                        )
+                        .map_err(plugin_error)
+                });
+            let _ = fs::remove_file(&source);
+            let written = written?;
+            Ok(RemoteEntry {
+                name: name.to_owned(),
+                uri: written.uri,
+                dir: false,
+                size: Some(written.size),
+            })
         }
     }
 }

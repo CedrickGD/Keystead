@@ -3,10 +3,11 @@
 //! deployment, update checks and the website-icon fetcher.
 //!
 //! One builder for both: `#[cfg(desktop)]` marks the plugins, commands and
-//! services the phone does without; the phone registers the read commands
-//! plus its own – the cloud-folder sync and the fingerprint unlock (it is
-//! read-only for vault data in this stage, see `AppInfo.readOnly` and "On
-//! the phone" under "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
+//! services the phone does without; the phone registers the vault commands
+//! except the desktop-only ones (master password, recovery key, deleting a
+//! vault, attachment changes, import/export) plus its own – the
+//! cloud-folder sync and the fingerprint unlock (see "On the phone" under
+//! "Desktop backend ↔ frontend" in docs/ARCHITECTURE.md).
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -104,15 +105,14 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
     let builder = builder.plugin(tauri_plugin_biometric::init());
     builder
         .plugin(tauri_plugin_dialog::init())
-        // `#[cfg(desktop)]`: not registered on the phone (read-only, or the
-        // feature is desktop-only); `#[cfg(mobile)]`: the phone's own
-        // (cloud-folder sync). The unit test below keeps this list and the
-        // table in docs/ARCHITECTURE.md in step.
+        // `#[cfg(desktop)]`: not registered on the phone (the feature is
+        // desktop-only); `#[cfg(mobile)]`: the phone's own (cloud-folder
+        // sync, fingerprint unlock). The unit test below keeps this list and
+        // the table in docs/ARCHITECTURE.md in step.
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_vaults,
             commands::session_state,
-            #[cfg(desktop)]
             commands::create_vault,
             commands::unlock_vault,
             #[cfg(desktop)]
@@ -121,14 +121,11 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             commands::touch_activity,
             commands::list_items,
             commands::list_folders,
-            #[cfg(desktop)]
             commands::save_item,
             crate::secrets::reveal_secret,
             crate::secrets::copy_secret_field,
             crate::secrets::totp_for_item,
-            #[cfg(desktop)]
             crate::secrets::get_item_for_edit,
-            #[cfg(desktop)]
             crate::secrets::set_favorite,
             #[cfg(desktop)]
             crate::attachments::add_attachment,
@@ -137,44 +134,25 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(desktop)]
             crate::attachments::remove_attachment,
             crate::attachments::reveal_attachment,
-            #[cfg(desktop)]
             commands::trash_item,
-            #[cfg(desktop)]
             commands::restore_item,
-            #[cfg(desktop)]
             commands::delete_item,
-            #[cfg(desktop)]
             commands::empty_trash,
-            #[cfg(desktop)]
             commands::save_folder,
-            #[cfg(desktop)]
             commands::delete_folder,
-            #[cfg(desktop)]
             commands::rename_tag,
-            #[cfg(desktop)]
             commands::delete_tag,
-            #[cfg(desktop)]
             crate::generator::generate_password,
-            #[cfg(desktop)]
             crate::generator::remember_generated,
-            #[cfg(desktop)]
             crate::generator::generator_history,
-            #[cfg(desktop)]
             crate::generator::reveal_generated,
-            #[cfg(desktop)]
             crate::generator::copy_generated,
-            #[cfg(desktop)]
             crate::generator::clear_generator_history,
-            #[cfg(desktop)]
             crate::generator::generator_presets,
-            #[cfg(desktop)]
             crate::generator::save_generator_preset,
-            #[cfg(desktop)]
             crate::generator::delete_generator_preset,
-            #[cfg(desktop)]
             crate::generator::set_default_generator_preset,
             commands::password_strength,
-            #[cfg(desktop)]
             commands::totp_code,
             commands::copy_text,
             commands::health_report,
@@ -184,7 +162,6 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             commands::create_recovery_key,
             #[cfg(desktop)]
             commands::remove_recovery_key,
-            #[cfg(desktop)]
             commands::rename_vault,
             #[cfg(desktop)]
             commands::delete_vault,
@@ -246,6 +223,10 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(mobile)]
             crate::mobile::sync::unlink_folder,
             #[cfg(mobile)]
+            crate::mobile::sync::sync_conflicts,
+            #[cfg(mobile)]
+            crate::mobile::sync::resolve_sync_conflict,
+            #[cfg(mobile)]
             crate::mobile::biometric::device_unlock_status,
             #[cfg(mobile)]
             crate::mobile::biometric::enable_device_unlock,
@@ -264,8 +245,9 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
 
 /// Desktop: closing the window hides it when "minimize to tray" is on.
 /// Phone: `Suspended`/`Resumed` (the activity's `onPause`/`onResume`)
-/// drive the background lock in the monitor and the UI's
-/// `app://suspended`.
+/// drive the background lock in the monitor, the UI's `app://suspended`
+/// and the cloud-folder sync (pushes flushed on `Suspended`, a sync on
+/// `Resumed`).
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     if window.label() != MAIN_WINDOW {
         return;
@@ -292,6 +274,9 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 // monitor's clock.
                 core.emit_suspended();
                 core.signal_monitor(MonitorSignal::Background);
+                // Edits waiting for their push go to the folder now (the
+                // process may be frozen or ended in the background).
+                crate::mobile::sync::flush_pushes(window.app_handle());
             }
             WindowEvent::Resumed => {
                 core.signal_monitor(MonitorSignal::Foreground);
@@ -648,9 +633,12 @@ mod tests {
             on_webview_create.contains("onBackPressedDispatcher.addCallback(this, backCallback)")
         );
 
-        // The cloud-folder plugin: read access only (persisted, given back on
-        // unlink), copies only into the app's sync/incoming folder, the
-        // provider work off the UI thread.
+        // The cloud-folder plugin: read and write access (persisted, given
+        // back on unlink; read only where the provider refuses write),
+        // copies only into the app's sync/incoming folder, writes only of
+        // `<id>.keystead` files staged in sync/outgoing – truncated and
+        // rewritten or created, never deleted or renamed, never a blob –,
+        // the provider work off the UI thread.
         let folder = include_str!(
             "../gen/android/app/src/main/java/io/github/cedrickgd/keystead/KeysteadFolderPlugin.kt"
         );
@@ -658,27 +646,45 @@ mod tests {
             "class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity)"
         ));
         assert!(folder.contains("Intent.ACTION_OPEN_DOCUMENT_TREE"));
+        assert!(folder.contains("takePersistableUriPermission(tree, READ_WRITE)"));
         assert!(folder
             .contains("takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)"));
+        assert!(folder.contains(
+            "Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION"
+        ));
         assert!(folder.contains("releasePersistableUriPermission"));
-        assert!(
-            !folder.contains("FLAG_GRANT_WRITE_URI_PERMISSION"),
-            "read-only"
-        );
-        for write in [
-            "openOutputStream",
-            "createDocument",
+        // Writes: an existing file truncated and rewritten ("wt", synced to
+        // disk), a missing one created under exactly its name.
+        assert!(folder.contains(r#"openFileDescriptor(target, "wt")"#));
+        assert!(folder.contains("fd.sync()"));
+        assert!(folder.contains("DocumentsContract.createDocument("));
+        assert!(folder.contains(r#""name_taken""#));
+        assert!(folder.contains(r#""write_unverified""#));
+        assert!(folder.contains("VAULT_FILE_NAME.matches(args.name)"));
+        assert!(folder.contains("needWrite = true"));
+        for never in [
             "deleteDocument",
             "renameDocument",
+            "moveDocument",
+            "openOutputStream",
         ] {
             assert!(
-                !folder.contains(write),
-                "{write}: the folder is never written"
+                !folder.contains(never),
+                "{never}: a file of the folder is never removed, renamed or moved"
             );
         }
+        assert!(!folder.contains(".attachments"), "no blob is ever written");
         assert!(folder.contains(r#"incoming.name != "incoming""#));
+        assert!(folder.contains(r#"outgoing.name != "outgoing""#));
         assert!(folder.contains("Executors.newSingleThreadExecutor()"));
-        for command in ["pickFolder", "releaseFolder", "listChildren", "copyFile"] {
+        for command in [
+            "pickFolder",
+            "releaseFolder",
+            "folderAccess",
+            "listChildren",
+            "copyFile",
+            "writeFile",
+        ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),
                 "{command}"
@@ -859,8 +865,8 @@ mod tests {
         // Every command is documented, and nothing undocumented is
         // registered on either side.
         assert_eq!(registered, table);
-        // The phone registers exactly the documented subset: the read
-        // commands plus its own (the cloud-folder sync).
+        // The phone registers exactly the documented subset: the vault
+        // commands without the desktop-only ones, plus its own.
         let phone: BTreeSet<String> = entries
             .iter()
             .filter(|(_, gate)| *gate != Registered::DesktopOnly)
@@ -880,23 +886,42 @@ mod tests {
                 "link_folder",
                 "sync_now",
                 "unlink_folder",
+                "sync_conflicts",
+                "resolve_sync_conflict",
                 "device_unlock_status",
                 "enable_device_unlock",
                 "disable_device_unlock",
                 "unlock_with_device",
             ])
         );
-        // Nothing that writes the vault, opens a dialog path or needs the
-        // network is on the phone.
+        // The phone edits items, folders, tags and the vault's name and
+        // creates vaults ...
         for name in [
+            "create_vault",
             "save_item",
             "set_favorite",
-            "create_vault",
+            "trash_item",
+            "delete_item",
+            "rename_vault",
+            "generate_password",
+            "totp_code",
+        ] {
+            assert!(phone.contains(name), "{name} must be on the phone");
+        }
+        // ... but never changes what opens a vault, deletes one, changes
+        // attachments, opens a file dialog or needs the network.
+        for name in [
+            "change_master_password",
+            "create_recovery_key",
+            "remove_recovery_key",
             "unlock_with_recovery",
             "delete_vault",
             "import_data",
+            "analyze_import",
             "export_data",
             "add_attachment",
+            "save_attachment",
+            "remove_attachment",
             "check_update",
             "check_pwned_vault",
             "browser_status",

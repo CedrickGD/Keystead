@@ -74,7 +74,7 @@ links through `tauri-plugin-opener` (both plugins are called from Rust only,
 the webview gets no permission for them, and the opener's injected click
 hook is off) –, `src/mobile/sync.rs` (the cloud-folder sync: the binding of
 the Kotlin plugin `KeysteadFolderPlugin.kt` in `gen/android`, its commands,
-the automatic sync) and `src/mobile/biometric.rs` (fingerprint unlock on
+the automatic sync and the push after an edit) and `src/mobile/biometric.rs` (fingerprint unlock on
 `tauri-plugin-biometric`); their platform-neutral engines `folder_sync.rs`
 and `device_unlock.rs` are compiled on the desktop only for their unit
 tests. What only the Android build has – the plugin bindings, the biometric
@@ -97,12 +97,16 @@ only and Cargo has no instruction for a library's unit tests.
 * **Phone** – the Android/iOS shell loads the library and calls
   `keystead_lib::run()` (`#[tauri::mobile_entry_point]`), which builds the
   same Tauri app without the desktop-only plugins, services and commands;
-  the binary has no role there (`fn main() {}`). The phone is **read-only**
-  for vault data in this stage: the read commands plus the phone's own are
-  registered – the cloud-folder sync (it stores the folder's vault copies
-  and blobs, `sync/link.json` and `sync/trial/`) and the fingerprint unlock
-  (it stores the device-unlock blobs and `Settings.deviceUnlock`) –, see
-  "On the phone" under "Desktop backend ↔ frontend". Everything
+  the binary has no role there (`fn main() {}`). Since stage 2b the phone
+  **edits** vaults (items, folders, tags, the generator, a vault's name,
+  new vaults); desktop-only stay the master password, recovery keys,
+  deleting a vault, attachment changes and import/export. The phone's own
+  commands are the cloud-folder sync (two-way: it stores the folder's vault
+  copies and blobs, writes the phone's vault files back, keeps
+  `sync/link.json`, `sync/trial/`, `sync/base/`, `sync/conflicts.json` and
+  `conflicts/`) and the fingerprint unlock (it stores the device-unlock
+  blobs and `Settings.deviceUnlock`) –, see "On the phone" under "Desktop
+  backend ↔ frontend". Everything
   Android-specific – the committed Android
   project, its hardening, lifecycle, clipboard, build, CI and signing – is
   in "Mobile (Android)".
@@ -176,25 +180,29 @@ returned code: `0` success, `1` error, `2` invalid usage.
 ## Mobile (Android)
 
 Block 5 (design and the owner's decisions: `docs/BLOCK5-DESIGN.md`).
-**Stages 1a, 1b and 2a – the state described here – are a read-only, offline
-Android app**: the same Rust crate and the same React UI as the desktop,
+**Stages 1a, 1b, 2a and the phone engine of 2b – the state described here –
+are an offline Android app that edits its vaults and syncs them both ways
+through the user's cloud folder** (stage 2b's PC side, UI and docs are still
+in progress, see `docs/BLOCK5-DESIGN.md`): the same Rust crate and the same
+React UI as the desktop,
 built by CI as one APK (`Keystead-<version>-android.apk`, arm64, Android 10 /
 API 29 and later) that every release carries. It opens the vaults in its own
 app folder – lists, searches, reveals and copies, shows TOTP codes, image
 previews of attachments and the security report – and locks when it stays
 in the background. The vaults reach the phone through the user's **own
 cloud folder**: the PC keeps encrypted copies there, the phone links that
-folder and copies them in – one way, it never writes there (creating or
-editing a vault on the phone is a write and not registered).
+folder and copies them in, and writes the vault files it changed back
+(never blobs; nothing in the folder is ever deleted or renamed).
 
 | Part | Stage | In short | Contract |
 |---|---|---|---|
-| Read-only app | 1a (E4) | only the read commands and the phone's own are registered; `AppInfo.readOnly` | "Commands" below; "On the phone" under "Desktop backend ↔ frontend" |
+| Read-only app | 1a (E4) | only the read commands and the phone's own were registered; since 2b the phone edits (`AppInfo.readOnly` false, `attachmentsReadOnly` true) | "Commands" below; "On the phone" under "Desktop backend ↔ frontend" |
 | Background lock, clipboard | 1a (E3) | lock after `lockInBackgroundSeconds` away (default 60 s); copied secrets cleared without reading the clipboard | "Lifecycle", "Clipboard" under "Android project"; "Background lock (phone)" |
 | Android project, APK | 1a (E1, E2, E8–E10) | committed `gen/android`, no permission, no backup, `FLAG_SECURE`, back gesture; signed APK and gates in CI | "Android project", "Build, CI and signing" |
 | Phone layout | 1b | one column, drawer, detail stacked over the list, back gesture, read-only and desktop-only gates | "Phone layout" |
 | Fingerprint unlock | 1b (E5) | opt-in, default off; the master KEK sealed by the Android Keystore, no PIN/pattern fallback | "Fingerprint unlock (phone)" |
-| Cloud-folder link and copy-in | 2a | the phone links one folder (read permission only) and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
+| Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
+| Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
 | Desktop mirror | 2a (E7) | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder | "Cloud-folder mirror (desktop) and phone link" |
 | No network | 1a–2a (E6) | no `INTERNET` permission, no update check | "No network, and why" below |
 
@@ -236,24 +244,30 @@ editing a vault on the phone is a write and not registered).
   (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
   and `settings.json`, plus `sync/link.json` (the linked cloud folder,
   below), `sync/trial/` (copies on trial, below), `sync/base/` (sync
-  bases, see "Data locations") and
+  bases, see "Data locations"), `sync/conflicts.json` (recorded conflicts),
+  `sync/outgoing/` (a vault file only while it is written to the folder),
+  `conflicts/` (conflict copies) and
   `device-unlock/<vault-id>.json` (fingerprint unlock, below);
   nothing of the bridge (`bridge-clients.json`), no
   `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
   "Data locations"). Other apps cannot read the folder, Android's cloud
   backup and device-to-device transfer skip it (manifest below), and
-  **uninstalling the app deletes it** – in this stage the phone only ever
-  holds copies of vaults made elsewhere (the linked folder is untouched).
-* **Commands**: only the read commands and the phone's own (`#[cfg(mobile)]`:
-  `folder_status`, `link_folder`, `sync_now`, `unlink_folder` for the
+  **uninstalling the app deletes it** – a vault made on the phone that was
+  never written to a linked folder (`localOnly`) is lost with it.
+* **Commands**: the vault commands without the desktop-only ones (master
+  password, recovery keys, `delete_vault`, attachment changes,
+  import/export, the network features) and the phone's own
+  (`#[cfg(mobile)]`: `folder_status`, `link_folder`, `sync_now`,
+  `unlink_folder`, `sync_conflicts`, `resolve_sync_conflict` for the
   cloud-folder sync; `device_unlock_status`, `enable_device_unlock`,
   `disable_device_unlock`, `unlock_with_device` for the fingerprint) are
   registered ("**On the phone**" under "Desktop backend ↔ frontend", where
   the table has their arguments and answers; a unit test in `gui.rs` keeps
   the lists and that paragraph in step); every other command is unknown to
   the phone's invoke handler. `app_info` answers `platform: "android"`,
-  `readOnly: true`, `extensionId: null`, `portable: false`; the UI hides
-  every editing control on `readOnly` (part of the phone layout).
+  `readOnly: false`, `attachmentsReadOnly: true`, `extensionId: null`,
+  `portable: false`. (The phone UI still gates editing on `readOnly`/the
+  platform until its stage-2b package.)
 * **Settings** (see "Settings"): the phone-only `lockInBackgroundSeconds`
   (default 60, `0` = at once, `null` = never; Settings → "Sperren im
   Hintergrund": Sofort / 1 min / 5 min / Nie, a row shown only on
@@ -279,7 +293,20 @@ editing a vault on the phone is a write and not registered).
     is no error but its `outcome` in `files`; `unsupported:sync_copy_rejected`
     (an unlock – password or fingerprint – found a synced copy forged or
     damaged and there was no earlier copy to go back to: removed, see
-    "Copies on trial");
+    "Copies on trial"); stage 2b's write-back and conflicts:
+    `unsupported:sync_write_unverified` (a vault file written to the folder
+    did not read back equal, twice – per file as `failed`),
+    `unsupported:sync_name_taken` (the provider would not create
+    `<id>.keystead` under that name), `unsupported:sync_not_writable` (no
+    write permission – per file reported as `notWritable`),
+    `unsupported:sync_local_changed` (per file: the phone saved while the
+    folder's copy was about to replace its copy; the push after it looks
+    again), `unsupported:sync_conflict_password` (`resolve_sync_conflict`
+    with `keep: "local"` for a folder copy with another master password),
+    `unsupported:sync_conflict_changed` (either copy changed since the
+    conflict was recorded – it was synced again; fetch `sync_conflicts`
+    anew), `invalid_input:keep`, `invalid_input:folder_write` (the plugin
+    refused a write's name or source);
   * fingerprint – `unsupported:device_unlock_unavailable` /
     `device_unlock_not_enrolled` (no prompt shown), `device_unlock_cancelled`,
     `device_unlock_failed` (finger not recognised), `device_unlock_lockout`,
@@ -299,18 +326,21 @@ editing a vault on the phone is a write and not registered).
 * **Lifecycle, background lock, clipboard**: see the Android project
   below and "Background lock (phone)" under "Desktop backend behaviour
   details".
-* **Cloud-folder sync (phone)** – stage 2a, copy-in only
+* **Cloud-folder sync (phone)** – stage 2a copy-in, two-way since stage 2b
   (`src-tauri/src/folder_sync.rs`: the platform-neutral engine, unit-tested
   on the desktop host; `src/mobile/sync.rs`: the Kotlin plugin binding, the
-  commands, the automatic sync; `KeysteadFolderPlugin.kt` in the Android
-  project, below):
+  commands, the automatic sync and the push; `KeysteadFolderPlugin.kt` in
+  the Android project, below):
   * **The folder**: the user picks one folder in the system's folder picker
     (`ACTION_OPEN_DOCUMENT_TREE`) – the Nextcloud or OneDrive app offers its
     folders there as a `DocumentsProvider` (OneDrive's support is not
     verified: the emulator image has no Play Store). The app keeps a
-    **persisted read permission** (`takePersistableUriPermission`, read
-    only; `unlink_folder` gives it back, linking another folder gives the
-    old one back) – no storage permission, no network. The PC keeps one copy
+    **persisted read and write permission** (`takePersistableUriPermission`;
+    a provider that refuses write gives a read-only link, `writable: false`;
+    `unlink_folder` gives it back, linking another folder gives the old one
+    back) – no storage permission, no network. A link of stage 2a holds read
+    permission only: the phone reports its edits as `notWritable` until the
+    folder is picked again. The PC keeps one copy
     per vault there: `<id>.keystead` and, with attachments,
     `<id>.keystead.attachments/<attachment id>.bin` (the data folder's
     layout; never `.bak`, `.lock` or temporary files – the PC side writes
@@ -325,16 +355,69 @@ editing a vault on the phone is a write and not registered).
     "too large"), copied by the plugin into `<data>/sync/incoming/` (the
     only target it accepts; emptied before and after every sync), parsed and
     validated (`VaultFile::parse`, KDF limits included) before anything is
-    written; then `keystead_core::sync::decide_copy_in` (pure, unit-tested)
-    against the phone's copy `<data>/vaults/<id>.keystead`: no copy →
-    **import** (a new vault on the phone), higher revision → **update**
-    (replaced atomically with `format::write_atomic`, no `.bak` – an older
-    copy would still open with an old master password; only the copy on
-    trial below, until the new one opened), equal → nothing,
-    lower → the phone keeps its copy and reports "the PC's copy is older" (a
-    rollback is never copied in, nothing is ever written back), another
-    vault at that place (other id) → never touched. A damaged copy on the
-    phone is replaced. **Attachments**: the vault file is read first, then
+    written; then `keystead_core::sync::decide` (pure, unit-tested) on the
+    heads of the phone's copy `<data>/vaults/<id>.keystead` and the folder's
+    (`sync::head_of`: revision and a digest of the encrypted parts) and the
+    vault's **sync base** for this folder (`sync/base/<id>.json`: the last
+    head both agreed on – recorded for every copy the phone stores or
+    pushes, and for equal copies): no copy → **import** (a new vault on the
+    phone); only the folder's copy changed → **update** (replaced
+    atomically with `format::write_atomic`, no `.bak` – an older copy would
+    still open with an old master password; only the copy on trial below,
+    until the new one opened; never over an edit the phone saved since the
+    sync read its copy, `sync_local_changed`); only the phone's changed →
+    **push** (below); the same write → nothing (the base is recorded);
+    both changed, or no base and different copies → **conflict** (below;
+    nothing is written anywhere); the folder's copy below the base while
+    the phone's is unchanged → the phone keeps its copy and reports "the
+    PC's copy is older" (a rollback is never copied in); another vault at
+    that place (other id) → never touched. The same write with another
+    revision (a header changed by hand) is pulled when raised (it then
+    fails the checks below) and "older" when lowered. A copy on trial is
+    judged by the trial rules below instead (it has no edits of the
+    phone's). A damaged copy on the phone is replaced.
+  * **Push** (`folder_sync::sync_vault` for one vault, from
+    `Core::request_mirror` – every change of a vault and every unlock –
+    through `mobile::sync::push_soon`: 3 s after the last change, on the
+    push thread, at once when the app leaves the foreground; and in every
+    full sync): the folder's copy is read and compared first; then the
+    phone's vault file goes through `<data>/sync/outgoing/<id>.keystead` to
+    the plugin's `writeFile`, which truncates and rewrites the folder's file
+    or creates it under exactly that name. The sync reads the written file
+    back and compares the bytes; a mismatch is written once more, then
+    reported (`failed`, `unsupported:sync_write_unverified`); only a
+    verified write becomes the base (`pushed`). A vault the phone made and
+    never synced is written as a new file once a writable folder is linked
+    (`localOnly` without a folder, `notWritable` with a read-only one). A
+    vault whose folder copy disappeared after it was synced (it has a base,
+    or the last results show the folder had it) is **not** written again
+    (`missing`). Only vault files are written – never blobs (attachments
+    stay view-only on the phone; an edit keeps the PC's: the payload still
+    references them and their blobs stay in the folder) – and no file of
+    the folder is ever deleted, renamed or moved.
+  * **Conflicts** (`<data>/sync/conflicts.json`: per vault the
+    `SyncConflict` fields plus both copies' digests and `verified`;
+    camelCase, no secrets, read leniently; removed with the link): recorded
+    whenever a sync finds one. With the vault open its keys check the
+    folder's copy first (`check_copy`): forged → rejected like any forged
+    copy, no conflict; otherwise `verified`. Only verified conflicts of the
+    page's open vault are shown (`sync_conflicts`, `sync://conflict` on
+    every change of the list) – a conflict found while locked is checked by
+    the sync after the unlock. A later sync that finds both sides agreeing
+    removes it. `resolve_sync_conflict` keeps one side; the other side's
+    vault file is kept as a conflict copy in `<data>/conflicts/` (never in
+    the folder). **Keep the PC's** (`remote`): its blobs are copied, its
+    file replaces the phone's (the base becomes its head) and the open
+    session is replaced by one of the new copy – another master password:
+    the copy goes on trial and the vault locks (`keyChanged`). **Keep the
+    phone's** (`local`): refused when the folder's copy has another master
+    password (`passwordChanged`; the side with the old password never
+    wins); otherwise the open vault is saved again as a revision above the
+    folder's (`UnlockedVault::save_superseding`), the folder's head becomes
+    the base and the vault is pushed. Both refuse when either copy changed
+    since the conflict was recorded (`sync_conflict_changed`, synced again)
+    or the folder's copy turns out forged (`sync_copy_rejected`). "Later"
+    is nothing: the conflict stays. **Attachments**: the vault file is read first, then
     its blob folder listed (every blob that copy references is already
     there; the folder's top level was listed before the vault file was
     read, so for a copy with attachments – format version 2 – a blob folder
@@ -346,6 +429,10 @@ editing a vault on the phone is a write and not registered).
     Blobs the vault no longer references are left to the core's sweep (on
     unlock, and after a reload of the open vault: an hour after they
     arrived). Vaults the folder no longer has stay on the phone ("missing").
+    **2a → 2b**: at the first start of 2b the bases are seeded once per link
+    (`folder_sync::seed_bases`, `LinkState.basesSeeded`): a vault the last
+    2a sync found imported, updated or up to date at the revision the
+    phone's copy still has gets that copy's head as its base.
   * **Copies on trial** (`sync_trial::Trial` in `src-tauri/src/sync_trial.rs`
     – shared by both platforms since stage 2b –, `<data>/sync/trial/`): the
     folder's plain header – the revision included – is not authenticated
@@ -402,21 +489,30 @@ editing a vault on the phone is a write and not registered).
     then explains a "wrong password".
   * **When**: at start, when the app comes back to the foreground
     (`Resumed`) – at most every 60 s, on a thread of its own –, after
-    linking and on "Jetzt synchronisieren" (`sync_now`, always). One sync
-    at a time. Never in the background without the app (no service, no
-    job). Every change of the state is announced as `sync://status`.
+    linking and on "Jetzt synchronisieren" (`sync_now`, always); one vault
+    3 s after each change and after each unlock (the push, above), at once
+    on `Suspended`. One sync, push, resolution or link change at a time.
+    Never in the background without the app (no service, no job). Every
+    change of the state is announced as `sync://status`.
   * **State** `<data>/sync/link.json` (`LinkState`, camelCase, written
     atomically, read leniently – a damaged file counts as "not linked"):
-    `treeUri`, `folderName`, `linkedAt`, `lastSyncAt` (the last sync that
+    `treeUri`, `folderName`, `linkedAt`, `writable` (the app holds write
+    permission – as of the last sync; `false` for a 2a link),
+    `basesSeeded` (above), `lastSyncAt` (the last sync that
     read the folder), `lastError` (the code of the last failed attempt –
     `unsupported:folder_access_lost` when the permission was revoked, the
     cloud app removed or signed out, or the folder deleted or moved: pick it
     again), `files` (per vault file: `fileName`, `vaultId`, `vaultName`,
     `revision`, `outcome` – `imported`, `updated`, `upToDate`, `pcOlder`,
     `otherVault`, `misnamed`, `unreadable`, `tooLarge`, `failed`,
-    `missing`, `rejected` –, `error`, `attachmentsCopied`, `attachmentsFailed`,
-    `passwordChanged`). No secrets anywhere; the commands answer this
-    status (`FolderStatus`).
+    `missing`, `rejected`, and since 2b `pushed` (the phone's copy was
+    written), `conflict` (both changed; nothing written), `notWritable`
+    (the phone's copy is newer or new, the link is read-only) and
+    `localOnly` (no folder linked: in `FolderStatus.files` the phone's
+    vaults get it) –, `error`, `attachmentsCopied`, `attachmentsFailed`,
+    `passwordChanged` – for a `conflict`: the folder's copy has another
+    master password). No secrets anywhere; the commands answer this
+    status (`FolderStatus`, plus `writable`).
   * **UI**: the welcome screen without a vault explains the way (on the PC:
     "Kopie im Cloud-Ordner aktuell halten" with the Nextcloud/OneDrive
     folder; on the phone: that same folder through the cloud app) and offers
@@ -700,19 +796,35 @@ guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
   `register_android_plugin("io.github.cedrickgd.keystead",
   "KeysteadFolderPlugin")`; the tauri-android consumer ProGuard rules keep
   `@TauriPlugin`/`@InvokeArg` classes for R8): `pickFolder` (tree picker,
-  `EXTRA_INITIAL_URI` = the linked folder, persisted **read** permission →
-  `{ tree, name }`; closed → code `cancelled`), `releaseFolder`,
+  `EXTRA_INITIAL_URI` = the linked folder, persisted **read and write**
+  permission – read only when the provider refuses write (a
+  `SecurityException`) → `{ tree, name, writable }`; closed → code
+  `cancelled`), `releaseFolder` (gives back what is held),
+  `folderAccess(tree)` (`{ read, write }`: the persisted permissions held
+  now; the sync asks before each run),
   `listChildren(tree, parent?)` (`{ entries: [{ name, uri, dir, size }] }`
   – document URIs that must lie inside the granted tree), `copyFile(tree,
   uri, target, maxBytes)` (streams the document into a **new** file, which
   must be in `<app data>/sync/incoming/`; more than `maxBytes` → code
-  `too_large`, the file is removed; fsync before the answer). Rejection
-  codes: `access_lost` (no persisted permission, `SecurityException`, a
-  provider that no longer knows the URI), `not_found`, `too_large`,
-  `picker_unavailable`, `io`. Provider calls run on the plugin's own
-  thread (a cloud app may download first; never on the UI thread). Read
-  only: no write grant, no `openOutputStream`/`createDocument` on the
-  folder (guard test in `gui.rs`). No capability grants
+  `too_large`, the file is removed; fsync before the answer),
+  `writeFile(tree, name, source)` (needs the write permission, else
+  `not_writable`; `name` must be `<id>.keystead` and `source` exactly
+  `<app data>/sync/outgoing/<name>`, else `invalid`; the top-level file of
+  that name is opened with `openFileDescriptor(…, "wt")` and rewritten, or
+  – when the provider lists none – created with
+  `DocumentsContract.createDocument` and its display name checked: a
+  provider that picked another name (`… (1).keystead`) → `name_taken`,
+  nothing written into that new empty file, which stays (reported as
+  `misnamed`); `fd.sync()` where the descriptor allows it; a size the
+  provider reports that differs → `write_unverified`; answers
+  `{ uri, size }`). Rejection codes: `access_lost` (no persisted
+  permission, `SecurityException`, a provider that no longer knows the
+  URI), `not_found`, `too_large`, `picker_unavailable`, `not_writable`,
+  `name_taken`, `write_unverified`, `invalid`, `io`. Provider calls run on
+  the plugin's own thread (a cloud app may download or upload first; never
+  on the UI thread). Never `deleteDocument`, `renameDocument`,
+  `moveDocument` or `openOutputStream`, never a blob (guard test in
+  `gui.rs`). No capability grants
   `keystead-folder:*`, and Tauri checks the ACL for every `plugin:`
   command – the webview cannot call it.
 * `app/build.gradle.kts`: release signing from `gen/android/keystore.
@@ -1033,7 +1145,10 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
 * Settings: `<data_dir>/settings.json` (non-secret, see `Settings` below).
 * Phone only: `<data_dir>/sync/link.json` – the linked cloud folder and the
   last sync's results (no secrets, see "Cloud-folder sync (phone)");
-  `<data_dir>/sync/incoming/` holds a file only while the sync copies it in;
+  `<data_dir>/sync/incoming/` holds a file only while the sync copies it in,
+  `<data_dir>/sync/outgoing/` only while a push hands a vault file to the
+  folder plugin; `<data_dir>/sync/conflicts.json` – the recorded conflicts
+  of the two-way sync (no secrets, see "Conflicts" there);
   `<data_dir>/sync/trial/<vault-id>.json` (+ `<vault-id>.keystead`, the copy
   that opened before) – a synced copy that has not opened yet, or a
   rejected write of the folder's copy ("Copies on trial");
@@ -1046,8 +1161,8 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   `folder`, `syncedAt`; camelCase, no secrets, atomic write, read
   leniently – unreadable is none): the last head this side wrote to the
   folder or took from it; a base recorded for another `folder` (the phone's
-  tree URI, the PC's mirror folder) counts as none. The phone's copy-in
-  records it for every copy it stores.
+  tree URI, the PC's mirror folder) counts as none. The phone records it
+  for every copy it stores or pushes and for equal copies.
   `<data_dir>/conflicts/<vault-id>.keystead.conflict-<YYYYMMDD-HHMMSS>`
   (UTC; `-2`, `-3`, … for another copy in the same second) – the losing
   side's vault file of a resolved sync conflict, never in the cloud folder
@@ -1794,7 +1909,7 @@ history. The bridge's own writes are not affected.
 
 | Command | Args | Returns |
 |---|---|---|
-| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean }` – `extensionId` is `null` and `portable` `false` on the phone (no browser integration, no portable mode there); `readOnly` = the vault cannot be changed from this app (the phone in this stage): the UI hides every editing control |
+| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean, attachmentsReadOnly: boolean }` – `extensionId` is `null` and `portable` `false` on the phone (no browser integration, no portable mode there); `readOnly` = the vault cannot be changed from this app (`false` on both platforms since stage 2b); `attachmentsReadOnly` = attachments cannot be added, saved or removed (`true` on the phone: previews only) |
 | `list_vaults` | – | `VaultInfo[]` |
 | `session_state` | – | `SessionState { unlocked: boolean, vault: VaultInfo \| null }` |
 | `create_vault` | `name, masterPassword` | `VaultInfo` (and unlocks it) |
@@ -1865,16 +1980,18 @@ history. The bridge's own writes are not affected.
 | `check_update` | – | `UpdateInfo` – checks the configured channel now; network/HTTP errors → `io:<detail>` |
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
-| `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, syncing, folderName, linkedAt, lastSyncAt, lastError, files }` – the linked folder and what the last sync found (`files` as in `link.json`); no access to the folder, not user activity |
-| `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read access to the choice, links it in place of the previous one (whose permission is given back) and syncs; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
+| `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, writable, syncing, folderName, linkedAt, lastSyncAt, lastError, files }` – the linked folder, whether the app may write it, and what the last sync found (`files` as in `link.json`; without a folder the phone's vaults with outcome `localOnly`); no access to the folder, not user activity |
+| `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read and write access to the choice (read only where the provider refuses write: `writable: false`), links it in place of the previous one (whose permission is given back and whose recorded conflicts are forgotten) and syncs – pushing the phone's own vaults; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
-| `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's read permission back and removes `link.json`; the vault copies stay on the phone (and are no longer updated) |
+| `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's permission back and removes `link.json` and the recorded conflicts; the vault copies and their sync bases stay on the phone (and are no longer synced) |
+| `sync_conflicts` | `pageVaultId` | **Phone only** (the PC's from stage 2b's work package 4). `SyncConflict[]` – `{ vaultId, vaultName, localRevision, remoteRevision, localUpdatedAt, remoteUpdatedAt, passwordChanged }` ("local" = this side, "remote" = the folder's copy): the conflicts of the page's open vault that its keys checked (`locked` for another vault); no access to the folder, not user activity |
+| `resolve_sync_conflict` | `vaultId, pageVaultId, keep: "local"\|"remote"` | **Phone only** (as above). `VaultInfo` – keeps one side of the open vault's conflict, the other as a conflict copy in `<data>/conflicts/` (see "Conflicts" under "Cloud-folder sync (phone)"); `keep: "remote"` may lock the vault (`vault://locked` `keyChanged`, another master password). Errors: `locked` (not the page's open vault), `not_found` (no checked conflict), `invalid_input:keep`, `unsupported:sync_conflict_password` (`local` against a new master password), `unsupported:sync_conflict_changed`, `unsupported:sync_copy_rejected`, `unsupported:folder_not_linked`, the sync's errors |
 | `device_unlock_status` | – | **Phone only** (see "Fingerprint unlock (phone)"). `DeviceUnlockStatus { available: boolean, unavailableReason: "noHardware"\|"notEnrolled"\|"other"\|null, enabled: boolean, vaults: string[], invalidated: string[] }` – whether the fingerprint can be used now, `Settings.deviceUnlock`, the vaults set up and the ones reset since the start; removes blobs that no longer fit (feature off, vault gone, another salt). No prompt, not user activity |
 | `enable_device_unlock` | `prompt: { title, reason, cancel }, pageVaultId` | **Phone only.** `DeviceUnlockStatus` – the system prompt seals the open vault's master KEK, stores the blob and turns `deviceUnlock` on. `locked` (not the page's vault), `unsupported:device_unlock_unavailable` / `device_unlock_not_enrolled` (no prompt), `unsupported:device_unlock_cancelled` / `_failed` / `_lockout` / `_busy` (nothing stored) |
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
 | `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder`, `sync_conflicts`, `resolve_sync_conflict` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export and the network and desktop integrations. Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
 (and on the desktop the master password's: `Core::unlock` goes through
@@ -1927,6 +2044,11 @@ or `…/releases` without a version).
   only: a sync started or ended, or the folder was linked or unlinked. The
   UI re-reads the vault list (a vault may have arrived) and shows the
   status.
+* `sync://conflict` – payload `SyncConflict[]` (see `sync_conflicts`) –
+  phone only for now: the recorded conflicts changed (one found, checked,
+  resolved or gone); the payload is the open vault's checked conflicts
+  (`[]` without one). The UI shows the conflict dialog while a vault is
+  open.
 * `app://suspended` – payload `{}` – phone only: the app left the
   foreground (`WindowEvent::Suspended`, the activity's `onPause`).
   `useRevealedValue` hides revealed secrets and attachment previews on it,

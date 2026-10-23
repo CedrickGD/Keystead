@@ -11,8 +11,8 @@
 //!   activity runtime forwards stdout/stderr to logcat (tag
 //!   `RustStdoutStderr`), so nothing extra is installed. Never log secrets.
 //! * **Cloud-folder sync** (`sync`): the Kotlin folder plugin, the sync
-//!   commands and the automatic sync at start and resume (copy-in only, see
-//!   `crate::folder_sync`).
+//!   commands, the automatic sync at start and resume and the push after
+//!   an edit (two-way, see `crate::folder_sync`).
 //! * **Fingerprint unlock** (`biometric`): the Android Keystore through
 //!   `tauri-plugin-biometric` and the device-unlock commands (see
 //!   `crate::device_unlock`).

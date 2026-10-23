@@ -17,7 +17,33 @@ use keystead_core::attachments;
 use keystead_core::format;
 use keystead_core::sync;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{AppError, AppResult};
+
+/// A conflict of the two-way sync, for the UI (`sync_conflicts`,
+/// `sync://conflict`): this side's copy of a vault and the folder's both
+/// changed since they last agreed (`keystead_core::sync::decide` →
+/// `Diverged`). No secrets: ids, names, revisions and times from the plain
+/// headers.
+// The PC records its own from work package 4 on.
+#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflict {
+    pub vault_id: String,
+    /// This side's name of the vault.
+    pub vault_name: String,
+    /// This side's copy ("local") and the folder's ("remote").
+    pub local_revision: u64,
+    pub remote_revision: u64,
+    pub local_updated_at: i64,
+    pub remote_updated_at: i64,
+    /// The folder's copy has another master password (KDF salt or
+    /// parameters): this side's state cannot be kept – the side with the
+    /// old password never wins.
+    pub password_changed: bool,
+}
 
 /// `<data>/conflicts`.
 pub fn conflicts_dir(data_dir: &Path) -> PathBuf {
@@ -39,8 +65,9 @@ pub struct ConflictCopy {
 /// blob files (`<attachment id>.bin`; nothing else) are copied into the
 /// copy's own blob folder after the vault file; a blob folder that does not
 /// exist is nothing to copy.
-// Both sides' conflict resolution keeps the losing copy (stage 2b).
-#[cfg_attr(not(test), expect(dead_code))]
+// Both sides' conflict resolution keeps the losing copy (stage 2b; the
+// PC's mirror from work package 4 on).
+#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn keep_conflict_copy(
     data_dir: &Path,
     id: &str,

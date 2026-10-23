@@ -246,8 +246,10 @@ export interface AppInfo {
   platform: "windows" | "linux" | "macos" | "android" | "ios";
   /** The browser extension's id; `null` on the phone (no browser integration there). */
   extensionId: string | null;
-  /** The vault cannot be changed from this app (the phone): the UI hides every editing control. */
+  /** The vault cannot be changed from this app: the UI hides every editing control (`false` on both platforms since stage 2b). */
   readOnly: boolean;
+  /** Attachments cannot be added, saved or removed (the phone: previews only). */
+  attachmentsReadOnly: boolean;
 }
 
 export interface SessionState {
@@ -584,26 +586,36 @@ export type SyncOutcome =
   | "tooLarge"
   | "failed"
   | "missing"
-  | "rejected";
+  | "rejected"
+  /** Stage 2b: the phone's copy was written to the folder. */
+  | "pushed"
+  /** Both the phone's and the folder's copy changed: nothing written (`sync_conflicts`). */
+  | "conflict"
+  /** The phone's copy is newer or new, but the link is read-only (pick the folder again). */
+  | "notWritable"
+  /** No folder linked: the vault is only on the phone. */
+  | "localOnly";
 
 export interface SyncFileResult {
   fileName: string;
   vaultId: string | null;
   vaultName: string | null;
-  /** The folder copy's revision. */
+  /** The folder copy's revision (after a push: the pushed one; for a vault the folder lacks: the phone's). */
   revision: number | null;
   outcome: SyncOutcome;
   /** The error code behind `unreadable` / `failed`. */
   error: string | null;
   attachmentsCopied: number;
   attachmentsFailed: number;
-  /** The master password was changed on the PC (the old one no longer opens this copy). */
+  /** The master password was changed on the PC (the old one no longer opens this copy; for a `conflict`: the folder's copy has another one). */
   passwordChanged: boolean;
 }
 
 /** The phone's linked cloud folder (`folder_status`, `sync://status`). No secrets. */
 export interface FolderStatus {
   linked: boolean;
+  /** The app may write the linked folder (false for a read-only link or none). */
+  writable: boolean;
   syncing: boolean;
   folderName: string | null;
   linkedAt: number | null;
@@ -612,6 +624,23 @@ export interface FolderStatus {
   /** Error code of the last failed sync, e.g. `unsupported:folder_access_lost`. */
   lastError: string | null;
   files: SyncFileResult[];
+}
+
+/**
+ * A conflict of the two-way sync (`sync_conflicts`, `sync://conflict`):
+ * this side's copy ("local") and the folder's ("remote") both changed. No
+ * secrets. `lostAttachments` only from the PC.
+ */
+export interface SyncConflict {
+  vaultId: string;
+  vaultName: string;
+  localRevision: number;
+  remoteRevision: number;
+  localUpdatedAt: number;
+  remoteUpdatedAt: number;
+  /** The folder's copy has another master password: this side's state cannot be kept. */
+  passwordChanged: boolean;
+  lostAttachments?: number;
 }
 
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */

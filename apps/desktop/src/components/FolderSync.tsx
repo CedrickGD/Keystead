@@ -28,6 +28,10 @@ const OUTCOME_KEYS: Record<SyncFileResult["outcome"], MessageKey> = {
   failed: "sync.outcome.failed",
   missing: "sync.outcome.missing",
   rejected: "sync.outcome.rejected",
+  pushed: "sync.outcome.pushed",
+  conflict: "sync.outcome.conflict",
+  notWritable: "sync.outcome.notWritable",
+  localOnly: "sync.outcome.localOnly",
 };
 
 /** Re-renders every 30 s, so a relative time ("vor 2 Minuten") stays current. */

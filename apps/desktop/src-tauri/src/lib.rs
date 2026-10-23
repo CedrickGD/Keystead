@@ -8,11 +8,12 @@
 //!   the desktop-only parts – tray, single instance, updater, browser
 //!   bridge, extension, portable mode, website-icon fetcher, leaked-password
 //!   check, the cloud-folder mirror, the file-dialog based attachment
-//!   commands (the image preview stays) and import/export. In this stage
-//!   the phone is **read-only** for vault data: the read commands plus the
-//!   phone's own are registered (`gui.rs`) – the cloud-folder sync
-//!   (`mobile/sync.rs` with the Kotlin plugin `KeysteadFolderPlugin`; it
-//!   stores the folder's vault copies and blobs and `sync/link.json`) and
+//!   commands (the image preview stays), import/export, the master
+//!   password and recovery keys and deleting a vault. The phone edits its
+//!   vaults (stage 2b); its own commands (`gui.rs`) are the cloud-folder
+//!   sync (`mobile/sync.rs` with the Kotlin plugin `KeysteadFolderPlugin`;
+//!   two-way: it stores the folder's vault copies and blobs, writes the
+//!   phone's vault files back and keeps `sync/`) and
 //!   the fingerprint unlock (`mobile/biometric.rs`; it stores the
 //!   device-unlock blobs and `Settings.deviceUnlock`). Phone-only code is in
 //!   `mobile.rs` (data directory, clipboard, links) and `mobile/`; the
@@ -49,7 +50,6 @@ mod extension;
 // tests run on the desktop host too.
 #[cfg(any(mobile, test))]
 mod folder_sync;
-#[cfg(desktop)]
 mod generator;
 mod gui;
 mod icons;

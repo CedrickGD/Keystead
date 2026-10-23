@@ -136,9 +136,8 @@ impl AppState {
         self.vault.as_ref().ok_or(AppError::Locked)
     }
 
-    // The phone is read-only in this stage: nothing there mutates the vault
-    // yet, so the writers below are unused on mobile.
-    #[cfg_attr(mobile, allow(dead_code))]
+    // The phone's commands all work on the page's vault (`mutate_for_page`).
+    #[cfg_attr(mobile, expect(dead_code))]
     pub fn vault_mut(&mut self) -> AppResult<&mut UnlockedVault> {
         self.vault.as_mut().ok_or(AppError::Locked)
     }
@@ -152,7 +151,6 @@ impl AppState {
             .ok_or(AppError::Locked)
     }
 
-    #[cfg_attr(mobile, allow(dead_code))]
     fn page_vault_mut(&mut self, page_vault_id: Option<&str>) -> AppResult<&mut UnlockedVault> {
         self.vault
             .as_mut()
@@ -367,15 +365,22 @@ impl Core {
         &self.mirror
     }
 
-    /// Desktop: lets the cloud-folder mirror copy vault `vault_id` – after
-    /// a change, on unlock (see `crate::mirror`; without a mirror folder
-    /// the worker does nothing). The phone has no mirror.
+    /// After a change of vault `vault_id` and on unlock. Desktop: lets the
+    /// cloud-folder mirror copy it (see `crate::mirror`; without a mirror
+    /// folder the worker does nothing). Phone: the cloud-folder sync pushes
+    /// it – or checks its conflict – a few seconds later
+    /// (`mobile::sync::push_soon`; without a linked folder it stays
+    /// `localOnly`).
     pub fn request_mirror(&self, vault_id: &str) {
         #[cfg(desktop)]
         self.mirror
             .request(crate::mirror::Job::Vault(vault_id.to_owned()));
         #[cfg(mobile)]
-        let _ = vault_id;
+        match &self.frontend {
+            Frontend::App(app) => crate::mobile::sync::push_soon(app, vault_id),
+            #[cfg(test)]
+            Frontend::Recorder(_) => {}
+        }
     }
 
     /// The app version shown to the user and to the browser extension.
@@ -755,8 +760,7 @@ impl Core {
     /// Runs a mutating operation on the unlocked vault. On
     /// `Error::Conflict` (another process saved the file) the vault is
     /// reloaded and `f` retried once; the UI then gets `vault://changed`.
-    /// (Unused on the read-only phone of this stage.)
-    #[cfg_attr(mobile, allow(dead_code))]
+    #[cfg_attr(mobile, expect(dead_code))]
     pub fn mutate<T>(
         &self,
         f: impl FnMut(&mut UnlockedVault) -> keystead_core::Result<T>,
@@ -771,7 +775,6 @@ impl Core {
     /// and an edit meant for the old vault (an item saved under an id the
     /// new vault does not know becomes a new item) must not land in the new
     /// one. Checked under the same state lock as the operation itself.
-    #[cfg_attr(mobile, allow(dead_code))]
     pub fn mutate_for_page<T>(
         &self,
         page_vault_id: Option<&str>,
@@ -780,7 +783,6 @@ impl Core {
         self.mutate_with(|st| st.page_vault_mut(page_vault_id), f)
     }
 
-    #[cfg_attr(mobile, allow(dead_code))]
     fn mutate_with<T>(
         &self,
         select: impl FnOnce(&mut AppState) -> AppResult<&mut UnlockedVault>,

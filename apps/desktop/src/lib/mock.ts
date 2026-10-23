@@ -328,6 +328,7 @@ function initState(): MockState {
       platform: phone ? platform : "windows",
       extensionId: phone ? null : EXTENSION_ID,
       readOnly: phone,
+      attachmentsReadOnly: phone,
     },
     browsers: [
       { id: "chrome", name: "Google Chrome", detected: true, registered: true },
@@ -1234,6 +1235,7 @@ function folderStatus(): FolderStatus {
   const sync = getState().sync;
   return {
     linked: sync.link !== null,
+    writable: sync.link !== null,
     syncing: sync.syncing,
     folderName: sync.link?.folderName ?? null,
     linkedAt: sync.link?.linkedAt ?? null,

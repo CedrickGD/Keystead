@@ -3,9 +3,9 @@
 //! blocking thread pool (key derivation, file I/O), never on the main
 //! thread. Errors are stable codes (see [`AppError::code`]).
 //!
-//! `#[cfg(desktop)]`: the command is not registered on the phone (read-only
-//! in this stage, or the feature is desktop-only) and therefore not
-//! compiled there; `gui.rs` holds the registration list.
+//! `#[cfg(desktop)]`: the command is not registered on the phone (the
+//! feature is desktop-only, see "On the phone" in docs/ARCHITECTURE.md) and
+//! therefore not compiled there; `gui.rs` holds the registration list.
 
 #[cfg(desktop)]
 use std::path::{Path, PathBuf};
@@ -17,12 +17,9 @@ use keystead_bridge::{register, BrowserId, BrowserInfo, PairedClient, EXTENSION_
 use keystead_core::health::{self, HealthReport, Strength};
 #[cfg(desktop)]
 use keystead_core::import::{self, ImportReport, LegacyVaultInfo};
-#[cfg(desktop)]
-use keystead_core::model::VaultItem;
-use keystead_core::model::{Folder, VaultInfo};
+use keystead_core::model::{Folder, VaultInfo, VaultItem};
 use keystead_core::paths;
 use keystead_core::settings::Settings;
-#[cfg(desktop)]
 use keystead_core::totp::{self, TotpCode};
 #[cfg(desktop)]
 use keystead_core::{export, Error as CoreError, VaultStore};
@@ -101,9 +98,13 @@ pub struct AppInfo {
     /// The browser extension's id (`null` on the phone: no browser
     /// integration there).
     extension_id: Option<&'static str>,
-    /// The vault cannot be changed from this app (the phone in this stage):
-    /// only the read commands exist, the UI hides every editing control.
+    /// The vault cannot be changed from this app: the UI hides every
+    /// editing control. `false` on both platforms since the phone edits
+    /// (stage 2b); kept for older pages.
     read_only: bool,
+    /// Attachments cannot be added, saved or removed here (the phone: they
+    /// stay view-only – image previews – and an edit keeps the PC's).
+    attachments_read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,7 +140,8 @@ fn app_info_of(core: &Core) -> AppInfo {
         extension_id: Some(EXTENSION_ID),
         #[cfg(mobile)]
         extension_id: None,
-        read_only: cfg!(mobile),
+        read_only: false,
+        attachments_read_only: cfg!(mobile),
     }
 }
 
@@ -216,7 +218,6 @@ pub async fn session_state(core: Shared<'_>) -> CmdResult<SessionState> {
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn create_vault(
     core: Shared<'_>,
@@ -305,7 +306,6 @@ pub async fn list_folders(core: Shared<'_>) -> CmdResult<Vec<Folder>> {
 // browser extension switched vaults, the page has not reloaded yet) answers
 // `locked` – see `Core::mutate_for_page`.
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn save_item(
     core: Shared<'_>,
@@ -323,7 +323,6 @@ pub async fn save_item(
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn trash_item(
     core: Shared<'_>,
@@ -336,7 +335,6 @@ pub async fn trash_item(
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn restore_item(
     core: Shared<'_>,
@@ -349,7 +347,6 @@ pub async fn restore_item(
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_item(
     core: Shared<'_>,
@@ -362,7 +359,6 @@ pub async fn delete_item(
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn empty_trash(core: Shared<'_>, page_vault_id: Option<String>) -> CmdResult<usize> {
     run(&core, true, move |c| {
@@ -371,7 +367,6 @@ pub async fn empty_trash(core: Shared<'_>, page_vault_id: Option<String>) -> Cmd
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn save_folder(
     core: Shared<'_>,
@@ -385,7 +380,6 @@ pub async fn save_folder(
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_folder(
     core: Shared<'_>,
@@ -401,7 +395,6 @@ pub async fn delete_folder(
 /// `rename_tag(from, to, pageVaultId)` † → the number of changed items.
 /// One save over every item incl. trash (see "Tags" in docs/ARCHITECTURE.md);
 /// no event, the UI refetches `list_items`.
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn rename_tag(
     core: Shared<'_>,
@@ -417,7 +410,6 @@ pub async fn rename_tag(
 
 /// `delete_tag(tag, pageVaultId)` † → the number of changed items, like
 /// [`rename_tag`].
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn delete_tag(
     core: Shared<'_>,
@@ -432,13 +424,11 @@ pub async fn delete_tag(
 
 /// The work of [`rename_tag`]: the core's validation of `to`
 /// (`invalid_input:tag_required` / `tag_too_long`) passes through.
-#[cfg(desktop)]
 fn rename_tag_on(c: &Core, page_vault_id: Option<&str>, from: &str, to: &str) -> AppResult<usize> {
     c.mutate_for_page(page_vault_id, |v| v.rename_tag(from, to))
 }
 
 /// The work of [`delete_tag`].
-#[cfg(desktop)]
 fn delete_tag_on(c: &Core, page_vault_id: Option<&str>, tag: &str) -> AppResult<usize> {
     c.mutate_for_page(page_vault_id, |v| v.delete_tag(tag))
 }
@@ -452,7 +442,6 @@ pub async fn password_strength(core: Shared<'_>, password: String) -> CmdResult<
     run(&core, true, move |_| Ok(health::strength(&password, &[]))).await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn totp_code(core: Shared<'_>, seed: String) -> CmdResult<TotpCode> {
     // Polled by the UI every period: not an activity.
@@ -546,7 +535,6 @@ pub async fn remove_recovery_key(core: Shared<'_>, page_vault_id: Option<String>
     .await
 }
 
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn rename_vault(
     core: Shared<'_>,

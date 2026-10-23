@@ -48,7 +48,7 @@ pub fn base_path(data_dir: &Path, id: &str) -> PathBuf {
 /// The base of vault `id` for `folder`, `None` without one – or with one
 /// recorded for another folder.
 // The phone's two-way sync and the PC's mirror pull read it (stage 2b).
-#[cfg_attr(not(test), expect(dead_code))]
+#[cfg_attr(not(any(mobile, test)), expect(dead_code))]
 pub fn load(data_dir: &Path, id: &str, folder: &str) -> Option<SyncBase> {
     read(data_dir, id).filter(|base| base.folder == folder)
 }

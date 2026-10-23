@@ -31,8 +31,9 @@ use crate::state::Core;
 use crate::wipe::Wiped;
 
 /// Longest password `remember_generated` accepts (characters) – the same
-/// limit as the bridge's `remember_generated`.
-pub const MAX_REMEMBERED_CHARS: usize = keystead_bridge::dispatcher::MAX_REMEMBERED_CHARS;
+/// limit as the bridge's `remember_generated` (the phone has no bridge; a
+/// desktop test keeps the two equal).
+pub const MAX_REMEMBERED_CHARS: usize = 1024;
 
 fn not_found(what: &str) -> AppError {
     CoreError::NotFound(what.to_owned()).into()
@@ -411,6 +412,14 @@ mod tests {
 
     fn stored_settings(c: &Core) -> Settings {
         Settings::load_from(&c.data_dir().join("settings.json"))
+    }
+
+    #[test]
+    fn the_remembered_limit_is_the_bridges() {
+        assert_eq!(
+            MAX_REMEMBERED_CHARS,
+            keystead_bridge::dispatcher::MAX_REMEMBERED_CHARS
+        );
     }
 
     #[test]

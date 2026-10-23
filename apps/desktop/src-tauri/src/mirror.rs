@@ -1334,6 +1334,15 @@ mod tests {
             fn copy_to(&self, entry: &RemoteEntry, target: &Path, _max: u64) -> AppResult<u64> {
                 Ok(fs::copy(&entry.uri, target)?)
             }
+            // A read-only link: the phone only takes what the PC wrote.
+            fn writable(&self) -> AppResult<bool> {
+                Ok(false)
+            }
+            fn write_vault(&self, _name: &str, _bytes: &[u8]) -> AppResult<RemoteEntry> {
+                Err(crate::error::AppError::unsupported(
+                    folder_sync::NOT_WRITABLE,
+                ))
+            }
         }
 
         let dir = tempfile::tempdir().unwrap();
@@ -1349,7 +1358,7 @@ mod tests {
             VaultStore::new(dir.path().join("phone")),
             Settings::default(),
         );
-        let mut link = LinkState::new("content://tree".into(), "Keystead".into(), 1);
+        let mut link = LinkState::new("content://tree".into(), "Keystead".into(), 1, false);
         assert!(folder_sync::sync_folder(&phone, &Dir(cloud.clone()), &mut link, 2).unwrap());
         assert_eq!(link.files.len(), 1, "{:?}", link.files);
         assert_eq!(link.files[0].outcome, PhoneOutcome::Imported);
