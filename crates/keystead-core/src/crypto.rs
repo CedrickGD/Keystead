@@ -226,6 +226,33 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && bool::from(a.ct_eq(b))
 }
 
+/// HMAC-SHA256 of the concatenation of `parts` under `key` (RFC 2104).
+pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    use hmac::{KeyInit, Mac};
+    let mut mac = <hmac::Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key)
+        .expect("HMAC takes keys of any length");
+    for part in parts {
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+/// HKDF-SHA256 (RFC 5869) with one block of output: a 32-byte key derived
+/// from the input key material `ikm`, the `salt` (empty: 32 zero bytes, as
+/// the RFC specifies) and the context `info`.
+pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8]) -> SecretKey {
+    let zero_salt = [0u8; 32];
+    let salt = if salt.is_empty() {
+        &zero_salt[..]
+    } else {
+        salt
+    };
+    // Extract.
+    let prk = Zeroizing::new(hmac_sha256(salt, &[ikm]));
+    // Expand: T(1) = HMAC(PRK, info ‖ 0x01) – 32 bytes are one block.
+    Zeroizing::new(hmac_sha256(prk.as_slice(), &[info, &[1u8]]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +411,34 @@ mod tests {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"ab"));
+    }
+
+    #[test]
+    fn hmac_sha256_rfc4231() {
+        // Test case 2.
+        assert_eq!(
+            hex(&hmac_sha256(
+                b"Jefe",
+                &[b"what do ya want ", b"for nothing?"]
+            )),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn hkdf_sha256_rfc5869() {
+        // Test case 3 (no salt, no info), first 32 bytes of the OKM.
+        let ikm = [0x0bu8; 22];
+        assert_eq!(
+            hex(hkdf_sha256(&ikm, b"", b"").as_slice()),
+            "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d"
+        );
+        // Test case 1 (salt and info), first 32 bytes of the OKM.
+        let salt: Vec<u8> = (0x00u8..=0x0c).collect();
+        let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+        assert_eq!(
+            hex(hkdf_sha256(&ikm, &salt, &info).as_slice()),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
+        );
     }
 }

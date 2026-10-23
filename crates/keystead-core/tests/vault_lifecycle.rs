@@ -1213,9 +1213,16 @@ fn save_superseding_writes_above_the_given_revision() {
     assert_eq!(v.revision(), 2);
     let (data, nonce) = (v.data().clone(), v.payload_nonce().to_owned());
 
+    // A copy of this vault at another revision (the folder's, in a
+    // conflict).
+    let at = |v: &keystead_core::UnlockedVault, revision: u64| {
+        let mut file = VaultFile::read(v.path()).unwrap();
+        file.revision = revision;
+        file
+    };
     // Above the folder's revision 9: revision 10, same data, a fresh write,
     // the previous revision kept as `.bak`.
-    v.save_superseding(9).unwrap();
+    v.save_superseding(&at(&v, 9)).unwrap();
     assert_eq!(v.revision(), 10);
     assert_eq!(v.data(), &data);
     assert_ne!(v.payload_nonce(), nonce);
@@ -1227,9 +1234,9 @@ fn save_superseding_writes_above_the_given_revision() {
     assert!(reopened.item(&a.id).is_some());
 
     // A lower or equal revision than its own: just the next one.
-    v.save_superseding(3).unwrap();
+    v.save_superseding(&at(&v, 3)).unwrap();
     assert_eq!(v.revision(), 11);
-    v.save_superseding(11).unwrap();
+    v.save_superseding(&at(&v, 11)).unwrap();
     assert_eq!(v.revision(), 12);
     // Normal saves continue from there.
     v.save_item(login("B", "b", "b", "")).unwrap();
@@ -1240,13 +1247,16 @@ fn save_superseding_writes_above_the_given_revision() {
     let mut other = store.unlock(v.id(), PW).unwrap();
     other.save_item(login("C", "c", "c", "")).unwrap();
     let before = v.data().clone();
-    assert!(matches!(v.save_superseding(50), Err(Error::Conflict)));
+    assert!(matches!(
+        v.save_superseding(&at(&v, 50)),
+        Err(Error::Conflict)
+    ));
     assert_eq!(v.revision(), 13);
     assert_eq!(v.data(), &before);
     assert_eq!(VaultFile::read(v.path()).unwrap().revision, 14);
     // After a reload it supersedes as asked; the other session follows.
     assert!(v.reload_if_changed().unwrap());
-    v.save_superseding(50).unwrap();
+    v.save_superseding(&at(&v, 50)).unwrap();
     assert_eq!(v.revision(), 51);
     assert!(other.reload_if_changed().unwrap());
     assert_eq!(other.revision(), 51);
@@ -1254,13 +1264,16 @@ fn save_superseding_writes_above_the_given_revision() {
     // A rolled-back file (the `.bak` put back) is not built on.
     fs::copy(bak_path(&v), v.path()).unwrap();
     assert!(matches!(v.reload_if_changed(), Err(Error::Rollback)));
-    assert!(matches!(v.save_superseding(100), Err(Error::Conflict)));
+    assert!(matches!(
+        v.save_superseding(&at(&v, 100)),
+        Err(Error::Conflict)
+    ));
     assert_eq!(VaultFile::read(v.path()).unwrap().revision, 14);
 
     // The highest revision cannot be superseded.
     let mut w = create(&store, "Voll");
     assert!(matches!(
-        w.save_superseding(u64::MAX),
+        w.save_superseding(&at(&w, u64::MAX)),
         Err(Error::Corrupt(_))
     ));
     assert_eq!(w.revision(), 1);

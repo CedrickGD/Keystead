@@ -118,6 +118,12 @@ export const de = {
     "Dieser Stand hat noch das alte Master-Passwort und kann deshalb nicht behalten werden. Übernimm den anderen Stand.",
   "error.unsupported.sync_conflict_changed":
     "Der Tresor hat sich inzwischen noch einmal geändert. Keystead hat ihn neu geprüft.",
+  "error.unsupported.sync_remote_changed":
+    "Die Kopie im Cloud-Ordner hat sich inzwischen geändert. Keystead gleicht sie neu ab – überschrieben wurde nichts.",
+  "error.unsupported.mirror_remote_unsupported":
+    "Die Kopie im Cloud-Ordner stammt von einer neueren Keystead-Version (oder ist keine Keystead-Tresor-Datei). Keystead übernimmt und überschreibt sie nicht – aktualisiere Keystead auf allen Geräten.",
+  "error.unsupported.sync_unlock_raced":
+    "Der Tresor wurde während des Entsperrens von der Synchronisierung aktualisiert. Bitte entsperre ihn noch einmal.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -985,12 +991,16 @@ export const de = {
     "Das Master-Passwort wurde am PC geändert. Der Stand vom Handy hat noch das alte Passwort und kann deshalb nicht behalten werden.",
   "sync.conflict.passwordChangedPc":
     "Die Kopie im Cloud-Ordner hat ein anderes Master-Passwort. Der Stand dieses PCs kann deshalb nicht behalten werden.",
-  "sync.conflict.lostAttachments_one":
-    "Übernimmst du den Stand vom Handy, fehlt danach {n} Anhang, der nur hier am PC hängt. Die Datei bleibt bei der Konfliktkopie erhalten.",
-  "sync.conflict.lostAttachments_other":
-    "Übernimmst du den Stand vom Handy, fehlen danach {n} Anhänge, die nur hier am PC hängen. Die Dateien bleiben bei der Konfliktkopie erhalten.",
+  "sync.conflict.lostPcAttachments_one":
+    "Wählst du den Stand vom Handy, fehlt danach {n} Anhang, den nur der Stand vom PC hat. Die Datei bleibt bei der Konfliktkopie erhalten.",
+  "sync.conflict.lostPcAttachments_other":
+    "Wählst du den Stand vom Handy, fehlen danach {n} Anhänge, die nur der Stand vom PC hat. Die Dateien bleiben bei der Konfliktkopie erhalten.",
+  "sync.conflict.lostPhoneAttachments_one":
+    "Wählst du den Stand vom PC, fehlt danach {n} Anhang, den nur der Stand vom Handy hat. Die Datei bleibt bei der Konfliktkopie erhalten.",
+  "sync.conflict.lostPhoneAttachments_other":
+    "Wählst du den Stand vom PC, fehlen danach {n} Anhänge, die nur der Stand vom Handy hat. Die Dateien bleiben bei der Konfliktkopie erhalten.",
   "sync.conflict.copyNotePhone":
-    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy (nicht im Cloud-Ordner). Wiederherstellen lässt er sich über „Importieren“ – das gibt es nur am PC.",
+    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy und wird zusätzlich in den Cloud-Ordner gelegt – der PC bietet an, ihn wiederherzustellen (Einstellungen → Handy).",
   "sync.conflict.copyNotePc":
     "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem PC (Datenordner, Unterordner „conflicts“). Einträge daraus holst du über Einstellungen → Importieren zurück.",
   "sync.offer.title": "Neuer Tresor im Cloud-Ordner – übernehmen?",
@@ -1004,6 +1014,13 @@ export const de = {
   "sync.offer.dismissed": "„{name}“ wird nicht übernommen.",
   "sync.offer.listTitle": "Neue Tresore im Cloud-Ordner",
   "sync.offer.listDesc": "Diese Tresore liegen im Ordner, aber noch nicht auf diesem PC (z. B. am Handy erstellt).",
+  "sync.copies.listTitle": "Konfliktkopien vom Handy",
+  "sync.copies.listDesc":
+    "Das Handy hat bei einem Konflikt diesen Stand nicht behalten und ihn in den Cloud-Ordner gelegt. „Wiederherstellen“ öffnet den Import – du wählst, welche Einträge in den geöffneten Tresor zurückkommen.",
+  "sync.copies.vault": "Tresor „{name}“ · Version {n}",
+  "sync.copies.restore": "Wiederherstellen",
+  "sync.copies.dismiss": "Ausblenden",
+  "sync.copies.dismissed": "Die Konfliktkopie wird nicht mehr angezeigt. Die Datei im Ordner bleibt liegen.",
   "settings.phone": "Handy",
   "settings.phoneShort": "Handy",
   "settings.phoneDesc": "Deine Tresore in der Android-App – über einen Ordner deiner eigenen Cloud. Keystead selbst verbindet sich dafür mit keinem Server.",

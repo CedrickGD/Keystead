@@ -14,3 +14,9 @@ export interface ConflictChoice {
 }
 
 export declare function conflictChoices(platform: string | null | undefined, passwordChanged: boolean): ConflictChoice[];
+
+export declare function attachmentWarnings(
+  platform: string | null | undefined,
+  conflict: { lostAttachments?: number; remoteOnlyAttachments?: number },
+  choices: ConflictChoice[],
+): { pcOnly: number; phoneOnly: number };

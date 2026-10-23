@@ -255,6 +255,9 @@ pub async fn unlock_with_recovery(
         let (epoch, store) = c.unlock_ticket();
         let vault =
             store.unlock_with_recovery_key(&vault_id, &recovery_key, &new_master_password)?;
+        // It saved a new write: a copy on trial ends here (its kept copy is
+        // not dropped unless the new write descends from it).
+        crate::sync_trial::after_save(store.root(), &vault);
         c.install_vault_since(vault, epoch)
     })
     .await

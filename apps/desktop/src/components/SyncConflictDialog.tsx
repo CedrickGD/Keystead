@@ -8,7 +8,13 @@
 
 import { CopyCheck, Laptop, Paperclip, Smartphone, TriangleAlert } from "lucide-react";
 import type { SyncConflict } from "../lib/types";
-import { conflictChoices, conflictSides, type ConflictDevice, type ConflictKeep } from "../lib/syncConflict.mjs";
+import {
+  attachmentWarnings,
+  conflictChoices,
+  conflictSides,
+  type ConflictDevice,
+  type ConflictKeep,
+} from "../lib/syncConflict.mjs";
 import { isPhonePlatform } from "../lib/phone";
 import { useT, type MessageKey } from "../i18n";
 import { useApp } from "../state/app";
@@ -75,8 +81,7 @@ export function SyncConflictDialog({
     sides.local === device
       ? { revision: conflict.localRevision, updatedAt: conflict.localUpdatedAt }
       : { revision: conflict.remoteRevision, updatedAt: conflict.remoteUpdatedAt };
-  const lost = conflict.lostAttachments ?? 0;
-  const remoteOffered = choices.some((c) => c.keep === "remote");
+  const { pcOnly, phoneOnly } = attachmentWarnings(info.platform, conflict, choices);
 
   return (
     <Modal
@@ -118,10 +123,16 @@ export function SyncConflictDialog({
           <span>{phone ? t("sync.conflict.passwordChangedPhone") : t("sync.conflict.passwordChangedPc")}</span>
         </div>
       )}
-      {!phone && lost > 0 && remoteOffered && (
+      {pcOnly > 0 && (
         <div className="callout callout-warning" role="note">
           <Paperclip />
-          <span>{tp("sync.conflict.lostAttachments", lost)}</span>
+          <span>{tp("sync.conflict.lostPcAttachments", pcOnly)}</span>
+        </div>
+      )}
+      {phoneOnly > 0 && (
+        <div className="callout callout-warning" role="note">
+          <Paperclip />
+          <span>{tp("sync.conflict.lostPhoneAttachments", phoneOnly)}</span>
         </div>
       )}
       <p className="conflict-note">{phone ? t("sync.conflict.copyNotePhone") : t("sync.conflict.copyNotePc")}</p>

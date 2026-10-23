@@ -17,24 +17,41 @@
 //!   files are `format::write_atomic`'s hidden `.<name>.<hex>.tmp`, which
 //!   the phone ignores.
 //! * What to do with a vault ([`mirror_vault`]) is
-//!   `sync_base::decide_pair` (`keystead_core::sync::decide`) on the heads
-//!   of both copies and the vault's **sync base** for this folder
+//!   `sync_base::decide_copies` (`keystead_core::sync::decide`) on the heads
+//!   of both copies, the vault's **sync base** for this folder
 //!   (`sync_base.rs`, `<data>/sync/base/<id>.json`: the last head the PC
-//!   and the folder agreed on): only the PC's copy changed → written
-//!   (push); only the folder's → taken ([`pull`]); both → a **conflict**
-//!   for the user (`sync_conflict.rs`; nothing is merged, neither copy is
-//!   overwritten); the folder's copy went back below the base →
-//!   `unsupported:mirror_remote_older`; it was removed after it was synced
-//!   → not written again (`unsupported:mirror_remote_gone`; setting the
-//!   folder again writes it). The same write with a raised revision is
-//!   pulled (and refused by the checks), a lowered one is older.
-//! * First pass after the update (no base for this folder yet, both
-//!   copies there and different): before stage 2b only the PC wrote the
-//!   folder, so the older copy is what both came from – it serves as the
-//!   base (a newer PC copy is pushed, a newer folder copy pulled); the
-//!   same revision with other contents is a conflict. A folder copy
-//!   overwritten that way is kept as a conflict copy, in case it was
-//!   another device's.
+//!   and the folder agreed on) and the folder copy's **sync proof**
+//!   (authenticated ancestry, verified with the open vault's keys): only
+//!   the PC's copy changed → written (push); the folder's copy descends
+//!   from the PC's → taken ([`pull`]; while the vault is locked only on
+//!   trial, confirmed at the unlock if it then descends); anything else →
+//!   a **conflict** for the user (`sync_conflict.rs`; nothing is merged,
+//!   neither copy is overwritten) – a higher revision alone never replaces
+//!   the PC's copy; the folder's copy went back to one of the PC's earlier
+//!   writes → `unsupported:mirror_remote_older`; it was removed after it
+//!   was synced → not written again (`unsupported:mirror_remote_gone`;
+//!   setting the folder again writes it).
+//! * First pass with a folder (no base for it yet, both copies there and
+//!   different): the folder's copy is pulled only if its verified ancestry
+//!   holds the PC's copy, the PC's is pushed only if the folder's is one of
+//!   the PC's own earlier writes (its proof's ancestry, or its `.bak`);
+//!   anything else – a copy of a 2.0.x writer included – is a conflict,
+//!   however far apart the revisions are.
+//! * A folder copy that cannot be read right now (an I/O error: a cloud
+//!   drive's placeholder, a file the cloud app holds open) skips the pass;
+//!   one larger than `sync::VAULT_FILE_MAX_BYTES`
+//!   (`unsupported:sync_file_too_large`) or of a newer format or another
+//!   program (`unsupported:mirror_remote_unsupported`) is never overwritten;
+//!   a damaged one (or another vault's file under this name) is kept as a
+//!   conflict copy before the PC's replaces it.
+//! * Conflict copies the phone wrote into the folder
+//!   (`<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`, the state the phone
+//!   did not keep when it resolved a conflict) are listed
+//!   ([`FolderConflictCopy`], `mirror://conflictCopies`): "Wiederherstellen"
+//!   copies one into `<data>/conflicts/` for the import
+//!   (`restore_folder_conflict_copy`), "Ausblenden" hides it
+//!   (`<data>/sync/dismissed-copies.json`); nothing in the folder is
+//!   removed.
 //! * A pull ([`pull`]): the folder's copy (at most
 //!   `sync::VAULT_FILE_MAX_BYTES`, parsed and validated – KDF bounds
 //!   included) and its blobs the PC lacks (blobs first), then under the
@@ -90,7 +107,9 @@ use std::time::{Duration, Instant, SystemTime};
 use keystead_core::format::{self, VaultFile, VAULT_EXTENSION};
 use keystead_core::model::{now_ms, VaultInfo};
 use keystead_core::settings::Settings;
-use keystead_core::sync::{self, SyncBase, SyncDecision, SyncHead, VAULT_FILE_MAX_BYTES};
+use keystead_core::sync::{
+    self, RemoteProof, SyncBase, SyncDecision, SyncHead, VAULT_FILE_MAX_BYTES,
+};
 use keystead_core::vault::CopyCheck;
 use keystead_core::{attachments, paths, Error as CoreError};
 use serde::Serialize;
@@ -99,12 +118,12 @@ use crate::attachments::{is_dialog_path, is_inside};
 use crate::commands::{run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
 use crate::state::{log, Core};
-use crate::sync_base::{self, sync_dir};
+use crate::sync_base::{self, decide_copies, sync_dir};
 use crate::sync_conflict::{
     self, conflict_changed, install_resolved, set_record, ConflictRecord, Keep, CONFLICT_PASSWORD,
 };
 use crate::sync_trial::{
-    begin_trial, remember_rejected, trial_lock, FileVersion, Trial, COPY_REJECTED,
+    begin_trial, kept_path, remember_rejected, trial_lock, FileVersion, Trial, COPY_REJECTED,
 };
 
 /// `mirror://status` – payload [`MirrorStatus`].
@@ -112,6 +131,9 @@ pub const EVENT_STATUS: &str = "mirror://status";
 /// `mirror://offers` – payload [`FolderOffer`]`[]`: the vaults in the
 /// folder the PC does not have, whenever that list changes.
 pub const EVENT_OFFERS: &str = "mirror://offers";
+/// `mirror://conflictCopies` – payload [`FolderConflictCopy`]`[]`: the
+/// phone's conflict copies in the folder, whenever that list changes.
+pub const EVENT_COPIES: &str = "mirror://conflictCopies";
 
 /// `invalid_input:mirror_folder` – not an absolute path as the folder
 /// dialog gives it.
@@ -133,6 +155,13 @@ pub const REMOTE_OLDER: &str = "mirror_remote_older";
 /// `unsupported:mirror_remote_gone` – the folder's copy was removed after
 /// it was synced: it is not written again (set the folder again for that).
 pub const REMOTE_GONE: &str = "mirror_remote_gone";
+/// `unsupported:mirror_remote_unsupported` – the folder's copy is of a
+/// newer format version (or not a Keystead vault file): it is neither
+/// taken nor overwritten.
+pub const REMOTE_UNSUPPORTED: &str = "mirror_remote_unsupported";
+/// `unsupported:sync_file_too_large` – the folder's copy is larger than
+/// `sync::VAULT_FILE_MAX_BYTES`: not read, never overwritten.
+pub const TOO_LARGE: &str = "sync_file_too_large";
 /// `unsupported:folder_not_linked` – no mirror folder is set.
 pub const NOT_LINKED: &str = "folder_not_linked";
 /// `invalid_input:vault_exists` – `adopt_folder_vault` for a vault the PC
@@ -336,8 +365,12 @@ fn copy_blobs(from: &Path, to: &Path) -> AppResult<(BTreeSet<String>, u32)> {
 /// The folder's copy of a vault file as [`mirror_vault`] sees it.
 enum FolderCopy {
     Missing,
-    /// Larger than [`VAULT_FILE_MAX_BYTES`] (not read), or not readable.
-    Unusable,
+    /// Larger than [`VAULT_FILE_MAX_BYTES`] (not read).
+    TooLarge,
+    /// It could not be read right now (a cloud drive's placeholder that is
+    /// not downloaded, a file the cloud app holds open while it writes it):
+    /// the pass is skipped, nothing is overwritten.
+    Unreadable(AppError),
     Bytes(Vec<u8>),
 }
 
@@ -347,16 +380,23 @@ enum FolderCopy {
 fn read_copy(path: &Path) -> FolderCopy {
     match fs::metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FolderCopy::Missing,
-        Ok(meta) if meta.is_file() && meta.len() <= VAULT_FILE_MAX_BYTES => {}
-        _ => return FolderCopy::Unusable,
+        Err(e) => return FolderCopy::Unreadable(io_err(path, e)),
+        Ok(meta) if !meta.is_file() => {
+            return FolderCopy::Unreadable(AppError::unsupported(REMOTE_UNSUPPORTED))
+        }
+        Ok(meta) if meta.len() > VAULT_FILE_MAX_BYTES => return FolderCopy::TooLarge,
+        Ok(_) => {}
     }
-    let Ok(file) = fs::File::open(path) else {
-        return FolderCopy::Unusable;
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FolderCopy::Missing,
+        Err(e) => return FolderCopy::Unreadable(io_err(path, e)),
     };
     let mut bytes = Vec::new();
     match file.take(VAULT_FILE_MAX_BYTES + 1).read_to_end(&mut bytes) {
         Ok(_) if bytes.len() as u64 <= VAULT_FILE_MAX_BYTES => FolderCopy::Bytes(bytes),
-        _ => FolderCopy::Unusable,
+        Ok(_) => FolderCopy::TooLarge,
+        Err(e) => FolderCopy::Unreadable(io_err(path, e)),
     }
 }
 
@@ -374,8 +414,9 @@ fn file_len(path: &Path) -> Option<u64> {
 /// What a pass did with the vault file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The PC's copy was written to the folder (it was missing, older,
-    /// unreadable or forged there, or only the PC's copy changed).
+    /// The PC's copy was written to the folder (it was missing, damaged or
+    /// forged there – a damaged one kept as a conflict copy first –, or
+    /// only the PC's copy changed).
     Written,
     /// Both copies are the same write (the base is recorded).
     UpToDate,
@@ -383,7 +424,8 @@ pub enum Outcome {
     Gone,
     /// The folder's copy replaced the PC's.
     Pulled,
-    /// Both copies changed: recorded for the user, nothing written.
+    /// Both copies changed (or nothing proves that the folder's descends
+    /// from the PC's): recorded for the user, nothing written.
     Conflict,
     /// A copy changed while the pass looked (a save meanwhile, the phone
     /// wrote the folder): nothing written, the next pass looks again.
@@ -431,17 +473,20 @@ struct Pass<'a> {
 /// The folder's copy as a pass found it.
 enum Remote {
     Missing,
-    /// Too large, unreadable, damaged, or another vault's file under this
-    /// vault's name: replaced like a missing one.
-    Garbage,
+    /// Damaged (not valid JSON, a header that fails validation) or another
+    /// vault's file under this vault's name: kept as a conflict copy, then
+    /// replaced.
+    Damaged(Vec<u8>),
     Copy(Box<VaultFile>, Vec<u8>),
 }
 
 /// Syncs vault `vault_id` of the PC with its copy in `folder` (see the
 /// module docs): writes the PC's copy, takes the folder's, records a
 /// conflict or reports why neither happens (`unsupported:mirror_remote_older`,
-/// `unsupported:mirror_remote_gone`, `unsupported:mirror_other_password`).
-/// The open vault's session checks the folder's copy where that matters.
+/// `unsupported:mirror_remote_gone`, `unsupported:mirror_other_password`,
+/// `unsupported:mirror_remote_unsupported`, `unsupported:sync_file_too_large`,
+/// an I/O error for a copy that cannot be read right now). The open vault's
+/// session checks the folder's copy where that matters.
 pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Report> {
     let data_dir = core.data_dir();
     let folder_path = Path::new(folder);
@@ -467,10 +512,18 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
     let on_trial = trial.unconfirmed.as_ref() == Some(&FileVersion::of(&local));
     let remote = match read_copy(&target) {
         FolderCopy::Missing => Remote::Missing,
-        FolderCopy::Unusable => Remote::Garbage,
+        // Never overwritten: a copy this pass cannot read is not known to
+        // be worthless.
+        FolderCopy::TooLarge => return Err(AppError::unsupported(TOO_LARGE)),
+        FolderCopy::Unreadable(e) => return Err(e),
         FolderCopy::Bytes(bytes) => match VaultFile::parse(&bytes) {
             Ok(file) if file.id == vault_id => Remote::Copy(Box::new(file), bytes),
-            _ => Remote::Garbage,
+            // A newer format (or not a Keystead file at all): never
+            // overwritten.
+            Err(CoreError::Unsupported(_)) => {
+                return Err(AppError::unsupported(REMOTE_UNSUPPORTED))
+            }
+            Ok(_) | Err(_) => Remote::Damaged(bytes),
         },
     };
     let pass = Pass {
@@ -487,24 +540,33 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
 
     let (file, bytes) = match remote {
         // A copy that has not opened here is never written to the folder.
-        Remote::Missing | Remote::Garbage if on_trial => return Ok(Report::of(Outcome::OnTrial)),
+        Remote::Missing | Remote::Damaged(_) if on_trial => {
+            return Ok(Report::of(Outcome::OnTrial))
+        }
         Remote::Missing => {
             let base = sync_base::load(&pass.data_dir, vault_id, folder);
-            return match sync::decide(Some(&pass.local_head), None, base.as_ref()) {
+            return match sync::decide(
+                Some(&pass.local_head),
+                None,
+                base.as_ref(),
+                &[],
+                RemoteProof::Unproven,
+            ) {
                 SyncDecision::NewLocal => push(&pass, None, None),
                 _ => Err(AppError::unsupported(REMOTE_GONE)),
             };
         }
-        Remote::Garbage => {
-            log("replacing a damaged copy in the cloud folder");
-            return push(&pass, None, None);
+        Remote::Damaged(bytes) => {
+            log("keeping a damaged copy of the cloud folder before it is replaced");
+            return push(&pass, Some(&bytes), Some(&bytes));
         }
         Remote::Copy(file, bytes) => (*file, bytes),
     };
     let remote_head = sync::head_of(&file);
+    let remote_version = FileVersion::of(&file);
     // A write of the folder's file that did not open here (forged or
     // damaged): replaced with the PC's.
-    if trial.rejected.as_ref() == Some(&FileVersion::of(&file)) {
+    if trial.rejected.as_ref() == Some(&remote_version) {
         if on_trial {
             return Ok(Report::of(Outcome::OnTrial));
         }
@@ -512,42 +574,39 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
         return push(&pass, Some(&bytes), None);
     }
 
-    let (decision, migrated) = if on_trial {
+    if on_trial {
         // Its revision proves nothing yet: the folder's copy has to beat
-        // the copy that opened here last. It has no edits of the PC's.
-        let decision = if FileVersion::of(&file) == FileVersion::of(&pass.local) {
-            SyncDecision::UpToDate
-        } else if trial.kept_revision.is_none_or(|kept| file.revision > kept) {
-            SyncDecision::PullRemote
-        } else {
-            return Ok(Report::of(Outcome::OnTrial));
-        };
-        (decision, false)
-    } else {
-        match sync_base::load(&pass.data_dir, vault_id, folder) {
-            Some(base) => (
-                sync_base::decide_pair(&pass.local_head, &remote_head, Some(&base)),
-                false,
-            ),
-            None => {
-                let base = first_base(&pass.local_head, &remote_head, folder);
-                (
-                    sync_base::decide_pair(&pass.local_head, &remote_head, base.as_ref()),
-                    true,
-                )
-            }
+        // the copy that opened here last (and, once it opens, descend from
+        // it). It has no edits of the PC's.
+        if remote_version == FileVersion::of(&pass.local) {
+            return up_to_date(&pass, &remote_head, true);
         }
+        if trial.kept_revision.is_none_or(|kept| file.revision > kept) {
+            let kept = kept_head(&pass);
+            return pull(&pass, &file, &bytes, &remote_head, kept.as_ref());
+        }
+        return Ok(Report::of(Outcome::OnTrial));
+    }
+
+    let base = sync_base::load(&pass.data_dir, vault_id, folder);
+    let extra = own_backup(&pass.local_path, &pass.local)
+        .map(|h| vec![h.digest])
+        .unwrap_or_default();
+    let decision = match decide_copies(core, &pass.local, &file, base.as_ref(), &extra) {
+        // This write opened here before and does not descend from the PC's
+        // copy: a conflict, never on trial again.
+        SyncDecision::PullUnverified if trial.diverged.as_ref() == Some(&remote_version) => {
+            SyncDecision::Diverged
+        }
+        decision => decision,
     };
     match decision {
-        SyncDecision::UpToDate => up_to_date(&pass, &remote_head, on_trial),
-        SyncDecision::PushLocal => {
-            // Without a base, the folder's older copy may still be another
-            // device's write – unless it is the PC's own previous one (its
-            // `.bak`): kept as a conflict copy before it is replaced.
-            let keep = migrated && !is_own_backup(&pass.local_path, &remote_head);
-            push(&pass, Some(&bytes), keep.then_some(&bytes[..]))
+        SyncDecision::UpToDate => up_to_date(&pass, &remote_head, false),
+        SyncDecision::PushLocal => push(&pass, Some(&bytes), None),
+        SyncDecision::PullRemote | SyncDecision::PullUnverified => {
+            let from = pass.local_head.clone();
+            pull(&pass, &file, &bytes, &remote_head, Some(&from))
         }
-        SyncDecision::PullRemote => pull(&pass, &file, &bytes, &remote_head),
         SyncDecision::RemoteOlder => Err(AppError::unsupported(REMOTE_OLDER)),
         // Both copies are there: only `Diverged` is left.
         SyncDecision::Diverged
@@ -558,26 +617,21 @@ pub fn mirror_vault(core: &Core, folder: &str, vault_id: &str) -> AppResult<Repo
     }
 }
 
-/// The base of a vault the PC has never synced with this folder although
-/// both copies are there (the first pass after the update to stage 2b, or
-/// a folder that already held copies): before 2b only the PC wrote the
-/// folder, so the older copy is the write both came from. The same
-/// revision with other contents has none (a conflict).
-fn first_base(local: &SyncHead, remote: &SyncHead, folder: &str) -> Option<SyncBase> {
-    let older = match local.revision.cmp(&remote.revision) {
-        std::cmp::Ordering::Less => local,
-        std::cmp::Ordering::Greater => remote,
-        std::cmp::Ordering::Equal => return None,
-    };
-    Some(SyncBase::new(older, folder, now_ms()))
+/// The head of the copy a copy on trial replaced (kept beside the trial
+/// record), if there is one.
+fn kept_head(pass: &Pass<'_>) -> Option<SyncHead> {
+    let _trial = trial_lock();
+    let kept = VaultFile::read(&kept_path(&pass.data_dir, pass.id)).ok()?;
+    (kept.id == pass.id).then(|| sync::head_of(&kept))
 }
 
-/// Whether `head` is the write in the `.bak` beside the PC's vault file at
-/// `path` (the revision before the current one).
-fn is_own_backup(path: &Path, head: &SyncHead) -> bool {
+/// The head of the PC's own previous write – the `.bak` beside its vault
+/// file at `path` – if it is an earlier revision than `current`'s.
+fn own_backup(path: &Path, current: &VaultFile) -> Option<SyncHead> {
     let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");
-    VaultFile::read(Path::new(&bak)).is_ok_and(|f| sync::head_of(&f) == *head)
+    let file = VaultFile::read(Path::new(&bak)).ok()?;
+    (file.id == current.id && file.revision < current.revision).then(|| sync::head_of(&file))
 }
 
 /// Records `head` as the vault's base for the pass's folder (best effort).
@@ -646,19 +700,16 @@ fn sync_blobs_out(
 
 /// Writes the PC's copy to the folder (blobs first) and records its head
 /// as the base. `seen`: the folder's copy the decision was made on (`None`:
-/// missing or unusable) – if it changed meanwhile (the phone wrote it),
-/// nothing is written (`Changed`). `keep`: the folder's copy is kept as a
-/// conflict copy before it is replaced.
+/// missing) – read again right before the write; if it changed meanwhile
+/// (the phone wrote it), nothing is written (`Changed`). `keep`: the
+/// folder's copy is kept as a conflict copy before it is replaced.
 fn push(pass: &Pass<'_>, seen: Option<&[u8]>, keep: Option<&[u8]>) -> AppResult<Report> {
     let mut changed = false;
     let (blobs_copied, blobs_removed) = sync_blobs_out(pass, || {
         let still = match (read_copy(&pass.target), seen) {
             (FolderCopy::Bytes(now), Some(seen)) => now == seen,
-            (FolderCopy::Bytes(now), None) => {
-                VaultFile::parse(&now).map_or(true, |f| f.id != pass.id)
-            }
-            (FolderCopy::Missing | FolderCopy::Unusable, Some(_)) => false,
-            (FolderCopy::Missing | FolderCopy::Unusable, None) => true,
+            (FolderCopy::Missing, None) => true,
+            _ => false,
         };
         if !still {
             changed = true;
@@ -696,24 +747,30 @@ enum Installed {
     },
     /// The open vault's keys prove the copy forged: not taken.
     Forged,
+    /// The open vault's keys open it, but its sync proof does not show it
+    /// descends from the PC's copy: not taken (a conflict).
+    NotDescending,
     /// The PC's copy changed since the decision (a save meanwhile).
     LocalChanged,
 }
 
 /// Takes the folder's copy `file` (`bytes`, head `remote_head`) in place of
-/// the PC's: its blobs the PC lacks first, then [`install_pulled`]. A copy
-/// the open vault proves forged is overwritten with the PC's.
+/// the PC's – a copy that must descend from `from` (the PC's copy, or the
+/// one a copy on trial replaced): its blobs the PC lacks first, then
+/// [`install_pulled`]. A copy the open vault proves forged is overwritten
+/// with the PC's; one it opens that does not descend is a conflict.
 fn pull(
     pass: &Pass<'_>,
     file: &VaultFile,
     bytes: &[u8],
     remote_head: &SyncHead,
+    from: Option<&SyncHead>,
 ) -> AppResult<Report> {
     let (_, blobs_copied) = copy_blobs(
         &attachments::dir_for(&pass.target),
         &attachments::dir_for(&pass.local_path),
     )?;
-    match install_pulled(pass, file, bytes, remote_head)? {
+    match install_pulled(pass, file, bytes, remote_head, from)? {
         Installed::Yes { reloaded } => {
             if reloaded {
                 pass.core.emit_changed();
@@ -729,6 +786,7 @@ fn pull(
             log("the cloud folder's copy is forged or damaged: replaced");
             push(pass, Some(bytes), None)
         }
+        Installed::NotDescending => conflict(pass, file, bytes, remote_head),
         Installed::LocalChanged => Ok(Report::of(Outcome::Changed)),
     }
 }
@@ -736,14 +794,17 @@ fn pull(
 /// Replaces the PC's vault file with the folder's copy under the state
 /// lock, the trial lock and the vault file's lock (no save of this app or
 /// of the terminal UI interleaves) – if the PC's file is still the one the
-/// decision was made on. The open vault checks it first and is reloaded;
-/// a locked vault takes it on trial. Another master password is never
-/// taken. The folder's head becomes the base.
+/// decision was made on. The open vault checks it first (it must open and
+/// descend from `from`) and is reloaded; a locked vault takes it on trial
+/// (confirmed at the unlock only if it then descends from the copy it
+/// replaced, `sync_trial`). Another master password is never taken. The
+/// replaced file is kept as `.bak`; the folder's head becomes the base.
 fn install_pulled(
     pass: &Pass<'_>,
     file: &VaultFile,
     bytes: &[u8],
     remote_head: &SyncHead,
+    from: Option<&SyncHead>,
 ) -> AppResult<Installed> {
     let data_dir = &pass.data_dir;
     let mut st = pass.core.state();
@@ -755,19 +816,20 @@ fn install_pulled(
     if on_disk.as_ref() != Some(&pass.local_head) {
         return Ok(Installed::LocalChanged);
     }
-    let check = st
-        .vault
-        .as_ref()
-        .filter(|vault| vault.id() == pass.id)
-        .map(|vault| vault.check_copy(file));
-    match check {
-        Some(CopyCheck::Forged) => {
+    let vault = st.vault.as_ref().filter(|vault| vault.id() == pass.id);
+    match vault.map(|vault| (vault.check_copy(file), vault)) {
+        Some((CopyCheck::Forged, _)) => {
             remember_rejected(data_dir, pass.id, FileVersion::of(file));
             return Ok(Installed::Forged);
         }
-        Some(CopyCheck::OtherPassword) => return Err(AppError::unsupported(OTHER_PASSWORD)),
-        // Genuine: nothing to keep, nothing on trial.
-        Some(CopyCheck::Opens) => Trial::default().save(data_dir, pass.id)?,
+        Some((CopyCheck::OtherPassword, _)) => return Err(AppError::unsupported(OTHER_PASSWORD)),
+        Some((CopyCheck::Opens, vault)) => {
+            if from.is_some_and(|from| !sync_base::descends(vault, file, from)) {
+                return Ok(Installed::NotDescending);
+            }
+            // Genuine and descending: nothing to keep, nothing on trial.
+            Trial::default().save(data_dir, pass.id)?;
+        }
         None => {
             // Nothing proves a copy while the vault is locked: on trial –
             // but never one of another master password.
@@ -801,22 +863,22 @@ fn install_pulled(
     Ok(Installed::Yes { reloaded })
 }
 
-/// Both copies changed: recorded for the user (`sync://conflict` once the
-/// open vault's keys checked the folder's copy) – unless those keys prove
-/// it forged: then it is rejected and overwritten with the PC's, as
-/// before stage 2b.
+/// Both copies changed (or nothing proves the folder's descends from the
+/// PC's): recorded for the user (`sync://conflict` once the open vault's
+/// keys checked the folder's copy) – unless those keys prove it forged:
+/// then it is rejected and overwritten with the PC's, as before stage 2b.
 fn conflict(
     pass: &Pass<'_>,
     file: &VaultFile,
     bytes: &[u8],
     remote_head: &SyncHead,
 ) -> AppResult<Report> {
-    let (check, lost) = {
+    let (check, counts) = {
         let st = pass.core.state();
         match st.vault.as_ref().filter(|vault| vault.id() == pass.id) {
             Some(vault) => (
                 Some(vault.check_copy(file)),
-                vault.attachments_missing_in_copy(file),
+                vault.attachment_difference(file),
             ),
             None => (None, None),
         }
@@ -835,9 +897,16 @@ fn conflict(
         (&pass.local, &pass.local_head),
         (file, remote_head),
         check.is_some(),
-        lost.map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+        attachment_counts(counts),
     );
     Ok(Report::of(Outcome::Conflict))
+}
+
+/// The attachment counts of a conflict (`SyncConflict::lost_attachments`,
+/// `remote_only_attachments`); 0 when unknown.
+fn attachment_counts(counts: Option<(usize, usize)>) -> (u32, u32) {
+    let n = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    counts.map_or((0, 0), |(here, there)| (n(here), n(there)))
 }
 
 /// Removes the copy of the deleted vault `vault_id` from `folder`: its
@@ -1031,6 +1100,7 @@ fn scan(core: &Core, folder: &str, cached: bool, results: &mut Results) {
     }
     *lock(&tracker.seen) = seen;
     tracker.set_offers(core, offers);
+    scan_conflict_copies(core, folder, cached);
 }
 
 /// `adopt_folder_vault`: takes vault `vault_id` from the folder – it must
@@ -1115,6 +1185,195 @@ pub fn dismiss(core: &Core, vault_id: &str) -> AppResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// The phone's conflict copies in the folder
+// ---------------------------------------------------------------------------
+
+/// A conflict copy the phone wrote into the folder when it resolved a
+/// conflict (`<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`, the state it
+/// did not keep): listed for restoring (`folder_conflict_copies`,
+/// `mirror://conflictCopies`). From its plain header – no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderConflictCopy {
+    pub file_name: String,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub revision: u64,
+    pub updated_at: i64,
+}
+
+/// `<data>/sync/dismissed-copies.json`: the file names of the phone's
+/// conflict copies the user restored or hid (a JSON array, sorted).
+fn dismissed_copies_path(data_dir: &Path) -> PathBuf {
+    sync_dir(data_dir).join("dismissed-copies.json")
+}
+
+/// Read leniently: missing or damaged → none.
+fn load_dismissed_copies(data_dir: &Path) -> BTreeSet<String> {
+    match fs::read(dismissed_copies_path(data_dir)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            log(format_args!(
+                "the dismissed conflict copies are unreadable: {e}"
+            ));
+            BTreeSet::new()
+        }),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
+fn save_dismissed_copies(data_dir: &Path, names: &BTreeSet<String>) -> AppResult<()> {
+    fs::create_dir_all(sync_dir(data_dir))?;
+    let mut bytes = serde_json::to_vec_pretty(names).map_err(CoreError::from)?;
+    bytes.push(b'\n');
+    format::write_atomic(&dismissed_copies_path(data_dir), &bytes, false)?;
+    Ok(())
+}
+
+/// The names of the phone's conflict copies at the top of `folder` (files
+/// only, sorted).
+fn conflict_copy_names(folder: &Path) -> AppResult<Vec<String>> {
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(e) => return Err(io_err(folder, e)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(folder, e))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if sync::vault_id_of_phone_conflict_copy(&name).is_some()
+            && entry.file_type().is_ok_and(|t| t.is_file())
+        {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The phone's conflict copy `name` in `folder` with the bytes it has, if
+/// it is a readable vault file of the vault its name says.
+fn read_conflict_copy(folder: &Path, name: &str) -> Option<(FolderConflictCopy, Vec<u8>)> {
+    let id = sync::vault_id_of_phone_conflict_copy(name)?;
+    let FolderCopy::Bytes(bytes) = read_copy(&folder.join(name)) else {
+        return None;
+    };
+    let file = VaultFile::parse(&bytes).ok().filter(|f| f.id == id)?;
+    let copy = FolderConflictCopy {
+        file_name: name.to_owned(),
+        vault_id: file.id,
+        vault_name: file.name,
+        revision: file.revision,
+        updated_at: file.updated_at,
+    };
+    Some((copy, bytes))
+}
+
+/// Lists the phone's conflict copies in `folder` that were neither
+/// restored nor hidden. `cached`: copies whose size and time did not change
+/// since the last scan are not read again.
+fn scan_conflict_copies(core: &Core, folder: &str, cached: bool) {
+    let tracker = core.mirror();
+    let folder_path = Path::new(folder);
+    let Ok(names) = conflict_copy_names(folder_path) else {
+        return;
+    };
+    let dismissed = load_dismissed_copies(&core.data_dir());
+    let previous = if cached {
+        lock(&tracker.copies_seen).clone()
+    } else {
+        BTreeMap::new()
+    };
+    let mut seen = BTreeMap::new();
+    let mut copies = Vec::new();
+    for name in names.into_iter().filter(|n| !dismissed.contains(n)) {
+        let now = stamp(&folder_path.join(&name));
+        let copy = match previous.get(&name) {
+            Some((was, copy)) if *was == now => copy.clone(),
+            _ => read_conflict_copy(folder_path, &name).map(|(copy, _)| copy),
+        };
+        if let Some(copy) = &copy {
+            copies.push(copy.clone());
+        }
+        seen.insert(name, (now, copy));
+    }
+    *lock(&tracker.copies_seen) = seen;
+    tracker.set_copies(core, copies);
+}
+
+/// The mirror folder as set, checked (`unsupported:folder_not_linked`
+/// without one).
+fn checked_folder(core: &Core) -> AppResult<String> {
+    let folder = core
+        .state()
+        .settings
+        .mirror_folder
+        .clone()
+        .ok_or_else(|| AppError::unsupported(NOT_LINKED))?;
+    check_folder(Path::new(&folder), &core.data_dir())?;
+    Ok(folder)
+}
+
+/// `restore_folder_conflict_copy(fileName)` → its path: copies the
+/// phone's conflict copy `file_name` (a readable vault file of the vault
+/// its name says, at most `sync::VAULT_FILE_MAX_BYTES`) into
+/// `<data>/conflicts/` under the same name (`-2`, … if another file has it)
+/// – where the import reads it (`analyze_import`) – and stops listing it.
+/// The folder's file stays.
+pub fn restore_copy(core: &Core, file_name: &str) -> AppResult<String> {
+    if sync::vault_id_of_phone_conflict_copy(file_name).is_none() {
+        return Err(not_found(file_name));
+    }
+    let folder = checked_folder(core)?;
+    let tracker = core.mirror();
+    let _pass = lock(&tracker.pass);
+    let (_, bytes) =
+        read_conflict_copy(Path::new(&folder), file_name).ok_or_else(|| not_found(file_name))?;
+    let data_dir = core.data_dir();
+    let dir = sync_conflict::conflicts_dir(&data_dir);
+    fs::create_dir_all(&dir)?;
+    let path = (1..)
+        .map(|n| match n {
+            1 => dir.join(file_name),
+            n => dir.join(format!("{file_name}-{n}")),
+        })
+        .find(|p| !p.exists() || fs::read(p).is_ok_and(|b| b == bytes))
+        .expect("an unused name");
+    if !path.exists() {
+        format::write_atomic(&path, &bytes, false)?;
+    }
+    hide_copy(core, file_name)?;
+    Ok(path.display().to_string())
+}
+
+/// `dismiss_folder_conflict_copy(fileName)`: the phone's conflict copy is
+/// not listed any more (the file in the folder stays).
+pub fn dismiss_copy(core: &Core, file_name: &str) -> AppResult<()> {
+    if sync::vault_id_of_phone_conflict_copy(file_name).is_none() {
+        return Err(not_found(file_name));
+    }
+    hide_copy(core, file_name)
+}
+
+fn hide_copy(core: &Core, file_name: &str) -> AppResult<()> {
+    let data_dir = core.data_dir();
+    let mut dismissed = load_dismissed_copies(&data_dir);
+    if dismissed.insert(file_name.to_owned()) {
+        save_dismissed_copies(&data_dir, &dismissed)?;
+    }
+    let tracker = core.mirror();
+    lock(&tracker.copies_seen).remove(file_name);
+    let copies: Vec<FolderConflictCopy> = lock(&tracker.copies)
+        .iter()
+        .filter(|c| c.file_name != file_name)
+        .cloned()
+        .collect();
+    tracker.set_copies(core, copies);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Resolving a conflict
 // ---------------------------------------------------------------------------
 
@@ -1140,6 +1399,7 @@ pub fn resolve_conflict(
     vault_id: &str,
     page_vault_id: Option<&str>,
     keep: Keep,
+    seen: (&str, &str),
     now: i64,
 ) -> AppResult<VaultInfo> {
     {
@@ -1148,7 +1408,7 @@ pub fn resolve_conflict(
             return Err(AppError::Locked);
         }
     }
-    let record = sync_conflict::verified_record(&core.data_dir(), vault_id)?;
+    let record = sync_conflict::verified_record(&core.data_dir(), vault_id, seen)?;
     if keep == Keep::Local && record.conflict.password_changed {
         return Err(AppError::unsupported(CONFLICT_PASSWORD));
     }
@@ -1192,13 +1452,13 @@ fn resolve_in(
     };
     let remote = VaultFile::parse(&remote_bytes).map_err(|_| conflict_changed())?;
     let remote_head = sync::head_of(&remote);
-    if remote.id != id || remote_head.digest != record.remote_digest {
+    if remote.id != id || remote_head.digest != record.conflict.remote_digest {
         return Err(conflict_changed());
     }
     let local_path = core.store().vault_path(id);
     let local_bytes = fs::read(&local_path)?;
     let local = VaultFile::parse(&local_bytes)?;
-    if sync::head_of(&local).digest != record.local_digest {
+    if sync::head_of(&local).digest != record.conflict.local_digest {
         return Err(conflict_changed());
     }
     // The open vault's keys check the folder's copy (again: the record may
@@ -1243,8 +1503,9 @@ fn resolve_in(
                     .as_mut()
                     .filter(|v| v.id() == id)
                     .ok_or(AppError::Locked)?;
-                // Above the folder's revision: every other device takes it.
-                vault.save_superseding(remote.revision)?;
+                // Above the folder's revision, naming its head as an
+                // ancestor: every other device takes it.
+                vault.save_superseding(&remote)?;
                 vault.info()
             };
             // The folder's copy is what the PC's now supersedes: a push.
@@ -1288,7 +1549,7 @@ fn resolve_in(
                 folder,
                 id,
                 &local_path,
-                &record.local_digest,
+                &record.conflict.local_digest,
                 &remote_bytes,
                 &remote,
                 check,
@@ -1393,6 +1654,10 @@ pub struct MirrorTracker {
     offers: Mutex<Vec<FolderOffer>>,
     /// What the last scan found per file ([`Seen`]).
     seen: Mutex<BTreeMap<String, Seen>>,
+    /// The phone's conflict copies in the folder ([`FolderConflictCopy`]).
+    copies: Mutex<Vec<FolderConflictCopy>>,
+    /// What the last scan found per conflict copy (size and time).
+    copies_seen: Mutex<BTreeMap<String, (Stamp, Option<FolderConflictCopy>)>>,
     /// The folder was set (or turned off): the next round starts over.
     relinked: AtomicBool,
     /// The worker runs (`spawn`); `shutdown` waits for it.
@@ -1458,6 +1723,29 @@ impl MirrorTracker {
         };
         if changed {
             core.emit(EVENT_OFFERS, self.offers(core));
+        }
+    }
+
+    /// The phone's conflict copies in the folder (none while the mirror is
+    /// off).
+    pub fn copies(&self, core: &Core) -> Vec<FolderConflictCopy> {
+        if core.state().settings.mirror_folder.is_none() {
+            return Vec::new();
+        }
+        lock(&self.copies).clone()
+    }
+
+    /// Replaces the listed conflict copies; a change is announced as
+    /// `mirror://conflictCopies`.
+    fn set_copies(&self, core: &Core, copies: Vec<FolderConflictCopy>) {
+        let changed = {
+            let mut current = lock(&self.copies);
+            let changed = *current != copies;
+            *current = copies;
+            changed
+        };
+        if changed {
+            core.emit(EVENT_COPIES, self.copies(core));
         }
     }
 
@@ -1657,6 +1945,8 @@ fn start_over(core: &Core, folder: Option<&str>) {
     sync_conflict::emit_conflicts(core);
     lock(&tracker.seen).clear();
     tracker.set_offers(core, Vec::new());
+    lock(&tracker.copies_seen).clear();
+    tracker.set_copies(core, Vec::new());
     let Some(folder) = folder else {
         return;
     };
@@ -1719,6 +2009,31 @@ pub async fn adopt_folder_vault(core: Shared<'_>, vault_id: String) -> CmdResult
     run(&core, true, move |c| adopt(c, &vault_id)).await
 }
 
+/// `folder_conflict_copies` → [`FolderConflictCopy`]`[]`: the phone's
+/// conflict copies in the folder (as the last scan found them). No I/O; not
+/// user activity.
+#[tauri::command]
+pub async fn folder_conflict_copies(core: Shared<'_>) -> CmdResult<Vec<FolderConflictCopy>> {
+    run(&core, false, |c| Ok(c.mirror().copies(c))).await
+}
+
+/// `restore_folder_conflict_copy(fileName)` → the path of its copy in
+/// `<data>/conflicts/` for the import ([`restore_copy`]).
+#[tauri::command]
+pub async fn restore_folder_conflict_copy(
+    core: Shared<'_>,
+    file_name: String,
+) -> CmdResult<String> {
+    run(&core, true, move |c| restore_copy(c, &file_name)).await
+}
+
+/// `dismiss_folder_conflict_copy(fileName)`: not listed any more
+/// ([`dismiss_copy`]).
+#[tauri::command]
+pub async fn dismiss_folder_conflict_copy(core: Shared<'_>, file_name: String) -> CmdResult<()> {
+    run(&core, true, move |c| dismiss_copy(c, &file_name)).await
+}
+
 /// `dismiss_folder_vault(vaultId)`: the vault is not offered any more
 /// ([`dismiss`]).
 #[tauri::command]
@@ -1766,6 +2081,13 @@ mod tests {
     /// One pass over vault `id` with the folder of the settings.
     fn pass(core: &Core, id: &str) -> AppResult<Report> {
         mirror_vault(core, &folder_of(core), id)
+    }
+
+    /// `resolve_sync_conflict` as the dialog calls it: with the digests of
+    /// the recorded conflict.
+    fn resolve(core: &Core, id: &str, page: Option<&str>, keep: Keep) -> AppResult<VaultInfo> {
+        let seen = sync_conflict::recorded_digests(&core.data_dir(), id);
+        resolve_conflict(core, id, page, keep, (&seen.0, &seen.1), AT)
     }
 
     fn open_id(core: &Core) -> String {
@@ -2165,7 +2487,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_copy_is_replaced_without_being_read() {
+    fn an_oversized_copy_is_never_read_nor_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let (core, cloud) = pc(dir.path());
         let id = open_id(&core);
@@ -2174,11 +2496,14 @@ mod tests {
         let big = fs::File::create(&target).unwrap();
         big.set_len(VAULT_FILE_MAX_BYTES + 1).unwrap();
         drop(big);
-        assert!(matches!(read_copy(&target), FolderCopy::Unusable));
-        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Written);
+        assert!(matches!(read_copy(&target), FolderCopy::TooLarge));
         assert_eq!(
-            fs::read(&target).unwrap(),
-            fs::read(vault_path(&core)).unwrap()
+            pass(&core, &id).unwrap_err().code(),
+            format!("unsupported:{TOO_LARGE}")
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().len(),
+            VAULT_FILE_MAX_BYTES + 1
         );
 
         // A deleted vault's oversized copy is left alone (like a damaged one).
@@ -2586,16 +2911,16 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        // Older than that: pushed, the folder's copy kept just in case.
+        // Older than that, but one of the PC's own writes (its proof's
+        // ancestry): pushed.
         forget_base();
-        let two_back = fs::read(&target).unwrap();
         note(&core, "drei");
         note(&core, "vier");
         core.mirror().take_recorded();
         assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Written);
-        let kept = sync_conflict::list(&data_dir, Some(&id)).unwrap();
-        assert_eq!(kept.len(), 1);
-        assert_eq!(fs::read(&kept[0].path).unwrap(), two_back);
+        assert!(sync_conflict::list(&data_dir, Some(&id))
+            .unwrap()
+            .is_empty());
 
         // Newer in the folder (the phone pushed first): pulled.
         forget_base();
@@ -2761,6 +3086,8 @@ mod tests {
             "remoteUpdatedAt": phone.info().updated_at,
             "passwordChanged": false,
             "lostAttachments": 1,
+            "localDigest": sync::head_of(&local).digest,
+            "remoteDigest": sync::head_of(&VaultFile::read(phone.path()).unwrap()).digest,
         }]);
         assert_eq!(conflicts.last().unwrap(), &expected);
         assert_eq!(
@@ -2795,13 +3122,13 @@ mod tests {
 
         // Not the page's vault; an unknown keep value.
         assert_eq!(
-            resolve_conflict(&core, &id, Some("other"), Keep::Local, AT)
+            resolve(&core, &id, Some("other"), Keep::Local)
                 .unwrap_err()
                 .code(),
             "locked"
         );
         let before = core.read(|v| v.revision()).unwrap();
-        let info = resolve_conflict(&core, &id, Some(&id), Keep::Local, AT).unwrap();
+        let info = resolve(&core, &id, Some(&id), Keep::Local).unwrap();
         assert_eq!(info.id, id);
         // Above both revisions, written to the folder, the base is its head.
         let revision = core.read(|v| v.revision()).unwrap();
@@ -2825,7 +3152,7 @@ mod tests {
             &serde_json::json!([])
         );
         assert_eq!(
-            resolve_conflict(&core, &id, Some(&id), Keep::Local, AT)
+            resolve(&core, &id, Some(&id), Keep::Local)
                 .unwrap_err()
                 .code(),
             "not_found"
@@ -2845,7 +3172,7 @@ mod tests {
         let pc_blobs = blob_names(&attachments::dir_for(&path)).unwrap();
         assert_eq!(pc_blobs.len(), 1);
 
-        let info = resolve_conflict(&core, &id, Some(&id), Keep::Remote, AT).unwrap();
+        let info = resolve(&core, &id, Some(&id), Keep::Remote).unwrap();
         assert_eq!(info.id, id);
         assert_eq!(core.read(|v| v.revision()).unwrap(), phone.revision());
         assert_eq!(fs::read(&path).unwrap(), fs::read(phone.path()).unwrap());
@@ -2876,7 +3203,7 @@ mod tests {
         add_note(&mut phone, "Handy 2");
         write_to_folder(&phone, &cloud);
         assert_eq!(
-            resolve_conflict(&core, &id, Some(&id), Keep::Remote, AT)
+            resolve(&core, &id, Some(&id), Keep::Remote)
                 .unwrap_err()
                 .code(),
             "unsupported:sync_conflict_changed"
@@ -2890,7 +3217,7 @@ mod tests {
         assert!(sync_conflict::list(&core.data_dir(), Some(&id))
             .unwrap()
             .is_empty());
-        resolve_conflict(&core, &id, Some(&id), Keep::Remote, AT).unwrap();
+        resolve(&core, &id, Some(&id), Keep::Remote).unwrap();
         assert!(names(&core).contains(&"Handy 2".to_owned()));
     }
 
@@ -2932,6 +3259,18 @@ mod tests {
                 dir: false,
                 size: Some(bytes.len() as u64),
             })
+        }
+        fn write_conflict_copy(&self, name: &str, bytes: &[u8]) -> AppResult<()> {
+            assert!(
+                sync::vault_id_of_phone_conflict_copy(name).is_some(),
+                "{name}"
+            );
+            let path = self.0.join(name);
+            if path.exists() {
+                return Err(AppError::unsupported(folder_sync::NAME_TAKEN));
+            }
+            fs::write(&path, bytes)?;
+            Ok(())
         }
     }
 
@@ -3034,8 +3373,18 @@ mod tests {
                 .len(),
             1
         );
-        folder_sync::resolve_conflict(&phone, &folder, &mut link, &id, Some(&id), Keep::Local, 4)
-            .unwrap();
+        let seen = sync_conflict::recorded_digests(&phone.data_dir(), &id);
+        folder_sync::resolve_conflict(
+            &phone,
+            &folder,
+            &mut link,
+            &id,
+            Some(&id),
+            Keep::Local,
+            (&seen.0, &seen.1),
+            4,
+        )
+        .unwrap();
         assert_eq!(phone_outcome(&link, &id), PhoneOutcome::Pushed);
         scan_now(&core);
         assert_converged(&core, &phone, &link, &cloud, &id);
@@ -3054,7 +3403,7 @@ mod tests {
         let conflicts = sync_conflict::conflicts_for_page(&core, Some(&id)).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].lost_attachments, 0);
-        resolve_conflict(&core, &id, Some(&id), Keep::Remote, AT).unwrap();
+        resolve(&core, &id, Some(&id), Keep::Remote).unwrap();
         folder_sync::sync_vault(&phone, &folder, &mut link, &id, 6).unwrap();
         assert_eq!(phone_outcome(&link, &id), PhoneOutcome::UpToDate);
         assert_converged(&core, &phone, &link, &cloud, &id);
@@ -3099,6 +3448,9 @@ mod tests {
             fn write_vault(&self, _name: &str, _bytes: &[u8]) -> AppResult<RemoteEntry> {
                 Err(AppError::unsupported(folder_sync::NOT_WRITABLE))
             }
+            fn write_conflict_copy(&self, _name: &str, _bytes: &[u8]) -> AppResult<()> {
+                Err(AppError::unsupported(folder_sync::NOT_WRITABLE))
+            }
         }
 
         let dir = tempfile::tempdir().unwrap();
@@ -3128,5 +3480,295 @@ mod tests {
         assert_eq!(link.files[0].outcome, PhoneOutcome::Updated);
         let vault = phone.store().unlock(&id, "master").unwrap();
         assert_eq!(vault.items().len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Authenticated ancestry and the review fixes (stage 2b)
+    // -----------------------------------------------------------------
+
+    /// `bytes` of a vault file without its sync proof (what a 2.0.x writer
+    /// leaves after its save: a proof that no longer verifies, or none).
+    fn without_proof(bytes: &[u8]) -> Vec<u8> {
+        let mut file = VaultFile::parse(bytes).unwrap();
+        file.extra.0.remove(sync::SYNC_PROOF_KEY);
+        file.to_json().unwrap()
+    }
+
+    /// Review H2: the PC saved P and pushed it (its base); a phone that
+    /// still saw the older B writes its own branch over P in the folder,
+    /// with a higher revision (provider lag). The PC never pulls it: a
+    /// conflict – open right away; locked, the unlock brings P back.
+    #[test]
+    fn a_stale_branch_with_a_higher_revision_is_a_conflict_not_a_pull() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        let target = cloud.join(format!("{id}.keystead"));
+        note(&core, "B");
+        run_queued(&core);
+        let mut phone = other_device(dir.path(), &core, &id);
+        note(&core, "P");
+        run_queued(&core);
+        let p = fs::read(vault_path(&core)).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), p);
+        assert_eq!(base_of(&core, &id), pair(&head_of_path(&vault_path(&core))));
+        // The phone, still at B, saves twice: revision above P's.
+        add_note(&mut phone, "L1");
+        add_note(&mut phone, "L2");
+        assert!(phone.revision() > VaultFile::parse(&p).unwrap().revision);
+        write_to_folder(&phone, &cloud);
+        let theirs = fs::read(&target).unwrap();
+
+        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Conflict);
+        assert_eq!(fs::read(vault_path(&core)).unwrap(), p, "P is kept");
+        assert_eq!(fs::read(&target).unwrap(), theirs, "nothing overwritten");
+        assert_eq!(
+            sync_conflict::conflicts_for_page(&core, Some(&id))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Locked: on trial at most; the unlock brings P back and asks.
+        set_record(&core, &id, None);
+        core.lock(None);
+        scan_now(&core);
+        let path = vault_path_of(&core, &id);
+        assert_eq!(fs::read(&path).unwrap(), theirs, "on trial");
+        core.unlock(&id, "master").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), p);
+        assert!(names(&core).contains(&"P".to_owned()));
+        assert!(!names(&core).contains(&"L1".to_owned()));
+        let diverged = Trial::load(&core.data_dir(), &id).diverged;
+        assert_eq!(
+            diverged,
+            Some(FileVersion::of(&VaultFile::parse(&theirs).unwrap()))
+        );
+        assert_eq!(base_of(&core, &id), pair(&head_of_path(&path)));
+        run_queued(&core);
+        assert_eq!(
+            sync_conflict::conflicts_for_page(&core, Some(&id))
+                .unwrap()
+                .len(),
+            1
+        );
+        // Locked again: never on trial again.
+        core.lock(None);
+        scan_now(&core);
+        assert_eq!(fs::read(&path).unwrap(), p);
+        assert_eq!(fs::read(&target).unwrap(), theirs);
+    }
+
+    /// Provider lag the other way round: the other side wrote several
+    /// times; its newest copy descends from the PC's base – pulled
+    /// cleanly, open or locked.
+    #[test]
+    fn several_writes_of_the_other_side_are_pulled_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        note(&core, "PC");
+        run_queued(&core);
+        let mut phone = other_device(dir.path(), &core, &id);
+        for name in ["eins", "zwei", "drei"] {
+            add_note(&mut phone, name);
+        }
+        write_to_folder(&phone, &cloud);
+        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Pulled);
+        assert_eq!(names(&core), ["PC", "drei", "eins", "zwei"]);
+
+        core.lock(None);
+        add_note(&mut phone, "vier");
+        add_note(&mut phone, "fünf");
+        write_to_folder(&phone, &cloud);
+        scan_now(&core);
+        core.unlock(&id, "master").unwrap();
+        assert_eq!(names(&core).len(), 6);
+        assert_eq!(Trial::load(&core.data_dir(), &id), Trial::default());
+        run_queued(&core);
+        assert!(sync_conflict::conflicts_for_page(&core, Some(&id))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Review M1 and the migration: without a base only proven ancestry
+    /// pulls or pushes. A newer folder copy without a proof (a 2.0.x
+    /// writer), or one that descends from an older state than the PC's
+    /// unsynced edit, is a conflict – never pulled over the PC's copy.
+    #[test]
+    fn without_a_base_only_proven_ancestry_pulls_or_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        let data_dir = core.data_dir();
+        let target = cloud.join(format!("{id}.keystead"));
+        let path = vault_path(&core);
+        note(&core, "eins");
+        run_queued(&core);
+        let mut phone = other_device(dir.path(), &core, &id);
+
+        // A newer copy without a proof: a conflict, whatever its revision.
+        sync_base::remove(&data_dir, &id).unwrap();
+        for name in ["a", "b", "c"] {
+            add_note(&mut phone, name);
+        }
+        fs::write(&target, without_proof(&fs::read(phone.path()).unwrap())).unwrap();
+        let pc_copy = fs::read(&path).unwrap();
+        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Conflict);
+        assert_eq!(fs::read(&path).unwrap(), pc_copy);
+        set_record(&core, &id, None);
+
+        // M1: the PC has an edit the folder never got (the folder was away),
+        // the phone pushed two writes on top of the older state: a conflict.
+        write_to_folder(&phone, &cloud);
+        note(&core, "nur am PC");
+        core.mirror().take_recorded();
+        sync_base::remove(&data_dir, &id).unwrap();
+        let pc_copy = fs::read(&path).unwrap();
+        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Conflict);
+        assert_eq!(fs::read(&path).unwrap(), pc_copy);
+        assert!(names(&core).contains(&"nur am PC".to_owned()));
+    }
+
+    /// Review H3: a folder copy the PC cannot read is never overwritten –
+    /// a newer format or another program's file, one that cannot be read
+    /// right now; a damaged one is kept as a conflict copy first.
+    #[test]
+    fn a_folder_copy_the_pc_cannot_read_is_never_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        let data_dir = core.data_dir();
+        let target = cloud.join(format!("{id}.keystead"));
+        note(&core, "eins");
+        run_queued(&core);
+        let mine = fs::read(vault_path(&core)).unwrap();
+
+        // A newer format (the phone's newer build).
+        let mut future: serde_json::Value = serde_json::from_slice(&mine).unwrap();
+        future["version"] = 99.into();
+        let future = serde_json::to_vec(&future).unwrap();
+        fs::write(&target, &future).unwrap();
+        assert_eq!(
+            pass(&core, &id).unwrap_err().code(),
+            format!("unsupported:{REMOTE_UNSUPPORTED}")
+        );
+        assert_eq!(fs::read(&target).unwrap(), future);
+        // Another program's file under that name.
+        fs::write(&target, b"PK\x03\x04 not ours").unwrap();
+        assert_eq!(
+            pass(&core, &id).unwrap_err().code(),
+            format!("unsupported:{REMOTE_UNSUPPORTED}")
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"PK\x03\x04 not ours");
+
+        // Held open by the cloud app (a sharing violation): the pass is
+        // skipped, nothing written.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::write(&target, &mine[..mine.len() / 2]).unwrap();
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&target)
+                .unwrap();
+            let err = pass(&core, &id).unwrap_err();
+            assert!(err.code().starts_with("io:"), "{err:?}");
+            drop(held);
+            assert_eq!(fs::read(&target).unwrap(), &mine[..mine.len() / 2]);
+        }
+
+        // Damaged (half an upload): kept, then replaced.
+        fs::write(&target, &mine[..mine.len() / 2]).unwrap();
+        assert_eq!(pass(&core, &id).unwrap().outcome, Outcome::Written);
+        assert_eq!(fs::read(&target).unwrap(), mine);
+        let kept = sync_conflict::list(&data_dir, Some(&id)).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(&kept[0].path).unwrap(), &mine[..mine.len() / 2]);
+    }
+
+    /// Review L2: a resolution names the writes the dialog showed.
+    #[test]
+    fn a_resolution_for_other_writes_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        conflict_setup(dir.path(), &core, &cloud);
+        let seen = sync_conflict::recorded_digests(&core.data_dir(), &id);
+        for wrong in [(seen.0.as_str(), "x"), ("x", seen.1.as_str())] {
+            let err = resolve_conflict(&core, &id, Some(&id), Keep::Local, wrong, AT).unwrap_err();
+            assert_eq!(err.code(), conflict_changed().code());
+        }
+        resolve(&core, &id, Some(&id), Keep::Local).unwrap();
+    }
+
+    /// Review M2: the phone's conflict copies in the folder are listed,
+    /// restored into `<data>/conflicts/` for the import, or hidden; the
+    /// folder's files stay.
+    #[test]
+    fn the_phones_conflict_copies_are_listed_restored_and_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, cloud) = pc(dir.path());
+        let id = open_id(&core);
+        note(&core, "eins");
+        run_queued(&core);
+        let bytes = fs::read(vault_path(&core)).unwrap();
+        let first = sync::phone_conflict_file_name(&id, AT);
+        let second = sync::phone_conflict_file_name(&id, AT + 60_000);
+        fs::write(cloud.join(&first), &bytes).unwrap();
+        fs::write(cloud.join(&second), &bytes).unwrap();
+        // Not listed: a damaged one, another name, a copy of another vault
+        // under this vault's name.
+        fs::write(
+            cloud.join(sync::phone_conflict_file_name(&id, AT + 1_000)),
+            b"{",
+        )
+        .unwrap();
+        fs::write(cloud.join(format!("{first}.txt")), &bytes).unwrap();
+        fs::write(
+            cloud.join(sync::phone_conflict_file_name("other-vault", AT)),
+            &bytes,
+        )
+        .unwrap();
+
+        scan_now(&core);
+        let listed = core.mirror().copies(&core);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|c| c.file_name.as_str())
+                .collect::<Vec<_>>(),
+            [first.as_str(), second.as_str()]
+        );
+        assert_eq!(listed[0].vault_id, id);
+        assert_eq!(listed[0].vault_name, "Test");
+        let json = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 5);
+        assert_eq!(
+            events(&core, EVENT_COPIES).last().unwrap(),
+            &serde_json::to_value(&listed).unwrap()
+        );
+
+        let path = PathBuf::from(restore_copy(&core, &first).unwrap());
+        assert_eq!(
+            path,
+            sync_conflict::conflicts_dir(&core.data_dir()).join(&first)
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(cloud.join(&first).exists(), "the folder's file stays");
+        dismiss_copy(&core, &second).unwrap();
+        assert!(core.mirror().copies(&core).is_empty());
+        scan_now(&core);
+        assert!(core.mirror().copies(&core).is_empty(), "not listed again");
+        // Anything but such a name is no conflict copy.
+        for bad in [
+            "../x",
+            &format!("{id}.keystead"),
+            "a.keystead.conflict-1-2-phone",
+        ] {
+            assert_eq!(restore_copy(&core, bad).unwrap_err().code(), "not_found");
+            assert_eq!(dismiss_copy(&core, bad).unwrap_err().code(), "not_found");
+        }
     }
 }

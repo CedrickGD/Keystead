@@ -686,6 +686,25 @@ impl Core {
     ///   suspend, the auto-lock, the tray, the extension, the portable-mode
     ///   move, an update – so such a lock is never undone.
     pub fn install_vault_since(&self, vault: UnlockedVault, epoch: u64) -> AppResult<VaultInfo> {
+        match self.install_vault_checked(vault, epoch, |_| true)? {
+            Ok(info) => Ok(info),
+            // `still_current` always agrees.
+            Err(_) => Err(AppError::Locked),
+        }
+    }
+
+    /// [`Core::install_vault_since`] that first asks `still_current` –
+    /// under the state lock, after the update and epoch checks – whether
+    /// `vault` is still what should be installed (the unlock of a copy on
+    /// trial checks that the file on disk is still the write it opened,
+    /// `sync_trial::unlock_copy`). If not, nothing is installed and the
+    /// vault comes back as `Ok(Err(vault))`.
+    pub fn install_vault_checked(
+        &self,
+        vault: UnlockedVault,
+        epoch: u64,
+        still_current: impl FnOnce(&UnlockedVault) -> bool,
+    ) -> AppResult<Result<VaultInfo, UnlockedVault>> {
         let info = vault.info();
         let previous = {
             let mut st = self.state();
@@ -703,6 +722,9 @@ impl Core {
                 drop(st);
                 drop(vault);
                 return Err(AppError::Locked);
+            }
+            if !still_current(&vault) {
+                return Ok(Err(vault));
             }
             let previous = st.vault.replace(vault);
             if previous.is_some() {
@@ -723,7 +745,7 @@ impl Core {
         // other vaults, vaults made on the phone).
         #[cfg(desktop)]
         self.mirror.request(crate::mirror::Job::Scan);
-        Ok(info)
+        Ok(Ok(info))
     }
 
     /// The lock epoch and a clone of the store, read together before a slow
@@ -794,15 +816,23 @@ impl Core {
     ) -> AppResult<T> {
         let (result, reloaded, vault_id) = {
             let mut st = self.state();
+            let data_dir = st.store.root().to_path_buf();
             let vault = select(&mut st)?;
             let vault_id = vault.id().to_owned();
-            match f(vault) {
+            let revision = vault.revision();
+            let (result, reloaded) = match f(vault) {
                 Err(CoreError::Conflict) => {
                     let reloaded = vault.reload_if_changed()?;
-                    (f(vault), reloaded, vault_id)
+                    (f(vault), reloaded)
                 }
-                other => (other, false, vault_id),
+                other => (other, false),
+            };
+            if result.is_ok() && vault.revision() != revision {
+                // A write of the open vault's own: a copy the sync left on
+                // trial is no longer what the file holds.
+                crate::sync_trial::after_save(&data_dir, vault);
             }
+            (result, reloaded, vault_id)
         };
         if reloaded {
             self.emit_changed();

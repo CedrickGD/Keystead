@@ -9,6 +9,7 @@ import type {
   BrowserStatus,
   ExportFormat,
   Folder,
+  FolderConflictCopy,
   FolderOffer,
   FolderStatus,
   GeneratedPasswordInfo,
@@ -273,16 +274,30 @@ export const api = {
   adoptFolderVault: (vaultId: string) => call<VaultInfo>("adopt_folder_vault", { vaultId }),
   /** Desktop: the vault is no longer offered. */
   dismissFolderVault: (vaultId: string) => call<null>("dismiss_folder_vault", { vaultId }),
+  /** Desktop: the phone's conflict copies in the mirror folder (as the last scan found them). */
+  folderConflictCopies: () => call<FolderConflictCopy[]>("folder_conflict_copies"),
+  /** Desktop: copies one into the data folder (`conflicts/`) and returns its path for the import. */
+  restoreFolderConflictCopy: (fileName: string) => call<string>("restore_folder_conflict_copy", { fileName }),
+  /** Desktop: the conflict copy is no longer listed (the file in the folder stays). */
+  dismissFolderConflictCopy: (fileName: string) => call<null>("dismiss_folder_conflict_copy", { fileName }),
 
   // Sync conflicts – both platforms ("local" = this side, "remote" = the folder's copy).
   /** The checked conflicts of the page's open vault. */
   syncConflicts: () => call<SyncConflict[]>("sync_conflicts", { pageVaultId }),
   /**
-   * Keeps one side of the open vault's conflict; the other becomes a conflict
-   * copy in `<data>/conflicts/`. `remote` may lock the vault (`keyChanged`).
+   * Keeps one side of the open vault's conflict – the two writes `conflict`
+   * names (`unsupported:sync_conflict_changed` if it is about others by now);
+   * the other becomes a conflict copy in `<data>/conflicts/` (the phone also
+   * puts it into the cloud folder). `remote` may lock the vault (`keyChanged`).
    */
-  resolveSyncConflict: (vaultId: string, keep: "local" | "remote") =>
-    call<VaultInfo>("resolve_sync_conflict", { vaultId, pageVaultId, keep }),
+  resolveSyncConflict: (conflict: SyncConflict, keep: "local" | "remote") =>
+    call<VaultInfo>("resolve_sync_conflict", {
+      vaultId: conflict.vaultId,
+      pageVaultId,
+      keep,
+      localDigest: conflict.localDigest,
+      remoteDigest: conflict.remoteDigest,
+    }),
 
   /** Stored website icons of the page's vault: { [host]: "data:image/png;base64,…" } (see lib/icons.ts). */
   getIcons: () => call<Record<string, string>>("get_icons", { pageVaultId }),
@@ -376,6 +391,8 @@ export const events = {
   /** Desktop: the vaults the mirror folder offers changed. */
   onMirrorOffers: (handler: (offers: FolderOffer[]) => void) =>
     subscribe<FolderOffer[]>("mirror://offers", handler),
+  onMirrorConflictCopies: (handler: (copies: FolderConflictCopy[]) => void) =>
+    subscribe<FolderConflictCopy[]>("mirror://conflictCopies", handler),
   /** Both platforms: the open vault's checked sync conflicts changed (`[]`: none). */
   onSyncConflict: (handler: (conflicts: SyncConflict[]) => void) =>
     subscribe<SyncConflict[]>("sync://conflict", handler),

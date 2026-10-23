@@ -16,13 +16,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use keystead_core::format;
+use keystead_core::format::{self, VaultFile};
 use keystead_core::model::now_ms;
-use keystead_core::sync::{self, SyncBase, SyncDecision, SyncHead};
-use keystead_core::Error as CoreError;
+use keystead_core::sync::{self, RemoteProof, SyncBase, SyncDecision, SyncHead};
+use keystead_core::vault::CopyCheck;
+use keystead_core::{Error as CoreError, UnlockedVault};
 
 use crate::error::{AppError, AppResult};
-use crate::state::log;
+use crate::state::{log, Core};
 
 /// `<data>/sync`: the sync's own files (link, bases, copies on trial).
 pub fn sync_dir(data_dir: &Path) -> PathBuf {
@@ -98,20 +99,74 @@ pub fn remove(data_dir: &Path, id: &str) -> AppResult<()> {
     }
 }
 
-/// `sync::decide` for two copies of one vault that are both there – with
-/// one rule on top, the same on both sides: the same write with another
-/// revision (a header changed by hand) is not "up to date": a raised
-/// revision is pulled (and then fails the checks of a copy on trial or the
-/// open vault's `check_copy`), a lowered one is older.
-pub fn decide_pair(local: &SyncHead, remote: &SyncHead, base: Option<&SyncBase>) -> SyncDecision {
-    if local.id == remote.id && local.digest == remote.digest && local.revision != remote.revision {
-        return if remote.revision > local.revision {
-            SyncDecision::PullRemote
-        } else {
-            SyncDecision::RemoteOlder
-        };
+/// `sync::decide` for this side's copy `local` and the folder's `remote`
+/// of one vault (both there), the same on both sides. The ancestry comes
+/// from the open vault when it is this one: this side's verified lineage
+/// (if the session is that write; else what this side's own file claims)
+/// and the folder copy's proof verified with the session's master key
+/// ([`remote_proof`]). While the vault is locked the folder's proof cannot
+/// be checked (`Unchecked`: a pull only goes on trial). `extra_local`: more
+/// of this side's own earlier writes (the PC's `.bak`).
+pub fn decide_copies(
+    core: &Core,
+    local: &VaultFile,
+    remote: &VaultFile,
+    base: Option<&SyncBase>,
+    extra_local: &[String],
+) -> SyncDecision {
+    let local_head = sync::head_of(local);
+    let remote_head = sync::head_of(remote);
+    let (mut local_ancestors, verified, unchecked) = {
+        let st = core.state();
+        match st.vault.as_ref().filter(|v| v.id() == local.id) {
+            Some(vault) => {
+                let ancestors = if vault.head() == local_head {
+                    vault.lineage().to_vec()
+                } else {
+                    sync::claimed_ancestors(local)
+                };
+                match remote_proof(vault, remote) {
+                    Ok(verified) => (ancestors, Some(verified), false),
+                    Err(unchecked) => (ancestors, None, unchecked),
+                }
+            }
+            None => (sync::claimed_ancestors(local), None, true),
+        }
+    };
+    local_ancestors.extend(extra_local.iter().cloned());
+    let proof = match (&verified, unchecked) {
+        (Some(ancestors), _) => RemoteProof::Verified(ancestors),
+        (None, true) => RemoteProof::Unchecked,
+        (None, false) => RemoteProof::Unproven,
+    };
+    sync::decide(
+        Some(&local_head),
+        Some(&remote_head),
+        base,
+        &local_ancestors,
+        proof,
+    )
+}
+
+/// The folder copy `remote`'s verified ancestry with the open `vault`'s
+/// keys; `Err(true)` if the session cannot tell (another master password:
+/// unchecked), `Err(false)` if it can and there is none (no proof, one that
+/// does not verify, or a copy its keys prove forged).
+pub fn remote_proof(vault: &UnlockedVault, remote: &VaultFile) -> Result<Vec<String>, bool> {
+    match vault.verified_lineage_of(remote) {
+        Some(ancestors) => Ok(ancestors),
+        None => Err(vault.check_copy(remote) == CopyCheck::OtherPassword),
     }
-    sync::decide(Some(local), Some(remote), base)
+}
+
+/// Whether the folder copy `remote` descends from `from` as far as the open
+/// `vault`'s keys can prove it: a higher revision and `from` in its
+/// verified ancestry.
+pub fn descends(vault: &UnlockedVault, remote: &VaultFile, from: &SyncHead) -> bool {
+    remote.revision > from.revision
+        && vault
+            .verified_lineage_of(remote)
+            .is_some_and(|ancestors| ancestors.contains(&from.digest))
 }
 
 /// After this side went back from a copy it had taken from the folder
@@ -205,35 +260,65 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_with_the_same_write_under_another_revision() {
-        let base = SyncBase::new(&head(5, "d5"), TREE, 1);
-        let local = head(5, "d5");
-        // A raised revision of the same write: pulled (the checks refuse it).
+    fn copies_are_decided_with_the_open_vaults_keys() {
+        use keystead_core::settings::Settings;
+        use keystead_core::{KdfParams, VaultStore};
+
+        let dir = tempfile::tempdir().unwrap();
+        // The other device: writes the folder's copies.
+        let other_store = VaultStore::new(dir.path().join("other"));
+        let mut other = other_store
+            .create_vault_with_params("Privat", "pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        let store = VaultStore::new(dir.path().join("here"));
+        fs::create_dir_all(store.vaults_dir()).unwrap();
+        fs::copy(other.path(), store.vault_path(other.id())).unwrap();
+        let core = Core::for_tests(store.clone(), Settings::default());
+        let local = VaultFile::read(&store.vault_path(other.id())).unwrap();
+        let base = SyncBase::new(&sync::head_of(&local), TREE, 1);
+        other.save().unwrap();
+        other.save().unwrap();
+        let newer = VaultFile::read(other.path()).unwrap();
+
+        // Locked: the newer copy can only go on trial.
         assert_eq!(
-            decide_pair(&local, &head(9, "d5"), Some(&base)),
+            decide_copies(&core, &local, &newer, Some(&base), &[]),
+            SyncDecision::PullUnverified
+        );
+        // Open: its proof holds the base – a pull.
+        core.state().vault = Some(store.unlock(other.id(), "pw").unwrap());
+        assert_eq!(
+            decide_copies(&core, &local, &newer, Some(&base), &[]),
             SyncDecision::PullRemote
         );
+        // A raised revision of the same write is not the same write and
+        // proves nothing.
+        let mut raised = local.clone();
+        raised.revision = 9;
         assert_eq!(
-            decide_pair(&local, &head(9, "d5"), None),
-            SyncDecision::PullRemote
-        );
-        // A lowered one: older.
-        assert_eq!(
-            decide_pair(&local, &head(2, "d5"), Some(&base)),
-            SyncDecision::RemoteOlder
-        );
-        // Everything else is `decide`'s.
-        assert_eq!(
-            decide_pair(&local, &head(5, "d5"), Some(&base)),
-            SyncDecision::UpToDate
-        );
-        assert_eq!(
-            decide_pair(&local, &head(6, "d6"), Some(&base)),
-            SyncDecision::PullRemote
-        );
-        assert_eq!(
-            decide_pair(&head(6, "l6"), &head(6, "d6"), Some(&base)),
+            decide_copies(&core, &local, &raised, Some(&base), &[]),
             SyncDecision::Diverged
+        );
+        // Its proof stripped (a 2.0.x writer): a conflict, not a pull.
+        let mut bare = newer.clone();
+        bare.extra.0.remove(sync::SYNC_PROOF_KEY);
+        assert_eq!(
+            decide_copies(&core, &local, &bare, Some(&base), &[]),
+            SyncDecision::Diverged
+        );
+        let session = core.state().vault.take().unwrap();
+        assert!(descends(&session, &newer, &sync::head_of(&local)));
+        assert!(!descends(&session, &bare, &sync::head_of(&local)));
+        assert!(!descends(&session, &local, &sync::head_of(&local)));
+        // Another master password: unchecked even while open.
+        other.change_master_password("pw", "neu").unwrap();
+        let rekeyed = VaultFile::read(other.path()).unwrap();
+        assert_eq!(remote_proof(&session, &rekeyed), Err(true));
+        assert_eq!(remote_proof(&session, &bare), Err(false));
+        core.state().vault = Some(session);
+        assert_eq!(
+            decide_copies(&core, &local, &rekeyed, Some(&base), &[]),
+            SyncDecision::PullUnverified
         );
     }
 

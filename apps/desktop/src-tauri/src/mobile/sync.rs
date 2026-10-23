@@ -443,6 +443,7 @@ pub fn resolve(
     vault_id: &str,
     page_vault_id: Option<&str>,
     keep: Keep,
+    seen: (&str, &str),
 ) -> AppResult<VaultInfo> {
     let state = sync_state(app)?;
     let _guard = lock(&state.guard);
@@ -458,6 +459,7 @@ pub fn resolve(
             vault_id,
             page_vault_id,
             keep,
+            seen,
             now_ms(),
         )
     });
@@ -585,6 +587,13 @@ mod android {
     struct Written {
         uri: String,
         size: u64,
+    }
+
+    #[derive(Serialize)]
+    struct CopyWriteArgs<'a> {
+        tree: &'a str,
+        name: &'a str,
+        source: &'a str,
     }
 
     /// The plugin's rejection codes (`invoke.reject(message, code)`) as the
@@ -731,6 +740,37 @@ mod android {
                 dir: false,
                 size: Some(written.size),
             })
+        }
+
+        /// Stages `bytes` as `<data>/sync/outgoing/<name>` and lets the
+        /// plugin create the file `name` (a phone conflict copy only) –
+        /// never over an existing one.
+        fn write_conflict_copy(&self, name: &str, bytes: &[u8]) -> AppResult<()> {
+            if sync::vault_id_of_phone_conflict_copy(name).is_none() {
+                return Err(AppError::invalid("folder_write"));
+            }
+            let outgoing = folder_sync::outgoing_dir(&self.data_dir);
+            fs::create_dir_all(&outgoing)?;
+            let source = outgoing.join(name);
+            format::write_atomic(&source, bytes, false)?;
+            let written = source
+                .to_str()
+                .ok_or_else(|| AppError::io("outgoing path"))
+                .and_then(|source| {
+                    self.plugin
+                        .0
+                        .run_mobile_plugin::<Written>(
+                            "writeConflictCopy",
+                            CopyWriteArgs {
+                                tree: &self.tree,
+                                name,
+                                source,
+                            },
+                        )
+                        .map_err(plugin_error)
+                });
+            let _ = fs::remove_file(&source);
+            written.map(|_| ())
         }
     }
 }

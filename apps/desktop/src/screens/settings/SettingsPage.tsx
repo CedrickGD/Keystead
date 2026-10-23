@@ -1003,6 +1003,7 @@ function SyncSection() {
 function PhoneSection() {
   const { t, errorText, formatDateTime, formatRelative } = useT();
   const mirror = useMirror();
+  const openImport = useOpenImport();
   const { settings } = useApp();
   const status = mirror?.status ?? null;
   useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt));
@@ -1078,6 +1079,45 @@ function PhoneSection() {
                     onClick={() => void mirror.adopt(offer)}
                   >
                     {t("sync.offer.adopt")}
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </SettingRow>
+      )}
+      {on && mirror.copies.length > 0 && (
+        <SettingRow title={t("sync.copies.listTitle")} description={t("sync.copies.listDesc")} stacked>
+          <ul className="offer-list">
+            {mirror.copies.map((copy) => (
+              <li key={copy.fileName} className="offer-row">
+                <span className="offer-row-text">
+                  <strong className="truncate">{t("sync.copies.vault", { name: copy.vaultName, n: copy.revision })}</strong>
+                  <span className="subtle">
+                    {t("sync.offer.changed", { when: formatRelative(copy.updatedAt) })} · {formatDateTime(copy.updatedAt)}
+                  </span>
+                </span>
+                <span className="offer-row-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={mirror.copyBusy !== null}
+                    onClick={() => void mirror.dismissCopy(copy)}
+                  >
+                    {t("sync.copies.dismiss")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={mirror.copyBusy === copy.fileName}
+                    disabled={!openImport || (mirror.copyBusy !== null && mirror.copyBusy !== copy.fileName)}
+                    onClick={() =>
+                      void mirror.restoreCopy(copy).then((path) => {
+                        if (path) openImport?.(path);
+                      })
+                    }
+                  >
+                    {t("sync.copies.restore")}
                   </Button>
                 </span>
               </li>

@@ -6,12 +6,15 @@
 // the vaults in the folder this PC does not have yet, e.g. made on the phone
 // (`folder_offers`, `mirror://offers`): the PC asks before it takes one
 // (`adopt_folder_vault`) and forgets the ones the user declines
-// (`dismiss_folder_vault`). Desktop only – the phone has no such command;
-// there `useMirror()` is null.
+// (`dismiss_folder_vault`). And the conflict copies the phone put into the
+// folder (`folder_conflict_copies`, `mirror://conflictCopies`): restored into
+// the data folder for the import (`restore_folder_conflict_copy`) or hidden
+// (`dismiss_folder_conflict_copy`). Desktop only – the phone has no such
+// command; there `useMirror()` is null.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, pickFolder, subscribeEffect } from "../lib/api";
-import type { FolderOffer, MirrorStatus } from "../lib/types";
+import type { FolderConflictCopy, FolderOffer, MirrorStatus } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useApp } from "./app";
@@ -33,6 +36,14 @@ export interface MirrorApi {
   adopt: (offer: FolderOffer) => Promise<boolean>;
   /** Declines an offered vault for good (the file in the folder stays). */
   dismiss: (offer: FolderOffer) => Promise<boolean>;
+  /** The phone's conflict copies in the folder (newest scan). */
+  copies: FolderConflictCopy[];
+  /** The conflict copy being restored or hidden. */
+  copyBusy: string | null;
+  /** Copies a conflict copy into the data folder; resolves to its path for the import (null on error). */
+  restoreCopy: (copy: FolderConflictCopy) => Promise<string | null>;
+  /** Hides a conflict copy (the file in the folder stays). */
+  dismissCopy: (copy: FolderConflictCopy) => Promise<boolean>;
 }
 
 const MirrorContext = createContext<MirrorApi | null>(null);
@@ -51,6 +62,8 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
   const [busy, setBusy] = useState(false);
   const [offers, setOffers] = useState<FolderOffer[]>([]);
   const [offerBusy, setOfferBusy] = useState<string | null>(null);
+  const [copies, setCopies] = useState<FolderConflictCopy[]>([]);
+  const [copyBusy, setCopyBusy] = useState<string | null>(null);
   // The error the user has already been told about (or that was there when
   // the page loaded – a reload after a lock does not repeat the toast).
   const knownError = useRef<string | null | undefined>(undefined);
@@ -106,6 +119,64 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
       unsubscribe();
     };
   }, [enabled]);
+
+  // The phone's conflict copies, likewise.
+  useEffect(() => {
+    if (!enabled) return;
+    let disposed = false;
+    let heard = false;
+    const subscription = events.onMirrorConflictCopies((list) => {
+      heard = true;
+      setCopies(list);
+    });
+    void subscription
+      .catch(() => undefined)
+      .then(() => (disposed ? null : api.folderConflictCopies()))
+      .then((list) => {
+        if (list && !disposed && !heard) setCopies(list);
+      })
+      .catch(() => undefined);
+    const unsubscribe = subscribeEffect(subscription);
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [enabled]);
+
+  const restoreCopy = useCallback(
+    async (copy: FolderConflictCopy) => {
+      setCopyBusy(copy.fileName);
+      try {
+        const path = await api.restoreFolderConflictCopy(copy.fileName);
+        setCopies((list) => list.filter((c) => c.fileName !== copy.fileName));
+        return path;
+      } catch (err) {
+        toast.error(errorText(err));
+        return null;
+      } finally {
+        setCopyBusy(null);
+      }
+    },
+    [errorText, toast],
+  );
+
+  const dismissCopy = useCallback(
+    async (copy: FolderConflictCopy) => {
+      setCopyBusy(copy.fileName);
+      try {
+        await api.dismissFolderConflictCopy(copy.fileName);
+        setCopies((list) => list.filter((c) => c.fileName !== copy.fileName));
+        toast.info(t("sync.copies.dismissed"));
+        return true;
+      } catch (err) {
+        toast.error(errorText(err));
+        return false;
+      } finally {
+        setCopyBusy(null);
+      }
+    },
+    [errorText, t, toast],
+  );
 
   const adopt = useCallback(
     async (offer: FolderOffer) => {
@@ -168,8 +239,11 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
   }, [t, toast, updateSettings]);
 
   const value = useMemo<MirrorApi | null>(
-    () => (enabled ? { status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss } : null),
-    [enabled, status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss],
+    () =>
+      enabled
+        ? { status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss, copies, copyBusy, restoreCopy, dismissCopy }
+        : null,
+    [enabled, status, busy, choose, turnOff, offers, offerBusy, adopt, dismiss, copies, copyBusy, restoreCopy, dismissCopy],
   );
   return <MirrorContext.Provider value={value}>{children}</MirrorContext.Provider>;
 }

@@ -629,9 +629,13 @@ export interface FolderStatus {
 /**
  * A conflict of the two-way sync (`sync_conflicts`, `sync://conflict`, both
  * platforms): this side's copy ("local") and the folder's ("remote") both
- * changed. No secrets. `lostAttachments` only from the PC: how many
- * attachments only the PC's copy has (keeping the folder's drops them;
- * omitted when 0 or unknown).
+ * changed, or nothing proves that one descends from the other. No secrets.
+ * `lostAttachments`: how many attachments only this side's copy has (keeping
+ * the folder's drops them); `remoteOnlyAttachments`: only the folder's copy
+ * has (keeping this side's drops them) – omitted when 0 or unknown.
+ * `localDigest` / `remoteDigest` name the two writes; `resolve_sync_conflict`
+ * gets them back and refuses (`unsupported:sync_conflict_changed`) if the
+ * conflict is about other writes by then.
  */
 export interface SyncConflict {
   vaultId: string;
@@ -643,6 +647,9 @@ export interface SyncConflict {
   /** The folder's copy has another master password: this side's state cannot be kept. */
   passwordChanged: boolean;
   lostAttachments?: number;
+  remoteOnlyAttachments?: number;
+  localDigest: string;
+  remoteDigest: string;
 }
 
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
@@ -666,6 +673,22 @@ export interface MirrorStatus {
 export interface FolderOffer {
   vaultId: string;
   name: string;
+  revision: number;
+  updatedAt: number;
+}
+
+/**
+ * Desktop: a conflict copy the phone wrote into the mirror folder
+ * (`<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`, the state it did not
+ * keep when it resolved a conflict) – `folder_conflict_copies`,
+ * `mirror://conflictCopies`. `restore_folder_conflict_copy` copies it into
+ * the data folder for the import, `dismiss_folder_conflict_copy` hides it.
+ * From the plain header – no secrets.
+ */
+export interface FolderConflictCopy {
+  fileName: string;
+  vaultId: string;
+  vaultName: string;
   revision: number;
   updatedAt: number;
 }

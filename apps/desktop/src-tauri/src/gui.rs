@@ -189,6 +189,12 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mirror::adopt_folder_vault,
             #[cfg(desktop)]
             crate::mirror::dismiss_folder_vault,
+            #[cfg(desktop)]
+            crate::mirror::folder_conflict_copies,
+            #[cfg(desktop)]
+            crate::mirror::restore_folder_conflict_copy,
+            #[cfg(desktop)]
+            crate::mirror::dismiss_folder_conflict_copy,
             crate::sync_conflict::sync_conflicts,
             crate::sync_conflict::resolve_sync_conflict,
             #[cfg(desktop)]
@@ -666,13 +672,23 @@ mod tests {
         assert!(folder.contains("releasePersistableUriPermission"));
         // Writes: an existing file truncated and rewritten ("wt", synced to
         // disk), a missing one created under exactly its name.
-        assert!(folder.contains(r#"openFileDescriptor(target, "wt")"#));
+        assert!(folder.contains(r#"copyInto(target, source, "wt")"#));
+        assert!(folder.contains("openFileDescriptor(target, mode)"));
         assert!(folder.contains("fd.sync()"));
         assert!(folder.contains("DocumentsContract.createDocument("));
         assert!(folder.contains(r#""name_taken""#));
         assert!(folder.contains(r#""write_unverified""#));
         assert!(folder.contains("VAULT_FILE_NAME.matches(args.name)"));
         assert!(folder.contains("needWrite = true"));
+        // The phone's conflict copies: only created, never written over.
+        let copy = &folder[folder.find("fun writeConflictCopy").unwrap()..];
+        let copy = &copy[..copy.find("\n  }").unwrap()];
+        assert!(copy.contains("CONFLICT_COPY_NAME.matches(args.name)"));
+        assert!(copy.contains("childNamed(tree, rootId, args.name) != null) throw NameTaken()"));
+        assert!(copy.contains("if (nameOf(made) != args.name) throw NameTaken()"));
+        assert!(copy.contains(r#"copyInto(made, source, "w")"#));
+        assert!(!copy.contains(r#""wt""#));
+        assert!(folder.contains(r#"-[0-9]{8}-[0-9]{6}-phone$"#));
         for never in [
             "deleteDocument",
             "renameDocument",
@@ -695,6 +711,7 @@ mod tests {
             "listChildren",
             "copyFile",
             "writeFile",
+            "writeConflictCopy",
         ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),

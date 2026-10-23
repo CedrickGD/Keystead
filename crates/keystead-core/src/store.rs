@@ -115,8 +115,10 @@ impl VaultStore {
         let id = util::new_id();
         let key = crypto::random_key()?;
         let data = VaultData::default();
-        let (file, master_kek) =
+        let (mut file, master_kek) =
             VaultFile::create_with_kek(&id, &name, master_password, kdf, &key, &data)?;
+        // The first write of the vault's lineage (no ancestors).
+        crate::sync::seal_proof(&mut file, &key, &[]);
         let path = self.vault_path(&id);
         if path.exists() {
             // A UUID v4 collision is practically impossible; never overwrite.

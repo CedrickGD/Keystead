@@ -33,3 +33,24 @@ export function conflictChoices(platform, passwordChanged) {
     .map((device) => ({ device, keep: keepFor(device) }))
     .filter((choice) => !(passwordChanged && choice.keep === "local"));
 }
+
+/**
+ * The attachment warnings of the dialog. The backend counts the attachments
+ * only this device's copy has (`lostAttachments`: choosing the folder's copy
+ * drops them) and those only the folder's copy has (`remoteOnlyAttachments`:
+ * choosing this device's drops them). Returns `{ pcOnly, phoneOnly }`: the
+ * attachments only the PC's / only the phone's state has – each only when
+ * the choice that drops them is among `choices` (0 otherwise).
+ */
+export function attachmentWarnings(platform, conflict, choices) {
+  const sides = conflictSides(platform);
+  const only = {
+    [sides.local]: conflict.lostAttachments ?? 0,
+    [sides.remote]: conflict.remoteOnlyAttachments ?? 0,
+  };
+  const offered = (device) => choices.some((choice) => choice.device === device);
+  return {
+    pcOnly: offered("phone") ? only.pc : 0,
+    phoneOnly: offered("pc") ? only.phone : 0,
+  };
+}

@@ -10,8 +10,10 @@
 // listed and files are copied out of it – the copies go only to
 // <app data>/sync/incoming. Writes are as narrow: only a top-level
 // <id>.keystead file, only from <app data>/sync/outgoing, truncated and
-// rewritten in place or created under exactly that name; never a blob,
-// and no file of the folder is ever deleted, renamed or moved. Provider
+// rewritten in place or created under exactly that name – and the phone's
+// conflict copies (<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone), only
+// ever created, never written over; never a blob, and no file of the
+// folder is ever deleted, renamed or moved. Provider
 // calls can be slow (a cloud app may download or upload a file first), so
 // they run on a thread of their own, never on the UI thread. A unit test
 // in src-tauri/src/gui.rs guards this file.
@@ -71,6 +73,15 @@ class CopyFileArgs {
 class WriteFileArgs {
   lateinit var tree: String
   // The file's name at the tree's top level: <vault id>.keystead.
+  lateinit var name: String
+  // <app data>/sync/outgoing/<name>, staged by the Rust side.
+  lateinit var source: String
+}
+
+@InvokeArg
+class WriteConflictCopyArgs {
+  lateinit var tree: String
+  // <vault id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone.
   lateinit var name: String
   // <app data>/sync/outgoing/<name>, staged by the Rust side.
   lateinit var source: String
@@ -264,34 +275,7 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
           if (nameOf(made) != args.name) throw NameTaken()
           made
         }
-        var written = 0L
-        val descriptor = resolver.openFileDescriptor(target, "wt")
-          ?: throw FileNotFoundException("the file cannot be opened for writing")
-        descriptor.use { pfd ->
-          FileOutputStream(pfd.fileDescriptor).use { to ->
-            FileInputStream(source).use { from ->
-              val buffer = ByteArray(64 * 1024)
-              while (true) {
-                val n = from.read(buffer)
-                if (n < 0) break
-                to.write(buffer, 0, n)
-                written += n
-              }
-            }
-            to.flush()
-            try {
-              to.fd.sync()
-            } catch (e: SyncFailedException) {
-              // A pipe to the provider cannot be synced; the read-back on
-              // the Rust side verifies the file instead.
-            }
-          }
-        }
-        // Not every provider reports a size (then the read-back decides).
-        val size = sizeOf(target)
-        if (written != source.length() || (size != null && size != written)) {
-          throw WriteUnverified()
-        }
+        val written = copyInto(target, source, "wt")
         invoke.resolve(JSObject().apply {
           put("uri", target.toString())
           put("size", written)
@@ -300,6 +284,73 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
         reject(invoke, e)
       }
     }
+  }
+
+  // Creates the top-level file `name` – a conflict copy of the phone's
+  // (`<id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`) – from the staged
+  // file `source`. Never written over: when the folder lists a file of
+  // that name, or the provider picks another name, it is `name_taken` (a
+  // new, empty file the provider made under another name is left alone).
+  // Returns { uri, size }.
+  @Command
+  fun writeConflictCopy(invoke: Invoke) {
+    val args = invoke.parseArgs(WriteConflictCopyArgs::class.java)
+    io.execute {
+      try {
+        val tree = granted(args.tree, needWrite = true)
+        if (!CONFLICT_COPY_NAME.matches(args.name)) throw Invalid("not a conflict copy name")
+        val source = outgoingFile(args.source, args.name)
+        val rootId = DocumentsContract.getTreeDocumentId(tree)
+        if (childNamed(tree, rootId, args.name) != null) throw NameTaken()
+        val root = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
+        val made = DocumentsContract.createDocument(
+          activity.contentResolver, root, "application/octet-stream", args.name
+        ) ?: throw IOException("the file cannot be created")
+        if (nameOf(made) != args.name) throw NameTaken()
+        val written = copyInto(made, source, "w")
+        invoke.resolve(JSObject().apply {
+          put("uri", made.toString())
+          put("size", written)
+        })
+      } catch (e: Exception) {
+        reject(invoke, e)
+      }
+    }
+  }
+
+  // Writes the staged file `source` into the document `target` (opened
+  // with `mode`), synced to disk where the provider allows it; the size is
+  // checked. Returns the bytes written.
+  private fun copyInto(target: Uri, source: File, mode: String): Long {
+    var written = 0L
+    val descriptor = activity.contentResolver.openFileDescriptor(target, mode)
+      ?: throw FileNotFoundException("the file cannot be opened for writing")
+    descriptor.use { pfd ->
+      FileOutputStream(pfd.fileDescriptor).use { to ->
+        FileInputStream(source).use { from ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val n = from.read(buffer)
+            if (n < 0) break
+            to.write(buffer, 0, n)
+            written += n
+          }
+        }
+        to.flush()
+        try {
+          to.fd.sync()
+        } catch (e: SyncFailedException) {
+          // A pipe to the provider cannot be synced; the read-back on the
+          // Rust side verifies the file instead.
+        }
+      }
+    }
+    // Not every provider reports a size (then the read-back decides).
+    val size = sizeOf(target)
+    if (written != source.length() || (size != null && size != written)) {
+      throw WriteUnverified()
+    }
+    return written
   }
 
   // The tree, if the app still holds its persisted read (and, with
@@ -414,6 +465,10 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
 
     // A vault file as the app names it (`sync::vault_id_of_file_name`).
     private val VAULT_FILE_NAME = Regex("^[A-Za-z0-9_-]{1,64}\\.keystead$")
+
+    // A conflict copy of the phone's (`sync::phone_conflict_file_name`).
+    private val CONFLICT_COPY_NAME =
+      Regex("^[A-Za-z0-9_-]{1,64}\\.keystead\\.conflict-[0-9]{8}-[0-9]{6}-phone$")
 
     private val COLUMNS = arrayOf(
       Document.COLUMN_DOCUMENT_ID,

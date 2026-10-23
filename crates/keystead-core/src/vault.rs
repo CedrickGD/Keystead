@@ -27,6 +27,7 @@ use crate::model::{
     now_ms, AttachmentEntry, AttachmentInfo, Folder, GeneratedPassword, GeneratedPasswordInfo,
     ItemSummary, ItemType, PasswordHistoryEntry, VaultData, VaultInfo, VaultItem,
 };
+use crate::sync::{self, SyncHead};
 use crate::util;
 
 /// Maximum number of previous passwords kept per login.
@@ -53,6 +54,12 @@ pub struct UnlockedVault {
     /// a vault key rotated by another process.
     master_kek: SecretKey,
     data: VaultData,
+    /// The verified ancestry of the write in `file` (its sync proof, see
+    /// `sync::SyncProof`; empty when it has none that verifies): the
+    /// digests of the writes it descends from, newest first. Every commit
+    /// puts the previous head in front and seals the new write's proof
+    /// with it.
+    lineage: Vec<String>,
 }
 
 /// What an open session can tell about another copy of its vault file
@@ -272,12 +279,14 @@ impl UnlockedVault {
         mut data: VaultData,
     ) -> Self {
         assign_generator_history_ids(&mut data);
+        let lineage = sync::verify_proof(&file, &key).unwrap_or_default();
         UnlockedVault {
             path,
             file,
             key,
             master_kek,
             data,
+            lineage,
         }
     }
 
@@ -943,18 +952,23 @@ impl UnlockedVault {
         self.write(header, data)
     }
 
-    /// Persists the current state like [`Self::save`], as a revision above
-    /// both this session's and `min_revision`: `max(own, min_revision) + 1`.
-    /// For the two-way sync when the user keeps this side's state over the
-    /// folder's (a conflict): the written copy must win against the
-    /// folder's revision `min_revision` on every other device. The checks
-    /// stay those of a save – the file on disk must still be the revision
-    /// this session loaded (`Error::Conflict` otherwise) – and the previous
-    /// revision is kept as `.bak`.
-    pub fn save_superseding(&mut self, min_revision: u64) -> Result<()> {
+    /// Persists the current state like [`Self::save`], as a write that
+    /// supersedes `superseded` – the folder's copy of a conflict the user
+    /// resolves by keeping this side's state: its revision is above both
+    /// (`max(own, superseded) + 1`), and its sync proof names
+    /// `superseded`'s head (and, if `superseded`'s proof verifies with this
+    /// session's master key, its ancestors) as ancestors besides this
+    /// side's own, so every other device sees its head superseded rather
+    /// than a conflict. The checks stay those of a save – the file on disk
+    /// must still be the revision this session loaded (`Error::Conflict`
+    /// otherwise) – and the previous revision is kept as `.bak`.
+    pub fn save_superseding(&mut self, superseded: &VaultFile) -> Result<()> {
         let header = self.file.clone();
         let data = self.data.clone();
-        self.commit_above(header, data, None, min_revision)
+        let head = sync::head_of(superseded);
+        let ancestors = self.verified_lineage_of(superseded).unwrap_or_default();
+        let also = (head.digest, ancestors);
+        self.commit_above(header, data, None, superseded.revision, Some(also))
     }
 
     /// Re-reads the file if another process saved a newer revision.
@@ -991,6 +1005,7 @@ impl UnlockedVault {
         assign_generator_history_ids(&mut data);
         let mut old = std::mem::replace(&mut self.data, data);
         wipe_data(&mut old);
+        self.lineage = sync::verify_proof(&on_disk, &key).unwrap_or_default();
         self.file = on_disk;
         self.key = key;
         Ok(true)
@@ -1027,16 +1042,65 @@ impl UnlockedVault {
     /// open it (another master password, forged, damaged). Ids and counts
     /// only, no secrets.
     pub fn attachments_missing_in_copy(&self, file: &VaultFile) -> Option<usize> {
+        self.attachment_difference(file)
+            .map(|(only_here, _)| only_here)
+    }
+
+    /// The attachments only this session's state has and those only the
+    /// copy `file` has (by attachment id): what keeping the copy, and what
+    /// keeping this session's state, would drop. Like
+    /// [`Self::attachments_missing_in_copy`]: `None` if this session's
+    /// master KEK does not open the copy; counts only, nothing is kept.
+    pub fn attachment_difference(&self, file: &VaultFile) -> Option<(usize, usize)> {
         let key = file.unwrap_key_with_kek(&self.master_kek).ok()?;
         let mut data = file.decrypt_payload(&key).ok()?;
-        let missing = self
+        let only_here = self
             .data
             .attachments
             .keys()
             .filter(|id| !data.attachments.contains_key(*id))
             .count();
+        let only_there = data
+            .attachments
+            .keys()
+            .filter(|id| !self.data.attachments.contains_key(*id))
+            .count();
         wipe_data(&mut data);
-        Some(missing)
+        Some((only_here, only_there))
+    }
+
+    /// The sync head of the write this session opened (or last wrote).
+    pub fn head(&self) -> SyncHead {
+        sync::head_of(&self.file)
+    }
+
+    /// The verified ancestry of this session's write (newest first; empty
+    /// when its file had no sync proof that verifies) – see
+    /// `sync::SyncProof`.
+    pub fn lineage(&self) -> &[String] {
+        &self.lineage
+    }
+
+    /// Whether this session's write descends from `head`: a higher
+    /// revision of the same vault, and `head` is in its verified ancestry.
+    pub fn descends_from(&self, head: &SyncHead) -> bool {
+        head.id == self.file.id
+            && self.file.revision > head.revision
+            && self.lineage.contains(&head.digest)
+    }
+
+    /// The verified ancestry of `file` – another copy of this vault, e.g.
+    /// the cloud folder's: this session's master KEK must open its vault
+    /// key (a genuine wrapping of this master password) and that key its
+    /// sync proof. `None` otherwise (another master password, no proof, a
+    /// proof that does not verify). Says nothing about the payload –
+    /// [`Self::check_copy`] does.
+    pub fn verified_lineage_of(&self, file: &VaultFile) -> Option<Vec<String>> {
+        if file.id != self.file.id {
+            return None;
+        }
+        let key = file.unwrap_key_with_kek(&self.master_kek).ok()?;
+        sync::verify_proof(file, &key)
     }
 
     /// The base64 nonce of the payload this session opened (or last wrote).
@@ -1123,18 +1187,30 @@ impl UnlockedVault {
     /// kept as `.bak` (it would still open with the replaced secret) and the
     /// in-memory keys are replaced once the file was written.
     fn commit(&mut self, header: VaultFile, data: VaultData, rekey: Option<Rekey>) -> Result<()> {
-        self.commit_above(header, data, rekey, 0)
+        self.commit_above(header, data, rekey, 0, None)
     }
 
     /// [`Self::commit`] with the new revision `max(own, min_revision) + 1`
-    /// (`commit` itself: `min_revision` 0, the next revision).
+    /// (`commit` itself: `min_revision` 0, the next revision). Every write
+    /// carries a sync proof (`sync::seal_proof`, under the key that
+    /// encrypts its payload – after a rotation the new one): its ancestors
+    /// are the previous head, `also`'s head (a write it supersedes) and the
+    /// lineages of both.
     fn commit_above(
         &mut self,
         mut header: VaultFile,
         mut data: VaultData,
         rekey: Option<Rekey>,
         min_revision: u64,
+        also: Option<(String, Vec<String>)>,
     ) -> Result<()> {
+        let previous = sync::head_of(&self.file).digest;
+        let lineage = match &also {
+            None => sync::next_lineage(&[&previous], &[&self.lineage]),
+            Some((head, ancestors)) => {
+                sync::next_lineage(&[&previous, head], &[&self.lineage, ancestors])
+            }
+        };
         let result = (|| {
             if !self.path.exists() {
                 // Deleted by another process: never recreate it silently
@@ -1159,10 +1235,12 @@ impl UnlockedVault {
             match &rekey {
                 None => {
                     header.encrypt_payload(&self.key, &data)?;
+                    sync::seal_proof(&mut header, &self.key, &lineage);
                     header.write_atomic(&self.path, true)
                 }
                 Some(rekey) => {
                     header.encrypt_payload(&rekey.key, &data)?;
+                    sync::seal_proof(&mut header, &rekey.key, &lineage);
                     header.write_atomic(&self.path, false)?;
                     format::supersede_backup(&self.path);
                     Ok(())
@@ -1172,6 +1250,7 @@ impl UnlockedVault {
         match result {
             Ok(()) => {
                 self.file = header;
+                self.lineage = lineage;
                 let mut old = std::mem::replace(&mut self.data, data);
                 wipe_data(&mut old);
                 if let Some(rekey) = rekey {

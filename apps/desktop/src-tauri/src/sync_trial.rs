@@ -16,15 +16,37 @@
 //! comes back (or, without one, the copy goes), the vault's sync base goes
 //! back with it (`sync_base::reset_to`) and that write of the folder's file
 //! is not taken again ([`Trial::rejected`]). An unconfirmed copy never has
-//! local edits: it is replaced or confirmed before anything is saved to it.
+//! local edits: it is replaced or confirmed before anything is saved to it
+//! (a save of the open vault ends the trial: [`after_save`]).
+//!
+//! A copy that **opens** is still only confirmed if it descends from the
+//! copy it replaced ([`settle`]): its sync proof
+//! (`keystead_core::sync::SyncProof`) must verify with the opened keys and
+//! name the kept copy's head – while the vault was locked, nothing could
+//! check that. If it does not, the kept copy comes back as this device's
+//! state (opened with the same master key), the vault's base goes back to
+//! it and that write of the folder's file is remembered
+//! ([`Trial::diverged`]): the next sync finds the two in conflict and asks
+//! the user – it is never taken on trial again. Only a kept copy the
+//! opened master key cannot open (the master password was changed on the
+//! other side meanwhile – the side with the old password never wins) is
+//! not put back: it is kept as a conflict copy (`<data>/conflicts/`) and
+//! the new copy is confirmed.
+//!
+//! The unlock installs the session only if the vault file on disk is still
+//! the write it opened (under the state lock, where a sync stores copies):
+//! a copy a sync stored during the slow key derivation is opened again
+//! (with the derived master key) and settled in turn – never confirmed in
+//! place of the write that was opened.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use keystead_core::format::{self, VaultFile};
-use keystead_core::model::VaultInfo;
+use keystead_core::model::{now_ms, VaultInfo};
 use keystead_core::sync;
+use keystead_core::vault::CopyCheck;
 use keystead_core::{Error as CoreError, UnlockedVault, VaultStore};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +58,9 @@ use crate::sync_base::{self, sync_dir, valid_id};
 /// did (forged or damaged), and there was no earlier copy to go back to –
 /// it was removed; the folder's next copy brings the vault again.
 pub const COPY_REJECTED: &str = "sync_copy_rejected";
+/// Error code: the vault file changed again and again while it was being
+/// unlocked (a sync stored newer copies meanwhile): unlock once more.
+pub const UNLOCK_RACED: &str = "sync_unlock_raced";
 
 /// One write of a vault file, from its plain header: the revision and the
 /// payload's nonce (every write draws a fresh one). Not secret.
@@ -54,7 +79,7 @@ impl FileVersion {
         }
     }
 
-    fn of_session(vault: &UnlockedVault) -> Self {
+    pub fn of_session(vault: &UnlockedVault) -> Self {
         FileVersion {
             revision: vault.revision(),
             nonce: vault.payload_nonce().to_owned(),
@@ -84,6 +109,17 @@ pub struct Trial {
     /// (forged or damaged): not taken again.
     #[serde(default)]
     pub rejected: Option<FileVersion>,
+    /// A write of the folder's copy that opened here but does not descend
+    /// from the copy it replaced (its sync proof does not name it): the
+    /// kept copy came back, and the two are a conflict for the user – this
+    /// write is never taken on trial again ([`settle`]).
+    #[serde(default)]
+    pub diverged: Option<FileVersion>,
+    /// The unconfirmed copy is one the user chose in a conflict ("take the
+    /// other side's state"): it is confirmed when it opens, whatever its
+    /// ancestry ([`settle`] does not put the kept copy back).
+    #[serde(default)]
+    pub chosen: bool,
 }
 
 /// Held while a trial file and the vault files it describes change. Taken
@@ -179,7 +215,69 @@ pub fn begin_trial(data_dir: &Path, id: &str, path: &Path, incoming: &VaultFile)
     }
     trial.unconfirmed = Some(FileVersion::of(incoming));
     trial.rejected = None;
+    trial.diverged = None;
+    trial.chosen = false;
     trial.save(data_dir, id)
+}
+
+/// [`begin_trial`] for a copy the user chose in a conflict: confirmed when
+/// it opens, without the ancestry check ([`Trial::chosen`]).
+pub fn begin_chosen_trial(
+    data_dir: &Path,
+    id: &str,
+    path: &Path,
+    incoming: &VaultFile,
+) -> AppResult<()> {
+    begin_trial(data_dir, id, path, incoming)?;
+    let mut trial = Trial::load(data_dir, id);
+    trial.chosen = true;
+    trial.save(data_dir, id)
+}
+
+/// The open vault `vault` just saved a new write of its own (an edit, a
+/// recovery-key unlock): a copy on trial is no longer what the file holds,
+/// so the trial ends (best effort). The copy it kept is not dropped unless
+/// the saved write descends from it: otherwise it is kept as a conflict
+/// copy in `<data>/conflicts/` first. Call with the state lock
+/// (`Core::mutate_with`) or before the vault is installed, not with the
+/// trial lock.
+pub fn after_save(data_dir: &Path, vault: &UnlockedVault) {
+    let id = vault.id();
+    if !valid_id(id) {
+        return;
+    }
+    let saved = FileVersion::of_session(vault);
+    let _trial = trial_lock();
+    let mut trial = Trial::load(data_dir, id);
+    if trial.unconfirmed.is_none() || trial.unconfirmed.as_ref() == Some(&saved) {
+        return;
+    }
+    if trial.kept_revision.is_some() {
+        if let Ok(kept) = fs::read(kept_path(data_dir, id)) {
+            let descends = VaultFile::parse(&kept)
+                .is_ok_and(|file| vault.descends_from(&sync::head_of(&file)));
+            if !descends {
+                match crate::sync_conflict::keep_conflict_copy(data_dir, id, &kept, None, now_ms())
+                {
+                    Ok(path) => log(format_args!(
+                        "a sync trial ended: kept its previous copy as {}",
+                        path.display()
+                    )),
+                    // Then the trial (and its kept copy) stays.
+                    Err(e) => {
+                        log(format_args!("could not keep a trial's copy: {}", e.code()));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    trial.unconfirmed = None;
+    trial.kept_revision = None;
+    trial.chosen = false;
+    if let Err(e) = trial.save(data_dir, id) {
+        log(format_args!("could not end a sync trial: {}", e.code()));
+    }
 }
 
 /// Remembers `version` of the folder's copy of `id` as rejected (best
@@ -208,35 +306,114 @@ pub fn on_trial(data_dir: &Path, id: &str) -> bool {
     Trial::load(data_dir, id).unconfirmed.is_some()
 }
 
-/// Vault `id` opened on this device as `opened` (with KDF salt `salt`): if
-/// that is its unconfirmed copy, it is confirmed and the kept copy goes
-/// (best effort) – and on the phone a fingerprint setup for another salt is
-/// stale now. Another write (a sync stored a newer copy meanwhile) stays on
-/// trial.
-fn confirm(data_dir: &Path, id: &str, opened: &FileVersion, salt: &str) {
+/// Under the state lock, right before the unlock installs `vault` (vault
+/// `id`, file `path`): whether the file on disk is still the write the
+/// session opened – a sync may have stored another copy during the key
+/// derivation (then `None`: the caller opens it again). If that write is
+/// the unconfirmed copy ([`settle`] has checked it), it is confirmed and
+/// the kept copy goes (`Some(true)`, best effort).
+fn confirm_if_current(
+    data_dir: &Path,
+    path: &Path,
+    id: &str,
+    vault: &UnlockedVault,
+) -> Option<bool> {
+    let opened = FileVersion::of_session(vault);
+    let _trial = trial_lock();
+    let on_disk = VaultFile::read(path).ok().map(|f| FileVersion::of(&f));
+    if on_disk.as_ref() != Some(&opened) {
+        return None;
+    }
     if !valid_id(id) {
-        return;
+        return Some(false);
+    }
+    let mut trial = Trial::load(data_dir, id);
+    if trial.unconfirmed.as_ref() != Some(&opened) {
+        return Some(false);
+    }
+    trial.unconfirmed = None;
+    trial.kept_revision = None;
+    trial.chosen = false;
+    if let Err(e) = trial.save(data_dir, id) {
+        log(format_args!(
+            "could not confirm a synced copy: {}",
+            e.code()
+        ));
+    }
+    Some(true)
+}
+
+/// The vault `vault` just opened as a copy on trial: confirmed below only
+/// if it descends from the copy it replaced (see the module docs). Returns
+/// the session to install – `vault`, or the kept copy's (opened with the
+/// same master key) after it was put back.
+fn settle(core: &Core, id: &str, vault: UnlockedVault) -> AppResult<UnlockedVault> {
+    if !valid_id(id) {
+        return Ok(vault);
+    }
+    let data_dir = core.data_dir();
+    let store = core.store();
+    let path = store.vault_path(id);
+    let opened = FileVersion::of_session(&vault);
+    let kept_bytes = {
+        let _trial = trial_lock();
+        let trial = Trial::load(&data_dir, id);
+        if trial.unconfirmed.as_ref() != Some(&opened)
+            || trial.kept_revision.is_none()
+            || trial.chosen
+        {
+            // Not the copy on trial, nothing it replaced (a vault new to
+            // this device), or one the user chose: nothing to descend from.
+            return Ok(vault);
+        }
+        match fs::read(kept_path(&data_dir, id)) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(vault),
+        }
+    };
+    let Some(kept) = VaultFile::parse(&kept_bytes).ok().filter(|f| f.id == id) else {
+        return Ok(vault);
+    };
+    let kept_head = sync::head_of(&kept);
+    if vault.descends_from(&kept_head) {
+        return Ok(vault);
+    }
+    if vault.check_copy(&kept) != CopyCheck::Opens {
+        // The kept copy has another master password (the one the user no
+        // longer has to type): it never wins, but it is not dropped.
+        let kept_at =
+            crate::sync_conflict::keep_conflict_copy(&data_dir, id, &kept_bytes, None, now_ms())?;
+        log(format_args!(
+            "a synced copy with a new master password does not descend from this device's: kept {}",
+            kept_at.display()
+        ));
+        return Ok(vault);
     }
     {
+        let _st = core.state();
         let _trial = trial_lock();
-        let mut trial = Trial::load(data_dir, id);
-        if trial.unconfirmed.as_ref() != Some(opened) {
-            return;
+        let on_disk = VaultFile::read(&path).ok().map(|f| FileVersion::of(&f));
+        if on_disk.as_ref() != Some(&opened) {
+            // Replaced meanwhile: the install check opens it again.
+            return Ok(vault);
         }
+        format::write_atomic(&path, &kept_bytes, false)?;
+        let mut trial = Trial::load(&data_dir, id);
         trial.unconfirmed = None;
         trial.kept_revision = None;
-        if let Err(e) = trial.save(data_dir, id) {
-            log(format_args!(
-                "could not confirm a synced copy: {}",
-                e.code()
-            ));
+        trial.diverged = Some(opened);
+        trial.chosen = false;
+        trial.save(&data_dir, id)?;
+        if let Err(e) = sync_base::reset_to(&data_dir, id, Some(&kept_head)) {
+            log(format_args!("could not reset a sync base: {}", e.code()));
         }
     }
-    #[cfg(any(mobile, test))]
-    crate::device_unlock::forget_if_stale(data_dir, id, salt);
-    // The desktop has no fingerprint unlock.
-    #[cfg(not(any(mobile, test)))]
-    let _ = salt;
+    log(
+        "a synced copy does not descend from this device's: kept this device's, a conflict follows",
+    );
+    let kek = vault.master_kek();
+    drop(vault);
+    Ok(store.unlock_with_master_kek(id, &kek)?)
 }
 
 /// An unlock of vault `id` with `open` failed with `wrong_password`. If the
@@ -346,6 +523,7 @@ fn reject_unconfirmed(core: &Core, id: &str) -> AppResult<Fallback> {
     trial.unconfirmed = None;
     trial.kept_revision = None;
     trial.rejected = Some(version);
+    trial.chosen = false;
     trial.save(&data_dir, id)?;
     if let Err(e) = sync_base::reset_to(&data_dir, id, head.as_ref()) {
         log(format_args!("could not reset a sync base: {}", e.code()));
@@ -369,7 +547,7 @@ pub fn unlock_copy(
     open: impl Fn(&VaultStore) -> Result<UnlockedVault, CoreError>,
 ) -> AppResult<VaultInfo> {
     let (epoch, store) = core.unlock_ticket();
-    let vault = match open(&store) {
+    let mut vault = match open(&store) {
         Ok(vault) => vault,
         Err(e) => {
             let forged = match &e {
@@ -393,13 +571,42 @@ pub fn unlock_copy(
             }
         }
     };
-    confirm(
-        &core.data_dir(),
-        vault_id,
-        &FileVersion::of_session(&vault),
-        vault.kdf_salt(),
-    );
-    core.install_vault_since(vault, epoch)
+    let data_dir = core.data_dir();
+    let path = store.vault_path(vault_id);
+    for _ in 0..3 {
+        vault = settle(core, vault_id, vault)?;
+        let salt = vault.kdf_salt().to_owned();
+        let mut confirmed = false;
+        let installed = core.install_vault_checked(vault, epoch, |v| {
+            match confirm_if_current(&data_dir, &path, vault_id, v) {
+                Some(c) => {
+                    confirmed = c;
+                    true
+                }
+                None => false,
+            }
+        })?;
+        match installed {
+            Ok(info) => {
+                if confirmed {
+                    // A new salt: the fingerprint unlock's sealed KEK is stale.
+                    #[cfg(any(mobile, test))]
+                    crate::device_unlock::forget_if_stale(&data_dir, vault_id, &salt);
+                }
+                #[cfg(not(any(mobile, test)))]
+                let _ = salt;
+                return Ok(info);
+            }
+            Err(stale) => {
+                // A sync stored another copy while the key was derived: that
+                // one is opened (with the derived master key) and settled.
+                let kek = stale.master_kek();
+                drop(stale);
+                vault = store.unlock_with_master_kek(vault_id, &kek)?;
+            }
+        }
+    }
+    Err(AppError::unsupported(UNLOCK_RACED))
 }
 
 // ---------------------------------------------------------------------------
@@ -633,5 +840,150 @@ mod tests {
             assert!(unlock_copy(&s.core, id, |st| st.unlock(id, "pw")).is_err());
         }
         assert!(!sync_dir(&data_dir).exists());
+    }
+
+    /// Review H1: a sync stores a newer copy on trial while an unlock
+    /// derives its key. The unlock does not install the write it opened
+    /// (and confirm the trial for it): it opens the one now on disk and
+    /// settles that.
+    #[test]
+    fn a_copy_stored_during_the_unlock_is_the_one_installed() {
+        let mut s = setup();
+        let data_dir = s.core.data_dir();
+        let path = s.core.store().vault_path(&s.id);
+        s.other
+            .save_item(VaultItem::new(ItemType::Note, "zwei"))
+            .unwrap();
+        let newer = fs::read(s.other.path()).unwrap();
+        let stored = std::cell::Cell::new(false);
+        let info = unlock_copy(&s.core, &s.id, |store| {
+            let opened = store.unlock(&s.id, "pw");
+            if !stored.replace(true) {
+                // The sync, during the key derivation.
+                store_on_trial(&s, &newer);
+            }
+            opened
+        })
+        .unwrap();
+        assert_eq!(info.id, s.id);
+        assert_eq!(fs::read(&path).unwrap(), newer);
+        assert_eq!(s.core.read(|o| o.items().len()).unwrap(), 2);
+        assert_eq!(
+            s.core.read(FileVersion::of_session).unwrap(),
+            FileVersion::of(&VaultFile::parse(&newer).unwrap())
+        );
+        assert!(!on_trial(&data_dir, &s.id), "it descends: confirmed");
+        // An edit saves on top of it (no conflict, nothing on trial).
+        s.core
+            .mutate(|v| v.save_item(VaultItem::new(ItemType::Note, "drei")))
+            .unwrap();
+        assert_eq!(Trial::load(&data_dir, &s.id), Trial::default());
+    }
+
+    /// A save of the open vault ends whatever trial is recorded for it.
+    #[test]
+    fn a_save_of_the_open_vault_ends_the_trial() {
+        let s = setup();
+        let data_dir = s.core.data_dir();
+        unlock(&s, "pw").unwrap();
+        let stale = Trial {
+            unconfirmed: Some(FileVersion {
+                revision: 50,
+                nonce: "AAAA".into(),
+            }),
+            kept_revision: Some(1),
+            ..Trial::default()
+        };
+        stale.save(&data_dir, &s.id).unwrap();
+        // The copy that trial kept (not an ancestor of what is saved now).
+        let kept = b"{ an older copy }".to_vec();
+        fs::write(kept_path(&data_dir, &s.id), &kept).unwrap();
+        assert!(on_trial(&data_dir, &s.id));
+        s.core
+            .mutate(|v| v.save_item(VaultItem::new(ItemType::Note, "neu")))
+            .unwrap();
+        assert!(!on_trial(&data_dir, &s.id));
+        assert!(!kept_path(&data_dir, &s.id).exists());
+        // Never dropped: kept as a conflict copy.
+        let copies = crate::sync_conflict::list(&data_dir, Some(&s.id)).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(fs::read(&copies[0].path).unwrap(), kept);
+    }
+
+    /// A copy stored on trial while locked that opens but does not descend
+    /// from the copy it replaced: the kept copy comes back (opened with the
+    /// same master key), the base with it, and that write is remembered as
+    /// diverged – the sync records the conflict.
+    #[test]
+    fn a_copy_on_trial_that_does_not_descend_brings_back_the_kept_copy() {
+        let mut s = setup();
+        let data_dir = s.core.data_dir();
+        let path = s.core.store().vault_path(&s.id);
+        let confirmed = fs::read(&path).unwrap();
+        // A write of the other side whose proof is gone (a 2.0.x writer).
+        s.other
+            .save_item(VaultItem::new(ItemType::Note, "zwei"))
+            .unwrap();
+        let mut stripped = VaultFile::read(s.other.path()).unwrap();
+        stripped.extra.0.remove(sync::SYNC_PROOF_KEY);
+        let stripped_bytes = stripped.to_json().unwrap();
+        store_on_trial(&s, &stripped_bytes);
+
+        let info = unlock(&s, "pw").unwrap();
+        assert_eq!(info.id, s.id);
+        assert_eq!(fs::read(&path).unwrap(), confirmed);
+        assert_eq!(s.core.read(|o| o.items().len()).unwrap(), 1);
+        let trial = Trial::load(&data_dir, &s.id);
+        assert_eq!(trial.unconfirmed, None);
+        assert_eq!(trial.diverged, Some(FileVersion::of(&stripped)));
+        assert!(!kept_path(&data_dir, &s.id).exists());
+        let head = head_of_bytes(&confirmed);
+        assert_eq!(base_head(&s), Some((head.revision, head.digest)));
+    }
+
+    /// … unless the kept copy has another master password (the other side
+    /// changed it): the copy is confirmed, the kept copy kept as a conflict
+    /// copy – never dropped.
+    #[test]
+    fn a_kept_copy_with_the_old_password_is_kept_as_a_conflict_copy() {
+        let mut s = setup();
+        let data_dir = s.core.data_dir();
+        let path = s.core.store().vault_path(&s.id);
+        let confirmed = fs::read(&path).unwrap();
+        s.other.change_master_password("pw", "neu").unwrap();
+        let mut stripped = VaultFile::read(s.other.path()).unwrap();
+        stripped.extra.0.remove(sync::SYNC_PROOF_KEY);
+        let stripped_bytes = stripped.to_json().unwrap();
+        store_on_trial(&s, &stripped_bytes);
+
+        unlock(&s, "neu").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), stripped_bytes);
+        assert!(!on_trial(&data_dir, &s.id));
+        let copies = crate::sync_conflict::list(&data_dir, Some(&s.id)).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(fs::read(&copies[0].path).unwrap(), confirmed);
+    }
+
+    /// A copy the user chose in a conflict is confirmed whatever its
+    /// ancestry.
+    #[test]
+    fn a_chosen_copy_is_confirmed_without_the_ancestry_check() {
+        let mut s = setup();
+        let data_dir = s.core.data_dir();
+        let path = s.core.store().vault_path(&s.id);
+        s.other
+            .save_item(VaultItem::new(ItemType::Note, "zwei"))
+            .unwrap();
+        let mut stripped = VaultFile::read(s.other.path()).unwrap();
+        stripped.extra.0.remove(sync::SYNC_PROOF_KEY);
+        let bytes = stripped.to_json().unwrap();
+        {
+            let _trial = trial_lock();
+            begin_chosen_trial(&data_dir, &s.id, &path, &stripped).unwrap();
+            fs::write(&path, &bytes).unwrap();
+        }
+        unlock(&s, "pw").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(Trial::load(&data_dir, &s.id), Trial::default());
     }
 }

@@ -117,6 +117,12 @@ export const en: Record<MessageKey, string> = {
     "This state still has the old master password and cannot be kept. Take the other state.",
   "error.unsupported.sync_conflict_changed":
     "The vault changed once more meanwhile. Keystead has checked it again.",
+  "error.unsupported.sync_remote_changed":
+    "The copy in the cloud folder changed meanwhile. Keystead compares it again – nothing was overwritten.",
+  "error.unsupported.mirror_remote_unsupported":
+    "The copy in the cloud folder is from a newer Keystead version (or not a Keystead vault file). Keystead neither takes nor overwrites it – update Keystead on all your devices.",
+  "error.unsupported.sync_unlock_raced":
+    "The vault was updated by the sync while it was being unlocked. Please unlock it once more.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -964,12 +970,16 @@ export const en: Record<MessageKey, string> = {
     "The master password was changed on the PC. The phone's state still has the old password and cannot be kept.",
   "sync.conflict.passwordChangedPc":
     "The copy in the cloud folder has another master password. This PC's state cannot be kept.",
-  "sync.conflict.lostAttachments_one":
-    "If you take the phone's state, {n} attachment that only the PC has is missing afterwards. The file stays with the conflict copy.",
-  "sync.conflict.lostAttachments_other":
-    "If you take the phone's state, {n} attachments that only the PC has are missing afterwards. The files stay with the conflict copy.",
+  "sync.conflict.lostPcAttachments_one":
+    "If you choose the phone's state, {n} attachment that only the PC's state has is missing afterwards. The file stays with the conflict copy.",
+  "sync.conflict.lostPcAttachments_other":
+    "If you choose the phone's state, {n} attachments that only the PC's state has are missing afterwards. The files stay with the conflict copy.",
+  "sync.conflict.lostPhoneAttachments_one":
+    "If you choose the PC's state, {n} attachment that only the phone's state has is missing afterwards. The file stays with the conflict copy.",
+  "sync.conflict.lostPhoneAttachments_other":
+    "If you choose the PC's state, {n} attachments that only the phone's state has are missing afterwards. The files stay with the conflict copy.",
   "sync.conflict.copyNotePhone":
-    "Nothing is lost: the other state stays on this phone as a conflict copy (not in the cloud folder). It can be restored through “Import” – which only exists on the PC.",
+    "Nothing is lost: the other state stays on this phone as a conflict copy and is also put into the cloud folder – the PC offers to restore it (Settings → Phone).",
   "sync.conflict.copyNotePc":
     "Nothing is lost: the other state stays on this PC as a conflict copy (data folder, subfolder “conflicts”). Get entries back from it through Settings → Import.",
   "sync.offer.title": "New vault in the cloud folder – take it?",
@@ -983,6 +993,13 @@ export const en: Record<MessageKey, string> = {
   "sync.offer.dismissed": "“{name}” will not be taken.",
   "sync.offer.listTitle": "New vaults in the cloud folder",
   "sync.offer.listDesc": "These vaults are in the folder but not on this PC yet (e.g. created on the phone).",
+  "sync.copies.listTitle": "Conflict copies from the phone",
+  "sync.copies.listDesc":
+    "When the phone resolved a conflict, it did not keep this state and put it into the cloud folder. “Restore” opens the import – you choose which entries come back into the open vault.",
+  "sync.copies.vault": "Vault “{name}” · version {n}",
+  "sync.copies.restore": "Restore",
+  "sync.copies.dismiss": "Hide",
+  "sync.copies.dismissed": "The conflict copy is no longer shown. The file stays in the folder.",
   "settings.phone": "Phone",
   "settings.phoneShort": "Phone",
   "settings.phoneDesc": "Your vaults in the Android app – through a folder of your own cloud. Keystead itself connects to no server for it.",

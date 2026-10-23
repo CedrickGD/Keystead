@@ -81,7 +81,8 @@ function keysteadExport(now: number): VaultItem[] {
 export function mockImportFile(path: string, now: number): MockImportFile | { error: string } {
   const name = (path.split(/[\\/]/).pop() ?? path).toLowerCase();
   const lowerPath = path.toLowerCase();
-  if (name.endsWith(".keystead")) {
+  // A vault file – or a conflict copy of one (`<id>.keystead.conflict-…`).
+  if (name.endsWith(".keystead") || name.includes(".keystead.conflict-")) {
     return { format: "keystead", needsPassword: true, items: keysteadExport(now), invalid: 0, warnings: [] };
   }
   if (name.endsWith(".json") && (name.startsWith("vault") || lowerPath.includes("vaultx"))) {

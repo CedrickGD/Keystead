@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conflictChoices, conflictSides } from "../src/lib/syncConflict.mjs";
+import { attachmentWarnings, conflictChoices, conflictSides } from "../src/lib/syncConflict.mjs";
 
 test("on the phone the PC's state is the folder's copy", () => {
   assert.deepEqual(conflictSides("android"), { local: "phone", remote: "pc" });
@@ -31,4 +31,32 @@ test("another master password in the folder: this device's copy cannot be kept",
   for (const platform of ["android", "windows"]) {
     assert.ok(conflictChoices(platform, true).every((c) => c.keep !== "local"));
   }
+});
+
+test("attachment warnings name the state that has them and the choice that drops them", () => {
+  const counts = { lostAttachments: 2, remoteOnlyAttachments: 3 };
+  // PC: this side is the PC.
+  assert.deepEqual(attachmentWarnings("windows", counts, conflictChoices("windows", false)), {
+    pcOnly: 2,
+    phoneOnly: 3,
+  });
+  // Phone: this side is the phone, the folder's copy the PC's.
+  assert.deepEqual(attachmentWarnings("android", counts, conflictChoices("android", false)), {
+    pcOnly: 3,
+    phoneOnly: 2,
+  });
+  // A choice that is not offered warns about nothing.
+  assert.deepEqual(attachmentWarnings("android", counts, conflictChoices("android", true)), {
+    pcOnly: 0,
+    phoneOnly: 2,
+  });
+  assert.deepEqual(attachmentWarnings("windows", counts, conflictChoices("windows", true)), {
+    pcOnly: 2,
+    phoneOnly: 0,
+  });
+  // Unknown counts: nothing.
+  assert.deepEqual(attachmentWarnings("android", {}, conflictChoices("android", false)), {
+    pcOnly: 0,
+    phoneOnly: 0,
+  });
 });

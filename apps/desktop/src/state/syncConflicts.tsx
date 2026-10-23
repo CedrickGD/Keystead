@@ -64,7 +64,8 @@ export function SyncConflictsProvider({ children }: { children: ReactNode }) {
     async (conflict: SyncConflict, keep: ConflictKeep) => {
       setBusy(keep);
       try {
-        const info = await api.resolveSyncConflict(conflict.vaultId, keep);
+        // The two writes the dialog showed: a newer one meanwhile is refused.
+        const info = await api.resolveSyncConflict(conflict, keep);
         setConflicts((list) => list.filter((c) => c.vaultId !== conflict.vaultId));
         setVault(info);
         void refreshVaults().catch(() => undefined);

@@ -57,6 +57,11 @@
 // `simulatePhoneNewVault()` (PC) puts a vault made on the phone into the
 // mirror folder: the offer dialog asks (`mirror://offers`), "Übernehmen"
 // adds "Handy-Tresor" (master password "demo") to the vault list.
+// `simulatePhoneConflictCopy()` (PC) puts a conflict copy of the phone's into
+// the mirror folder (`mirror://conflictCopies`, Settings → Handy):
+// "Wiederherstellen" opens the import with it (password "demo").
+// A resolution must name the two writes of the recorded conflict
+// (`localDigest`/`remoteDigest`, else `unsupported:sync_conflict_changed`).
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -79,6 +84,7 @@ import type {
   DeviceUnlockStatus,
   ExportFormat,
   Folder,
+  FolderConflictCopy,
   FolderOffer,
   FolderStatus,
   GeneratedPassword,
@@ -188,6 +194,8 @@ interface MockMirror {
   lost: boolean;
   /** Vaults in the folder this PC does not have (`simulatePhoneNewVault`). */
   offers: FolderOffer[];
+  /** The phone's conflict copies in the folder (`simulatePhoneConflictCopy`). */
+  copies: FolderConflictCopy[];
 }
 
 /** The phone's linked cloud folder (see the header comment). */
@@ -368,7 +376,7 @@ function initState(): MockState {
     pairings: new Map(),
     lastActivity: now,
     sync: initSync(phone ? params.get("sync") : null, empty, now),
-    mirror: { lastMirroredAt: null, lastPulledAt: null, lastError: null, lost: false, offers: [] },
+    mirror: { lastMirroredAt: null, lastPulledAt: null, lastError: null, lost: false, offers: [], copies: [] },
     deviceUnlock: initDeviceUnlock(phone ? params.get("fingerprint") : null, empty),
     conflicts: new Map(),
   };
@@ -672,6 +680,8 @@ export interface MockDevHelpers {
   simulatePhonePush: () => void;
   /** PC: a vault made on the phone appears in the mirror folder (the offer dialog asks). */
   simulatePhoneNewVault: () => void;
+  /** PC: a conflict copy of the phone's appears in the mirror folder (Settings → Handy). */
+  simulatePhoneConflictCopy: () => void;
   /** Fingerprint unlock: what the next "system prompt" does (default "ok"). */
   setFingerprintResult: (result: MockFingerprintResult) => void;
   /** Fingerprint unlock: a new fingerprint was enrolled – every setup is reset at its next use. */
@@ -715,6 +725,7 @@ function installDevHelpers(): void {
     simulateConflict: (passwordChanged = false) => mockSimulateConflict(passwordChanged),
     simulatePhonePush: () => mockPhonePush(),
     simulatePhoneNewVault: () => mockPhoneNewVault(),
+    simulatePhoneConflictCopy: () => mockPhoneConflictCopy(),
     setFingerprintResult: (result: MockFingerprintResult) => {
       getState().deviceUnlock.next = result;
     },
@@ -2061,7 +2072,32 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "resolve_sync_conflict":
       if (optStr(args, "pageVaultId") !== s.unlockedId) fail("locked");
       await sleep(500);
-      return mockResolveConflict(str(args, "vaultId"), str(args, "keep"));
+      return mockResolveConflict(
+        str(args, "vaultId"),
+        str(args, "keep"),
+        str(args, "localDigest"),
+        str(args, "remoteDigest"),
+      );
+
+    case "folder_conflict_copies":
+      return clone(s.mirror.copies);
+
+    case "restore_folder_conflict_copy": {
+      const fileName = str(args, "fileName");
+      if (!s.mirror.copies.some((c) => c.fileName === fileName)) fail("not_found");
+      await sleep(300);
+      s.mirror.copies = s.mirror.copies.filter((c) => c.fileName !== fileName);
+      emit("mirror://conflictCopies", clone(s.mirror.copies));
+      return `${s.appInfo.dataDir}\\conflicts\\${fileName}`;
+    }
+
+    case "dismiss_folder_conflict_copy": {
+      const fileName = str(args, "fileName");
+      if (!s.mirror.copies.some((c) => c.fileName === fileName)) fail("not_found");
+      s.mirror.copies = s.mirror.copies.filter((c) => c.fileName !== fileName);
+      emit("mirror://conflictCopies", clone(s.mirror.copies));
+      return null;
+    }
 
     case "folder_offers":
       return clone(s.mirror.offers);
@@ -2325,6 +2361,7 @@ function mockSimulateConflict(passwordChanged: boolean): void {
   const id = vault.info.id;
   const phone = isPhone();
   const folderRevision = s.sync.folder.get(id)?.revision ?? 42;
+  const digest = () => Array.from({ length: 64 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
   const conflict: SyncConflict = {
     vaultId: id,
     vaultName: vault.info.name,
@@ -2334,8 +2371,13 @@ function mockSimulateConflict(passwordChanged: boolean): void {
     localUpdatedAt: phone ? now - 25 * 60_000 : now - 8 * 60_000,
     remoteUpdatedAt: phone ? now - 8 * 60_000 : now - 25 * 60_000,
     passwordChanged,
+    localDigest: digest(),
+    remoteDigest: digest(),
   };
-  if (!phone) conflict.lostAttachments = 1;
+  // One attachment only the PC's state has: on the PC this side's, on the
+  // phone the folder's.
+  if (phone) conflict.remoteOnlyAttachments = 1;
+  else conflict.lostAttachments = 1;
   s.conflicts.set(id, conflict);
   if (phone && s.sync.link) {
     s.sync.files = s.sync.files.map((f) => (f.vaultId === id ? { ...f, outcome: "conflict" } : f));
@@ -2345,12 +2387,15 @@ function mockSimulateConflict(passwordChanged: boolean): void {
 }
 
 /** `resolve_sync_conflict`: keeps one side; the other side's state shows up as a note. */
-function mockResolveConflict(vaultId: string, keep: string): VaultInfo {
+function mockResolveConflict(vaultId: string, keep: string, localDigest: string, remoteDigest: string): VaultInfo {
   const s = getState();
   const vault = openVault();
   if (vault.info.id !== vaultId) fail("locked");
   const conflict = s.conflicts.get(vaultId);
   if (!conflict) fail("not_found");
+  if (conflict.localDigest !== localDigest || conflict.remoteDigest !== remoteDigest) {
+    fail("unsupported:sync_conflict_changed");
+  }
   if (keep !== "local" && keep !== "remote") fail("invalid_input:keep");
   if (keep === "local" && conflict.passwordChanged) fail("unsupported:sync_conflict_password");
   s.conflicts.delete(vaultId);
@@ -2437,6 +2482,25 @@ function mockPhoneNewVault(): void {
   if (s.vaults.has(PHONE_VAULT_ID) || s.mirror.offers.some((o) => o.vaultId === PHONE_VAULT_ID)) return;
   s.mirror.offers = [...s.mirror.offers, { vaultId: PHONE_VAULT_ID, name: "Handy-Tresor", revision: 3, updatedAt: Date.now() - 5 * 60_000 }];
   emit("mirror://offers", clone(s.mirror.offers));
+}
+
+/** PC, `simulatePhoneConflictCopy`: the phone put the state it did not keep into the folder. */
+function mockPhoneConflictCopy(): void {
+  const s = getState();
+  const vault = s.unlockedId ? s.vaults.get(s.unlockedId) : undefined;
+  if (isPhone() || !vault) {
+    console.warn("[mock] simulatePhoneConflictCopy needs the PC mock with an open vault");
+    return;
+  }
+  const at = new Date(Date.now() - 3 * 60_000);
+  const stamp = at.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  const fileName = `${vault.info.id}.keystead.conflict-${stamp}-phone`;
+  if (s.mirror.copies.some((c) => c.fileName === fileName)) return;
+  s.mirror.copies = [
+    ...s.mirror.copies,
+    { fileName, vaultId: vault.info.id, vaultName: vault.info.name, revision: 7, updatedAt: at.getTime() },
+  ];
+  emit("mirror://conflictCopies", clone(s.mirror.copies));
 }
 
 function mockAdoptFolderVault(vaultId: string): VaultInfo {
