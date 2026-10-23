@@ -17,7 +17,9 @@
 //!   device-unlock blobs and `Settings.deviceUnlock`). Phone-only code is in
 //!   `mobile.rs` (data directory, clipboard, links) and `mobile/`; the
 //!   platform-neutral engines `folder_sync.rs` and `device_unlock.rs` are
-//!   compiled on the desktop for their unit tests only.
+//!   compiled on the desktop for their unit tests only. The sync's shared
+//!   parts (`sync_base.rs`, `sync_conflict.rs`, `sync_trial.rs`) are
+//!   compiled on both.
 //!
 //! `#[cfg(desktop)]` / `#[cfg(mobile)]` are the aliases `tauri_build` sets
 //! from the target OS; what only Android has (the plugins' Kotlin sides,
@@ -67,6 +69,12 @@ mod portable;
 mod pwned;
 mod secrets;
 mod state;
+// The two-way cloud-folder sync's shared parts (both platforms): the sync
+// base per vault, conflict copies, and copies on trial (every unlock goes
+// through `sync_trial::unlock_copy`).
+mod sync_base;
+mod sync_conflict;
+mod sync_trial;
 #[cfg(desktop)]
 mod tray;
 mod update;

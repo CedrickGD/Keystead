@@ -943,6 +943,20 @@ impl UnlockedVault {
         self.write(header, data)
     }
 
+    /// Persists the current state like [`Self::save`], as a revision above
+    /// both this session's and `min_revision`: `max(own, min_revision) + 1`.
+    /// For the two-way sync when the user keeps this side's state over the
+    /// folder's (a conflict): the written copy must win against the
+    /// folder's revision `min_revision` on every other device. The checks
+    /// stay those of a save – the file on disk must still be the revision
+    /// this session loaded (`Error::Conflict` otherwise) – and the previous
+    /// revision is kept as `.bak`.
+    pub fn save_superseding(&mut self, min_revision: u64) -> Result<()> {
+        let header = self.file.clone();
+        let data = self.data.clone();
+        self.commit_above(header, data, None, min_revision)
+    }
+
     /// Re-reads the file if another process saved a newer revision.
     /// Returns true if the data was reloaded.
     ///
@@ -1089,11 +1103,18 @@ impl UnlockedVault {
     /// already carries the matching wrappings), the previous revision is not
     /// kept as `.bak` (it would still open with the replaced secret) and the
     /// in-memory keys are replaced once the file was written.
-    fn commit(
+    fn commit(&mut self, header: VaultFile, data: VaultData, rekey: Option<Rekey>) -> Result<()> {
+        self.commit_above(header, data, rekey, 0)
+    }
+
+    /// [`Self::commit`] with the new revision `max(own, min_revision) + 1`
+    /// (`commit` itself: `min_revision` 0, the next revision).
+    fn commit_above(
         &mut self,
         mut header: VaultFile,
         mut data: VaultData,
         rekey: Option<Rekey>,
+        min_revision: u64,
     ) -> Result<()> {
         let result = (|| {
             if !self.path.exists() {
@@ -1109,7 +1130,12 @@ impl UnlockedVault {
             if on_disk.revision != self.file.revision || on_disk.id != self.file.id {
                 return Err(Error::Conflict);
             }
-            header.revision = self.file.revision + 1;
+            header.revision = self
+                .file
+                .revision
+                .max(min_revision)
+                .checked_add(1)
+                .ok_or_else(|| Error::corrupt("the revision cannot be raised any further"))?;
             header.updated_at = now_ms().max(self.file.updated_at);
             match &rekey {
                 None => {

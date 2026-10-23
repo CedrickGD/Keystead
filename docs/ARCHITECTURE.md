@@ -235,7 +235,8 @@ editing a vault on the phone is a write and not registered).
   app's private internal storage `/data/user/0/io.github.cedrickgd.keystead/`
   (verified in the emulator). Inside, as on the desktop: `vaults/<id>.keystead`
   and `settings.json`, plus `sync/link.json` (the linked cloud folder,
-  below), `sync/trial/` (copies on trial, below) and
+  below), `sync/trial/` (copies on trial, below), `sync/base/` (sync
+  bases, see "Data locations") and
   `device-unlock/<vault-id>.json` (fingerprint unlock, below);
   nothing of the bridge (`bridge-clients.json`), no
   `browser-extension` folder, no portable mode, no `$KEYSTEAD_DATA_DIR` (see
@@ -345,7 +346,8 @@ editing a vault on the phone is a write and not registered).
     Blobs the vault no longer references are left to the core's sweep (on
     unlock, and after a reload of the open vault: an hour after they
     arrived). Vaults the folder no longer has stay on the phone ("missing").
-  * **Copies on trial** (`folder_sync::Trial`, `<data>/sync/trial/`): the
+  * **Copies on trial** (`sync_trial::Trial` in `src-tauri/src/sync_trial.rs`
+    – shared by both platforms since stage 2b –, `<data>/sync/trial/`): the
     folder's plain header – the revision included – is not authenticated
     without the keys, so anyone who can write the folder (a shared folder, a
     compromised cloud account, a misbehaving sync client) could raise it. A
@@ -359,7 +361,7 @@ editing a vault on the phone is a write and not registered).
     write again → up to date), so a forged revision never blocks the PC's
     genuine ones; a copy that never opened on the phone just follows the
     folder. Every unlock – password or fingerprint – goes through
-    `folder_sync::unlock_copy`: the copy opens → confirmed, the kept copy
+    `sync_trial::unlock_copy`: the copy opens → confirmed, the kept copy
     goes; it does not although its key opened (`corrupt`: the payload's AAD
     binds the revision, so a raised revision fails here, as do damaged
     bytes) → **rejected**: the kept copy is put back and opened instead (the
@@ -367,7 +369,9 @@ editing a vault on the phone is a write and not registered).
     (`unsupported:sync_copy_rejected`; the PC's next copy brings the vault
     again), and that write (revision and payload nonce) is never taken
     again (outcome `rejected`; the sync checks that once more under the
-    trial lock right before it stores a copy). A wrong password is not a
+    trial lock right before it stores a copy); the vault's sync base
+    (`sync/base/`, see "Data locations") goes back to the kept copy's head,
+    or – without one – is removed. A wrong password is not a
     rejection (it may be the PC's new one) – except when it proves a forged
     key wrapping: the copy on trial has the kept copy's KDF salt and
     parameters and the same password (or fingerprint KEK) opens the kept
@@ -381,7 +385,7 @@ editing a vault on the phone is a write and not registered).
     cannot be told from a genuine new password – it stays on trial (the
     unlock screen says "changed on the PC") until the PC's next copy beats
     the kept revision. The fingerprint setup is never judged by a copy on
-    trial (`folder_sync::on_trial`): the sync, `device_unlock_status` and
+    trial (`sync_trial::on_trial`): the sync, `device_unlock_status` and
     the unlock leave a setup with another salt alone, the unlock answers
     `unsupported:device_unlock_needs_password`; once that copy opens with
     the password (`confirm`), a setup for another salt is reset. With the vault open, its keys check
@@ -1036,6 +1040,19 @@ Nextcloud or OneDrive client syncs the folder. Desktop only
   `<data_dir>/device-unlock/<vault-id>.json` – a vault's master KEK sealed
   by the Android Keystore, only while fingerprint unlock is on for it (see
   "Fingerprint unlock (phone)").
+* Two-way cloud-folder sync (stage 2b; `src-tauri/src/sync_base.rs`,
+  `sync_conflict.rs`): `<data_dir>/sync/base/<vault-id>.json` – the vault's
+  sync base (`keystead_core::sync::SyncBase`: `revision`, `digest`,
+  `folder`, `syncedAt`; camelCase, no secrets, atomic write, read
+  leniently – unreadable is none): the last head this side wrote to the
+  folder or took from it; a base recorded for another `folder` (the phone's
+  tree URI, the PC's mirror folder) counts as none. The phone's copy-in
+  records it for every copy it stores.
+  `<data_dir>/conflicts/<vault-id>.keystead.conflict-<YYYYMMDD-HHMMSS>`
+  (UTC; `-2`, `-3`, … for another copy in the same second) – the losing
+  side's vault file of a resolved sync conflict, never in the cloud folder
+  and not in `vaults/` (importable as a `.keystead` file); on the PC with the
+  losing side's blobs beside it in `<copy>.attachments/`.
 * Desktop, when turned on: the copies in `Settings.mirrorFolder` (outside
   the data directory; `<id>.keystead` and `<id>.keystead.attachments/`, see
   "Cloud-folder mirror (desktop) and phone link") – the app keeps working on
@@ -1177,7 +1194,14 @@ pub mod clipboard;// copy_secret(text, clear_after: Option<Duration>), copy_text
 pub mod sync;     // VaultHeader + header_of(bytes): id/name/revision of a .keystead file without the password (file import, cloud-folder sync);
                   // CopyIn + decide_copy_in(local, remote): Import | Update | UpToDate | RemoteOlder | OtherVault from the headers alone (the phone's copy-in, see "Cloud-folder sync");
                   // vault_id_of_file_name(name): Some(id) only for `<id>.keystead` with a valid id (no conflict copies, temp files, .bak);
-                  // VAULT_FILE_MAX_BYTES = 64 MiB: the largest vault file the phone copies in and the PC's mirror reads from the folder
+                  // VAULT_FILE_MAX_BYTES = 64 MiB: the largest vault file the phone copies in and the PC's mirror reads from the folder;
+                  // two-way sync (stage 2b): SyncHead { id, revision, digest } + head_of(&VaultFile) – digest = lowercase hex SHA-256 of
+                  //   "keystead-sync:1\0" ‖ payload.ciphertext ‖ "\0" ‖ wrappedKey.nonce ‖ "\0" ‖ wrappedKey.ciphertext (the base64 strings; equal digest = same write);
+                  // SyncBase { revision, digest, folder, synced_at } (camelCase; SyncBase::new(&head, folder, synced_at)): the last head both sides agreed on;
+                  // decide(local, remote, base) -> SyncDecision (pure), top to bottom: no copies → UpToDate; only remote → NewRemote; only local → NewLocal (no base) /
+                  //   RemoteGone (base); other ids → OtherVault; equal digests → UpToDate; no base → Diverged; local = base ∧ remote.rev < base.rev → RemoteOlder;
+                  //   local = base ∧ remote.rev > base.rev → PullRemote; remote = base ∧ local.rev > base.rev → PushLocal; else → Diverged ("=": revision and digest);
+                  // conflict_file_name(id, at_ms): `<id>.keystead.conflict-<YYYYMMDD-HHMMSS>` (UTC; never a vault file name)
 ```
 
 ### `store::VaultStore`
@@ -1254,6 +1278,8 @@ impl UnlockedVault {
     pub fn remove_recovery_key(&mut self) -> Result<()>;       // rotates the vault key
     pub fn has_recovery_key(&self) -> bool;
     pub fn save(&mut self) -> Result<()>;                      // atomic write, revision check, .bak
+    pub fn save_superseding(&mut self, min_revision: u64) -> Result<()>; // like save(), written as revision max(own, min_revision) + 1 (the two-way sync's "keep this side": beats the folder's revision);
+                                                               // same Conflict check and .bak; no revision above u64::MAX → Error::Corrupt
     pub fn reload_if_changed(&mut self) -> Result<bool>;       // re-reads file if the revision on disk is newer (opens it with the in-memory master KEK, so a recovery-key rotation elsewhere is followed);
                                                                // older revision → Error::Rollback; master password changed elsewhere → Error::KeyChanged (unlock again); state unchanged on error
     pub fn path(&self) -> &Path;
@@ -1851,6 +1877,8 @@ history. The bridge's own writes are not affected.
 **On the phone** (Android/iOS, `readOnly`) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `reveal_attachment`, `password_strength`, `copy_text`, `health_report`, `get_icons`, `get_settings`, `save_settings`, and the phone's own `folder_status`, `link_folder`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
+(and on the desktop the master password's: `Core::unlock` goes through
+`sync_trial::unlock_copy` on both platforms; nothing is on trial there yet)
 follow the trial rules of synced copies ("Copies on trial" under
 "Cloud-folder sync (phone)"): a copy that opens is confirmed; one that does
 not although its key opened – or whose key wrapping the kept copy proves

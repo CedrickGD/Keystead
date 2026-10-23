@@ -729,18 +729,11 @@ impl Core {
     /// without holding the state lock; a lock meanwhile wins (`locked`, see
     /// [`Core::install_vault_since`]).
     pub fn unlock(&self, vault_id: &str, master_password: &str) -> AppResult<VaultInfo> {
-        // Phone: a copy the cloud-folder sync stored is on trial until it
-        // opens (`folder_sync::unlock_copy`).
-        #[cfg(mobile)]
-        return crate::folder_sync::unlock_copy(self, vault_id, |store| {
+        // A copy the cloud-folder sync stored is on trial until it opens
+        // (`sync_trial::unlock_copy`); any other vault opens as it is.
+        crate::sync_trial::unlock_copy(self, vault_id, |store| {
             store.unlock(vault_id, master_password)
-        });
-        #[cfg(not(mobile))]
-        {
-            let (epoch, store) = self.unlock_ticket();
-            let vault = store.unlock(vault_id, master_password)?;
-            self.install_vault_since(vault, epoch)
-        }
+        })
     }
 
     /// Clone of the store (for slow operations outside the state lock).

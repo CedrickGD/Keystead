@@ -70,7 +70,7 @@ pub const INVALID: &str = "device_unlock_invalid";
 pub const NOT_SET: &str = "device_unlock_not_set";
 /// Error detail: the vault's copy came from the cloud folder and the
 /// stored setup does not fit it; the setup is kept until the copy opens
-/// with the master password (`folder_sync::on_trial`).
+/// with the master password (`sync_trial::on_trial`).
 pub const NEEDS_PASSWORD: &str = "device_unlock_needs_password";
 
 /// What `<data>/device-unlock/<vault-id>.json` holds. No secret in the
@@ -459,7 +459,7 @@ pub fn status(core: &Core, keystore: &dyn Keystore) -> DeviceUnlockStatus {
                 Err(_) => continue,
             };
             // A copy on trial proves no new salt (see `unlock`).
-            if !crate::folder_sync::on_trial(&data_dir, &vault_id) {
+            if !crate::sync_trial::on_trial(&data_dir, &vault_id) {
                 forget_if_stale(&data_dir, &vault_id, &file.kdf.salt);
             }
         }
@@ -588,7 +588,7 @@ pub fn unlock(
     // password – anyone who can write the folder can change its salt: the
     // setup stays until the copy opens with the password.
     if file.kdf.salt != blob.kdf_salt {
-        if crate::folder_sync::on_trial(&data_dir, vault_id) {
+        if crate::sync_trial::on_trial(&data_dir, vault_id) {
             return Err(needs_password());
         }
         invalidate(&data_dir, vault_id, "the master password was changed");
@@ -605,15 +605,15 @@ pub fn unlock(
     };
     // Like a password unlock that starts now (the prompt may have taken a
     // while; a lock during it found no vault to close) – with the rules for
-    // a copy the cloud-folder sync stored (`folder_sync::unlock_copy`).
-    match crate::folder_sync::unlock_copy(core, vault_id, |store| {
+    // a copy the cloud-folder sync stored (`sync_trial::unlock_copy`).
+    match crate::sync_trial::unlock_copy(core, vault_id, |store| {
         store.unlock_with_master_kek(vault_id, &kek)
     }) {
         // The file changed since the salt check (a sync with a new master
         // password): this KEK opens nothing any more – unless that copy is
         // still on trial (see above).
         Err(AppError::Core(CoreError::WrongPassword)) => {
-            if crate::folder_sync::on_trial(&data_dir, vault_id) {
+            if crate::sync_trial::on_trial(&data_dir, vault_id) {
                 return Err(needs_password());
             }
             invalidate(&data_dir, vault_id, "the master password was changed");
