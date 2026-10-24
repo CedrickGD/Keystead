@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-23)
+# Übergabe – Stand Keystead (2026-10-24)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -39,9 +39,9 @@ WebView2 (ist auf Win 10/11 vorhanden).
   signiert; CI bricht ab, wenn das Zertifikat nicht
   `B7:3D:75:…:3C:AA` ist). `versionCode` = Run-Nummer – deshalb
   `.github/workflows/build.yml` **nie umbenennen**. Die Android-App
-  aktualisiert sich nicht selbst und sucht auch nicht nach Updates (keine
-  `INTERNET`-Berechtigung); neue APK über die alte installieren, „Über
-  Keystead“ verlinkt die Releases. Release-Notes und README nennen sie
+  aktualisiert sich nicht selbst und sucht auch nicht nach Updates (seit
+  Stufe 2c hat sie `INTERNET`, aber nur für den WebDAV-Abgleich); neue APK
+  über die alte installieren, „Über Keystead“ verlinkt die Releases. Release-Notes und README nennen sie
   „frühe Vorschau“: nur lesen, die Tresore kommen über den Cloud-Ordner
   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“), einen Tresor
   anlegen kann sie nicht. **Seit Stufe 2b (2026-10-23, noch nicht
@@ -1062,6 +1062,112 @@ E14–E16.
   aber nichts; ein 2.0.x-PC behält den `syncProof` nur bis zu seinem
   nächsten Speichern) – **beide Geräte aktualisieren**, zuerst den PC.
 
+### Stufe 2c – Abgleich über einen WebDAV-Server (2026-10-23/24)
+
+Wunsch des Besitzers: Abgleich für jeden, viele Anbieter, über WLAN und
+mobile Daten, ohne Cloud-App (BLOCK5-DESIGN E6 revidiert, E17–E22). Vertrag:
+ARCHITECTURE „Remote backends“, „Server sync (WebDAV)“, „Server
+credentials“, „Network (stage 2c)“. Commits `a37d3e6` (I/O-Schicht,
+WebDAV-Client), `622f821` (Zugangsdaten, Verdrahtung Handy/PC, Manifest),
+`1e9ec38` (Oberfläche, Mock, Texte), `d167555` (Review-Fixes, Doku) und der
+Abschluss-Commit danach.
+
+**Was fertig ist:**
+* **WebDAV auf beiden Seiten**, unter den unveränderten Engines
+  (Entscheidungsregel, `syncProof`, Probe, Konflikte): Handy
+  `link_webdav` (statt oder anstelle des Cloud-Ordners), PC
+  `set_sync_server` / `clear_sync_server` (eine Methode je PC: Ordner
+  **oder** Server). Gleiches Layout wie der Ordner – gemischt geht (PC über
+  den Nextcloud-Ordner, Handy per WebDAV).
+* **Eigener Client** (reqwest, eigene kleine Runtime): PROPFIND mit
+  Grenzen, GET/PUT mit `If-Match`/`If-None-Match`, MKCOL, DELETE; nur
+  https (Debug: auch http zu localhost/10.0.2.2); keine Weiterleitungen;
+  Obergrenze je Anfrage (120 s + 16 KiB/s). **TLS**: System-Vertrauen oder
+  genau ein bestätigtes Zertifikat (Pin, SHA-256), Wechsel → erneut fragen.
+* **Passwort** (`credentials.rs`): Windows DPAPI, Android eigener
+  Keystore-Schlüssel (`KeysteadSecretPlugin.kt`), Linux/macOS nur im
+  Speicher; nie in `settings.json`/`link.json`/Log/Oberfläche.
+* **Wann**: Handy wie beim Ordner plus Pause nach Serverfehlern (1/2/5/15
+  min) und „Nur über WLAN synchronisieren“ (Standard aus); PC alle 60 s
+  plus Fokus/Entsperren, gleiche Pause.
+* **Oberfläche**: Formular `WebDavForm.tsx` (Testen, Zertifikat vertrauen,
+  Ordner anlegen, vorgeschlagene Adresse); Handy: Einstellungen →
+  Synchronisierung und Willkommensbildschirm „Mit Server verbinden
+  (WebDAV)“; PC: Einstellungen → Synchronisierung „Abgleich über“ Kein
+  Abgleich / Cloud-Ordner / WebDAV-Server. Google Drive/Dropbox „bald“.
+* **Android**: Manifest genau `INTERNET` + `ACCESS_NETWORK_STATE`,
+  `network_security_config.xml` ohne Klartext; das APK-Gate in CI ist jetzt
+  eine Positivliste (`ANDROID_PERMISSIONS`: dazu die zwei
+  Fingerabdruck-Rechte und die Empfänger-Berechtigung von androidx).
+* **Unabhängiges Review** (Sicherheit, feindlicher Server) – behoben: ein
+  feindlicher Server konnte vorhandene Anhänge über eine andere Größe
+  ersetzen (jetzt: ein intakter Anhang wird nie ersetzt, Handy und PC);
+  Aufträge des PC-Spiegels gingen verloren, wenn kein Server-Zugang da war;
+  eine veraltete Seite konnte die Server-Wahl rückgängig machen; ein
+  tröpfelnder Server konnte Abgleich und Trennen endlos blockieren;
+  „Ordner anlegen“ scheiterte an 201-Antworten mit Text (rclone, Apache);
+  die CAS-Probe schrieb bei jedem Abgleich; Weiterleitungsvorschlag nur
+  bei gleichem Ursprung; Keystore-Fehler beim Versiegeln blockiert das
+  Verbinden nicht mehr (dann nur im Speicher); VPN über WLAN zählt als WLAN.
+  **Bewusst offen (niedrig, kein Datenverlust):** der PC liest bei einem
+  Server ohne `If-Match` (rclone) vor dem Schreiben nicht noch einmal (der
+  `syncProof` macht daraus einen Konflikt, getestet); ein gelöschter
+  Server-Ordner meldet am PC „Kopie fehlt“ statt „Ordner fehlt“; ein
+  seltenes Rennen lässt nach einem Serverwechsel einmal 1 min Pause stehen;
+  der Schlüssel `webdav:<URL>` enthält den Benutzer nicht.
+
+**Verifiziert (2026-10-24):**
+* Unit-Tests: `keystead-core` 242 grün, `keystead-tui` 68 grün,
+  `keystead-desktop --lib` 293 grün (5 ignoriert, davon 1 der manuelle
+  Servertest; neu u. a. Anhang-Tausch, wartende Aufträge,
+  Keystore-Fallback, veraltete Seite), `node --test` 99 grün;
+  fmt, clippy `-D warnings` (Windows und aarch64-Android), `tsc`,
+  `npm run build`. Der eingebaute Testserver antwortet jetzt wie rclone
+  (201 mit Text).
+* **Emulator gegen einen echten WebDAV-Server** (`rclone serve webdav`
+  v1.75.1 mit selbst signiertem Zertifikat, `https://10.0.2.2:8443`, Debug-
+  APK x86_64 über die alte installiert): bestehende Ordner-Verbindung nach
+  dem Update weiter gültig; Wechsel auf den Server im Formular –
+  Zertifikats-Dialog zeigt genau den Fingerabdruck von openssl, „Ordner
+  anlegen“, „Verbinden“; Handy schreibt seinen Tresor (byte-gleich);
+  Passwort nur versiegelt in `sync/credentials/`, nirgends im Klartext;
+  `cas: false` richtig erkannt; PC-Änderung auf dem Server (echter Core) →
+  „Updated“, Notiz sichtbar; Handy-Änderung → am Server lesbar; beide
+  geändert → Konfliktdialog → „Stand vom Handy behalten“ → Revision 16 auf
+  dem Server, PC-Stand als `…conflict-…-phone` daneben; App-Neustart →
+  Passwort aus dem Keystore, Abgleich ohne Fehler; Server aus →
+  „Server nicht erreichbar“, Pause 1 min; „Nur über WLAN“ + mobile Daten →
+  übersprungen ohne Anfrage; falsches Passwort → `sync_auth_failed`,
+  falscher Pin → Zertifikat erneut bestätigen, `http://` zu fremdem Host →
+  abgelehnt. Keine CAS-Probe beim normalen Abgleich.
+* **PC-Spiegel gegen denselben rclone-Server**: der manuelle Test
+  `mirror::tests::over_a_server::the_pc_against_a_real_webdav_server`
+  (`--ignored`, Umgebungsvariablen `KEYSTEAD_TEST_DAV_*`) – Tresor mit
+  Anhang hoch, Änderung eines anderen Geräts gezogen, Anhang entfernt
+  (DELETE), aufgeräumt.
+
+**Nicht verifiziert:**
+* ein echtes Handy; echte Anbieter (Nextcloud, Synology, Koofr, GMX,
+  WEB.DE, MagentaCLOUD – Verhalten bei `If-Match`, ETags, Rechten);
+* die echte Desktop-App mit Oberfläche gegen einen Server (nur der
+  Spiegel-Code per Test – die Dev-App hätte die echte Browser-Registrierung
+  und die laufende Instanz des Besitzers berührt);
+* der R8-Release-Build mit dem neuen Keystore-Plugin (die Tauri-Regeln
+  behalten `@TauriPlugin`-Klassen, wie beim Ordner-Plugin);
+* Linux/macOS (Passwort nur im Speicher) nur per Unit-Test.
+
+**Für den Besitzer zum Ausprobieren:** am PC Einstellungen →
+Synchronisierung → „WebDAV-Server“ (bei Nextcloud: Server-Adresse,
+Benutzer, App-Passwort aus Einstellungen → Sicherheit), am Handy „Mit
+Server verbinden (WebDAV)“ mit denselben Angaben. Testserver lokal:
+`rclone serve webdav <ordner> --addr 127.0.0.1:8443 --cert cert.pem --key
+key.pem --user … --pass …` (rclone per winget installiert, 2026-10-23); der
+Emulator erreicht den PC unter `https://10.0.2.2:8443/`.
+
+**Nächste Schritte:** echte Handy-Tests; dann Google Drive und Dropbox als
+weitere `Remote` (OAuth – der Besitzer registriert kostenlose
+Entwickler-Apps), OneDrive; danach Autofill (Stufe 3).
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -1162,7 +1268,10 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    Abschnitt „Stufe 2b“ oben; der Besitzer hat die Reihenfolge E11 auf
    „2b vor Autofill“ geändert). Offen: Prüfung mit echtem Handy, echter
    Cloud-App und der echten PC-App Ende-zu-Ende; danach eine Beta.
-2. **Autofill** (Stufe 3, E11 – jetzt als Nächstes):
+2. ~~**2c**~~ Abgleich über einen WebDAV-Server: **fertig** (2026-10-24,
+   Abschnitt „Stufe 2c“ oben). Danach nach Wunsch des Besitzers (E17):
+   Google Drive + Dropbox (OAuth), OneDrive, evtl. PC↔Handy direkt im WLAN.
+3. **Autofill** (Stufe 3, E11):
    ein Android-`AutofillService` in Kotlin (gleicher Prozess wie die
    Rust-Bibliothek, JNI), zuerst die Minimalvariante – nur Browser/Domain,
    Benutzername + Passwort, kein Speichern; ohne offene App entsperrt eine
@@ -1170,15 +1279,16 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    `BLOCK5-DESIGN.md`, „Stufe 3“. Dabei sinnvoll: der Fingerabdruck als
    eigenes Kotlin-Plugin (E5 b: StrongBox, eigener Alias, `ByteArray` statt
    Text), weil Autofill denselben Keystore-KEK braucht.
-3. Kleinere offene Punkte: das Launcher-Icon von `gen/android` (noch
+4. Kleinere offene Punkte: das Launcher-Icon von `gen/android` (noch
    Tauris Standard, auch im Fingerabdruck-Prompt sichtbar) durch das
    Keystead-Logo ersetzen; Zwischenablage mit langem Timer härten
    (Kotlin-`AlarmManager`, siehe „Bekannte Grenzen“ unten); TalkBack und
-   der R8-Release-Build mit Ordner- und Biometrie-Plugin im Emulator.
-4. Update-Hinweis auf dem Handy: nach der Entscheidung der Läufe **nicht**
-   (keine `INTERNET`-Berechtigung, siehe „Bitte bestätigen“); nur wieder
+   der R8-Release-Build mit Ordner-, Keystore- und Biometrie-Plugin im
+   Emulator.
+5. Update-Hinweis auf dem Handy: weiterhin **nicht** (die `INTERNET`-
+   Berechtigung seit 2c dient nur dem Server-Abgleich); nur wieder
    aufnehmen, wenn der Besitzer das will.
-5. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
+6. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
    Signatur, nur Screenshots).
 
 Bekannte Grenzen: Zwischenablage auf dem Handy – wird der Prozess

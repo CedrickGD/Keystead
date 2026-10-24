@@ -254,7 +254,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
       </div>
       {selected?.outcome === "pcOlder" && <p className="sync-line-note">{t("sync.pcOlderHint")}</p>}
       {needsRelink(status) && <p className="sync-line-note">{t("sync.relink.short")}</p>}
-      {!status.lastError && skippedText(status) && <p className="sync-line-note">{skippedText(status)}</p>}
+      {skippedText(status) && <p className="sync-line-note">{skippedText(status)}</p>}
     </div>
   );
 }

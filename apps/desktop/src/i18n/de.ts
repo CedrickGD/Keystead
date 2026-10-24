@@ -295,7 +295,7 @@ export const de = {
   "unlock.passwordChangedOnPc": "Falsches Master-Passwort. Die Kopie vom PC hat ein anderes Master-Passwort – hast du es am PC geändert, nutze das neue.",
   "unlock.forgot": "Passwort vergessen?",
   "unlock.createNew": "Neuen Tresor erstellen",
-  "unlock.footer": "Lokal verschlüsselt, ohne Cloud",
+  "unlock.footer": "Lokal verschlüsselt, ohne Keystead-Server",
 
   // Fingerprint unlock (phone)
   "deviceUnlock.button": "Mit Fingerabdruck entsperren",
@@ -1052,7 +1052,7 @@ export const de = {
   "sync.conflict.lostPhoneAttachments_other":
     "Wählst du den Stand vom PC, fehlen danach {n} Anhänge, die nur der Stand vom Handy hat. Die Dateien bleiben bei der Konfliktkopie erhalten.",
   "sync.conflict.copyNotePhone":
-    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy und wird zusätzlich in den Cloud-Ordner gelegt – der PC bietet an, ihn wiederherzustellen (Einstellungen → Handy). Seine Anhänge bleiben nur bei der Kopie auf dem Handy; am PC kommen die Einträge zurück.",
+    "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem Handy und wird zusätzlich in den Cloud-Ordner bzw. auf den Server gelegt – der PC bietet an, ihn wiederherzustellen (Einstellungen → Handy). Seine Anhänge bleiben nur bei der Kopie auf dem Handy; am PC kommen die Einträge zurück.",
   "sync.conflict.copyNotePc":
     "Nichts geht verloren: Der andere Stand bleibt als Konfliktkopie auf diesem PC (Datenordner, Unterordner „conflicts“). Einträge daraus holst du über Einstellungen → Importieren zurück.",
   "sync.notice.keptAside":

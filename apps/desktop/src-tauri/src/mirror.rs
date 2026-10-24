@@ -4702,6 +4702,74 @@ mod tests {
             assert_eq!(server.paths(), BTreeSet::from([name]));
         }
 
+        /// By hand, against a real WebDAV server (e.g. `rclone serve webdav`
+        /// with a self-signed certificate): `KEYSTEAD_TEST_DAV_URL`,
+        /// `KEYSTEAD_TEST_DAV_USER`, `KEYSTEAD_TEST_DAV_PASSWORD`, optional
+        /// `KEYSTEAD_TEST_DAV_CERT` (the leaf's SHA-256) and
+        /// `KEYSTEAD_TEST_DAV_FOLDER` (default "Keystead-PC-Test", created):
+        /// the PC's pass with a blob, a pull of another device's edit, the
+        /// blob's removal – what the phone never does.
+        #[test]
+        #[ignore = "needs a WebDAV server (KEYSTEAD_TEST_DAV_URL, …)"]
+        fn the_pc_against_a_real_webdav_server() {
+            use crate::remote::webdav::{WebDavConfig, WebDavRemote};
+            let env = |name: &str| std::env::var(name).ok();
+            let cfg = WebDavConfig {
+                url: env("KEYSTEAD_TEST_DAV_URL").expect("KEYSTEAD_TEST_DAV_URL"),
+                user: env("KEYSTEAD_TEST_DAV_USER").expect("KEYSTEAD_TEST_DAV_USER"),
+                password: zeroize::Zeroizing::new(
+                    env("KEYSTEAD_TEST_DAV_PASSWORD").expect("KEYSTEAD_TEST_DAV_PASSWORD"),
+                ),
+                folder: env("KEYSTEAD_TEST_DAV_FOLDER")
+                    .unwrap_or_else(|| "Keystead-PC-Test".into()),
+                cert_sha256: env("KEYSTEAD_TEST_DAV_CERT"),
+            };
+            WebDavRemote::new(&cfg)
+                .unwrap()
+                .create_folder(&cfg)
+                .unwrap();
+            let test = WebDavRemote::test(&cfg);
+            assert!(test.ok, "{test:?}");
+            let store = RemoteStore::new(WebDavRemote::new(&cfg).unwrap().with_cas(test.cas));
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let id = open_id(&core);
+            let name = format!("{id}.keystead");
+            let item = note(&core, "Ausweis");
+            let a = core
+                .mutate(|v| v.add_attachment(&item, "scan.png", b"\x89PNG fake scan"))
+                .unwrap();
+            let results = run_queued_on(&core, &store);
+            assert!(results.ok && results.error.is_none(), "{results:?}");
+            let blob = format!("{}/{}.bin", remote::blob_dir_name(&id), a.id);
+            let (bytes, _) = store.remote.get(&name, VAULT_FILE_MAX_BYTES).unwrap();
+            assert_eq!(bytes, fs::read(vault_path(&core)).unwrap());
+            assert!(store.remote.get(&blob, BLOB_MAX_BYTES).is_ok());
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::UpToDate
+            );
+
+            // Another device's edit on the server comes back.
+            let mut phone = other_device(dir.path(), &core, &id);
+            add_note(&mut phone, "Handy");
+            store
+                .remote
+                .put(&name, &fs::read(phone.path()).unwrap(), Precondition::None)
+                .unwrap();
+            let results = scan_on(&core, &store);
+            assert!(results.pulled, "{results:?}");
+            assert!(names(&core).contains(&"Handy".to_owned()));
+
+            // The attachment goes: its blob and folder leave the server.
+            core.mutate(|v| v.remove_attachment(&a.id)).unwrap();
+            let results = run_queued_on(&core, &store);
+            assert!(results.error.is_none(), "{results:?}");
+            let gone = store.remote.get(&blob, BLOB_MAX_BYTES).unwrap_err();
+            assert!(remote::has_code(&gone, remote::FILE_MISSING), "{gone:?}");
+            store.remote.delete(&name, Precondition::None).unwrap();
+        }
+
         #[test]
         fn the_open_vault_takes_a_newer_copy_from_the_server() {
             let dir = tempfile::tempdir().unwrap();

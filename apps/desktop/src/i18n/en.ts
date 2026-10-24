@@ -285,7 +285,7 @@ export const en: Record<MessageKey, string> = {
   "unlock.passwordChangedOnPc": "Wrong master password. The copy from the PC has another master password – if you changed it on the PC, use the new one.",
   "unlock.forgot": "Forgot password?",
   "unlock.createNew": "Create new vault",
-  "unlock.footer": "Encrypted locally, no cloud",
+  "unlock.footer": "Encrypted locally, no Keystead server",
 
   // Fingerprint unlock (phone)
   "deviceUnlock.button": "Unlock with fingerprint",
@@ -1028,7 +1028,7 @@ export const en: Record<MessageKey, string> = {
   "sync.conflict.lostPhoneAttachments_other":
     "If you choose the PC's state, {n} attachments that only the phone's state has are missing afterwards. The files stay with the conflict copy.",
   "sync.conflict.copyNotePhone":
-    "Nothing is lost: the other state stays on this phone as a conflict copy and is also put into the cloud folder – the PC offers to restore it (Settings → Phone). Its attachments stay only with the copy on the phone; the PC brings back the entries.",
+    "Nothing is lost: the other state stays on this phone as a conflict copy and is also put into the cloud folder or onto the server – the PC offers to restore it (Settings → Phone). Its attachments stay only with the copy on the phone; the PC brings back the entries.",
   "sync.conflict.copyNotePc":
     "Nothing is lost: the other state stays on this PC as a conflict copy (data folder, subfolder “conflicts”). Get entries back from it through Settings → Import.",
   "sync.notice.keptAside":
