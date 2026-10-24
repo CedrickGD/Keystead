@@ -100,6 +100,9 @@ impl TestServer {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
+                // A client that stops reading never holds a server thread
+                // (and the state it may lock) for long.
+                let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
                 let state = Arc::clone(&shared);
                 let config = config.clone();
                 std::thread::spawn(move || {
@@ -359,6 +362,11 @@ fn serve(state: &Mutex<State>, stream: &mut (impl Read + Write)) -> Option<()> {
                     }
                 },
             };
+            // Never write while holding the state: a client that stops
+            // reading (an oversized answer it refused) would block the next
+            // `set_hostile` of the test for good (Linux's socket buffers are
+            // smaller than the 9 MiB answer).
+            drop(st);
             respond(
                 stream,
                 207,

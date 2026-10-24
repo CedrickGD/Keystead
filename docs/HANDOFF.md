@@ -1123,7 +1123,11 @@ Abschluss-Commit danach.
   Keystore-Fallback, veraltete Seite), `node --test` 99 grün;
   fmt, clippy `-D warnings` (Windows und aarch64-Android), `tsc`,
   `npm run build`. Der eingebaute Testserver antwortet jetzt wie rclone
-  (201 mit Text).
+  (201 mit Text). Der erste Release-Lauf (`5b088f2`) hing unter Linux im
+  Test `remote::webdav::tests::hostile_answers`: der Testserver schrieb die
+  9-MiB-Antwort unter seiner Sperre, Linux' Socket-Puffer sind kleiner –
+  Verklemmung (unter Windows unsichtbar). Behoben; der Linux-Testjob hat
+  jetzt `timeout-minutes: 30`.
 * **Emulator gegen einen echten WebDAV-Server** (`rclone serve webdav`
   v1.75.1 mit selbst signiertem Zertifikat, `https://10.0.2.2:8443`, Debug-
   APK x86_64 über die alte installiert): bestehende Ordner-Verbindung nach
