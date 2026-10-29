@@ -30,6 +30,7 @@
 | E20 | Eine Methode | am PC entweder Cloud-Ordner oder Server (das eine ersetzt das andere), am Handy eine Verbindung; gemischt geht trotzdem (PC über den Nextcloud-Ordner, Handy per WebDAV in denselben Ordner) |
 | E21 | Server-Ordner | wird nie von selbst angelegt – nur über „Ordner anlegen“ im Formular; Keystead legt dort nur seine Dateien im Layout des Cloud-Ordners ab und löscht nur, was der PC-Spiegel auch im Ordner löscht (alte Anhänge, eine entfernte Tresorkopie) |
 | E22 | Wann (Server) | Handy wie beim Ordner, dazu Pause nach Serverfehlern 1 → 2 → 5 → 15 min für automatische Abgleiche („Jetzt synchronisieren“ immer); „Nur über WLAN synchronisieren“ Standard **aus**; PC prüft den Server alle 60 s (Ordner: 20 s) plus bei Fokus und Entsperren; kein Hintergrunddienst |
+| E23 | Dropbox (Stufe 2d) | **2026-10-29 (Entscheidung nach Freigabe „Entscheidung triffst du“):** Dropbox vor Google Drive, weil der Login auf beiden Geräten gleich geht – PKCE **ohne Weiterleitung** (Dropbox zeigt einen Code, den man in Keystead einfügt), kein App-Geheimnis, Zugriff nur auf den **App-Ordner** `/Apps/Keystead`. Der App-Schlüssel ist öffentlich und kommt über die Build-Variable `KEYSTEAD_DROPBOX_APP_KEY`; ohne ihn bietet die App Dropbox nicht an. Refresh-Token wie das Server-Passwort versiegelt; Abmelden widerruft ihn |
 
 ---
 

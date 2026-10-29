@@ -278,6 +278,12 @@ export const api = {
   setSyncServer: (config: WebDavConfig) => call<MirrorStatus>("set_sync_server", { config }),
   /** Desktop: no server any more (its stored password is removed; the copies on it stay). */
   clearSyncServer: () => call<MirrorStatus>("clear_sync_server"),
+  /** Both platforms: starts a Dropbox login – the URL of the page to open in the browser (it shows a code). */
+  dropboxLogin: () => call<string>("dropbox_login"),
+  /** Desktop: finishes the Dropbox login with the code; the copies go to the app folder from now on. */
+  setSyncDropbox: (code: string) => call<MirrorStatus>("set_sync_dropbox", { code }),
+  /** Desktop: signs the Dropbox account out (the token is revoked and forgotten; the copies there stay). */
+  clearSyncCloud: () => call<MirrorStatus>("clear_sync_cloud"),
   /** Both platforms: the server form's connection test – nothing is stored. */
   webdavTest: (config: WebDavConfig) => call<WebDavTest>("webdav_test", { config }),
   /** Both platforms: "Ordner anlegen" – creates the server's sync folder, then tests again. */
@@ -347,6 +353,8 @@ export const api = {
    * (its code as the error). The password is sealed by the Android Keystore, never returned.
    */
   linkWebdav: (config: WebDavConfig) => call<FolderStatus>("link_webdav", { config }),
+  /** Phone: finishes the Dropbox login with the code and links the app folder (then syncs). */
+  linkDropbox: (code: string) => call<FolderStatus>("link_dropbox", { code }),
   /** Syncs now; rejects with the sync's error (also recorded in `lastError`). */
   syncNow: () => call<FolderStatus>("sync_now"),
   /** Forgets the folder; the vault copies stay on the phone. */

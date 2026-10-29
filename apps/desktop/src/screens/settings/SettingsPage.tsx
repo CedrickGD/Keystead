@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import {
   Check,
   CircleCheck,
+  Cloud,
   Copy,
   Download,
   ExternalLink,
@@ -76,6 +77,7 @@ import {
   useSyncErrorText,
 } from "../../components/FolderSync";
 import { WebDavDialog } from "../../components/WebDavForm";
+import { DropboxDialog } from "../../components/DropboxDialog";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -900,19 +902,27 @@ function UpdateCheckResult({ result }: { result: CheckResult }) {
 function SyncSection() {
   const { t, formatDateTime, formatRelative } = useT();
   const folderSync = useFolderSync();
-  const { settings, updateSettings } = useApp();
+  const { info, settings, updateSettings } = useApp();
   const errorFor = useSyncErrorText();
   const skippedText = useSkippedText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
+  const [dropboxForm, setDropboxForm] = useState(false);
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync) return null;
   const { status, busy, link, sync, unlink } = folderSync;
   const linked = status?.linked === true;
   const server = status?.kind === "webdav" ? status.server : null;
+  const cloud = status?.kind === "dropbox" ? status.cloud : null;
+  const dropboxAvailable = info.syncProviders.includes("dropbox");
   const syncing = Boolean(status?.syncing) || busy === "sync";
   const skipped = skippedText(status);
-  const dialog = serverForm && (
-    <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
+  const dialog = (
+    <>
+      {serverForm && (
+        <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
+      )}
+      {dropboxForm && <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setDropboxForm(false)} />}
+    </>
   );
 
   return (
@@ -938,8 +948,19 @@ function SyncSection() {
             >
               {t("sync.connectServer")}
             </Button>
+            {dropboxAvailable && (
+              <Button
+                variant="secondary"
+                icon={<Cloud />}
+                loading={busy === "dropbox"}
+                disabled={!status || busy !== null}
+                onClick={() => setDropboxForm(true)}
+              >
+                {t("sync.connectDropbox")}
+              </Button>
+            )}
           </div>
-          <p className="subtle">{t("sync.methodSoon")}</p>
+          <p className="subtle">{dropboxAvailable ? t("sync.methodSoonGdrive") : t("sync.methodSoon")}</p>
         </SettingRow>
       ) : (
         <>
@@ -948,7 +969,41 @@ function SyncSection() {
               <RelinkBanner />
             </div>
           )}
-          {server ? (
+          {cloud ? (
+            <SettingRow
+              title={t("sync.dropbox")}
+              description={
+                <>
+                  <strong className="sync-folder-name">{cloud.email || cloud.name}</strong>
+                  <span className="sync-folder-desc">{t("sync.dropboxDesc")}</span>
+                </>
+              }
+              stacked
+            >
+              <div className="setting-actions">
+                {serverNeedsPassword(status?.lastError) && (
+                  <Button
+                    variant="primary"
+                    icon={<KeyRound />}
+                    loading={busy === "dropbox"}
+                    disabled={busy !== null && busy !== "dropbox"}
+                    onClick={() => setDropboxForm(true)}
+                  >
+                    {t("sync.signInAgain")}
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  icon={<FolderOpen />}
+                  loading={busy === "link"}
+                  disabled={busy !== null && busy !== "link"}
+                  onClick={() => void link()}
+                >
+                  {t("sync.switchToFolder")}
+                </Button>
+              </div>
+            </SettingRow>
+          ) : server ? (
             <SettingRow
               title={t("sync.server")}
               description={
@@ -1044,7 +1099,7 @@ function SyncSection() {
               {t("sync.syncNow")}
             </Button>
           </SettingRow>
-          {server && (
+          {(server || cloud) && (
             <SettingRow title={t("sync.wifiOnly")} description={t("sync.wifiOnlyDesc")}>
               <Switch
                 checked={settings.syncWifiOnly}
@@ -1054,7 +1109,7 @@ function SyncSection() {
             </SettingRow>
           )}
           <SettingRow
-            title={server ? t("settings.syncVaultsServer") : t("settings.syncVaults")}
+            title={server ? t("settings.syncVaultsServer") : cloud ? t("settings.syncVaultsDropbox") : t("settings.syncVaults")}
             description={
               status && status.files.length > 0 ? <SyncFileList files={status.files} /> : t("settings.syncNoFiles")
             }
@@ -1078,7 +1133,7 @@ function SyncSection() {
   );
 }
 
-type SyncMethod = "none" | "folder" | "webdav";
+type SyncMethod = "none" | "folder" | "webdav" | "dropbox";
 
 /**
  * Desktop: how the PC keeps its encrypted copies for the phone – off, a
@@ -1089,21 +1144,27 @@ type SyncMethod = "none" | "folder" | "webdav";
 function DesktopSyncSection() {
   const { t, errorText, formatDateTime, formatRelative } = useT();
   const mirror = useMirror();
-  const { settings } = useApp();
+  const { info, settings } = useApp();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
+  const [dropboxForm, setDropboxForm] = useState(false);
   const status = mirror?.status ?? null;
   useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt || status?.retryAt));
   if (!mirror) return null;
   const folder = settings.mirrorFolder;
   const server = folder === null ? settings.syncServer : null;
-  const method: SyncMethod = folder !== null ? "folder" : server ? "webdav" : "none";
+  const cloud = folder === null && !server ? settings.syncCloud : null;
+  const method: SyncMethod = folder !== null ? "folder" : server ? "webdav" : cloud ? "dropbox" : "none";
+  const dropboxAvailable = info.syncProviders.includes("dropbox");
 
   const pick = (next: SyncMethod) => {
     if (next === method) return;
-    // A folder or a server replaces the other one (the backend clears it).
+    // A folder, a server or an account replaces the others (the backend clears them).
     if (next === "folder") void mirror.choose();
     else if (next === "webdav") setServerForm("new");
-    else void (method === "folder" ? mirror.turnOff() : mirror.clearServer());
+    else if (next === "dropbox") setDropboxForm(true);
+    else if (method === "folder") void mirror.turnOff();
+    else if (method === "webdav") void mirror.clearServer();
+    else void mirror.clearCloud();
   };
 
   const state = (
@@ -1134,7 +1195,11 @@ function DesktopSyncSection() {
 
   return (
     <SettingsSection id="sync" title={t("settings.sync")} description={t("settings.syncDescPc")}>
-      <SettingRow title={t("sync.method")} description={t("sync.methodSoon")} stacked>
+      <SettingRow
+        title={t("sync.method")}
+        description={dropboxAvailable ? t("sync.methodSoonGdrive") : t("sync.methodSoon")}
+        stacked
+      >
         <Segmented<SyncMethod>
           value={method}
           onChange={pick}
@@ -1143,6 +1208,9 @@ function DesktopSyncSection() {
             { value: "none", label: t("sync.methodNone") },
             { value: "folder", label: t("sync.methodFolder"), icon: <FolderOpen /> },
             { value: "webdav", label: t("sync.methodServer"), icon: <Server /> },
+            ...(dropboxAvailable || method === "dropbox"
+              ? [{ value: "dropbox" as const, label: t("sync.methodDropbox"), icon: <Cloud /> }]
+              : []),
           ]}
         />
       </SettingRow>
@@ -1185,6 +1253,31 @@ function DesktopSyncSection() {
           </Button>
         </SettingRow>
       )}
+      {method === "dropbox" && cloud && (
+        <SettingRow
+          title={t("sync.dropbox")}
+          description={
+            <>
+              <strong className="sync-folder-name">{cloud.email || cloud.name}</strong>
+              <span className="mirror-state">{t("mirror.dropboxDesc")}</span>
+              {state}
+            </>
+          }
+          stacked
+        >
+          <div className="setting-actions">
+            {serverNeedsPassword(status?.lastError) && (
+              <Button variant="primary" icon={<KeyRound />} loading={mirror.busy} onClick={() => setDropboxForm(true)}>
+                {t("sync.signInAgain")}
+              </Button>
+            )}
+            <Button variant="ghost" loading={mirror.busy} onClick={() => void mirror.clearCloud()}>
+              {t("sync.signOut")}
+            </Button>
+          </div>
+        </SettingRow>
+      )}
+      {dropboxForm && <DropboxDialog onConnect={mirror.setDropbox} onClose={() => setDropboxForm(false)} />}
       {serverForm && (
         <WebDavDialog
           initial={serverForm === "edit" ? server : null}
@@ -1210,7 +1303,7 @@ function PhoneSection() {
   const openImport = useOpenImport();
   const { settings } = useApp();
   if (!mirror) return null;
-  const on = settings.mirrorFolder !== null || settings.syncServer !== null;
+  const on = settings.mirrorFolder !== null || settings.syncServer !== null || settings.syncCloud !== null;
 
   return (
     <SettingsSection id="phone" title={t("settings.phone")} description={t("settings.phoneDesc")}>

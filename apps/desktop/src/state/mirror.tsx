@@ -36,6 +36,10 @@ export interface MirrorApi {
   setServer: (config: WebDavConfig) => Promise<boolean>;
   /** No server any more (its password is removed; the copies on it stay). */
   clearServer: () => Promise<void>;
+  /** Finishes the Dropbox login with the code: the copies go to the app folder; resolves to whether it worked. */
+  setDropbox: (code: string) => Promise<boolean>;
+  /** Signs the Dropbox account out (the copies there stay). */
+  clearCloud: () => Promise<void>;
   /** Vaults in the folder this PC does not have (newest scan). */
   offers: FolderOffer[];
   /** The offer being taken or declined. */
@@ -279,6 +283,39 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
     }
   }, [errorText, reloadSettings, t, toast]);
 
+  const setDropbox = useCallback(
+    async (code: string) => {
+      setBusy(true);
+      try {
+        const next = await api.setSyncDropbox(code);
+        knownError.current = next.lastError;
+        setStatus(next);
+        await reloadSettings();
+        toast.success(t("mirror.dropboxEnabledToast"));
+        return true;
+      } catch (err) {
+        toast.error(errorText(err));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [errorText, reloadSettings, t, toast],
+  );
+
+  const clearCloud = useCallback(async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.clearSyncCloud());
+      await reloadSettings();
+      toast.info(t("mirror.dropboxDisabledToast"));
+    } catch (err) {
+      toast.error(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [errorText, reloadSettings, t, toast]);
+
   const value = useMemo<MirrorApi | null>(
     () =>
       enabled
@@ -289,6 +326,8 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
             turnOff,
             setServer,
             clearServer,
+            setDropbox,
+            clearCloud,
             offers,
             offerBusy,
             adopt,
@@ -307,6 +346,8 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
       turnOff,
       setServer,
       clearServer,
+      setDropbox,
+      clearCloud,
       offers,
       offerBusy,
       adopt,

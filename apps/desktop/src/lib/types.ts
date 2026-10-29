@@ -250,6 +250,8 @@ export interface AppInfo {
   readOnly: boolean;
   /** Attachments cannot be added, saved or removed (the phone: previews only). */
   attachmentsReadOnly: boolean;
+  /** The sync methods besides a cloud folder this build can use: "webdav", and "dropbox" with an app key. */
+  syncProviders: string[];
 }
 
 export interface SessionState {
@@ -508,6 +510,11 @@ export interface Settings {
    * (`save_settings` keeps the stored value, except that a new `mirrorFolder` clears it). The phone ignores it.
    */
   syncServer: SyncServer | null;
+  /**
+   * Desktop: the cloud account (Dropbox, stage 2d) instead of a folder or server. No token. Only
+   * `set_sync_dropbox` / `clear_sync_cloud` change it (a new `mirrorFolder` clears it). The phone ignores it.
+   */
+  syncCloud: SyncCloud | null;
   /** Phone: automatic syncs with a server only on Wi-Fi ("Nur über WLAN synchronisieren"). Default false. */
   syncWifiOnly: boolean;
   /**
@@ -632,6 +639,14 @@ export interface SyncServer {
   cas: boolean;
 }
 
+/** A cloud account (Dropbox's app folder `/Apps/Keystead`): `Settings.syncCloud`, a phone's link. No token. */
+export interface SyncCloud {
+  provider: "dropbox";
+  accountId: string;
+  name: string;
+  email: string;
+}
+
 /** What the server form sends (`webdav_test`, `webdav_create_folder`, `link_webdav`, `set_sync_server`). */
 export interface WebDavConfig {
   url: string;
@@ -671,9 +686,11 @@ export interface WebDavTest {
 export interface FolderStatus {
   linked: boolean;
   /** What the phone is linked to (null without a link). */
-  kind: "folder" | "webdav" | null;
+  kind: "folder" | "webdav" | "dropbox" | null;
   /** The server of a `webdav` link (no password). */
   server: SyncServer | null;
+  /** The account of a `dropbox` link (no token). */
+  cloud: SyncCloud | null;
   /** The app may write the linked folder (false for a read-only link or none). */
   writable: boolean;
   syncing: boolean;
@@ -733,8 +750,10 @@ export interface SyncNotice {
 
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
 export interface MirrorStatus {
-  /** How the copies are kept: a cloud folder, a WebDAV server, or null = off. */
-  kind: "folder" | "webdav" | null;
+  /** How the copies are kept: a cloud folder, a WebDAV server, Dropbox, or null = off. */
+  kind: "folder" | "webdav" | "dropbox" | null;
+  /** `Settings.syncCloud` (no token); null without one. */
+  cloud: SyncCloud | null;
   /** `Settings.mirrorFolder`; null without one. */
   folder: string | null;
   /** `Settings.syncServer` (no password); null without one. */

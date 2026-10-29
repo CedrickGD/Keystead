@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   ClipboardCopy,
+  Cloud,
   FolderInput,
   FolderOpen,
   HardDrive,
@@ -32,6 +33,7 @@ import { startOnSettings } from "../lib/startView";
 import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
 import { PhoneServerDialog, SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
+import { DropboxDialog } from "../components/DropboxDialog";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
@@ -205,7 +207,9 @@ function PhoneWelcome({ onCreate }: { onCreate: () => void }) {
  */
 function PhoneVaultSource() {
   const { t } = useT();
+  const { info } = useApp();
   const folderSync = useFolderSync();
+  const [dropboxForm, setDropboxForm] = useState(false);
   const errorFor = useSyncErrorText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const status = folderSync?.status ?? null;
@@ -301,7 +305,22 @@ function PhoneVaultSource() {
           >
             {t("sync.connectServer")}
           </Button>
+          {info.syncProviders.includes("dropbox") && (
+            <Button
+              variant="secondary"
+              block
+              icon={<Cloud />}
+              loading={busy === "dropbox"}
+              disabled={!folderSync || busy !== null}
+              onClick={() => setDropboxForm(true)}
+            >
+              {t("sync.connectDropbox")}
+            </Button>
+          )}
         </>
+      )}
+      {dropboxForm && folderSync && (
+        <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setDropboxForm(false)} />
       )}
       <p className="subtle sync-note">{server ? t("sync.serverNote") : t("sync.folderNote")}</p>
       {serverForm && (

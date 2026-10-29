@@ -146,6 +146,11 @@ export const de = {
   "error.input.server_folder": "Das ist kein gültiger Ordnername (nicht „.“ oder „..“, kein „\\“).",
   "error.input.webdav_config": "Die Angaben zum Server sind unvollständig.",
   "error.input.server_link": "Die Verbindung zum Server ist beschädigt. Verbinde den Server neu.",
+  "error.unsupported.dropbox_not_configured": "Diese Version kann sich noch nicht mit Dropbox verbinden.",
+  "error.unsupported.dropbox_login_expired":
+    "Die Anmeldung bei Dropbox ist abgelaufen. Starte sie erneut mit „Bei Dropbox anmelden“.",
+  "error.input.dropbox_code":
+    "Dieser Code passt nicht (oder ist abgelaufen). Kopiere ihn noch einmal von der Dropbox-Seite.",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -945,6 +950,7 @@ export const de = {
   "settings.syncDescPc":
     "Halte deine Tresore mit dem Handy abgeglichen – über einen Ordner deiner eigenen Cloud oder direkt über einen WebDAV-Server. Ein Keystead-Server ist nie im Spiel.",
   "settings.syncVaultsServer": "Tresore auf dem Server",
+  "settings.syncVaultsDropbox": "Tresore in Dropbox",
   "sync.welcomeTitle": "Tresor vom PC holen",
   "sync.stepPc":
     "Am PC: In den Einstellungen unter „Synchronisierung“ einen Cloud-Ordner in Nextcloud oder OneDrive wählen – oder einen WebDAV-Server verbinden.",
@@ -976,6 +982,28 @@ export const de = {
   "sync.skipped.backoff": "Der Server war eben nicht erreichbar – nächster automatischer Versuch {when}.",
   "sync.serverNote":
     "Keystead überträgt nur seine eigenen, verschlüsselten Tresor-Dateien – direkt zu deinem Server, ohne Keystead-Server dazwischen.",
+  "sync.connectDropbox": "Mit Dropbox verbinden",
+  "sync.methodDropbox": "Dropbox",
+  "sync.methodSoonGdrive": "Google Drive folgt bald.",
+  "sync.dropbox": "Dropbox",
+  "sync.dropboxDesc":
+    "Keystead gleicht seinen eigenen Ordner „Apps/Keystead“ in deiner Dropbox ab – sonst sieht es nichts davon. Beim Start, beim Zurückkehren in die App, nach jeder Änderung und auf Knopfdruck.",
+  "sync.signInAgain": "Erneut anmelden",
+  "sync.signOut": "Abmelden",
+  "sync.dropboxLinkedEmpty": "Mit Dropbox verbunden – im Ordner „Apps/Keystead“ liegt noch kein Tresor.",
+  "sync.dropboxLinkedVaults_one": "Mit Dropbox verbunden – {n} Tresor ist jetzt auf dem Handy.",
+  "sync.dropboxLinkedVaults_other": "Mit Dropbox verbunden – {n} Tresore sind jetzt auf dem Handy.",
+  "dropbox.title": "Mit Dropbox verbinden",
+  "dropbox.subtitle":
+    "Keystead bekommt nur einen eigenen Ordner in deiner Dropbox („Apps/Keystead“) – auf deine anderen Dateien hat es keinen Zugriff.",
+  "dropbox.step1":
+    "Auf „Bei Dropbox anmelden“ tippen: Dropbox öffnet sich im Browser. Melde dich an und erlaube Keystead den Zugriff.",
+  "dropbox.step2": "Dropbox zeigt dann einen Code. Kopiere ihn und füge ihn hier ein.",
+  "dropbox.signIn": "Bei Dropbox anmelden",
+  "dropbox.code": "Code von Dropbox",
+  "dropbox.codeHint": "Keystead speichert den Zugang verschlüsselt auf diesem Gerät – nie dein Dropbox-Passwort.",
+  "dropbox.connect": "Verbinden",
+  "dropbox.openAgain": "Dropbox-Seite erneut öffnen",
   "sync.linkedEmptyTitle": "Im Ordner „{folder}“ liegt noch kein Tresor",
   "sync.linkedEmptyText": "Prüfe am PC, ob „Kopie im Cloud-Ordner aktuell halten“ genau diesen Ordner nutzt und die Cloud-App die Datei schon hochgeladen hat. Tippe dann auf „Jetzt synchronisieren“.",
   "sync.linkedEmpty": "Ordner „{folder}“ verbunden – darin liegt noch kein Tresor.",
@@ -1100,6 +1128,10 @@ export const de = {
   "mirror.retryAt": "Pausiert nach einem Serverfehler – nächster Versuch {when}.",
   "mirror.serverEnabledToast": "Keystead hält jetzt eine Kopie auf „{server}“ aktuell.",
   "mirror.serverDisabledToast": "Abgleich mit dem Server ausgeschaltet – die Dateien auf dem Server bleiben liegen.",
+  "mirror.dropboxDesc":
+    "Keystead legt jeden Tresor, den du hier öffnest, verschlüsselt in seinen Ordner „Apps/Keystead“ in deiner Dropbox und übernimmt Änderungen vom Handy von dort – nach jedem Speichern, wenn du das Fenster wieder öffnest und jede Minute.",
+  "mirror.dropboxEnabledToast": "Keystead hält jetzt eine Kopie in deiner Dropbox aktuell.",
+  "mirror.dropboxDisabledToast": "Von Dropbox abgemeldet – die Dateien in „Apps/Keystead“ bleiben liegen.",
   "webdav.title": "Mit WebDAV-Server verbinden",
   "webdav.changeTitle": "Server ändern",
   "webdav.subtitle":

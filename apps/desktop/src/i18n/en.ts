@@ -144,6 +144,9 @@ export const en: Record<MessageKey, string> = {
   "error.input.server_folder": "That is not a valid folder name (not “.” or “..”, no “\\”).",
   "error.input.webdav_config": "The server details are incomplete.",
   "error.input.server_link": "The link to the server is damaged. Connect the server again.",
+  "error.unsupported.dropbox_not_configured": "This version cannot connect to Dropbox yet.",
+  "error.unsupported.dropbox_login_expired": "The Dropbox sign-in expired. Start it again with “Sign in to Dropbox”.",
+  "error.input.dropbox_code": "This code does not fit (or it expired). Copy it again from the Dropbox page.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -923,6 +926,7 @@ export const en: Record<MessageKey, string> = {
   "settings.syncDescPc":
     "Keep your vaults in sync with the phone – through a folder of your own cloud or directly through a WebDAV server. A Keystead server is never involved.",
   "settings.syncVaultsServer": "Vaults on the server",
+  "settings.syncVaultsDropbox": "Vaults in Dropbox",
   "sync.welcomeTitle": "Get your vault from the PC",
   "sync.stepPc":
     "On your PC: in the settings under “Sync”, choose a cloud folder in Nextcloud or OneDrive – or connect a WebDAV server.",
@@ -952,6 +956,27 @@ export const en: Record<MessageKey, string> = {
   "sync.skipped.backoff": "The server could not be reached just now – next automatic try {when}.",
   "sync.serverNote":
     "Keystead transfers only its own encrypted vault files – straight to your server, with no Keystead server in between.",
+  "sync.connectDropbox": "Connect to Dropbox",
+  "sync.methodDropbox": "Dropbox",
+  "sync.methodSoonGdrive": "Google Drive is coming soon.",
+  "sync.dropbox": "Dropbox",
+  "sync.dropboxDesc":
+    "Keystead syncs its own folder “Apps/Keystead” in your Dropbox – it sees nothing else of it. At start, when you return to the app, after every change and when you ask it to.",
+  "sync.signInAgain": "Sign in again",
+  "sync.signOut": "Sign out",
+  "sync.dropboxLinkedEmpty": "Connected to Dropbox – there is no vault in “Apps/Keystead” yet.",
+  "sync.dropboxLinkedVaults_one": "Connected to Dropbox – {n} vault is now on this phone.",
+  "sync.dropboxLinkedVaults_other": "Connected to Dropbox – {n} vaults are now on this phone.",
+  "dropbox.title": "Connect to Dropbox",
+  "dropbox.subtitle":
+    "Keystead gets only a folder of its own in your Dropbox (“Apps/Keystead”) – it has no access to your other files.",
+  "dropbox.step1": "Tap “Sign in to Dropbox”: Dropbox opens in the browser. Sign in and allow Keystead.",
+  "dropbox.step2": "Dropbox then shows a code. Copy it and paste it here.",
+  "dropbox.signIn": "Sign in to Dropbox",
+  "dropbox.code": "Code from Dropbox",
+  "dropbox.codeHint": "Keystead stores the access encrypted on this device – never your Dropbox password.",
+  "dropbox.connect": "Connect",
+  "dropbox.openAgain": "Open the Dropbox page again",
   "sync.linkedEmptyTitle": "No vault in the folder “{folder}” yet",
   "sync.linkedEmptyText": "Check on your PC that “Keep a copy in a cloud folder up to date” uses exactly this folder and that the cloud app has uploaded the file. Then tap “Sync now”.",
   "sync.linkedEmpty": "Folder “{folder}” linked – there is no vault in it yet.",
@@ -1076,6 +1101,10 @@ export const en: Record<MessageKey, string> = {
   "mirror.retryAt": "Paused after a server error – next try {when}.",
   "mirror.serverEnabledToast": "Keystead now keeps a copy on “{server}” up to date.",
   "mirror.serverDisabledToast": "Sync with the server turned off – the files on the server stay.",
+  "mirror.dropboxDesc":
+    "Keystead puts every vault you open here, encrypted, into its folder “Apps/Keystead” in your Dropbox and takes the phone's changes from there – after every save, when you return to the window and every minute.",
+  "mirror.dropboxEnabledToast": "Keystead now keeps a copy in your Dropbox up to date.",
+  "mirror.dropboxDisabledToast": "Signed out of Dropbox – the files in “Apps/Keystead” stay.",
   "webdav.title": "Connect to a WebDAV server",
   "webdav.changeTitle": "Change server",
   "webdav.subtitle":

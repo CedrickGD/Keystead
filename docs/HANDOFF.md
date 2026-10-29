@@ -1173,6 +1173,43 @@ Emulator erreicht den PC unter `https://10.0.2.2:8443/`.
 weitere `Remote` (OAuth – der Besitzer registriert kostenlose
 Entwickler-Apps), OneDrive; danach Autofill (Stufe 3).
 
+### Stufe 2d – Dropbox (2026-10-29)
+
+Vertrag: ARCHITECTURE „Cloud accounts (Dropbox)“; Entscheidung E23. Plan
+(auch Google Drive): `C:\Users\cedri\.ai\handoffs\projects\keystead\plan-2d.md`.
+
+**Was fertig ist:** `remote/http.rs` (gemeinsamer Transport mit den
+Zeitgrenzen für WebDAV und Dropbox), `remote/dropbox.rs` (App-Ordner über
+die API v2: PKCE-Login ohne Weiterleitung, Refresh-Token versiegelt wie das
+Server-Passwort, `rev` als ETag mit `update`/`add` – atomar, Listen
+begrenzt, nur Fehlercodes), Fake-Dropbox für die Tests, Einstellung
+`syncCloud` (PC), Verbindungsart `dropbox` (Handy), Befehle `dropbox_login`,
+`link_dropbox`, `set_sync_dropbox`, `clear_sync_cloud`, Abmelden widerruft
+den Token; Oberfläche `DropboxDialog.tsx` („Bei Dropbox anmelden“ → Code
+einfügen → „Verbinden“), PC: „Abgleich über … Dropbox“, Handy:
+Einstellungen und Willkommensbildschirm „Mit Dropbox verbinden“; Mock (Code
+„demo“).
+
+**Noch nicht aktiv:** Die App bietet Dropbox erst an, wenn ein App-Schlüssel
+eingebaut ist. **Für den Besitzer (5 Minuten):**
+1. <https://www.dropbox.com/developers/apps> → „Create app“ → **Scoped
+   access** → **App folder** → Name z. B. „Keystead Sync“.
+2. Reiter **Permissions**: `files.metadata.read`, `files.content.read`,
+   `files.content.write` ankreuzen → „Submit“.
+3. Reiter **Settings**: „Allow public clients (Implicit Grant & PKCE)“ auf
+   **Allow**; Redirect-URIs bleiben leer.
+4. Den **App key** (nicht das App secret!) im Repo als Variable anlegen:
+   GitHub → Settings → Secrets and variables → Actions → **Variables** →
+   `KEYSTEAD_DROPBOX_APP_KEY` (oder Claude geben, der setzt sie mit
+   `gh variable set`). Lokal: `export KEYSTEAD_DROPBOX_APP_KEY=…` vor dem
+   Build. Die nächste Beta bietet dann Dropbox an; README danach ergänzen.
+
+**Verifiziert:** Unit-Tests gegen den Fake (Login mit falschem/richtigem
+Code, Token-Erneuerung, widerrufener Token, Revisions-Konflikte, feindliche
+Antworten, Handy-Import und PC-Spiegel über Dropbox); Klick-Test im Mock
+(Handy und PC). **Nicht verifiziert:** echtes Dropbox-Konto (es fehlt der
+App-Schlüssel).
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle

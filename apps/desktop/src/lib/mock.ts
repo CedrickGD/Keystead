@@ -71,7 +71,10 @@
 // (the same sample vaults), the PC's `set_sync_server` replaces the mirror
 // folder (and `clear_sync_server` turns it off); no password is kept.
 // `?sync=server` (phone) starts linked to a demo server, `?mirror=server` (PC)
-// with one set.
+// with one set. Dropbox (stage 2d) is offered too: "Bei Dropbox anmelden"
+// opens Dropbox's real authorize page in a new tab (nothing is sent back to
+// it), the code "demo" connects (any other is `invalid_input:dropbox_code`);
+// the phone links the account like a folder, the PC keeps its copies there.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -115,6 +118,7 @@ import type {
   Settings,
   SyncConflict,
   SyncFileResult,
+  SyncCloud,
   SyncServer,
   TotpCode,
   UpdateInfo,
@@ -214,7 +218,14 @@ interface MockMirror {
 /** The phone's linked cloud folder (see the header comment). */
 interface MockSync {
   /** `writable`: false for a read-only link (`?sync=readonly`, a link from before stage 2b). */
-  link: { folderName: string; linkedAt: number; writable: boolean; kind: "folder" | "webdav"; server: SyncServer | null } | null;
+  link: {
+    folderName: string;
+    linkedAt: number;
+    writable: boolean;
+    kind: "folder" | "webdav" | "dropbox";
+    server: SyncServer | null;
+    cloud?: SyncCloud | null;
+  } | null;
   lastSyncAt: number | null;
   lastError: string | null;
   files: SyncFileResult[];
@@ -357,6 +368,7 @@ function initState(): MockState {
       deviceUnlock: phone && params.get("fingerprint") === "on" && !empty,
       mirrorFolder: !phone && params.get("mirror") === "on" ? MOCK_MIRROR_FOLDER : null,
       syncServer: !phone && params.get("mirror") === "server" ? { ...MOCK_SERVER } : null,
+      syncCloud: null,
       syncWifiOnly: false,
       generatorPresets: empty
         ? []
@@ -377,6 +389,7 @@ function initState(): MockState {
       extensionId: phone ? null : EXTENSION_ID,
       readOnly: false,
       attachmentsReadOnly: phone,
+      syncProviders: ["webdav", "dropbox"],
     },
     browsers: [
       { id: "chrome", name: "Google Chrome", detected: true, registered: true },
@@ -1012,8 +1025,10 @@ function validateSettings(input: unknown, stored: Settings): Settings {
   if (typeof s.syncWifiOnly !== "boolean") fail("invalid_input:settings");
   const mirrorFolder = s.mirrorFolder?.trim() ? s.mirrorFolder : null;
   // Like `from_the_page`: only the server commands change `syncServer` – a new folder replaces it.
-  const syncServer = mirrorFolder !== null && mirrorFolder !== stored.mirrorFolder ? null : stored.syncServer;
-  return clone({ ...s, mirrorFolder, syncServer });
+  const picksFolder = mirrorFolder !== null && mirrorFolder !== stored.mirrorFolder;
+  const syncServer = picksFolder ? null : stored.syncServer;
+  const syncCloud = picksFolder ? null : stored.syncCloud;
+  return clone({ ...s, mirrorFolder, syncServer, syncCloud });
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,6 +1050,20 @@ const MOCK_CERT = {
   notBefore: Date.UTC(2026, 0, 1),
   notAfter: Date.UTC(2028, 0, 1),
 };
+
+const MOCK_DROPBOX: SyncCloud = {
+  provider: "dropbox",
+  accountId: "dbid:demo",
+  name: "Demo Nutzer",
+  email: "demo@example.com",
+};
+
+/** A Dropbox login of the mock: the code "demo" connects. */
+function mockDropboxCode(args: Record<string, unknown>): SyncCloud {
+  const code = typeof args.code === "string" ? args.code.trim() : "";
+  if (code !== "demo") fail("invalid_input:dropbox_code");
+  return { ...MOCK_DROPBOX };
+}
 
 /** Server folders made with "Ordner anlegen" (by URL and folder). */
 const mockCreatedFolders = new Set<string>();
@@ -1103,10 +1132,12 @@ function mirrorStatus(): MirrorStatus {
   const s = getState();
   const folder = s.settings.mirrorFolder;
   const server = folder === null ? s.settings.syncServer : null;
+  const cloud = folder === null && !server ? s.settings.syncCloud : null;
   return {
-    kind: folder !== null ? "folder" : server ? "webdav" : null,
+    kind: folder !== null ? "folder" : server ? "webdav" : cloud ? "dropbox" : null,
     folder,
     server: clone(server),
+    cloud: clone(cloud),
     passwordKept: true,
     retryAt: null,
     lastMirroredAt: s.mirror.lastMirroredAt,
@@ -1122,7 +1153,7 @@ function scheduleMirrorPass(): void {
   window.clearTimeout(mirrorTimer);
   mirrorTimer = window.setTimeout(() => {
     const s = getState();
-    if ((!s.settings.mirrorFolder && !s.settings.syncServer) || !s.unlockedId || isPhone()) return;
+    if ((!s.settings.mirrorFolder && !s.settings.syncServer && !s.settings.syncCloud) || !s.unlockedId || isPhone()) return;
     const before = JSON.stringify(mirrorStatus());
     if (s.mirror.lost) {
       s.mirror.lastError = "unsupported:mirror_folder_missing";
@@ -1392,6 +1423,7 @@ function folderStatus(): FolderStatus {
     linked: sync.link !== null,
     kind: sync.link?.kind ?? null,
     server: clone(sync.link?.server ?? null),
+    cloud: clone(sync.link?.cloud ?? null),
     writable: sync.link?.writable ?? false,
     syncing: sync.syncing,
     folderName: sync.link?.folderName ?? null,
@@ -2120,6 +2152,27 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return mirrorStatus();
     }
 
+    case "dropbox_login":
+      return "https://www.dropbox.com/oauth2/authorize?client_id=demo&response_type=code&code_challenge_method=S256&token_access_type=offline";
+
+    case "set_sync_dropbox": {
+      const cloud = mockDropboxCode(args);
+      await sleep(600);
+      s.settings = { ...s.settings, syncCloud: cloud, syncServer: null, mirrorFolder: null };
+      s.mirror.lastMirroredAt = null;
+      s.mirror.lastError = null;
+      emit("mirror://status", mirrorStatus());
+      scheduleMirrorPass();
+      return mirrorStatus();
+    }
+
+    case "clear_sync_cloud":
+      s.settings = { ...s.settings, syncCloud: null };
+      s.mirror.lastMirroredAt = null;
+      s.mirror.lastError = null;
+      emit("mirror://status", mirrorStatus());
+      return mirrorStatus();
+
     case "clear_sync_server":
       s.settings = { ...s.settings, syncServer: null };
       s.mirror.lastMirroredAt = null;
@@ -2281,6 +2334,21 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return folderStatus();
     }
 
+    case "link_dropbox": {
+      const cloud = mockDropboxCode(args);
+      await sleep(700);
+      s.sync.link = { folderName: "Dropbox", linkedAt: Date.now(), writable: true, kind: "dropbox", server: null, cloud };
+      s.sync.lost = false;
+      s.sync.lastError = null;
+      s.lastActivity = Date.now();
+      try {
+        await mockSyncFolder();
+      } catch {
+        /* recorded in lastError */
+      }
+      return folderStatus();
+    }
+
     case "sync_now":
       s.lastActivity = Date.now();
       return mockSyncFolder();
@@ -2385,6 +2453,8 @@ const PHONE_COMMANDS = new Set([
   "link_webdav",
   "webdav_test",
   "webdav_create_folder",
+  "dropbox_login",
+  "link_dropbox",
   "sync_now",
   "unlink_folder",
   "device_unlock_status",
