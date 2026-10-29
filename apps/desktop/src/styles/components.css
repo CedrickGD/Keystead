@@ -1503,6 +1503,14 @@ mark {
   margin-right: 0;
 }
 
+/* The Google Drive login (components/GdriveDialog.tsx) while it waits. */
+.gdrive-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
 /* The WebDAV server form (components/WebDavForm.tsx): its notes stack their
    text and button; an untrusted certificate's facts in two columns. */
 .webdav-cert-body {

@@ -20,7 +20,9 @@
 // Besides the folder, the sync asks one thing of the system here:
 // `networkKind` – whether the phone is on Wi-Fi or mobile data right now
 // ("Nur über WLAN synchronisieren" for a server link; ACCESS_NETWORK_STATE,
-// no network I/O). A unit test in src-tauri/src/gui.rs guards this file.
+// no network I/O) – and it keeps the redirect of a Google sign-in for the
+// Rust side (`takeOAuthRedirect`, stage 2d). A unit test in
+// src-tauri/src/gui.rs guards this file.
 package io.github.cedrickgd.keystead
 
 import android.app.Activity
@@ -47,6 +49,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.SyncFailedException
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 
 @InvokeArg
 class PickFolderArgs {
@@ -204,6 +207,30 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
       else -> "other"
     }
     invoke.resolve(JSObject().apply { put("kind", kind) })
+  }
+
+  // The redirect of a Google sign-in ("Cloud accounts" in
+  // docs/ARCHITECTURE.md): Google sends the browser to
+  // io.github.cedrickgd.keystead:/oauth2redirect?state=…&code=…, Android
+  // brings MainActivity (singleTask) to the front with that intent, and the
+  // URI waits here until Rust takes it. Only this scheme and path, at most
+  // 4 KiB; Rust checks the login's state, and the code is useless without
+  // the PKCE verifier that never leaves the Rust side.
+  private val redirect = AtomicReference<String?>(null)
+
+  override fun onNewIntent(intent: Intent) {
+    val data = intent.data ?: return
+    if (intent.action != Intent.ACTION_VIEW) return
+    if (data.scheme != OAUTH_SCHEME || data.path != OAUTH_PATH) return
+    val text = data.toString()
+    if (text.length <= 4096) redirect.set(text)
+  }
+
+  // { uri } – the redirect since the last call, or {} (taken once).
+  @Command
+  fun takeOAuthRedirect(invoke: Invoke) {
+    val uri = redirect.getAndSet(null)
+    invoke.resolve(JSObject().apply { if (uri != null) put("uri", uri) })
   }
 
   @Command
@@ -486,6 +513,10 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
   companion object {
     private const val READ_WRITE =
       Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+    // The Google sign-in's redirect (`remote::gdrive::ANDROID_REDIRECT`).
+    private const val OAUTH_SCHEME = "io.github.cedrickgd.keystead"
+    private const val OAUTH_PATH = "/oauth2redirect"
 
     // A vault file as the app names it (`sync::vault_id_of_file_name`).
     private val VAULT_FILE_NAME = Regex("^[A-Za-z0-9_-]{1,64}\\.keystead$")

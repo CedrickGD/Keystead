@@ -72,7 +72,20 @@ export function needsRelink(status: FolderStatus | null): boolean {
   return status?.linked === true && status.kind !== "webdav" && !status.writable && !folderLost(status);
 }
 
-/** The server's password (or Dropbox's token) is missing or was refused: the user signs in again (both platforms). */
+/**
+ * What the method row says is still to come: Google Drive and/or Dropbox when this build cannot
+ * use them (`AppInfo.syncProviders`), nothing when it can use both.
+ */
+export function methodSoonKey(providers: string[]) {
+  const dropbox = providers.includes("dropbox");
+  const gdrive = providers.includes("gdrive");
+  if (dropbox && gdrive) return null;
+  if (dropbox) return "sync.methodSoonGdrive" as const;
+  if (gdrive) return "sync.methodSoonDropbox" as const;
+  return "sync.methodSoon" as const;
+}
+
+/** The server's password (or a cloud account's token) is missing or was refused: the user signs in again (both platforms). */
 export function serverNeedsPassword(lastError: string | null | undefined): boolean {
   return lastError === "unsupported:sync_credentials_missing" || lastError === "unsupported:sync_auth_failed";
 }

@@ -38,7 +38,9 @@ export interface MirrorApi {
   clearServer: () => Promise<void>;
   /** Finishes the Dropbox login with the code: the copies go to the app folder; resolves to whether it worked. */
   setDropbox: (code: string) => Promise<boolean>;
-  /** Signs the Dropbox account out (the copies there stay). */
+  /** Finishes the Google login whose redirect came: the copies go to the Drive folder; resolves to whether it worked. */
+  setGdrive: () => Promise<boolean>;
+  /** Signs the cloud account out (the copies there stay). */
   clearCloud: () => Promise<void>;
   /** Vaults in the folder this PC does not have (newest scan). */
   offers: FolderOffer[];
@@ -303,18 +305,36 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
     [errorText, reloadSettings, t, toast],
   );
 
+  const setGdrive = useCallback(async () => {
+    setBusy(true);
+    try {
+      const next = await api.setSyncGdrive();
+      knownError.current = next.lastError;
+      setStatus(next);
+      await reloadSettings();
+      toast.success(t("mirror.gdriveEnabledToast"));
+      return true;
+    } catch (err) {
+      toast.error(errorText(err));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [errorText, reloadSettings, t, toast]);
+
+  const provider = status?.cloud?.provider ?? null;
   const clearCloud = useCallback(async () => {
     setBusy(true);
     try {
       setStatus(await api.clearSyncCloud());
       await reloadSettings();
-      toast.info(t("mirror.dropboxDisabledToast"));
+      toast.info(provider === "gdrive" ? t("mirror.gdriveDisabledToast") : t("mirror.dropboxDisabledToast"));
     } catch (err) {
       toast.error(errorText(err));
     } finally {
       setBusy(false);
     }
-  }, [errorText, reloadSettings, t, toast]);
+  }, [errorText, provider, reloadSettings, t, toast]);
 
   const value = useMemo<MirrorApi | null>(
     () =>
@@ -327,6 +347,7 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
             setServer,
             clearServer,
             setDropbox,
+            setGdrive,
             clearCloud,
             offers,
             offerBusy,
@@ -347,6 +368,7 @@ export function MirrorProvider({ enabled, children }: { enabled: boolean; childr
       setServer,
       clearServer,
       setDropbox,
+      setGdrive,
       clearCloud,
       offers,
       offerBusy,

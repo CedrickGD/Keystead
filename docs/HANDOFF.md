@@ -1094,7 +1094,8 @@ Abschluss-Commit danach.
   Ordner anlegen, vorgeschlagene Adresse); Handy: Einstellungen →
   Synchronisierung und Willkommensbildschirm „Mit Server verbinden
   (WebDAV)“; PC: Einstellungen → Synchronisierung „Abgleich über“ Kein
-  Abgleich / Cloud-Ordner / WebDAV-Server. Google Drive/Dropbox „bald“.
+  Abgleich / Cloud-Ordner / WebDAV-Server (seit 2d auch Dropbox und Google
+  Drive, sobald eingebaut; sonst „bald“).
 * **Android**: Manifest genau `INTERNET` + `ACCESS_NETWORK_STATE`,
   `network_security_config.xml` ohne Klartext; das APK-Gate in CI ist jetzt
   eine Positivliste (`ANDROID_PERMISSIONS`: dazu die zwei
@@ -1210,6 +1211,60 @@ Antworten, Handy-Import und PC-Spiegel über Dropbox); Klick-Test im Mock
 (Handy und PC). **Nicht verifiziert:** echtes Dropbox-Konto (es fehlt der
 App-Schlüssel).
 
+### Stufe 2d – Google Drive (2026-10-29)
+
+Vertrag: ARCHITECTURE „Cloud accounts (Dropbox, Google Drive)“ → „Google
+Drive“; Entscheidung E24.
+
+**Was fertig ist:** `remote/gdrive.rs` (Drive v3, Bereich `drive.file`:
+Ordner „Keystead“ in „Meine Ablage“, Anhänge als Unterordner; Login mit PKCE
+und `state`, Rückleitung PC: Loopback-Listener `serve_loopback`, Handy:
+App-Schema über `MainActivity`-Intent-Filter + `KeysteadFolderPlugin`
+`onNewIntent`/`takeOAuthRedirect`; doppelte Namen: die älteste Datei gilt,
+eine verlorene Neuanlage wird wieder gelöscht; kein CAS – Version direkt vor
+dem Schreiben verglichen; Ordner bei jedem `probe` neu gesucht), Fake-Drive
+für die Tests, `CloudProvider::Gdrive`, Verbindungsart `gdrive`, Befehle
+`gdrive_login`, `gdrive_login_ready`, `link_gdrive`, `set_sync_gdrive`;
+Oberfläche `GdriveDialog.tsx` („Bei Google anmelden“ → wartet → verbindet
+selbst), PC: „Abgleich über … Google Drive“, Handy: Einstellungen und
+Willkommensbildschirm „Mit Google Drive verbinden“; Mock (Anmeldung gilt
+nach 2 s als zurückgekehrt).
+
+**Noch nicht aktiv:** Die App bietet Google Drive erst an, wenn eine
+Client-ID eingebaut ist. **Für den Besitzer (ca. 15 Minuten, kostenlos):**
+1. <https://console.cloud.google.com/> → neues Projekt „Keystead“.
+2. „APIs & Dienste“ → „Bibliothek“ → **Google Drive API** aktivieren.
+3. „Google Auth Platform“ (OAuth-Zustimmungsbildschirm): Typ **Extern**,
+   App-Name „Keystead“, Support-E-Mail; unter „Datenzugriff“ den Bereich
+   `.../auth/drive.file` hinzufügen (nicht vertraulich, keine Prüfung
+   nötig). Unter „Zielgruppe“ **„App veröffentlichen“** (Status „In
+   Produktion“) – sonst verfallen die Anmeldungen nach 7 Tagen. Kein Logo
+   hochladen (das würde eine Markenprüfung auslösen).
+4. „Clients“ → „Client erstellen“ → **Desktop-App** („Keystead PC“) →
+   Client-ID und Client-Schlüssel notieren.
+5. „Clients“ → „Client erstellen“ → **Android** („Keystead Handy“):
+   Paketname `io.github.cedrickgd.keystead`, SHA-1 des Release-Schlüssels
+   (`keytool -list -v -keystore <keystore>` – Claude kann ihn auslesen,
+   wenn du den Keystore-Pfad nennst); danach im Client unter „Erweiterte
+   Einstellungen“ **„Benutzerdefiniertes URI-Schema aktivieren“**.
+6. Im Repo eintragen (GitHub → Settings → Secrets and variables →
+   Actions, oder Claude mit `gh variable set` / `gh secret set`):
+   Variablen `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_ID`,
+   `KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID`, **Secret**
+   `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_SECRET`. Die nächste Beta bietet dann
+   Google Drive an; README danach ergänzen.
+
+**Verifiziert:** Unit-Tests gegen den Fake (Login-Adresse, Rückleitung mit
+fremdem/richtigem `state`, abgelehnte Anmeldung, Loopback-Listener gegen
+einen echten Browser-Request, Token-Erneuerung, widerrufener Token,
+Fehlercodes, doppelte Namen und verlorene Neuanlage, veraltete Version,
+Paging, verschwundener Ordner, Handy-Import und PC-Spiegel über Drive);
+Clippy Desktop und Android; Klick-Test im Mock (PC und Handy).
+**Nicht verifiziert:** echtes Google-Konto und die Rückleitung am echten
+Handy (es fehlen die Client-IDs). Bekannte Grenze: Wird die App am Handy
+während der Anmeldung von Android beendet, ist die Anmeldung verloren
+(„abgelaufen“ – einfach neu starten).
+
 ### Emulator-Checkliste für den Besitzer
 
 Ohne Handy prüfst du die App im Emulator `MB_S26` (API 36, x86_64). Befehle
@@ -1311,8 +1366,11 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    „2b vor Autofill“ geändert). Offen: Prüfung mit echtem Handy, echter
    Cloud-App und der echten PC-App Ende-zu-Ende; danach eine Beta.
 2. ~~**2c**~~ Abgleich über einen WebDAV-Server: **fertig** (2026-10-24,
-   Abschnitt „Stufe 2c“ oben). Danach nach Wunsch des Besitzers (E17):
-   Google Drive + Dropbox (OAuth), OneDrive, evtl. PC↔Handy direkt im WLAN.
+   Abschnitt „Stufe 2c“ oben). ~~**2d**~~ Dropbox und Google Drive: **Code
+   fertig** (2026-10-29, Abschnitte „Stufe 2d“ oben) – aktiv erst, wenn der
+   Besitzer die App bei Dropbox bzw. Google registriert und die Schlüssel
+   als Repo-Variablen einträgt (Anleitungen dort). Später: OneDrive, evtl.
+   PC↔Handy direkt im WLAN.
 3. **Autofill** (Stufe 3, E11):
    ein Android-`AutofillService` in Kotlin (gleicher Prozess wie die
    Rust-Bibliothek, JNI), zuerst die Minimalvariante – nur Browser/Domain,

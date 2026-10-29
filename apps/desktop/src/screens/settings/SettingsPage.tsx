@@ -10,6 +10,7 @@ import {
   FileUp,
   FingerprintPattern,
   FolderOpen,
+  HardDrive,
   FolderSync,
   RefreshCw,
   Server,
@@ -39,6 +40,7 @@ import type {
   AppInfo,
   BrowserInfo,
   BrowserStatus,
+  CloudProvider,
   ItemListEntry,
   Language,
   ThemeSetting,
@@ -70,6 +72,7 @@ import {
   SyncFileList,
   SyncSteps,
   folderLost,
+  methodSoonKey,
   needsRelink,
   serverNeedsPassword,
   useRelativeTimeTick,
@@ -78,6 +81,7 @@ import {
 } from "../../components/FolderSync";
 import { WebDavDialog } from "../../components/WebDavForm";
 import { DropboxDialog } from "../../components/DropboxDialog";
+import { GdriveDialog } from "../../components/GdriveDialog";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -906,14 +910,16 @@ function SyncSection() {
   const errorFor = useSyncErrorText();
   const skippedText = useSkippedText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
-  const [dropboxForm, setDropboxForm] = useState(false);
+  const [cloudForm, setCloudForm] = useState<CloudProvider | null>(null);
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync) return null;
   const { status, busy, link, sync, unlink } = folderSync;
   const linked = status?.linked === true;
   const server = status?.kind === "webdav" ? status.server : null;
-  const cloud = status?.kind === "dropbox" ? status.cloud : null;
+  const cloud = status?.kind === "dropbox" || status?.kind === "gdrive" ? status.cloud : null;
   const dropboxAvailable = info.syncProviders.includes("dropbox");
+  const gdriveAvailable = info.syncProviders.includes("gdrive");
+  const soon = methodSoonKey(info.syncProviders);
   const syncing = Boolean(status?.syncing) || busy === "sync";
   const skipped = skippedText(status);
   const dialog = (
@@ -921,7 +927,10 @@ function SyncSection() {
       {serverForm && (
         <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
       )}
-      {dropboxForm && <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setDropboxForm(false)} />}
+      {cloudForm === "dropbox" && (
+        <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setCloudForm(null)} />
+      )}
+      {cloudForm === "gdrive" && <GdriveDialog onConnect={folderSync.linkGdrive} onClose={() => setCloudForm(null)} />}
     </>
   );
 
@@ -954,13 +963,24 @@ function SyncSection() {
                 icon={<Cloud />}
                 loading={busy === "dropbox"}
                 disabled={!status || busy !== null}
-                onClick={() => setDropboxForm(true)}
+                onClick={() => setCloudForm("dropbox")}
               >
                 {t("sync.connectDropbox")}
               </Button>
             )}
+            {gdriveAvailable && (
+              <Button
+                variant="secondary"
+                icon={<HardDrive />}
+                loading={busy === "gdrive"}
+                disabled={!status || busy !== null}
+                onClick={() => setCloudForm("gdrive")}
+              >
+                {t("sync.connectGdrive")}
+              </Button>
+            )}
           </div>
-          <p className="subtle">{dropboxAvailable ? t("sync.methodSoonGdrive") : t("sync.methodSoon")}</p>
+          {soon && <p className="subtle">{t(soon)}</p>}
         </SettingRow>
       ) : (
         <>
@@ -971,11 +991,13 @@ function SyncSection() {
           )}
           {cloud ? (
             <SettingRow
-              title={t("sync.dropbox")}
+              title={cloud.provider === "gdrive" ? t("sync.gdrive") : t("sync.dropbox")}
               description={
                 <>
                   <strong className="sync-folder-name">{cloud.email || cloud.name}</strong>
-                  <span className="sync-folder-desc">{t("sync.dropboxDesc")}</span>
+                  <span className="sync-folder-desc">
+                    {cloud.provider === "gdrive" ? t("sync.gdriveDesc") : t("sync.dropboxDesc")}
+                  </span>
                 </>
               }
               stacked
@@ -985,9 +1007,9 @@ function SyncSection() {
                   <Button
                     variant="primary"
                     icon={<KeyRound />}
-                    loading={busy === "dropbox"}
-                    disabled={busy !== null && busy !== "dropbox"}
-                    onClick={() => setDropboxForm(true)}
+                    loading={busy === cloud.provider}
+                    disabled={busy !== null && busy !== cloud.provider}
+                    onClick={() => setCloudForm(cloud.provider)}
                   >
                     {t("sync.signInAgain")}
                   </Button>
@@ -1109,7 +1131,15 @@ function SyncSection() {
             </SettingRow>
           )}
           <SettingRow
-            title={server ? t("settings.syncVaultsServer") : cloud ? t("settings.syncVaultsDropbox") : t("settings.syncVaults")}
+            title={
+              server
+                ? t("settings.syncVaultsServer")
+                : cloud
+                  ? cloud.provider === "gdrive"
+                    ? t("settings.syncVaultsGdrive")
+                    : t("settings.syncVaultsDropbox")
+                  : t("settings.syncVaults")
+            }
             description={
               status && status.files.length > 0 ? <SyncFileList files={status.files} /> : t("settings.syncNoFiles")
             }
@@ -1133,7 +1163,7 @@ function SyncSection() {
   );
 }
 
-type SyncMethod = "none" | "folder" | "webdav" | "dropbox";
+type SyncMethod = "none" | "folder" | "webdav" | CloudProvider;
 
 /**
  * Desktop: how the PC keeps its encrypted copies for the phone – off, a
@@ -1146,22 +1176,24 @@ function DesktopSyncSection() {
   const mirror = useMirror();
   const { info, settings } = useApp();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
-  const [dropboxForm, setDropboxForm] = useState(false);
+  const [cloudForm, setCloudForm] = useState<CloudProvider | null>(null);
   const status = mirror?.status ?? null;
   useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt || status?.retryAt));
   if (!mirror) return null;
   const folder = settings.mirrorFolder;
   const server = folder === null ? settings.syncServer : null;
   const cloud = folder === null && !server ? settings.syncCloud : null;
-  const method: SyncMethod = folder !== null ? "folder" : server ? "webdav" : cloud ? "dropbox" : "none";
+  const method: SyncMethod = folder !== null ? "folder" : server ? "webdav" : cloud ? cloud.provider : "none";
   const dropboxAvailable = info.syncProviders.includes("dropbox");
+  const gdriveAvailable = info.syncProviders.includes("gdrive");
+  const soon = methodSoonKey(info.syncProviders);
 
   const pick = (next: SyncMethod) => {
     if (next === method) return;
     // A folder, a server or an account replaces the others (the backend clears them).
     if (next === "folder") void mirror.choose();
     else if (next === "webdav") setServerForm("new");
-    else if (next === "dropbox") setDropboxForm(true);
+    else if (next === "dropbox" || next === "gdrive") setCloudForm(next);
     else if (method === "folder") void mirror.turnOff();
     else if (method === "webdav") void mirror.clearServer();
     else void mirror.clearCloud();
@@ -1195,11 +1227,7 @@ function DesktopSyncSection() {
 
   return (
     <SettingsSection id="sync" title={t("settings.sync")} description={t("settings.syncDescPc")}>
-      <SettingRow
-        title={t("sync.method")}
-        description={dropboxAvailable ? t("sync.methodSoonGdrive") : t("sync.methodSoon")}
-        stacked
-      >
+      <SettingRow title={t("sync.method")} description={soon ? t(soon) : undefined} stacked>
         <Segmented<SyncMethod>
           value={method}
           onChange={pick}
@@ -1210,6 +1238,9 @@ function DesktopSyncSection() {
             { value: "webdav", label: t("sync.methodServer"), icon: <Server /> },
             ...(dropboxAvailable || method === "dropbox"
               ? [{ value: "dropbox" as const, label: t("sync.methodDropbox"), icon: <Cloud /> }]
+              : []),
+            ...(gdriveAvailable || method === "gdrive"
+              ? [{ value: "gdrive" as const, label: t("sync.methodGdrive"), icon: <HardDrive /> }]
               : []),
           ]}
         />
@@ -1253,13 +1284,15 @@ function DesktopSyncSection() {
           </Button>
         </SettingRow>
       )}
-      {method === "dropbox" && cloud && (
+      {cloud && (method === "dropbox" || method === "gdrive") && (
         <SettingRow
-          title={t("sync.dropbox")}
+          title={cloud.provider === "gdrive" ? t("sync.gdrive") : t("sync.dropbox")}
           description={
             <>
               <strong className="sync-folder-name">{cloud.email || cloud.name}</strong>
-              <span className="mirror-state">{t("mirror.dropboxDesc")}</span>
+              <span className="mirror-state">
+                {cloud.provider === "gdrive" ? t("mirror.gdriveDesc") : t("mirror.dropboxDesc")}
+              </span>
               {state}
             </>
           }
@@ -1267,7 +1300,12 @@ function DesktopSyncSection() {
         >
           <div className="setting-actions">
             {serverNeedsPassword(status?.lastError) && (
-              <Button variant="primary" icon={<KeyRound />} loading={mirror.busy} onClick={() => setDropboxForm(true)}>
+              <Button
+                variant="primary"
+                icon={<KeyRound />}
+                loading={mirror.busy}
+                onClick={() => setCloudForm(cloud.provider)}
+              >
                 {t("sync.signInAgain")}
               </Button>
             )}
@@ -1277,7 +1315,8 @@ function DesktopSyncSection() {
           </div>
         </SettingRow>
       )}
-      {dropboxForm && <DropboxDialog onConnect={mirror.setDropbox} onClose={() => setDropboxForm(false)} />}
+      {cloudForm === "dropbox" && <DropboxDialog onConnect={mirror.setDropbox} onClose={() => setCloudForm(null)} />}
+      {cloudForm === "gdrive" && <GdriveDialog onConnect={mirror.setGdrive} onClose={() => setCloudForm(null)} />}
       {serverForm && (
         <WebDavDialog
           initial={serverForm === "edit" ? server : null}

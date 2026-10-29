@@ -250,7 +250,7 @@ export interface AppInfo {
   readOnly: boolean;
   /** Attachments cannot be added, saved or removed (the phone: previews only). */
   attachmentsReadOnly: boolean;
-  /** The sync methods besides a cloud folder this build can use: "webdav", and "dropbox" with an app key. */
+  /** The sync methods besides a cloud folder this build can use: "webdav", "dropbox" with an app key, "gdrive" with a client id. */
   syncProviders: string[];
 }
 
@@ -639,9 +639,15 @@ export interface SyncServer {
   cas: boolean;
 }
 
-/** A cloud account (Dropbox's app folder `/Apps/Keystead`): `Settings.syncCloud`, a phone's link. No token. */
+/** A cloud provider of a `SyncCloud`. */
+export type CloudProvider = "dropbox" | "gdrive";
+
+/**
+ * A cloud account (Dropbox's app folder `/Apps/Keystead`, or the folder "Keystead" in a Google
+ * Drive): `Settings.syncCloud`, a phone's link. No token.
+ */
 export interface SyncCloud {
-  provider: "dropbox";
+  provider: CloudProvider;
   accountId: string;
   name: string;
   email: string;
@@ -686,7 +692,7 @@ export interface WebDavTest {
 export interface FolderStatus {
   linked: boolean;
   /** What the phone is linked to (null without a link). */
-  kind: "folder" | "webdav" | "dropbox" | null;
+  kind: "folder" | "webdav" | CloudProvider | null;
   /** The server of a `webdav` link (no password). */
   server: SyncServer | null;
   /** The account of a `dropbox` link (no token). */
@@ -750,8 +756,8 @@ export interface SyncNotice {
 
 /** The desktop's cloud-folder mirror (`mirror_status`, `mirror://status`). No secrets. */
 export interface MirrorStatus {
-  /** How the copies are kept: a cloud folder, a WebDAV server, Dropbox, or null = off. */
-  kind: "folder" | "webdav" | "dropbox" | null;
+  /** How the copies are kept: a cloud folder, a WebDAV server, Dropbox, Google Drive, or null = off. */
+  kind: "folder" | "webdav" | CloudProvider | null;
   /** `Settings.syncCloud` (no token); null without one. */
   cloud: SyncCloud | null;
   /** `Settings.mirrorFolder`; null without one. */

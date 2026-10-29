@@ -39,6 +39,7 @@ pub mod dav_xml;
 pub mod dropbox;
 #[cfg(any(mobile, test))]
 pub mod folder;
+pub mod gdrive;
 pub mod http;
 #[cfg(test)]
 pub mod mem;

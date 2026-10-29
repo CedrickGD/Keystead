@@ -34,6 +34,7 @@ import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
 import { PhoneServerDialog, SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
 import { DropboxDialog } from "../components/DropboxDialog";
+import { GdriveDialog } from "../components/GdriveDialog";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
@@ -209,7 +210,7 @@ function PhoneVaultSource() {
   const { t } = useT();
   const { info } = useApp();
   const folderSync = useFolderSync();
-  const [dropboxForm, setDropboxForm] = useState(false);
+  const [cloudForm, setCloudForm] = useState<"dropbox" | "gdrive" | null>(null);
   const errorFor = useSyncErrorText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const status = folderSync?.status ?? null;
@@ -312,15 +313,30 @@ function PhoneVaultSource() {
               icon={<Cloud />}
               loading={busy === "dropbox"}
               disabled={!folderSync || busy !== null}
-              onClick={() => setDropboxForm(true)}
+              onClick={() => setCloudForm("dropbox")}
             >
               {t("sync.connectDropbox")}
             </Button>
           )}
+          {info.syncProviders.includes("gdrive") && (
+            <Button
+              variant="secondary"
+              block
+              icon={<HardDrive />}
+              loading={busy === "gdrive"}
+              disabled={!folderSync || busy !== null}
+              onClick={() => setCloudForm("gdrive")}
+            >
+              {t("sync.connectGdrive")}
+            </Button>
+          )}
         </>
       )}
-      {dropboxForm && folderSync && (
-        <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setDropboxForm(false)} />
+      {cloudForm === "dropbox" && folderSync && (
+        <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setCloudForm(null)} />
+      )}
+      {cloudForm === "gdrive" && folderSync && (
+        <GdriveDialog onConnect={folderSync.linkGdrive} onClose={() => setCloudForm(null)} />
       )}
       <p className="subtle sync-note">{server ? t("sync.serverNote") : t("sync.folderNote")}</p>
       {serverForm && (

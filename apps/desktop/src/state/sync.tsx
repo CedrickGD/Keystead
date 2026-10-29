@@ -14,7 +14,7 @@ import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
 
-export type SyncAction = "link" | "server" | "dropbox" | "sync" | "unlink";
+export type SyncAction = "link" | "server" | "dropbox" | "gdrive" | "sync" | "unlink";
 
 export interface FolderSyncApi {
   /** null until the first answer. */
@@ -27,6 +27,8 @@ export interface FolderSyncApi {
   linkServer: (config: WebDavConfig) => Promise<boolean>;
   /** Finishes the Dropbox login with the code and links the app folder (then syncs). */
   linkDropbox: (code: string) => Promise<boolean>;
+  /** Finishes the Google login whose redirect came and links the Drive folder (then syncs). */
+  linkGdrive: () => Promise<boolean>;
   /** Syncs now. */
   sync: () => Promise<void>;
   /** Asks, then forgets the folder (the vault copies stay). */
@@ -189,6 +191,24 @@ export function FolderSyncProvider({
     [errorText, onStatus, t, toast, tp],
   );
 
+  const linkGdrive = useCallback(async () => {
+    setBusy("gdrive");
+    try {
+      const linked = await api.linkGdrive();
+      setStatus(linked);
+      onStatus(linked);
+      if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+      else if (usableVaults(linked) === 0) toast.info(t("sync.gdriveLinkedEmpty"));
+      else toast.success(tp("sync.gdriveLinkedVaults", usableVaults(linked)));
+      return true;
+    } catch (err) {
+      toast.error(errorText(err));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [errorText, onStatus, t, toast, tp]);
+
   const sync = useCallback(async () => {
     setBusy("sync");
     try {
@@ -228,8 +248,8 @@ export function FolderSyncProvider({
   relinkRef.current = () => void link();
 
   const value = useMemo<FolderSyncApi | null>(
-    () => (enabled ? { status, busy, link, linkServer, linkDropbox, sync, unlink } : null),
-    [enabled, status, busy, link, linkServer, linkDropbox, sync, unlink],
+    () => (enabled ? { status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink } : null),
+    [enabled, status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink],
   );
   return <FolderSyncContext.Provider value={value}>{children}</FolderSyncContext.Provider>;
 }

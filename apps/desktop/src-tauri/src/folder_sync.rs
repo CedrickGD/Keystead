@@ -386,6 +386,8 @@ pub enum LinkKind {
     /// Keystead's app folder on a Dropbox account (stage 2d;
     /// `remote::dropbox`).
     Dropbox,
+    /// The folder "Keystead" in a Google Drive (stage 2d; `remote::gdrive`).
+    Gdrive,
 }
 
 /// The linked folder (`<data>/sync/link.json`). No secrets: the folder's
@@ -402,7 +404,8 @@ pub struct LinkState {
     /// The server ([`LinkKind::Webdav`] only).
     #[serde(default)]
     pub server: Option<SyncServer>,
-    /// The cloud account ([`LinkKind::Dropbox`] only; no token).
+    /// The cloud account ([`LinkKind::Dropbox`], [`LinkKind::Gdrive`]
+    /// only; no token).
     #[serde(default)]
     pub cloud: Option<SyncCloud>,
     /// The folder's address – what the sync bases are recorded for
@@ -451,15 +454,17 @@ impl LinkState {
     }
 
     /// A link to the cloud account `cloud` under its key
-    /// (`remote::Remote::key`); its app folder is always writable.
+    /// (`remote::Remote::key`); Keystead's folder there is always writable.
     pub fn new_cloud(key: String, cloud: SyncCloud, linked_at: i64) -> Self {
-        let folder_name = match cloud.provider {
-            keystead_core::settings::CloudProvider::Dropbox => "Dropbox".to_owned(),
+        use keystead_core::settings::CloudProvider;
+        let (kind, folder_name) = match cloud.provider {
+            CloudProvider::Dropbox => (LinkKind::Dropbox, "Dropbox"),
+            CloudProvider::Gdrive => (LinkKind::Gdrive, "Google Drive"),
         };
         LinkState {
-            kind: LinkKind::Dropbox,
+            kind,
             cloud: Some(cloud),
-            ..LinkState::new(key, folder_name, linked_at, true)
+            ..LinkState::new(key, folder_name.to_owned(), linked_at, true)
         }
     }
 
@@ -528,7 +533,8 @@ pub struct FolderStatus {
     pub kind: Option<LinkKind>,
     /// The server of a [`LinkKind::Webdav`] link (no password).
     pub server: Option<SyncServer>,
-    /// The account of a [`LinkKind::Dropbox`] link (no token).
+    /// The account of a [`LinkKind::Dropbox`] or [`LinkKind::Gdrive`] link
+    /// (no token).
     pub cloud: Option<SyncCloud>,
     /// The app may write the linked folder (`false` without one).
     pub writable: bool,

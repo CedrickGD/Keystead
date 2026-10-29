@@ -2143,6 +2143,8 @@ pub enum MirrorKind {
     Webdav,
     /// Keystead's app folder on a Dropbox account (`Settings.syncCloud`).
     Dropbox,
+    /// The folder "Keystead" in a Google Drive (`Settings.syncCloud`).
+    Gdrive,
 }
 
 /// `mirror_status`, `mirror://status`. No secrets.
@@ -2301,7 +2303,10 @@ impl MirrorTracker {
         let kind = method.map(|m| match m {
             Method::Folder(_) => MirrorKind::Folder,
             Method::Server(_) => MirrorKind::Webdav,
-            Method::Cloud(_) => MirrorKind::Dropbox,
+            Method::Cloud(cloud) => match cloud.provider {
+                keystead_core::settings::CloudProvider::Dropbox => MirrorKind::Dropbox,
+                keystead_core::settings::CloudProvider::Gdrive => MirrorKind::Gdrive,
+            },
         });
         let retry_at = if kind.is_some() {
             lock(&self.backoff).retry_at_ms()
@@ -2831,14 +2836,14 @@ pub fn clear_server(core: &Arc<Core>) -> AppResult<MirrorStatus> {
     Ok(core.mirror().status(core))
 }
 
-/// `set_sync_dropbox(code)` → [`MirrorStatus`]: finishes the Dropbox login
-/// the page started (`dropbox_login`) with the code the user copied; the PC
-/// keeps its copies in Keystead's app folder on that account from now on
+/// `set_sync_dropbox(code)` / `set_sync_gdrive` → [`MirrorStatus`]: the
+/// login the page started (`dropbox_login` – with the code the user copied
+/// – or `gdrive_login`, whose redirect came) has signed in `cloud`; the PC
+/// keeps its copies in Keystead's folder on that account from now on
 /// (`Settings.syncCloud`; `mirrorFolder` and `syncServer` are cleared), the
 /// refresh token stored (`crate::credentials`, never returned). The mirror
 /// starts over – also for the same account signed in again.
-pub fn set_cloud(core: &Arc<Core>, code: &str) -> AppResult<MirrorStatus> {
-    let cloud = sync_server::dropbox_finish_login(core, code)?;
+pub fn set_cloud(core: &Arc<Core>, cloud: SyncCloud) -> AppResult<MirrorStatus> {
     let (unchanged, _) = crate::commands::change_settings(core, |settings| {
         let unchanged = settings.sync_cloud.as_ref() == Some(&cloud)
             && settings.mirror_folder.is_none()
@@ -2907,7 +2912,20 @@ pub async fn clear_sync_server(core: Shared<'_>) -> CmdResult<MirrorStatus> {
 
 #[tauri::command]
 pub async fn set_sync_dropbox(core: Shared<'_>, code: String) -> CmdResult<MirrorStatus> {
-    run(&core, true, move |c| set_cloud(c, &code)).await
+    run(&core, true, move |c| {
+        let cloud = sync_server::dropbox_finish_login(c, &code)?;
+        set_cloud(c, cloud)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_sync_gdrive(core: Shared<'_>) -> CmdResult<MirrorStatus> {
+    run(&core, true, |c| {
+        let cloud = sync_server::gdrive_finish_login(c)?;
+        set_cloud(c, cloud)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4775,6 +4793,58 @@ mod tests {
                 fake.file(&format!("{id}.keystead")).unwrap(),
                 fs::read(vault_path(&core)).unwrap()
             );
+            TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
+        }
+
+        #[test]
+        fn the_pc_keeps_its_copies_in_google_drive() {
+            use crate::remote::gdrive::fake::FakeDrive;
+            use crate::remote::gdrive::{self, TEST_ENDPOINTS};
+
+            let fake = FakeDrive::new();
+            TEST_ENDPOINTS.with(|e| *e.borrow_mut() = Some(fake.endpoints()));
+            let connected = gdrive::connect(
+                &gdrive::client().unwrap(),
+                &fake.code(),
+                &fake.verifier(),
+                "http://127.0.0.1:1/",
+                &fake.endpoints(),
+            )
+            .unwrap();
+            let cloud = SyncCloud {
+                provider: keystead_core::settings::CloudProvider::Gdrive,
+                account_id: connected.account.account_id.clone(),
+                name: String::new(),
+                email: String::new(),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let settings = Settings {
+                sync_cloud: Some(cloud.clone()),
+                ..Settings::default()
+            };
+            let core = core_with_open_vault(dir.path(), settings);
+            core.credentials()
+                .store(
+                    &core.data_dir(),
+                    &sync_server::cloud_key(&cloud),
+                    &connected.refresh_token,
+                )
+                .unwrap();
+            let id = open_id(&core);
+            let _ = core.mirror().take_recorded();
+            process_round(&core, vec![Job::Vault(id.clone())], None);
+            let status = core.mirror().status(&core);
+            assert_eq!(status.kind, Some(MirrorKind::Gdrive));
+            assert_eq!(status.last_error, None, "{status:?}");
+            let name = format!("{id}.keystead");
+            assert_eq!(
+                fake.file(&name).unwrap(),
+                fs::read(vault_path(&core)).unwrap()
+            );
+            // Saved again: the same file is updated, no second one.
+            process_round(&core, vec![Job::Vault(id.clone())], None);
+            assert_eq!(fake.count(&name), 1);
+            assert_eq!(core.mirror().status(&core).last_error, None);
             TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
         }
 

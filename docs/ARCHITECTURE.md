@@ -1529,8 +1529,9 @@ vault files travel, in the cloud folder's layout (`<id>.keystead`,
 methods mix (the PC through the Nextcloud desktop client's folder, the phone
 through WebDAV to the same folder). The engines are the folder's – decision
 rule, sync proof, trial and conflicts unchanged –; only the I/O goes through
-`remote::Remote` ("Remote backends" above). Google Drive, Dropbox (OAuth) and
-OneDrive come later as further `Remote`s.
+`remote::Remote` ("Remote backends" above). Dropbox and Google Drive (stage
+2d, "Cloud accounts (Dropbox, Google Drive)") are further `Remote`s; OneDrive
+comes later.
 
 * **The server** (`keystead_core::settings::SyncServer { url, user, folder,
   certSha256, cas }`, camelCase, no password): `url` as entered (a server, or
@@ -1650,7 +1651,7 @@ OneDrive come later as further `Remote`s.
   anything else is offline; `?sync=server` (phone) and `?mirror=server` (PC)
   start with a demo server.
 * **Error codes**: see "Remote backends" (Dropbox: "Cloud accounts
-  (Dropbox)"); also
+  (Dropbox, Google Drive)"); also
   `unsupported:sync_credentials_missing`, `invalid_input:webdav_config`,
   `invalid_input:server_url`, `invalid_input:server_folder`,
   `invalid_input:server_link`.
@@ -1688,15 +1689,15 @@ OneDrive come later as further `Remote`s.
   Android it crosses the plugin bridge as a JSON string (Kotlin strings
   cannot be wiped).
 
-## Cloud accounts (Dropbox)
+## Cloud accounts (Dropbox, Google Drive)
 
 Stage 2d (owner's order E17: WebDAV, then Google Drive and Dropbox; Dropbox
 first – its login works the same on both platforms; `BLOCK5-DESIGN.md` E23).
 Keystead keeps its copies in **its own app folder** on the user's Dropbox
 account (`/Apps/Keystead`; a Dropbox app of the type "App folder" sees
 nothing else of the account), in the cloud folder's layout; the engines are
-the folder's, as for WebDAV ("Server sync (WebDAV)"). Google Drive and
-OneDrive come later as further providers.
+the folder's, as for WebDAV ("Server sync (WebDAV)"). Google Drive follows
+the same pattern ("Google Drive" below); OneDrive comes later.
 
 * **The app**: a Dropbox app of the owner's (App Console: Scoped access, App
   folder, permissions `files.metadata.read`, `files.content.read`,
@@ -1774,6 +1775,97 @@ OneDrive come later as further providers.
   listings, hostile names) under both engines (`sync_server` and `mirror`
   tests); `remote::dropbox::TEST_ENDPOINTS` points the code at it.
 
+### Google Drive
+
+Stage 2d, after Dropbox (`BLOCK5-DESIGN.md` E24). Keystead keeps its copies
+in a folder **"Keystead" in the user's My Drive** that it made itself, with
+the scope `drive.file` – Keystead sees only the files it created, nothing
+else of the Drive. The engines are the folder's, as for Dropbox.
+
+* **The app**: a Google Cloud project of the owner's with the Drive API on,
+  the OAuth consent screen (External, scope `.../auth/drive.file` – not a
+  sensitive one; **published** "In production", or Google drops the refresh
+  tokens after 7 days) and **two OAuth clients in that project** (Drive's
+  `drive.file` access is per project, so the phone sees the PC's files):
+  * "Desktop app" – its id and secret compiled in from
+    `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_ID` and
+    `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_SECRET` (Google calls an installed app's
+    secret not confidential; CI: a repository variable and a secret);
+  * "Android" – package `io.github.cedrickgd.keystead`, the SHA-1 of the
+    release key, "Enable custom URI scheme" in its advanced settings; no
+    secret; its id from `KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID`.
+  A build without its platform's id offers no Google Drive (`syncProviders`
+  lists `gdrive` only with one; the commands answer
+  `unsupported:gdrive_not_configured`).
+* **Login** (`sync_server::{gdrive_start_login, gdrive_check_login,
+  gdrive_finish_login}`): `gdrive_login` returns the URL of Google's consent
+  page (code flow, `code_challenge` S256, a random `state`,
+  `access_type=offline`, `prompt=consent`), the page opens it in the
+  browser. Google sends the user back with the code:
+  * **PC**: to `http://127.0.0.1:<free port>/` – a listener thread started
+    for this login (`remote::gdrive::serve_loopback`) answers the browser
+    with a short page ("Anmeldung … abgeschlossen") and takes the redirect
+    of its `state` (anything else gets a 404; ≤ 8 KiB and 5 s per request);
+    it stops with that redirect, after 15 minutes or when another login
+    starts.
+  * **Phone**: to `io.github.cedrickgd.keystead:/oauth2redirect` – an intent
+    filter of `MainActivity` (singleTask) for the app's scheme, and the
+    folder plugin keeps the URI (`onNewIntent`, this scheme and path only,
+    ≤ 4 KiB) until `takeOAuthRedirect` takes it.
+  The dialog asks `gdrive_login_ready` every second and when the window
+  gets the focus back (the phone's call hands the plugin's URI in; one of
+  another `state` is ignored): `true` once the code is there,
+  `invalid_input:gdrive_redirect` when the user refused (the login ends),
+  `unsupported:gdrive_login_expired` when none waits. Then `link_gdrive`
+  (phone) or `set_sync_gdrive` (PC) exchanges the code – once; the login
+  ends either way – with the verifier, the redirect and (PC) the secret for
+  a refresh token, asks whose Drive it is (`about`: `permissionId`, name,
+  e-mail), makes the folder "Keystead" if there is none and stores the
+  refresh token sealed ("Server credentials", key `gdrive:<permissionId>`).
+  An app that catches the scheme too gets a code it cannot exchange (PKCE),
+  a forged redirect fails the `state`.
+* **The account**: `SyncCloud { provider: "gdrive", accountId:
+  <permissionId>, … }`; the phone's link `kind` `"gdrive"`, `folderName`
+  "Google Drive"; `MirrorStatus.kind` and `FolderStatus.kind` `"gdrive"`.
+* **API** (`remote::gdrive::GdriveRemote`, a `Remote`; transport and
+  ceilings `remote::http`, the system's TLS): the folder is found by name
+  and type in My Drive, not trashed – again at each `probe` (one trashed or
+  moved is `sync_server_folder_missing`, never an empty folder; an empty
+  listing within a pass looks once more); an attachment folder is a
+  sub-folder. `list` = `files.list` (`'<id>' in parents and trashed=false`,
+  `orderBy=createdTime`, pages of 1000, ≤ 10 000 entries, ≤ 8 MiB per page,
+  names of one segment only), `get` = `alt=media` (capped like WebDAV's),
+  `put` = a multipart create or a media update (`PATCH`), `mkcol` = a
+  folder create, `delete` = `files.delete`. Drive allows several files of
+  one name in a folder: **the oldest counts**, later ones are left out, and
+  a create that turns out not to be the oldest is deleted again and
+  reported as `sync_remote_changed`. Drive has no conditional upload:
+  `cas` is false – the version (the ETag) is compared right before an
+  update or a delete, and the engines read the copy again before they
+  write, as for a WebDAV server without `If-Match`. Errors (Google's texts
+  are only matched): 401 after a renewal → `sync_auth_failed`, 403 quota →
+  `sync_server_quota`, 403 rate limit, 429 and 5xx → `sync_server_error`,
+  another 403 → `sync_not_writable` (writes) or `sync_auth_failed`, 404 →
+  `sync_file_missing`, a malformed answer → `sync_server_response`.
+* **Signing out**: as for Dropbox; Google revokes the refresh token
+  (`oauth2.googleapis.com/revoke`, best effort).
+* **What Google sees**: the folder's file names (vault and attachment ids),
+  sizes, times and the encrypted files – never an item, a name or a key.
+* **UI** (`components/GdriveDialog.tsx`, both platforms): "Bei Google
+  anmelden" opens the browser, the dialog waits ("Warte auf Google …",
+  "Google-Seite erneut öffnen") and connects by itself; the PC's "Abgleich
+  über" offers "Google Drive", the phone's sync section and welcome screen
+  "Mit Google Drive verbinden" when `syncProviders` has `gdrive`; a linked
+  account shows its e-mail with "Abmelden". The mock offers it; its login
+  is "ready" two seconds after the page opened.
+* **Tests**: `remote::gdrive::fake::FakeDrive` (OAuth token and revoke,
+  `about`, `files.list` with the client's queries and paging, media
+  download, multipart create, media update, folders, delete; faults:
+  expired and revoked tokens, an error for the next write, a file of the
+  same name made just before ours, hostile names) under both engines;
+  `remote::gdrive::TEST_ENDPOINTS` points the code at it; the loopback
+  listener against a raw browser request.
+
 ## Data locations (`keystead_core::paths`)
 
 * `data_dir()`:
@@ -1844,8 +1936,8 @@ OneDrive come later as further providers.
   writes the losing side into the cloud folder as
   `<vault-id>.keystead.conflict-<YYYYMMDD-HHMMSS>-phone`.
 * Server sync (stage 2c, both platforms): `<data_dir>/sync/credentials/<32 hex>.bin`
-  – the server's password (or, stage 2d, a Dropbox account's refresh
-  token, under the key `dropbox:<account id>`), sealed (Windows DPAPI, Android Keystore; Linux
+  – the server's password (or, stage 2d, a cloud account's refresh
+  token, under the key `dropbox:<account id>` or `gdrive:<permission id>`), sealed (Windows DPAPI, Android Keystore; Linux
   and macOS keep it in memory only), one file per server folder, named after
   the first 32 hex digits of the SHA-256 of the folder's key (see "Server
   credentials"). The phone's server link is in `sync/link.json` (`kind`
@@ -2616,8 +2708,8 @@ interface Settings {
                                              // { url, user, folder = "Keystead", certSha256: string|null, cas: boolean } – no password. Only set_sync_server /
                                              // clear_sync_server change it; save_settings keeps the stored value, except that a new mirrorFolder clears it
                                              // (one method per PC). Loading drops one without a URL, an empty folder becomes "Keystead". The phone ignores it
-  syncCloud: SyncCloud | null;               // desktop: the cloud account instead of a folder or server (stage 2d, "Cloud accounts (Dropbox)"); null = none
-                                             // (default). { provider: "dropbox", accountId, name, email } – no token. Only set_sync_dropbox / clear_sync_cloud
+  syncCloud: SyncCloud | null;               // desktop: the cloud account instead of a folder or server (stage 2d, "Cloud accounts (Dropbox, Google Drive)"); null = none
+                                             // (default). { provider: "dropbox"|"gdrive", accountId, name, email } – no token. Only set_sync_dropbox / set_sync_gdrive / clear_sync_cloud
                                              // change it; save_settings keeps the stored value, except that a new mirrorFolder clears it. Dropped without accountId
   syncWifiOnly: boolean;                     // mobile: automatic syncs with a server or cloud account only on Wi-Fi ("Nur über WLAN synchronisieren"); default false
   generatorPresets: GeneratorPreset[];       // the user's presets { id, name, options: GeneratorOptions }; default []; built-ins are not stored
@@ -2685,7 +2777,7 @@ history. The bridge's own writes are not affected.
 
 | Command | Args | Returns |
 |---|---|---|
-| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean, attachmentsReadOnly: boolean, syncProviders: string[] }` – `syncProviders`: the sync methods besides a cloud folder this build can use (`"webdav"`, and `"dropbox"` with an app key compiled in, "Cloud accounts (Dropbox)"); `extensionId` is `null` and `portable` `false` on the phone (no browser integration, no portable mode there); `readOnly` = the vault cannot be changed from this app (`false` on both platforms since stage 2b); `attachmentsReadOnly` = attachments cannot be added, saved or removed (`true` on the phone: previews only) |
+| `app_info` | – | `AppInfo { version, dataDir, portable, platform: "windows"\|"linux"\|"macos"\|"android"\|"ios", extensionId: string\|null, readOnly: boolean, attachmentsReadOnly: boolean, syncProviders: string[] }` – `syncProviders`: the sync methods besides a cloud folder this build can use (`"webdav"`, `"dropbox"` with an app key and `"gdrive"` with this platform's client id compiled in, "Cloud accounts (Dropbox, Google Drive)"); `extensionId` is `null` and `portable` `false` on the phone (no browser integration, no portable mode there); `readOnly` = the vault cannot be changed from this app (`false` on both platforms since stage 2b); `attachmentsReadOnly` = attachments cannot be added, saved or removed (`true` on the phone: previews only) |
 | `list_vaults` | – | `VaultInfo[]` |
 | `session_state` | – | `SessionState { unlocked: boolean, vault: VaultInfo \| null }` |
 | `create_vault` | `name, masterPassword` | `VaultInfo` (and unlocks it) |
@@ -2747,7 +2839,8 @@ history. The bridge's own writes are not affected.
 | `set_sync_server` | `config: WebDavConfig` | **Desktop only.** `MirrorStatus` – the PC keeps its copies on this WebDAV server from now on ("Server sync (WebDAV)"): the connection test must pass (its code otherwise, nothing changes), the password is stored ("Server credentials"), the server without it becomes `Settings.syncServer`, `mirrorFolder` is cleared and the mirror starts over – also for the same server with a new password. `invalid_input:webdav_config`, `invalid_input:server_url`, `invalid_input:server_folder`, the test's codes |
 | `clear_sync_server` | – | **Desktop only.** `MirrorStatus` – no server any more; its stored password is removed, the copies on the server stay |
 | `set_sync_dropbox` | `code` | **Desktop only.** `MirrorStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied: the PC keeps its copies in Keystead's app folder on that account from now on (`Settings.syncCloud`; `mirrorFolder` and `syncServer` are cleared), the refresh token stored ("Server credentials"), the mirror starts over. `invalid_input:dropbox_code` (a wrong code – the login still waits), `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`, the network's codes |
-| `clear_sync_cloud` | – | **Desktop only.** `MirrorStatus` – no cloud account any more: it is signed out (Dropbox revokes the token, best effort; the PC forgets it); the copies in the app folder stay |
+| `set_sync_gdrive` | – | **Desktop only.** `MirrorStatus` – finishes the Google login whose redirect came (`gdrive_login`, `gdrive_login_ready`): the PC keeps its copies in the folder "Keystead" of that Drive from now on (`Settings.syncCloud`; `mirrorFolder` and `syncServer` are cleared), the refresh token stored ("Server credentials"), the mirror starts over. `unsupported:gdrive_login_expired` (none waits, or its code was used), `invalid_input:gdrive_redirect` (Google refused the code), `unsupported:gdrive_not_configured`, the network's codes |
+| `clear_sync_cloud` | – | **Desktop only.** `MirrorStatus` – no cloud account any more: it is signed out (Dropbox or Google revokes the token, best effort; the PC forgets it); the copies there stay |
 | `folder_offers` | – | **Desktop only.** `FolderOffer[]` – `{ vaultId, name, revision, updatedAt }`: the vaults in the mirror folder the PC does not have (e.g. made on the phone) and the user did not dismiss, as the last scan found them (`[]` with the mirror off); no I/O, not user activity |
 | `adopt_folder_vault` | `vaultId` | **Desktop only.** `VaultInfo` – takes an offered vault from the mirror folder (blobs first, then the file into `vaults/`, on trial: it opens with its own master password; its head becomes the base; no longer dismissed). `invalid_input:vault_exists` (the PC has that vault), `not_found` (no readable copy of that id in the folder), `unsupported:folder_not_linked` (mirror off), the folder checks' codes, `corrupt:…`/`unsupported:…` of a damaged or foreign file |
 | `dismiss_folder_vault` | `vaultId` | **Desktop only.** `null` – the vault is no longer offered (`<data>/sync/dismissed.json`; `adopt_folder_vault` still takes it). `not_found` for an invalid id |
@@ -2768,12 +2861,15 @@ history. The bridge's own writes are not affected.
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
 | `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, kind: "folder"\|"webdav"\|null, server: SyncServer\|null, writable, syncing, folderName, linkedAt, lastSyncAt, lastError, files, skipped: string\|null, retryAt: number\|null }` – the linked folder or server (no password; `skipped`: why the last automatic sync did not run – `sync_wifi_only`, `sync_backoff`; `retryAt`: while automatic syncs pause after a server error), whether the app may write it, and what the last sync found (`files` as in `link.json`; without a folder the phone's vaults with outcome `localOnly`); no access to the folder, not user activity |
 | `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read and write access to the choice (read only where the provider refuses write: `writable: false`), links it in place of the previous one (whose permission is given back and whose recorded conflicts are forgotten) and syncs – pushing the phone's own vaults; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
-| `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
+| `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
+| `link_gdrive` | – | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Google login whose redirect came (`gdrive_login`, `gdrive_login_ready`) and links the phone to the folder "Keystead" of that Drive in place of the previous link, then syncs. The refresh token is sealed by the Android Keystore and never returned. `unsupported:gdrive_login_expired`, `invalid_input:gdrive_redirect`, `unsupported:gdrive_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_webdav` | `config: WebDavConfig` | **Phone only** (see "Server sync (WebDAV)"). `FolderStatus` – links the phone to a folder on a WebDAV server in place of the previous link (a cloud folder's permission is given back, another server's password removed, the recorded conflicts of another folder forgotten) and syncs. The connection test must pass (its code otherwise – e.g. `unsupported:sync_server_folder_missing`, `unsupported:sync_server_certificate`; nothing changes); the password is sealed by the Android Keystore and never returned. A failed first sync is no error (`lastError`). `invalid_input:webdav_config`, `invalid_input:server_url`, `invalid_input:server_folder` |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
 | `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's permission back (a server: removes its stored password) and removes `link.json` and the recorded conflicts; the vault copies and their sync bases stay on the phone (and are no longer synced) |
 | `webdav_test` | `config: WebDavConfig` | **Both platforms** (see "Server sync (WebDAV)"). `WebDavTest { ok, code, certificate: CertInfo\|null, suggestedUrl, folderMissing, writable, cas }` – the settings form's connection test (`WebDavConfig { url, user, password, folder = "Keystead", certSha256? }`): server, certificate (untrusted → `code` `unsupported:sync_server_certificate` with `certificate { sha256, subject, issuer, notBefore, notAfter }` to confirm), login, folder (`folderMissing`), write access and `If-Match`; a same-host https redirect or Nextcloud's WebDAV folder as `suggestedUrl`. Nothing stored, the password never echoed; the bad input is `invalid_input:webdav_config` / `server_url` / `server_folder`, everything the server says is in `code` |
-| `dropbox_login` | – | **Both platforms** (see "Cloud accounts (Dropbox)"). `string` – the URL of Dropbox's page where the user allows Keystead's app folder (code flow with PKCE, no redirect: Dropbox shows a code to copy); the page opens it in the browser. The verifier stays in the backend; a new start replaces a waiting login, which waits 15 minutes. `unsupported:dropbox_not_configured` (this build has no app key) |
+| `dropbox_login` | – | **Both platforms** (see "Cloud accounts (Dropbox, Google Drive)"). `string` – the URL of Dropbox's page where the user allows Keystead's app folder (code flow with PKCE, no redirect: Dropbox shows a code to copy); the page opens it in the browser. The verifier stays in the backend; a new start replaces a waiting login, which waits 15 minutes. `unsupported:dropbox_not_configured` (this build has no app key) |
+| `gdrive_login` | – | **Both platforms** (see "Google Drive"). `string` – the URL of Google's consent page for Keystead's folder (code flow with PKCE and a random `state`, scope `drive.file`, offline); the page opens it in the browser. The redirect goes to a loopback listener (PC, started now) or the app's scheme (phone). A new start replaces a waiting login, which waits 15 minutes. `unsupported:gdrive_not_configured` (no client id for this platform) |
+| `gdrive_login_ready` | – | **Both platforms.** `boolean` – whether Google sent the user back to the waiting login (then `link_gdrive` / `set_sync_gdrive`); the phone hands the redirect its activity received in (one of another login is ignored). `invalid_input:gdrive_redirect` (refused – the login ends), `unsupported:gdrive_login_expired` (none waits) |
 | `webdav_create_folder` | `config: WebDavConfig` | **Both platforms.** `WebDavTest` – "Ordner anlegen": creates the server's sync folder (one that exists is fine), then tests again; never done by a sync. The test's codes as errors (`unsupported:sync_auth_failed`, …) |
 | `sync_conflicts` | `pageVaultId` | **Both platforms.** `SyncConflict[]` – `{ vaultId, vaultName, localRevision, remoteRevision, localUpdatedAt, remoteUpdatedAt, passwordChanged, lostAttachments?, remoteOnlyAttachments?, localDigest, remoteDigest }` ("local" = this side, "remote" = the folder's copy; `lostAttachments`: how many attachments only this side's copy has, `remoteOnlyAttachments`: only the folder's – omitted when 0 or unknown; the digests name the two writes, lowercase hex): the conflicts of the page's open vault that its keys checked (`locked` for another vault); no access to the folder, not user activity |
 | `resolve_sync_conflict` | `vaultId, pageVaultId, keep: "local"\|"remote", localDigest, remoteDigest` | **Both platforms** (phone: the linked folder, "Conflicts" under "Cloud-folder sync (phone)"; PC: the mirror folder, "Conflicts" under "Cloud-folder mirror (desktop) and phone link"). `VaultInfo` – keeps one side of the open vault's conflict – the one about the two writes the dialog showed –, the other as a conflict copy in `<data>/conflicts/` with its blobs (the phone also writes it into the cloud folder as `<id>.keystead.conflict-…-phone`); `keep: "remote"` may lock the vault (`vault://locked` `keyChanged`, another master password). Errors: `locked` (not the page's open vault), `not_found` (no checked conflict), `invalid_input:keep`, `unsupported:sync_conflict_password` (`local` against a new master password), `unsupported:sync_conflict_changed` (other digests than the recorded ones, or a copy changed since), `unsupported:sync_copy_rejected`, `unsupported:folder_not_linked`, the sync's or mirror's errors |
@@ -2782,7 +2878,7 @@ history. The bridge's own writes are not affected.
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
 | `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login` (the server and Dropbox forms, both platforms), and the phone's own `folder_status`, `link_folder`, `link_webdav`, `link_dropbox`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server and Dropbox sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server setting and the network and desktop integrations (the server sync is the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login`, `gdrive_login`, `gdrive_login_ready` (the server, Dropbox and Google forms, both platforms), and the phone's own `folder_status`, `link_folder`, `link_webdav`, `link_dropbox`, `link_gdrive`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server and cloud-account sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server setting and the network and desktop integrations (the server sync is the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
 (and on the desktop the master password's: `Core::unlock` goes through

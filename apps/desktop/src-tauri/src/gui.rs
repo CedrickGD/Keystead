@@ -202,12 +202,16 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::sync_server::webdav_test,
             crate::sync_server::webdav_create_folder,
             crate::sync_server::dropbox_login,
+            crate::sync_server::gdrive_login,
+            crate::sync_server::gdrive_login_ready,
             #[cfg(desktop)]
             crate::mirror::set_sync_server,
             #[cfg(desktop)]
             crate::mirror::clear_sync_server,
             #[cfg(desktop)]
             crate::mirror::set_sync_dropbox,
+            #[cfg(desktop)]
+            crate::mirror::set_sync_gdrive,
             #[cfg(desktop)]
             crate::mirror::clear_sync_cloud,
             #[cfg(desktop)]
@@ -249,6 +253,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mobile::sync::link_webdav,
             #[cfg(mobile)]
             crate::mobile::sync::link_dropbox,
+            #[cfg(mobile)]
+            crate::mobile::sync::link_gdrive,
             #[cfg(mobile)]
             crate::mobile::sync::sync_now,
             #[cfg(mobile)]
@@ -734,6 +740,7 @@ mod tests {
             "writeFile",
             "writeConflictCopy",
             "networkKind",
+            "takeOAuthRedirect",
         ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),
@@ -747,6 +754,21 @@ mod tests {
         assert!(network.contains("getNetworkCapabilities"));
         assert!(network.contains("TRANSPORT_WIFI"));
         assert!(network.contains("TRANSPORT_CELLULAR"));
+        // A Google sign-in's redirect: only the app's scheme and path, kept
+        // for Rust (which checks the state), taken once.
+        let redirect = &folder[folder.find("override fun onNewIntent").unwrap()..];
+        let redirect = &redirect[..redirect.find("\n  }").unwrap()];
+        assert!(redirect.contains("Intent.ACTION_VIEW"));
+        assert!(redirect.contains("data.scheme != OAUTH_SCHEME || data.path != OAUTH_PATH"));
+        assert!(
+            folder.contains(r#"private const val OAUTH_SCHEME = "io.github.cedrickgd.keystead""#)
+        );
+        assert!(folder.contains(r#"private const val OAUTH_PATH = "/oauth2redirect""#));
+        assert!(folder.contains("redirect.getAndSet(null)"));
+        assert_eq!(
+            format!("{}:{}", "io.github.cedrickgd.keystead", "/oauth2redirect"),
+            crate::remote::gdrive::ANDROID_REDIRECT
+        );
 
         // The server password's plugin: AES-256-GCM in the Android
         // Keystore, no authentication per use but only while the phone is
@@ -797,6 +819,12 @@ mod tests {
         assert!(manifest.contains(r#"android:allowBackup="false""#));
         assert!(manifest.contains(r#"android:dataExtractionRules="@xml/data_extraction_rules""#));
         assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
+        // Two intent filters: the launcher's and the Google sign-in's
+        // redirect (the app's own scheme only, to the singleTask activity).
+        assert_eq!(manifest.matches("<intent-filter>").count(), 2);
+        assert_eq!(manifest.matches("<data ").count(), 1);
+        assert!(manifest.contains(r#"<data android:scheme="io.github.cedrickgd.keystead" />"#));
+        assert!(manifest.contains(r#"android:launchMode="singleTask""#));
         assert!(manifest.contains(r#"android.webkit.WebView.EnableSafeBrowsing""#));
         let permissions: BTreeSet<&str> = manifest
             .split("<uses-permission")
@@ -1017,6 +1045,7 @@ mod tests {
                 "link_folder",
                 "link_webdav",
                 "link_dropbox",
+                "link_gdrive",
                 "sync_now",
                 "unlink_folder",
                 "device_unlock_status",
@@ -1039,6 +1068,8 @@ mod tests {
             "webdav_test",
             "webdav_create_folder",
             "dropbox_login",
+            "gdrive_login",
+            "gdrive_login_ready",
         ] {
             assert!(phone.contains(name), "{name} must be on the phone");
         }
@@ -1062,6 +1093,7 @@ mod tests {
             "set_sync_server",
             "clear_sync_server",
             "set_sync_dropbox",
+            "set_sync_gdrive",
             "clear_sync_cloud",
         ] {
             assert!(!phone.contains(name), "{name} must stay desktop-only");

@@ -44,6 +44,14 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!-- The redirect of a Google sign-in (stage 2d): the folder plugin
+                 keeps io.github.cedrickgd.keystead:/oauth2redirect?… for Rust. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="io.github.cedrickgd.keystead" />
+            </intent-filter>
         </activity>
 
         <provider

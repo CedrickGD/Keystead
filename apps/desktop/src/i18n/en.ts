@@ -147,6 +147,9 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.dropbox_not_configured": "This version cannot connect to Dropbox yet.",
   "error.unsupported.dropbox_login_expired": "The Dropbox sign-in expired. Start it again with “Sign in to Dropbox”.",
   "error.input.dropbox_code": "This code does not fit (or it expired). Copy it again from the Dropbox page.",
+  "error.unsupported.gdrive_not_configured": "This version cannot connect to Google Drive yet.",
+  "error.unsupported.gdrive_login_expired": "The Google sign-in expired. Start it again with “Sign in with Google”.",
+  "error.input.gdrive_redirect": "Google did not confirm the sign-in (cancelled or not allowed). Start it again.",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -927,6 +930,7 @@ export const en: Record<MessageKey, string> = {
     "Keep your vaults in sync with the phone – through a folder of your own cloud or directly through a WebDAV server. A Keystead server is never involved.",
   "settings.syncVaultsServer": "Vaults on the server",
   "settings.syncVaultsDropbox": "Vaults in Dropbox",
+  "settings.syncVaultsGdrive": "Vaults in Google Drive",
   "sync.welcomeTitle": "Get your vault from the PC",
   "sync.stepPc":
     "On your PC: in the settings under “Sync”, choose a cloud folder in Nextcloud or OneDrive – or connect a WebDAV server.",
@@ -959,6 +963,25 @@ export const en: Record<MessageKey, string> = {
   "sync.connectDropbox": "Connect to Dropbox",
   "sync.methodDropbox": "Dropbox",
   "sync.methodSoonGdrive": "Google Drive is coming soon.",
+  "sync.connectGdrive": "Connect to Google Drive",
+  "sync.methodGdrive": "Google Drive",
+  "sync.methodSoonDropbox": "Dropbox is coming soon.",
+  "sync.gdrive": "Google Drive",
+  "sync.gdriveDesc":
+    "Keystead syncs its own folder “Keystead” in your Google Drive – it sees none of your other files. At start, when you return to the app, after every change and when you ask it to.",
+  "sync.gdriveLinkedEmpty": "Connected to Google Drive – there is no vault in “Keystead” yet.",
+  "sync.gdriveLinkedVaults_one": "Connected to Google Drive – {n} vault is now on this phone.",
+  "sync.gdriveLinkedVaults_other": "Connected to Google Drive – {n} vaults are now on this phone.",
+  "gdrive.title": "Connect to Google Drive",
+  "gdrive.subtitle":
+    "Keystead gets access only to the files it makes itself – the folder “Keystead” in your Google Drive. It does not see your other files.",
+  "gdrive.step1": "Tap “Sign in with Google”: Google opens in the browser. Sign in and allow Keystead.",
+  "gdrive.step2":
+    "Then it goes on here by itself. Keystead stores the access encrypted on this device – never your Google password.",
+  "gdrive.signIn": "Sign in with Google",
+  "gdrive.waiting": "Waiting for the Google sign-in …",
+  "gdrive.connecting": "Connecting to Google Drive …",
+  "gdrive.openAgain": "Open the Google page again",
   "sync.dropbox": "Dropbox",
   "sync.dropboxDesc":
     "Keystead syncs its own folder “Apps/Keystead” in your Dropbox – it sees nothing else of it. At start, when you return to the app, after every change and when you ask it to.",
@@ -1105,6 +1128,10 @@ export const en: Record<MessageKey, string> = {
     "Keystead puts every vault you open here, encrypted, into its folder “Apps/Keystead” in your Dropbox and takes the phone's changes from there – after every save, when you return to the window and every minute.",
   "mirror.dropboxEnabledToast": "Keystead now keeps a copy in your Dropbox up to date.",
   "mirror.dropboxDisabledToast": "Signed out of Dropbox – the files in “Apps/Keystead” stay.",
+  "mirror.gdriveDesc":
+    "Keystead puts every vault you open here, encrypted, into its folder “Keystead” in your Google Drive and takes the phone's changes from there – after every save, when you return to the window and every minute.",
+  "mirror.gdriveEnabledToast": "Keystead now keeps a copy in your Google Drive up to date.",
+  "mirror.gdriveDisabledToast": "Signed out of Google Drive – the files in the folder “Keystead” stay.",
   "webdav.title": "Connect to a WebDAV server",
   "webdav.changeTitle": "Change server",
   "webdav.subtitle":

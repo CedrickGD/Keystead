@@ -75,6 +75,8 @@
 // opens Dropbox's real authorize page in a new tab (nothing is sent back to
 // it), the code "demo" connects (any other is `invalid_input:dropbox_code`);
 // the phone links the account like a folder, the PC keeps its copies there.
+// Google Drive likewise: "Bei Google anmelden" opens Google's page (it refuses
+// the demo client), and the login counts as sent back two seconds later.
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -222,7 +224,7 @@ interface MockSync {
     folderName: string;
     linkedAt: number;
     writable: boolean;
-    kind: "folder" | "webdav" | "dropbox";
+    kind: "folder" | "webdav" | "dropbox" | "gdrive";
     server: SyncServer | null;
     cloud?: SyncCloud | null;
   } | null;
@@ -389,7 +391,7 @@ function initState(): MockState {
       extensionId: phone ? null : EXTENSION_ID,
       readOnly: false,
       attachmentsReadOnly: phone,
-      syncProviders: ["webdav", "dropbox"],
+      syncProviders: ["webdav", "dropbox", "gdrive"],
     },
     browsers: [
       { id: "chrome", name: "Google Chrome", detected: true, registered: true },
@@ -1058,6 +1060,23 @@ const MOCK_DROPBOX: SyncCloud = {
   email: "demo@example.com",
 };
 
+const MOCK_GDRIVE: SyncCloud = {
+  provider: "gdrive",
+  accountId: "04512345678901234567",
+  name: "Demo Nutzer",
+  email: "demo@gmail.com",
+};
+
+/** When the mock's Google login started (it is "sent back" two seconds later). */
+let gdriveLoginAt: number | null = null;
+
+/** The mock's Google login once it came back (and ends it). */
+function mockGdriveFinish(): SyncCloud {
+  if (gdriveLoginAt === null || Date.now() - gdriveLoginAt < 2000) fail("unsupported:gdrive_login_expired");
+  gdriveLoginAt = null;
+  return { ...MOCK_GDRIVE };
+}
+
 /** A Dropbox login of the mock: the code "demo" connects. */
 function mockDropboxCode(args: Record<string, unknown>): SyncCloud {
   const code = typeof args.code === "string" ? args.code.trim() : "";
@@ -1134,7 +1153,7 @@ function mirrorStatus(): MirrorStatus {
   const server = folder === null ? s.settings.syncServer : null;
   const cloud = folder === null && !server ? s.settings.syncCloud : null;
   return {
-    kind: folder !== null ? "folder" : server ? "webdav" : cloud ? "dropbox" : null,
+    kind: folder !== null ? "folder" : server ? "webdav" : cloud ? cloud.provider : null,
     folder,
     server: clone(server),
     cloud: clone(cloud),
@@ -2155,6 +2174,25 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "dropbox_login":
       return "https://www.dropbox.com/oauth2/authorize?client_id=demo&response_type=code&code_challenge_method=S256&token_access_type=offline";
 
+    case "gdrive_login":
+      gdriveLoginAt = Date.now();
+      return "https://accounts.google.com/o/oauth2/v2/auth?client_id=demo&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file&code_challenge_method=S256&access_type=offline";
+
+    case "gdrive_login_ready":
+      if (gdriveLoginAt === null) fail("unsupported:gdrive_login_expired");
+      return Date.now() - gdriveLoginAt >= 2000;
+
+    case "set_sync_gdrive": {
+      const cloud = mockGdriveFinish();
+      await sleep(600);
+      s.settings = { ...s.settings, syncCloud: cloud, syncServer: null, mirrorFolder: null };
+      s.mirror.lastMirroredAt = null;
+      s.mirror.lastError = null;
+      emit("mirror://status", mirrorStatus());
+      scheduleMirrorPass();
+      return mirrorStatus();
+    }
+
     case "set_sync_dropbox": {
       const cloud = mockDropboxCode(args);
       await sleep(600);
@@ -2334,6 +2372,21 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return folderStatus();
     }
 
+    case "link_gdrive": {
+      const cloud = mockGdriveFinish();
+      await sleep(700);
+      s.sync.link = { folderName: "Google Drive", linkedAt: Date.now(), writable: true, kind: "gdrive", server: null, cloud };
+      s.sync.lost = false;
+      s.sync.lastError = null;
+      s.lastActivity = Date.now();
+      try {
+        await mockSyncFolder();
+      } catch {
+        /* recorded in lastError */
+      }
+      return folderStatus();
+    }
+
     case "link_dropbox": {
       const cloud = mockDropboxCode(args);
       await sleep(700);
@@ -2455,6 +2508,9 @@ const PHONE_COMMANDS = new Set([
   "webdav_create_folder",
   "dropbox_login",
   "link_dropbox",
+  "gdrive_login",
+  "gdrive_login_ready",
+  "link_gdrive",
   "sync_now",
   "unlink_folder",
   "device_unlock_status",

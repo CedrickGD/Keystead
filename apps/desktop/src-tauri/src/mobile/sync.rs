@@ -445,8 +445,8 @@ fn forget_link(app: &AppHandle, core: &Core, previous: &LinkState, keep: Option<
     match previous.kind {
         LinkKind::Folder => release_folder(app, &previous.tree_uri),
         LinkKind::Webdav => sync_server::forget_password(core, &previous.tree_uri, keep),
-        LinkKind::Dropbox if keep == Some(previous.tree_uri.as_str()) => {}
-        LinkKind::Dropbox => match &previous.cloud {
+        LinkKind::Dropbox | LinkKind::Gdrive if keep == Some(previous.tree_uri.as_str()) => {}
+        LinkKind::Dropbox | LinkKind::Gdrive => match &previous.cloud {
             Some(cloud) => sync_server::sign_out(core, cloud),
             None => sync_server::forget_password(core, &previous.tree_uri, keep),
         },
@@ -537,6 +537,36 @@ pub async fn link_dropbox(
         replace_link(&app, c, sync_server::link_cloud(cloud, now_ms()))
     })
     .await
+}
+
+/// `link_gdrive` → [`FolderStatus`]: finishes the Google login whose
+/// redirect came (`gdrive_login`, `gdrive_login_ready`), links the phone to
+/// the folder "Keystead" in that Drive in place of the previous link and
+/// syncs. The refresh token is sealed by the Android Keystore and never
+/// returned. `unsupported:gdrive_login_expired` (none waits). A failed first
+/// sync is not an error (`lastError`).
+#[tauri::command]
+pub async fn link_gdrive(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderStatus> {
+    run(&core, true, move |c| {
+        let cloud = sync_server::gdrive_finish_login(c)?;
+        replace_link(&app, c, sync_server::link_cloud(cloud, now_ms()))
+    })
+    .await
+}
+
+/// The redirect of a Google login the activity received since the last
+/// call (`io.github.cedrickgd.keystead:/oauth2redirect?…`), if any.
+#[cfg(target_os = "android")]
+pub fn take_oauth_redirect(app: &AppHandle, _core: &Core) -> AppResult<Option<String>> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.take_oauth_redirect()
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn take_oauth_redirect(_app: &AppHandle, _core: &Core) -> AppResult<Option<String>> {
+    Ok(None)
 }
 
 /// Makes `link` the phone's link (the previous one forgotten – its folder
@@ -752,6 +782,12 @@ mod android {
         kind: String,
     }
 
+    #[derive(Deserialize)]
+    struct Redirect {
+        #[serde(default)]
+        uri: Option<String>,
+    }
+
     #[derive(Serialize)]
     struct WriteArgs<'a> {
         tree: &'a str,
@@ -811,6 +847,14 @@ mod android {
                 }
                 Err(e) => Err(plugin_error(e)),
             }
+        }
+
+        /// The OAuth redirect `MainActivity` received (see the plugin).
+        pub fn take_oauth_redirect(&self) -> AppResult<Option<String>> {
+            self.0
+                .run_mobile_plugin::<Redirect>("takeOAuthRedirect", ())
+                .map(|r| r.uri)
+                .map_err(plugin_error)
         }
 
         /// `wifi`, `cellular`, `other` or `none` (see the plugin).

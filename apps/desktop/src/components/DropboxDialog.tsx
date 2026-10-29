@@ -1,4 +1,4 @@
-// The Dropbox login (stage 2d, "Cloud accounts (Dropbox)" in
+// The Dropbox login (stage 2d, "Cloud accounts (Dropbox, Google Drive)" in
 // docs/ARCHITECTURE.md), on both platforms: "Bei Dropbox anmelden" asks the
 // backend for the authorize page (`dropbox_login` – the PKCE verifier stays
 // there) and opens it in the browser; Dropbox shows a code after the user

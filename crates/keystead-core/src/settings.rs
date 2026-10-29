@@ -197,6 +197,9 @@ pub struct SyncServer {
 pub enum CloudProvider {
     /// Dropbox's app folder `/Apps/Keystead`.
     Dropbox,
+    /// The folder "Keystead" in the user's Google Drive (scope `drive.file`:
+    /// only what Keystead made).
+    Gdrive,
 }
 
 /// A cloud account the vault copies are kept on (`Settings.syncCloud`, and
@@ -553,6 +556,13 @@ mod tests {
                 name: "Max".into(),
                 email: "max@example.com".into(),
             })
+        );
+        let s = Settings::from_json_lenient(
+            r#"{"syncCloud":{"provider":"gdrive","accountId":"0123456789","email":"max@gmail.com"}}"#,
+        );
+        assert_eq!(
+            s.sync_cloud.map(|c| c.provider),
+            Some(CloudProvider::Gdrive)
         );
         for json in [
             r#"{"syncCloud":null}"#,
