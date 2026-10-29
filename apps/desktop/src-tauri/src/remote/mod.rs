@@ -17,8 +17,8 @@
 //!   precondition that fails is `unsupported:sync_remote_changed`
 //!   ([`CHANGED`]) – the engines look again. A server that ignores the
 //!   preconditions (`SyncServer.cas` false; `rclone serve webdav` is one)
-//!   loses the atomicity only: the phone still reads the copy again right
-//!   before a write (the PC's server store relies on the precondition), and
+//!   loses the atomicity only: both engines still read the copy again right
+//!   before a write (the PC's server store for such a server only), and
 //!   the authenticated ancestry (sync proof) turns a write that went over
 //!   another one into a conflict on the other side, never into a silent
 //!   pull.

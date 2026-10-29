@@ -1461,11 +1461,20 @@ below.
   is a server (version = ETag; stamp = ETag, else size and time; the blob
   folder is made with its first blob; a **damaged** server copy is replaced
   only once it is still the same damaged copy ≥ 60 s later – it may be an
-  upload in progress). A push writes with `IfMatch(version)` of the copy
-  the decision was made on (`IfNoneMatch` for none); a refused write is
-  `Changed` (looked at again by the next pass). A server ignoring `If-Match`
-  loses the atomicity only: the side whose write was gone over finds a
-  conflict on its next look (tested).
+  upload in progress; `check` asks the server for the folder – a removed
+  one is `sync_server_folder_missing`, never "the copy is gone"). A push
+  writes with `IfMatch(version)` of the copy the decision was made on
+  (`IfNoneMatch` for none); a refused write is `Changed` (looked at again by
+  the next pass). On a server that ignores `If-Match` (its probe says so)
+  the store also reads the copy again right before the write and compares
+  it with the bytes the decision was made on (SHA-256), as the cloud folder
+  does – a copy the phone wrote meanwhile (e.g. during the blob uploads) is
+  not written over. Only the `PUT` itself stays unguarded there: the side
+  whose write was gone over finds a conflict on its next look (tested).
+  A start over (`folder_changed`) counts up an epoch: a round that began
+  before it does not carry its server errors into the new pause, and the
+  start-over flag is read before the settings, so the new store's start
+  over is never used up by a round of the old one.
 * WebDAV (`remote::webdav::WebDavRemote`, `dav_xml`, `tls`): an own thin
   client on reqwest (async client on a small runtime of its own – the
   blocking client has a total timeout only): `PROPFIND` (explicit props,
@@ -1485,11 +1494,11 @@ below.
   `.keystead-cas-probe` with an ETag no file has: 412 → `cas`, a write
   that went through is removed again) runs in the connection test only; a
   sync takes the answer stored with the server (`SyncServer.cas`,
-  `WebDavRemote::with_cas`), so it never writes the probe file. A server
-  without `If-Match` (`rclone serve webdav` is one) loses the atomicity of
-  the PC's push only (the phone reads again right before a write); the sync
-  proof still turns a write over another one into a conflict. The
-  connection test
+  `WebDavRemote::with_cas`), so it never writes the probe file. On a
+  server without `If-Match` (`rclone serve webdav` is one) both engines
+  read the copy again right before a write; only the `PUT` itself is
+  unguarded, and the sync proof turns a write over another one into a
+  conflict. The connection test
   (`WebDavRemote::test` → `WebDavTest { ok, code, certificate,
   suggestedUrl, folderMissing, writable, cas }`) suggests a redirect
   target of the same origin (scheme, host and port) or Nextcloud's `/remote.php/dav/files/<user>/` for a bare

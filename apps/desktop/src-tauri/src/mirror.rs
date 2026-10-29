@@ -111,9 +111,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest as _, Sha256};
@@ -725,6 +725,11 @@ struct RemoteStore<R: Remote> {
     damaged: Mutex<BTreeMap<String, (String, i64)>>,
     /// The clock of [`MirrorStore::may_replace_damaged`] (ms).
     clock: fn() -> i64,
+    /// Whether the server honours `If-Match` (its probe, once known).
+    cas: OnceLock<bool>,
+    /// SHA-256 of the top-level files as last read – what a write on a
+    /// server without `If-Match` compares the copy with right before it.
+    read_digests: Mutex<BTreeMap<String, [u8; 32]>>,
 }
 
 impl<R: Remote> RemoteStore<R> {
@@ -736,7 +741,35 @@ impl<R: Remote> RemoteStore<R> {
             stamps: Mutex::new(BTreeMap::new()),
             damaged: Mutex::new(BTreeMap::new()),
             clock: now_ms,
+            cas: OnceLock::new(),
+            read_digests: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Whether the server checks `If-Match` itself (unknown – the probe
+    /// failed – counts as yes: the write then fails or is checked anyway).
+    fn cas(&self) -> bool {
+        *self
+            .cas
+            .get_or_init(|| self.remote.probe().map_or(true, |access| access.cas))
+    }
+
+    /// A server without `If-Match`: whether the copy `name` is still the one
+    /// the decision was made on (`pre`), read again right before the write –
+    /// as the cloud folder does; the gap shrinks to the `PUT` itself.
+    fn still_as_read(&self, name: &str, pre: &Precondition) -> AppResult<bool> {
+        let now: Option<[u8; 32]> = match self.remote.get(name, VAULT_FILE_MAX_BYTES) {
+            Ok((bytes, _)) => Some(Sha256::digest(&bytes).into()),
+            Err(e) if remote::has_code(&e, remote::FILE_MISSING) => None,
+            Err(e) => return Err(e),
+        };
+        Ok(match pre {
+            Precondition::IfMatch(_) => {
+                now.is_some() && now == lock(&self.read_digests).get(name).copied()
+            }
+            Precondition::IfNoneMatch => now.is_none(),
+            Precondition::None => true,
+        })
     }
 
     fn blob_path(id: &str, name: &str) -> String {
@@ -764,7 +797,15 @@ impl<R: Remote> MirrorStore for RemoteStore<R> {
         &self.key
     }
 
+    /// The server's folder must exist (a removed one is
+    /// `sync_server_folder_missing`, never "the copy is gone"); its
+    /// `If-Match` answer is kept on the way.
     fn check(&self) -> AppResult<()> {
+        let access = self.remote.probe()?;
+        let _ = self.cas.set(access.cas);
+        if !access.exists {
+            return Err(AppError::unsupported(remote::FOLDER_MISSING));
+        }
         Ok(())
     }
 
@@ -774,6 +815,7 @@ impl<R: Remote> MirrorStore for RemoteStore<R> {
                 if let Some(etag) = &etag {
                     self.remember(name, Some(etag.clone()));
                 }
+                lock(&self.read_digests).insert(name.to_owned(), Sha256::digest(&bytes).into());
                 FolderCopy::Bytes(bytes, etag)
             }
             Err(e) if remote::has_code(&e, remote::FILE_MISSING) => {
@@ -787,9 +829,13 @@ impl<R: Remote> MirrorStore for RemoteStore<R> {
 
     fn write_vault(&self, id: &str, bytes: &[u8], pre: &Precondition) -> AppResult<bool> {
         let name = copy_name(id)?;
+        if !self.cas() && !self.still_as_read(&name, pre)? {
+            return Ok(false);
+        }
         match self.remote.put(&name, bytes, pre.clone()) {
             Ok(meta) => {
                 self.remember(&name, meta.etag.is_some().then(|| meta_stamp(&meta)));
+                lock(&self.read_digests).insert(name.clone(), Sha256::digest(bytes).into());
                 Ok(true)
             }
             Err(e) if remote::has_code(&e, remote::CHANGED) => Ok(false),
@@ -2161,6 +2207,9 @@ pub struct MirrorTracker {
     /// the folder or a vault from it (adopt, resolve): one at a time. Taken
     /// before the state lock.
     pass: Mutex<()>,
+    /// Counts the starts over ([`MirrorTracker::reset`]): a round that began
+    /// before one does not carry its server errors into the new pause.
+    epoch: AtomicU64,
     /// Deleted vaults whose copy could not be removed yet: tried again with
     /// every pass (while the app runs).
     failed_removals: Mutex<BTreeSet<String>>,
@@ -2226,6 +2275,7 @@ impl MirrorTracker {
     }
 
     fn reset(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         *lock(&self.progress) = Progress::default();
         lock(&self.backoff).reset();
         *lock(&self.server) = None;
@@ -2434,8 +2484,16 @@ pub(crate) fn process(core: &Core, jobs: Vec<Job>) {
 fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
     let tracker = core.mirror();
     let _pass = lock(&tracker.pass);
+    // The start-over flag before the settings: a change of the method after
+    // this leaves the flag for the next round, one before it shows in
+    // `method` – the new store's start over is never used up by the old one.
+    let relinked = tracker.relinked.swap(false, Ordering::SeqCst);
+    let epoch = tracker.epoch.load(Ordering::SeqCst);
     let method = method_of(&core.state().settings);
     if method.is_some() && !lock(&tracker.backoff).allows_now() {
+        if relinked {
+            tracker.relinked.store(true, Ordering::SeqCst);
+        }
         tracker.defer(jobs);
         return;
     }
@@ -2443,7 +2501,6 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
         .into_iter()
         .chain(jobs)
         .collect();
-    let relinked = tracker.relinked.swap(false, Ordering::SeqCst);
     let store = match &method {
         None => None,
         Some(method) => match store_for(core, method) {
@@ -2477,7 +2534,9 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
         return;
     };
     let results = run_round(core, &*store, jobs, scan_anyway);
-    lock(&tracker.backoff).record_now(results.error.as_deref());
+    if tracker.epoch.load(Ordering::SeqCst) == epoch {
+        lock(&tracker.backoff).record_now(results.error.as_deref());
+    }
     if tracker.record(core, store.key(), results) {
         core.emit(EVENT_STATUS, tracker.status(core));
     }
@@ -5189,6 +5248,79 @@ mod tests {
         /// A server that ignores `If-Match`: the PC's write goes over the
         /// phone's that came in between – but the phone still has its state
         /// and finds a conflict; nothing is lost without the user seeing it.
+        #[test]
+        fn without_if_match_the_pc_looks_again_right_before_its_write() {
+            // A server that ignores `If-Match` (rclone): the phone writes
+            // while the PC uploads a blob after its decision – the PC reads
+            // the copy again before its vault file and writes nothing over
+            // the phone's (the next pass decides anew: a conflict).
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            server.ignore_if_match(true);
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            let folder = Arc::new(RemoteDirFolder::new(Arc::clone(&server)));
+            let phone = phone_core(dir.path());
+            let link = Arc::new(Mutex::new(phone_link()));
+            folder_sync::sync_folder(&phone, &*folder, &mut lock(&link), 2).unwrap();
+            phone.unlock(&id, "master").unwrap();
+
+            phone_note(&phone, "Handy");
+            let item = note(&core, "PC");
+            let a = core
+                .mutate(|v| v.add_attachment(&item, "scan.png", b"\x89PNG fake scan"))
+                .unwrap();
+            core.mirror().take_recorded();
+            let name = format!("{id}.keystead");
+            let blob = format!("{}/{}.bin", remote::blob_dir_name(&id), a.id);
+            {
+                let (phone, folder, link, id) = (
+                    Arc::clone(&phone),
+                    Arc::clone(&folder),
+                    Arc::clone(&link),
+                    id.clone(),
+                );
+                server.before_put(&blob, move || {
+                    folder_sync::sync_vault(&phone, &*folder, &mut lock(&link), &id, 3).unwrap();
+                    assert_eq!(phone_outcome(&lock(&link), &id), PhoneOutcome::Pushed);
+                });
+            }
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Changed
+            );
+            let phone_state = fs::read(vault_path_of(&phone, &id)).unwrap();
+            assert_eq!(server.file(&name).unwrap(), phone_state);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Conflict
+            );
+            assert_eq!(server.file(&name).unwrap(), phone_state);
+        }
+
+        #[test]
+        fn a_removed_server_folder_is_missing_not_gone() {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _cloud) = pc(dir.path());
+            let server = server();
+            let store = store_of(&server);
+            let id = open_id(&core);
+            assert_eq!(
+                pass_on(&core, &store, &id).unwrap().outcome,
+                Outcome::Written
+            );
+            server.take_log();
+            server.set_missing(true);
+            let e = pass_on(&core, &store, &id).unwrap_err();
+            assert!(remote::has_code(&e, remote::FOLDER_MISSING), "{e:?}");
+            assert!(server.take_log().is_empty());
+        }
+
         #[test]
         fn a_server_ignoring_if_match_never_loses_a_write_silently() {
             let dir = tempfile::tempdir().unwrap();

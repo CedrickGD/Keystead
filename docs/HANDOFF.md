@@ -10,8 +10,8 @@ Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 |---|---|
 | Repo | `CedrickGD/Keystead` (öffentlich; früher `Vault-X`, alte URLs leiten weiter) |
 | `main` | **Keystead 2.0.0** (Tag `v2.0.0`, 2026-10-15, PR #12 als Merge-Commit mit voller Historie). VaultX 1.x ist auf Wunsch des Besitzers vollständig entfernt (`legacy/`, `version.yml`). |
-| Entwicklung | **Seit 2026-10-23 direkt auf `main`** (Wunsch des Besitzers, steht auch in `CLAUDE.md`): keine Feature-Branches, keine Pull Requests. Zwischenstände tragen `[skip ci]`; ob und wann eine Beta (`[release]`) oder ein Tag `vX.Y.Z` veröffentlicht wird, entscheidet der Besitzer. Gepushte Commits nicht umschreiben. Die früheren Branches (`claude/mobile-android`, `claude/generator`, `claude/beta-phone`, `claude/releases-link`) sind Geschichte – ihr Stand ist über die Beta-Zusammenführung in `main`. |
-| Generator | `claude/generator` (abgezweigt vom Stand 2.0.0, lokal im eigenen Worktree `Keystead-generator`): Überarbeitung des Generators, siehe „Was fertig ist“. Stand 2026-10-17: WIP-Commits mit `[skip ci]`; die ersten drei (core, backend, UI) sind schon auf `origin/claude/generator` gepusht (öffentliches Repo), die späteren (extension, docs, review fixes) nur lokal. Bereits gepushte Commits nicht umschreiben (kein squash/amend/rebase – sonst Force-Push auf einen öffentlichen Branch). Nicht gemergt, nicht veröffentlicht. |
+| Entwicklung | **Seit 2026-10-23 direkt auf `main`** (Wunsch des Besitzers, steht auch in `CLAUDE.md`): keine Feature-Branches, keine Pull Requests. Zwischenstände tragen `[skip ci]`; ob und wann eine Beta (`[release]`) oder ein Tag `vX.Y.Z` veröffentlicht wird, entscheidet der Besitzer. Gepushte Commits nicht umschreiben. Die früheren Branches (`claude/mobile-android`, `claude/generator`, `claude/beta-phone`, `claude/releases-link`, `claude/mobile-2b`, `claude/quirky-archimedes-i4qa3j`) waren vollständig in `main` enthalten und sind am 2026-10-29 auf GitHub und lokal gelöscht; PR #13 ist gemergt. |
+| Generator | erledigt und in `main` (Beta-Zusammenführung); der Branch `claude/generator` und sein Worktree `Keystead-generator` sind am 2026-10-29 gelöscht. |
 | Schlüssel | privates Repo `CedrickGD/keys`, Ordner `keystead/` (Update-Signaturschlüssel, Erweiterungs-Schlüssel, Android-Keystore `keystead-android-release.jks` mit Passwortdatei, README) |
 | GitHub-Secrets | `TAURI_SIGNING_PRIVATE_KEY` (Inhalt von `keys/keystead/tauri-updater.key`); für die APK `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (= `keystead`) – alle im Keystead-Repo gesetzt (die Android-Secrets am 2026-10-16) |
 
@@ -1109,12 +1109,13 @@ Abschluss-Commit danach.
   die CAS-Probe schrieb bei jedem Abgleich; Weiterleitungsvorschlag nur
   bei gleichem Ursprung; Keystore-Fehler beim Versiegeln blockiert das
   Verbinden nicht mehr (dann nur im Speicher); VPN über WLAN zählt als WLAN.
-  **Bewusst offen (niedrig, kein Datenverlust):** der PC liest bei einem
-  Server ohne `If-Match` (rclone) vor dem Schreiben nicht noch einmal (der
-  `syncProof` macht daraus einen Konflikt, getestet); ein gelöschter
-  Server-Ordner meldet am PC „Kopie fehlt“ statt „Ordner fehlt“; ein
-  seltenes Rennen lässt nach einem Serverwechsel einmal 1 min Pause stehen;
-  der Schlüssel `webdav:<URL>` enthält den Benutzer nicht.
+  **Nachgezogen (2026-10-29):** der PC liest bei einem Server ohne
+  `If-Match` (rclone) direkt vor dem Schreiben noch einmal nach; ein
+  gelöschter Server-Ordner meldet „Ordner fehlt“; das Backoff-Rennen nach
+  einem Serverwechsel ist weg (Epoche, Start-über-Flag vor den
+  Einstellungen gelesen). **Bewusst offen:** der Schlüssel `webdav:<URL>`
+  enthält den Benutzer nicht (eine Änderung würde bestehende Verbindungen
+  und Basen ungültig machen; der `syncProof` verhindert falsches Ziehen).
 
 **Verifiziert (2026-10-24):**
 * Unit-Tests: `keystead-core` 242 grün, `keystead-tui` 68 grün,
