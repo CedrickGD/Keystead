@@ -387,6 +387,27 @@ impl UnlockedVault {
         v.into_iter().map(VaultItem::summary).collect()
     }
 
+    /// Non-trashed logins with a URI naming the Android app `package`
+    /// ([`matching::app_uri_matches`]); favorites first, then by name.
+    pub fn logins_for_app(&self, package: &str) -> Vec<ItemSummary> {
+        let mut v: Vec<&VaultItem> = self
+            .data
+            .items
+            .iter()
+            .filter(|i| !i.is_trashed() && i.item_type == ItemType::Login)
+            .filter(|i| {
+                i.login.as_ref().is_some_and(|l| {
+                    l.uris
+                        .iter()
+                        .any(|u| matching::app_uri_matches(u, package))
+                })
+            })
+            .collect();
+        sort_by_name(&mut v);
+        v.sort_by_key(|i| !i.favorite);
+        v.into_iter().map(VaultItem::summary).collect()
+    }
+
     /// Creates or updates an item and persists the vault.
     ///
     /// * New if `id` is empty or unknown: assigns a UUID and `createdAt`.

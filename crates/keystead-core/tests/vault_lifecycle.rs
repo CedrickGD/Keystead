@@ -325,6 +325,50 @@ fn summaries_search_and_url_lookup() {
     assert_eq!(v.logins_for_url("https://www.amazon.de/").len(), 1);
 }
 
+#[test]
+fn logins_for_an_android_app() {
+    let (_dir, store) = store();
+    let mut v = create(&store, "Privat");
+    v.save_item(login("Bank", "max", "x", "androidapp://de.bank.app"))
+        .unwrap();
+    let mut fav = login("Bank (Arbeit)", "work", "x", "android://Xk1Q==@de.bank.app/");
+    fav.favorite = true;
+    v.save_item(fav).unwrap();
+    v.save_item(login("Bank web", "max", "x", "https://bank.de"))
+        .unwrap();
+    v.save_item(login("Evil", "max", "x", "androidapp://de.bank.app.evil"))
+        .unwrap();
+    let mut trashed = login("Old bank", "old", "x", "androidapp://de.bank.app");
+    trashed = v.save_item(trashed).unwrap();
+    v.trash_item(&trashed.id).unwrap();
+    let names: Vec<String> = v
+        .logins_for_app("de.bank.app")
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, ["Bank (Arbeit)", "Bank"]);
+    assert!(v.logins_for_app("de.bank").is_empty());
+    assert!(v.logins_for_url("https://bank.app/").is_empty());
+
+    // Read only (the phone's autofill): the same answers, the secrets of a
+    // live login, nothing for a trashed one or a card.
+    let id = v.id().to_owned();
+    let kek = v.master_kek();
+    let mut card = VaultItem::new(ItemType::Card, "Karte");
+    card.card = Some(CardData::default());
+    let card = v.save_item(card).unwrap();
+    drop(v);
+    let ro = store.open_read_only_with_master_kek(&id, &kek).unwrap();
+    let found = ro.logins_for_app("de.bank.app");
+    assert_eq!(found.len(), 2);
+    let (user, pass) = ro.login_for_fill(&found[1].id).unwrap();
+    assert_eq!((user.as_str(), pass.as_str()), ("max", "x"));
+    assert!(ro.login_for_fill(&trashed.id).is_none());
+    assert!(ro.login_for_fill(&card.id).is_none());
+    assert!(ro.login_for_fill("no-such-id").is_none());
+    assert_eq!(ro.name(), "Privat");
+}
+
 fn tagged(name: &str, tags: &[&str]) -> VaultItem {
     let mut item = login(name, "user", "pw", "");
     item.tags = tags.iter().map(|t| (*t).to_owned()).collect();

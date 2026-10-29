@@ -90,6 +90,28 @@ pub struct Blob {
     pub created_at: i64,
 }
 
+/// The Android Keystore alias of the biometric plugin's key
+/// (tauri-plugin-biometric 2.5.0, `BiometricActivity.kt`): the phone's
+/// autofill (stage 3) decrypts a [`Blob::sealed`] with it in its own
+/// activity – it only ever gets the key, never makes, deletes or resets it.
+#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+pub const PLUGIN_KEY_ALIAS: &str = "tauri-plugin-biometric-key";
+
+/// The parts of a [`Blob::sealed`] (the plugin's `base64(ciphertext);base64(iv)`,
+/// standard base64): `(iv, ciphertext)` – an IV of 12 bytes, a ciphertext of
+/// at least 17 (data and the 16-byte GCM tag). `None` for anything else.
+/// Not secret: only the Keystore key, after a fingerprint, opens it.
+#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+pub fn plugin_sealed_parts(sealed: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut parts = sealed.split(';');
+    let (Some(ct), Some(iv), None) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    let ct = crypto::b64_decode(ct).ok()?;
+    let iv = crypto::b64_decode(iv).ok()?;
+    (iv.len() == 12 && ct.len() >= 17).then_some((iv, ct))
+}
+
 /// The texts of the system's fingerprint prompt (from the UI, translated).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -717,6 +739,26 @@ mod tests {
     fn enable_and_lock(core: &Core, id: &str, keystore: &FakeKeystore) {
         enable(core, keystore, Some(id), &prompt("einrichten")).unwrap();
         core.lock(None);
+    }
+
+    #[test]
+    fn the_plugins_sealed_parts() {
+        let ct = crypto::b64_encode(&[1u8; 40]);
+        let iv = crypto::b64_encode(&[2u8; 12]);
+        let (got_iv, got_ct) = plugin_sealed_parts(&format!("{ct};{iv}")).unwrap();
+        assert_eq!((got_iv, got_ct), (vec![2u8; 12], vec![1u8; 40]));
+        for bad in [
+            format!("{iv};{ct}"),
+            format!("{ct}"),
+            format!("{ct};{iv};{iv}"),
+            format!("{ct};***"),
+            format!("{};{iv}", crypto::b64_encode(&[1u8; 16])),
+            format!("{ct};{}", crypto::b64_encode(&[2u8; 16])),
+            String::new(),
+        ] {
+            assert_eq!(plugin_sealed_parts(&bad), None, "{bad}");
+        }
+        assert_eq!(PLUGIN_KEY_ALIAS, "tauri-plugin-biometric-key");
     }
 
     #[test]

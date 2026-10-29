@@ -182,6 +182,28 @@ impl VaultStore {
         )))
     }
 
+    /// Opens a vault only to read it – the phone's autofill (stage 3) – with
+    /// a master KEK as [`VaultStore::unlock_with_master_kek`] does, but
+    /// without its housekeeping ([`UnlockedVault::sweep_attachments`]): it
+    /// changes nothing on disk, and the [`ReadOnlyVault`] cannot save.
+    /// `Error::WrongPassword` if the KEK does not open the current header.
+    pub fn open_read_only_with_master_kek(
+        &self,
+        vault_id: &str,
+        master_kek: &SecretKey,
+    ) -> Result<ReadOnlyVault> {
+        let (path, file) = self.read_vault(vault_id)?;
+        let key = file.unwrap_key_with_kek(master_kek)?;
+        let data = file.decrypt_payload(&key)?;
+        Ok(ReadOnlyVault(UnlockedVault::from_parts(
+            path,
+            file,
+            key,
+            master_kek.clone(),
+            data,
+        )))
+    }
+
     /// Unlocks a vault with its recovery key and sets a new master password.
     /// The vault key is rotated, so the old master password does not open
     /// the vault any more, not even together with an older copy of the file.
@@ -242,5 +264,55 @@ impl VaultStore {
         // The lock file can only be removed once the lock is released.
         let _ = fs::remove_file(format::sibling(&path, ".lock"));
         Ok(())
+    }
+}
+
+/// A vault opened only to read ([`VaultStore::open_read_only_with_master_kek`],
+/// the phone's autofill): no way to save or change it; its data is wiped
+/// when it is dropped (as an [`UnlockedVault`]'s). Its `Debug` shows only
+/// the id.
+pub struct ReadOnlyVault(UnlockedVault);
+
+impl std::fmt::Debug for ReadOnlyVault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadOnlyVault")
+            .field("id", &self.0.id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadOnlyVault {
+    pub fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    pub fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    /// See [`UnlockedVault::logins_for_url`].
+    pub fn logins_for_url(&self, url: &str) -> Vec<crate::model::ItemSummary> {
+        self.0.logins_for_url(url)
+    }
+
+    /// See [`UnlockedVault::logins_for_app`].
+    pub fn logins_for_app(&self, package: &str) -> Vec<crate::model::ItemSummary> {
+        self.0.logins_for_app(package)
+    }
+
+    /// Username and password of the non-trashed login `id`, else `None`.
+    pub fn login_for_fill(
+        &self,
+        id: &str,
+    ) -> Option<(zeroize::Zeroizing<String>, zeroize::Zeroizing<String>)> {
+        let item = self.0.item(id)?;
+        if item.is_trashed() || item.item_type != crate::model::ItemType::Login {
+            return None;
+        }
+        let login = item.login.as_ref()?;
+        Some((
+            zeroize::Zeroizing::new(login.username.clone()),
+            zeroize::Zeroizing::new(login.password.clone()),
+        ))
     }
 }

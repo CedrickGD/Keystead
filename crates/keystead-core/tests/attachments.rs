@@ -379,6 +379,33 @@ fn sweep_removes_old_unreferenced_files_only() {
 }
 
 #[test]
+fn a_read_only_open_changes_nothing_on_disk() {
+    let (_dir, store) = store();
+    let mut v = create(&store);
+    let item = v.save_item(note("Sweep")).unwrap();
+    v.add_attachment(&item.id, "a.txt", b"aaa").unwrap();
+    let dir = v.attachments_dir();
+    let orphan = plant_old(&dir, "0f0f0f0f-0000-4000-8000-000000000005.bin");
+    let id = v.id().to_owned();
+    let kek = v.master_kek();
+    drop(v);
+    let ro = store.open_read_only_with_master_kek(&id, &kek).unwrap();
+    assert_eq!(ro.id(), id);
+    assert!(orphan.exists(), "no sweep when only reading");
+    assert!(!format!("{ro:?}").contains("Sweep"));
+    drop(ro);
+    // A wrong KEK: the password changed since.
+    let other: SecretKey = zeroize::Zeroizing::new([7u8; 32]);
+    assert!(matches!(
+        store.open_read_only_with_master_kek(&id, &other),
+        Err(Error::WrongPassword)
+    ));
+    // The normal unlock still sweeps it.
+    drop(store.unlock_with_master_kek(&id, &kek).unwrap());
+    assert!(!orphan.exists());
+}
+
+#[test]
 fn an_add_after_a_conflict_can_be_retried() {
     let (_dir, store) = store();
     let mut app = create(&store);

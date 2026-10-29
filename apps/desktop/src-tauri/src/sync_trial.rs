@@ -340,6 +340,50 @@ pub fn remember_rejected(data_dir: &Path, id: &str, version: FileVersion) {
     }
 }
 
+/// What the disk says about vault `id`'s trial record (see [`on_trial`]).
+enum Probe {
+    NotOnTrial,
+    /// The file on disk is the unconfirmed write (or cannot be read right
+    /// now: as recorded).
+    OnTrial,
+    /// The record names a write that never reached the disk; the file on
+    /// disk, if any.
+    Stale {
+        trial: Trial,
+        on_disk: Option<Vec<u8>>,
+    },
+}
+
+fn probe(data_dir: &Path, id: &str) -> Probe {
+    let trial = Trial::load(data_dir, id);
+    let Some(unconfirmed) = trial.unconfirmed.clone() else {
+        return Probe::NotOnTrial;
+    };
+    let on_disk = match fs::read(VaultStore::new(data_dir).vault_path(id)) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // Cannot tell right now: as recorded.
+        Err(_) => return Probe::OnTrial,
+    };
+    let version = on_disk
+        .as_deref()
+        .and_then(|bytes| VaultFile::parse(bytes).ok())
+        .map(|file| FileVersion::of(&file));
+    if version.as_ref() == Some(&unconfirmed) {
+        return Probe::OnTrial;
+    }
+    Probe::Stale { trial, on_disk }
+}
+
+/// [`on_trial`] without its tidy-up, for a caller that holds the trial lock
+/// (`_held`, so no sync stores an unconfirmed copy meanwhile) and must
+/// change nothing on disk: the phone's autofill reads the vault under that
+/// lock. A stale record does not count and stays as it is.
+#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+pub fn unconfirmed_while_locked(_held: &MutexGuard<'static, ()>, data_dir: &Path, id: &str) -> bool {
+    valid_id(id) && matches!(probe(data_dir, id), Probe::OnTrial)
+}
+
 /// Whether this device's copy of vault `id` came from the folder and has
 /// not opened here yet: its header (the salt included) is unproven, so the
 /// fingerprint unlock's setup is not judged by it. Only if the vault file
@@ -354,23 +398,11 @@ pub fn on_trial(data_dir: &Path, id: &str) -> bool {
         return false;
     }
     let _trial = trial_lock();
-    let mut trial = Trial::load(data_dir, id);
-    let Some(unconfirmed) = trial.unconfirmed.clone() else {
-        return false;
+    let (mut trial, on_disk) = match probe(data_dir, id) {
+        Probe::NotOnTrial => return false,
+        Probe::OnTrial => return true,
+        Probe::Stale { trial, on_disk } => (trial, on_disk),
     };
-    let on_disk = match fs::read(VaultStore::new(data_dir).vault_path(id)) {
-        Ok(bytes) => Some(bytes),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        // Cannot tell right now: as recorded.
-        Err(_) => return true,
-    };
-    let version = on_disk
-        .as_deref()
-        .and_then(|bytes| VaultFile::parse(bytes).ok())
-        .map(|file| FileVersion::of(&file));
-    if version.as_ref() == Some(&unconfirmed) {
-        return true;
-    }
     // Stale. The kept copy goes only if nothing is lost with it: the file
     // on disk is that very copy, or there is none (otherwise a save ended
     // the trial without keeping it yet – `after_save` keeps it next time).
@@ -880,6 +912,7 @@ mod tests {
         let newest = fs::read(s.other.path()).unwrap();
         store_on_trial(&s, &newest);
         assert!(on_trial(&data_dir, &s.id));
+        assert!(unconfirmed_while_locked(&trial_lock(), &data_dir, &s.id));
         assert_eq!(fs::read(kept_path(&data_dir, &s.id)).unwrap(), confirmed);
         let trial = Trial::load(&data_dir, &s.id);
         assert_eq!(trial.kept_revision, Some(2));
@@ -888,6 +921,7 @@ mod tests {
         // It opens: confirmed, the kept copy goes, the base stays its head.
         unlock(&s, "pw").unwrap();
         assert!(!on_trial(&data_dir, &s.id));
+        assert!(!unconfirmed_while_locked(&trial_lock(), &data_dir, &s.id));
         assert!(!trial_path(&data_dir, &s.id).exists());
         assert!(!kept_path(&data_dir, &s.id).exists());
         assert_eq!(s.core.read(|o| o.items().len()).unwrap(), 3);
@@ -1195,6 +1229,15 @@ mod tests {
             let _trial = trial_lock();
             begin_trial(&data_dir, &s.id, &path, &newer).unwrap();
         }
+        assert!(kept_path(&data_dir, &s.id).exists());
+        // Only reading (the phone's autofill): not on trial, and the record
+        // and the kept copy stay as they are.
+        let recorded = Trial::load(&data_dir, &s.id);
+        {
+            let held = trial_lock();
+            assert!(!unconfirmed_while_locked(&held, &data_dir, &s.id));
+        }
+        assert_eq!(Trial::load(&data_dir, &s.id), recorded);
         assert!(kept_path(&data_dir, &s.id).exists());
         assert!(!on_trial(&data_dir, &s.id));
         assert_eq!(Trial::load(&data_dir, &s.id), Trial::default());

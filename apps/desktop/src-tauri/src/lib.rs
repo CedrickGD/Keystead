@@ -36,6 +36,9 @@
 extern "C" {}
 
 mod attachments;
+// The phone's autofill (stage 3): Android only; its logic is tested on the host.
+#[cfg(any(target_os = "android", test))]
+mod autofill;
 #[cfg(desktop)]
 mod bridge;
 mod commands;
