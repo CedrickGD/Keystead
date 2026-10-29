@@ -15,10 +15,10 @@
 //!   Basic authentication on every request (only ever over TLS outside
 //!   debug builds). No redirects are followed; connect 15 s, read 30 s, no
 //!   total timeout (`tls::client`).
-//! * The client is reqwest's async one on a small runtime of its own
-//!   (`block_on`): the sync engines are blocking and run on threads of their
-//!   own; reqwest's blocking client has a total timeout only, no read
-//!   timeout. Never call it from an async task.
+//! * The transport is [`super::http::Http`] (reqwest's async client on a
+//!   small runtime of its own, the request ceilings): the sync engines are
+//!   blocking and run on threads of their own. Never call it from an async
+//!   task.
 //! * Errors are codes ([`super`]): no connection / a timeout →
 //!   `sync_offline`; 401 (403 on a read) → `sync_auth_failed`; 403 on a
 //!   write → `sync_not_writable`; the folder missing →
@@ -41,10 +41,11 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use super::dav_xml::{self, DavEntry};
+use super::http::Http;
 use super::tls::{self, CertInfo, Trust};
 use super::{
     check_dir, check_path, Access, Precondition, Remote, RemoteMeta, AUTH_FAILED, BAD_RESPONSE,
-    CERTIFICATE, CHANGED, FILE_MISSING, FOLDER_MISSING, NOT_WEBDAV, NOT_WRITABLE, OFFLINE, QUOTA,
+    CERTIFICATE, CHANGED, FILE_MISSING, FOLDER_MISSING, NOT_WEBDAV, NOT_WRITABLE, QUOTA,
     SERVER_ERROR, TOO_LARGE,
 };
 use crate::error::{AppError, AppResult};
@@ -61,14 +62,6 @@ const CAS_PROBE: &str = ".keystead-cas-probe";
 /// as a body – some servers send a short text or HTML page with 201/204
 /// (rclone: "Created"); it is read and dropped.
 const ACK_MAX: u64 = 64 * 1024;
-/// A request gets this long, plus [`MIN_RATE`] for its body, before it is
-/// given up (`sync_offline`): the read timeout alone lets a server that
-/// sends a byte every 29 s hold a sync – and the link or setting changes
-/// that wait for it – for ever.
-const REQUEST_BASE: std::time::Duration = std::time::Duration::from_secs(120);
-/// Bytes per second a transfer must reach on average once
-/// [`REQUEST_BASE`] has passed.
-const MIN_RATE: u64 = 16 * 1024;
 
 /// Characters escaped in a path segment.
 const SEGMENT: &AsciiSet = &CONTROLS
@@ -240,30 +233,6 @@ pub fn nextcloud_url(base: &Url, user: &str) -> Option<Url> {
     Some(url)
 }
 
-/// The code of a failed request (no answer): a TLS error anywhere in its
-/// chain (`io::Error`s wrap it, nested) decides; otherwise the server
-/// could not be reached.
-fn network_error(e: &reqwest::Error) -> AppError {
-    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(err) = source {
-        match err.downcast_ref::<rustls::Error>() {
-            Some(rustls::Error::InvalidCertificate(_)) => {
-                return AppError::unsupported(CERTIFICATE)
-            }
-            Some(_) => return AppError::unsupported(SERVER_ERROR),
-            None => {}
-        }
-        source = match err
-            .downcast_ref::<std::io::Error>()
-            .and_then(|io| io.get_ref())
-        {
-            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
-            None => err.source(),
-        };
-    }
-    AppError::unsupported(OFFLINE)
-}
-
 /// What a request is, for the status codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
@@ -310,8 +279,7 @@ pub struct WebDavRemote {
     key: String,
     user: String,
     password: Zeroizing<String>,
-    client: reqwest::Client,
-    runtime: tokio::runtime::Runtime,
+    http: Http,
     /// The `If-Match` probe's answer, once known.
     cas: OnceLock<bool>,
 }
@@ -326,19 +294,13 @@ impl WebDavRemote {
     /// The folder of `cfg` (no request yet).
     pub fn new(cfg: &WebDavConfig) -> AppResult<Self> {
         let collection = collection_url(&cfg.url, &cfg.folder)?;
-        let client = tls::client(cfg.trust()?)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .map_err(AppError::from)?;
+        let http = Http::new(cfg.trust()?)?;
         Ok(WebDavRemote {
             key: key_of(&collection),
             collection,
             user: cfg.user.clone(),
             password: cfg.password.clone(),
-            client,
-            runtime,
+            http,
             cas: OnceLock::new(),
         })
     }
@@ -379,47 +341,21 @@ impl WebDavRemote {
         too_large: &str,
     ) -> AppResult<(StatusCode, HeaderMap, Vec<u8>)> {
         let mut request = self
-            .client
+            .http
             .request(method, url)
             .headers(headers)
             .basic_auth(&self.user, Some(self.password.as_str()));
-        // The upload and the answer's headers: the base time plus the body
-        // at the minimum rate.
         let upload = body.as_ref().map_or(0, |b| b.len() as u64);
-        let send_limit = REQUEST_BASE + std::time::Duration::from_secs(upload / MIN_RATE);
         if let Some(body) = body {
             request = request.body(body);
         }
-        let started = std::time::Instant::now();
-        self.runtime.block_on(async move {
-            let mut response = tokio::time::timeout(send_limit, request.send())
-                .await
-                .map_err(|_| AppError::unsupported(OFFLINE))?
-                .map_err(|e| network_error(&e))?;
-            let status = response.status();
-            let headers = response.headers().clone();
-            let mut bytes = Vec::new();
-            if status.is_success() {
-                if response.content_length().is_some_and(|n| n > max) {
-                    return Err(AppError::unsupported(too_large));
-                }
-                while let Some(chunk) = response.chunk().await.map_err(|e| network_error(&e))? {
-                    if (bytes.len() + chunk.len()) as u64 > max {
-                        return Err(AppError::unsupported(too_large));
-                    }
-                    bytes.extend_from_slice(&chunk);
-                    // A trickle: below the minimum rate once the base time
-                    // has passed.
-                    let elapsed = started.elapsed();
-                    if elapsed > REQUEST_BASE
-                        && (bytes.len() as u64) < MIN_RATE * (elapsed - REQUEST_BASE).as_secs()
-                    {
-                        return Err(AppError::unsupported(OFFLINE));
-                    }
-                }
-            }
-            Ok((status, headers, bytes))
-        })
+        let answer = self.http.send(request, upload, max, too_large)?;
+        let body = if answer.status.is_success() {
+            answer.body
+        } else {
+            Vec::new()
+        };
+        Ok((answer.status, answer.headers, body))
     }
 
     /// `PROPFIND` of `url` (`depth` 0 or 1): the status and, for 207, the
@@ -802,7 +738,7 @@ impl Remote for WebDavRemote {
 mod tests {
     use super::*;
     use crate::remote::test_server::{Hostile, TestServer};
-    use crate::remote::{blob_dir_name, has_code};
+    use crate::remote::{blob_dir_name, has_code, OFFLINE};
 
     const ID: &str = "abc";
 

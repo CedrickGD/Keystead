@@ -120,7 +120,7 @@ use sha2::{Digest as _, Sha256};
 
 use keystead_core::format::{self, VaultFile, VAULT_EXTENSION};
 use keystead_core::model::{now_ms, VaultInfo};
-use keystead_core::settings::{Settings, SyncServer};
+use keystead_core::settings::{Settings, SyncCloud, SyncServer};
 use keystead_core::sync::{
     self, RemoteProof, SyncBase, SyncDecision, SyncHead, VAULT_FILE_MAX_BYTES,
 };
@@ -2141,18 +2141,23 @@ pub enum MirrorKind {
     Folder,
     /// A WebDAV server (`Settings.syncServer`).
     Webdav,
+    /// Keystead's app folder on a Dropbox account (`Settings.syncCloud`).
+    Dropbox,
 }
 
 /// `mirror_status`, `mirror://status`. No secrets.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MirrorStatus {
-    /// `folder`, `webdav`, or `null` = off.
+    /// `folder`, `webdav`, `dropbox`, or `null` = off.
     pub kind: Option<MirrorKind>,
     /// The folder (`Settings.mirrorFolder`); `null` without one.
     pub folder: Option<String>,
     /// The server (`Settings.syncServer`, no password); `null` without one.
     pub server: Option<SyncServer>,
+    /// The cloud account (`Settings.syncCloud`, no token); `null` without
+    /// one.
+    pub cloud: Option<SyncCloud>,
     /// A stored server password survives a restart (Windows: DPAPI);
     /// `false`: it is asked for again after a restart (Linux, macOS).
     pub password_kept: bool,
@@ -2226,7 +2231,7 @@ pub struct MirrorTracker {
     /// The server's store, kept across rounds (its stamps and damaged-copy
     /// timer), with the server it was built for; dropped when the server
     /// or its password changes ([`folder_changed`]).
-    server: Mutex<Option<(SyncServer, SharedStore)>>,
+    server: Mutex<Option<(Method, SharedStore)>>,
     /// The pause of the rounds after server errors.
     backoff: Mutex<Backoff>,
     /// Jobs that came during a pause: they run with the next round.
@@ -2284,18 +2289,20 @@ impl MirrorTracker {
     /// The status for `mirror_status` / `mirror://status`. Takes the state
     /// lock (never while `progress` is held).
     pub fn status(&self, core: &Core) -> MirrorStatus {
-        let (folder, server) = {
+        let (folder, server, cloud, method) = {
             let st = core.state();
             (
                 st.settings.mirror_folder.clone(),
                 st.settings.sync_server.clone(),
+                st.settings.sync_cloud.clone(),
+                method_of(&st.settings),
             )
         };
-        let kind = match (&folder, &server) {
-            (Some(_), _) => Some(MirrorKind::Folder),
-            (None, Some(_)) => Some(MirrorKind::Webdav),
-            (None, None) => None,
-        };
+        let kind = method.map(|m| match m {
+            Method::Folder(_) => MirrorKind::Folder,
+            Method::Server(_) => MirrorKind::Webdav,
+            Method::Cloud(_) => MirrorKind::Dropbox,
+        });
         let retry_at = if kind.is_some() {
             lock(&self.backoff).retry_at_ms()
         } else {
@@ -2306,6 +2313,7 @@ impl MirrorTracker {
             kind,
             folder,
             server,
+            cloud,
             password_kept: core.credentials().persistent(),
             retry_at,
             last_mirrored_at: progress.last_mirrored_at,
@@ -2546,11 +2554,12 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
 type SharedStore = Arc<dyn MirrorStore>;
 
 /// How the settings say the copies are kept (one at a time; a folder
-/// first should both be set).
+/// first, then a server, should more be set).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Method {
     Folder(String),
     Server(SyncServer),
+    Cloud(SyncCloud),
 }
 
 impl Method {
@@ -2560,43 +2569,49 @@ impl Method {
         match self {
             Method::Folder(folder) => Some(folder.clone()),
             Method::Server(server) => sync_server::key_of(server).ok(),
+            Method::Cloud(cloud) => Some(sync_server::cloud_key(cloud)),
         }
     }
 }
 
 fn method_of(settings: &Settings) -> Option<Method> {
-    match (&settings.mirror_folder, &settings.sync_server) {
-        (Some(folder), _) => Some(Method::Folder(folder.clone())),
-        (None, Some(server)) => Some(Method::Server(server.clone())),
-        (None, None) => None,
+    if let Some(folder) = &settings.mirror_folder {
+        return Some(Method::Folder(folder.clone()));
     }
+    if let Some(server) = &settings.sync_server {
+        return Some(Method::Server(server.clone()));
+    }
+    settings.sync_cloud.clone().map(Method::Cloud)
 }
 
 /// How often the worker scans without other jobs.
 fn scan_interval(settings: &Settings) -> Duration {
     match method_of(settings) {
-        Some(Method::Server(_)) => SCAN_INTERVAL_REMOTE,
+        Some(Method::Server(_) | Method::Cloud(_)) => SCAN_INTERVAL_REMOTE,
         _ => SCAN_INTERVAL,
     }
 }
 
-/// The store of `method`: the folder, or the server's kept store (built
-/// with the stored password when there is none for this server yet).
+/// The store of `method`: the folder, or the server's or account's kept
+/// store (built with the stored password or token when there is none for
+/// it yet).
 fn store_for(core: &Core, method: &Method) -> AppResult<SharedStore> {
-    match method {
-        Method::Folder(folder) => Ok(Arc::new(FsStore::new(folder, &core.data_dir()))),
-        Method::Server(server) => {
-            let mut slot = lock(&core.mirror().server);
-            if let Some((built_for, store)) = slot.as_ref() {
-                if built_for == server {
-                    return Ok(Arc::clone(store));
-                }
-            }
-            let store: SharedStore = Arc::new(RemoteStore::new(sync_server::open(core, server)?));
-            *slot = Some((server.clone(), Arc::clone(&store)));
-            Ok(store)
+    if let Method::Folder(folder) = method {
+        return Ok(Arc::new(FsStore::new(folder, &core.data_dir())));
+    }
+    let mut slot = lock(&core.mirror().server);
+    if let Some((built_for, store)) = slot.as_ref() {
+        if built_for == method {
+            return Ok(Arc::clone(store));
         }
     }
+    let store: SharedStore = match method {
+        Method::Server(server) => Arc::new(RemoteStore::new(sync_server::open(core, server)?)),
+        Method::Cloud(cloud) => Arc::new(RemoteStore::new(sync_server::open_cloud(core, cloud)?)),
+        Method::Folder(_) => unreachable!("handled above"),
+    };
+    *slot = Some((method.clone(), Arc::clone(&store)));
+    Ok(store)
 }
 
 /// The store of the settings (`unsupported:folder_not_linked` without
@@ -2790,10 +2805,12 @@ pub async fn dismiss_folder_vault(core: Shared<'_>, vault_id: String) -> CmdResu
 pub fn set_server(core: &Arc<Core>, cfg: &WebDavConfig) -> AppResult<MirrorStatus> {
     let server = sync_server::connect(core, cfg)?.server;
     let (unchanged, _) = crate::commands::change_settings(core, |settings| {
-        let unchanged =
-            settings.sync_server.as_ref() == Some(&server) && settings.mirror_folder.is_none();
+        let unchanged = settings.sync_server.as_ref() == Some(&server)
+            && settings.mirror_folder.is_none()
+            && settings.sync_cloud.is_none();
         settings.sync_server = Some(server);
         settings.mirror_folder = None;
+        settings.sync_cloud = None;
         Ok(unchanged)
     })?;
     if unchanged {
@@ -2812,6 +2829,53 @@ pub fn clear_server(core: &Arc<Core>) -> AppResult<MirrorStatus> {
         Ok(())
     })?;
     Ok(core.mirror().status(core))
+}
+
+/// `set_sync_dropbox(code)` → [`MirrorStatus`]: finishes the Dropbox login
+/// the page started (`dropbox_login`) with the code the user copied; the PC
+/// keeps its copies in Keystead's app folder on that account from now on
+/// (`Settings.syncCloud`; `mirrorFolder` and `syncServer` are cleared), the
+/// refresh token stored (`crate::credentials`, never returned). The mirror
+/// starts over – also for the same account signed in again.
+pub fn set_cloud(core: &Arc<Core>, code: &str) -> AppResult<MirrorStatus> {
+    let cloud = sync_server::dropbox_finish_login(core, code)?;
+    let (unchanged, _) = crate::commands::change_settings(core, |settings| {
+        let unchanged = settings.sync_cloud.as_ref() == Some(&cloud)
+            && settings.mirror_folder.is_none()
+            && settings.sync_server.is_none();
+        settings.sync_cloud = Some(cloud);
+        settings.mirror_folder = None;
+        settings.sync_server = None;
+        Ok(unchanged)
+    })?;
+    if unchanged {
+        folder_changed(core);
+    }
+    Ok(core.mirror().status(core))
+}
+
+/// `clear_sync_cloud` → [`MirrorStatus`]: no cloud account any more – it is
+/// signed out (the provider revokes the token, best effort; this PC forgets
+/// it). The copies in the app folder stay there.
+pub fn clear_cloud(core: &Arc<Core>) -> AppResult<MirrorStatus> {
+    crate::commands::change_settings(core, |settings| {
+        settings.sync_cloud = None;
+        Ok(())
+    })?;
+    Ok(core.mirror().status(core))
+}
+
+/// The side effects of a changed `syncCloud` (`commands::change_settings`):
+/// an account that is no longer used is signed out (its token revoked and
+/// forgotten).
+pub fn cloud_setting_changed(core: &Core, old: Option<&SyncCloud>, new: Option<&SyncCloud>) {
+    let Some(old) = old else {
+        return;
+    };
+    if new.map(sync_server::cloud_key) == Some(sync_server::cloud_key(old)) {
+        return;
+    }
+    sync_server::sign_out(core, old);
 }
 
 /// The side effects of a changed `syncServer` (`commands::change_settings`):
@@ -2839,6 +2903,16 @@ pub async fn set_sync_server(
 #[tauri::command]
 pub async fn clear_sync_server(core: Shared<'_>) -> CmdResult<MirrorStatus> {
     run(&core, true, clear_server).await
+}
+
+#[tauri::command]
+pub async fn set_sync_dropbox(core: Shared<'_>, code: String) -> CmdResult<MirrorStatus> {
+    run(&core, true, move |c| set_cloud(c, &code)).await
+}
+
+#[tauri::command]
+pub async fn clear_sync_cloud(core: Shared<'_>) -> CmdResult<MirrorStatus> {
+    run(&core, true, clear_cloud).await
 }
 
 // ---------------------------------------------------------------------------
@@ -4659,6 +4733,49 @@ mod tests {
             fs::write(&local, b"damaged").unwrap();
             assert_eq!(copy_blobs_in(&store, &id, &local_dir).unwrap(), 1);
             assert_eq!(fs::read(&local).unwrap(), swapped);
+        }
+
+        #[test]
+        fn the_pc_keeps_its_copies_in_dropbox() {
+            use crate::remote::dropbox::fake::FakeDropbox;
+            use crate::remote::dropbox::{self, TEST_ENDPOINTS};
+
+            let fake = FakeDropbox::new();
+            TEST_ENDPOINTS.with(|e| *e.borrow_mut() = Some(fake.endpoints()));
+            let connected =
+                dropbox::connect("app-key", &fake.code(), &fake.verifier(), &fake.endpoints())
+                    .unwrap();
+            let cloud = SyncCloud {
+                provider: keystead_core::settings::CloudProvider::Dropbox,
+                account_id: connected.account.account_id.clone(),
+                name: String::new(),
+                email: String::new(),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let settings = Settings {
+                sync_cloud: Some(cloud.clone()),
+                ..Settings::default()
+            };
+            let core = core_with_open_vault(dir.path(), settings);
+            core.credentials()
+                .store(
+                    &core.data_dir(),
+                    &sync_server::cloud_key(&cloud),
+                    &connected.refresh_token,
+                )
+                .unwrap();
+            let id = open_id(&core);
+            let _ = core.mirror().take_recorded();
+            process_round(&core, vec![Job::Vault(id.clone())], None);
+            let status = core.mirror().status(&core);
+            assert_eq!(status.kind, Some(MirrorKind::Dropbox));
+            assert_eq!(status.cloud, Some(cloud));
+            assert_eq!(status.last_error, None, "{status:?}");
+            assert_eq!(
+                fake.file(&format!("{id}.keystead")).unwrap(),
+                fs::read(vault_path(&core)).unwrap()
+            );
+            TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
         }
 
         #[test]

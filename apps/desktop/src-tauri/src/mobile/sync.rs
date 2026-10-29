@@ -307,11 +307,12 @@ fn status(core: &Core, state: &SyncState) -> FolderStatus {
     status
 }
 
-/// Whether an automatic sync or push of `link` waits (a server link only):
+/// Whether an automatic sync or push of `link` waits (a server or cloud
+/// account link only):
 /// the server failed shortly before ([`Backoff`]), or "Nur über WLAN" is on
 /// and the phone is not on Wi-Fi. Records and announces why.
 fn skip_automatic(app: &AppHandle, core: &Core, state: &SyncState, link: &LinkState) -> bool {
-    if link.kind != LinkKind::Webdav {
+    if link.kind == LinkKind::Folder {
         return false;
     }
     let reason = if !lock(&state.backoff).allows_now() {
@@ -332,10 +333,10 @@ fn skip_automatic(app: &AppHandle, core: &Core, state: &SyncState, link: &LinkSt
 }
 
 /// After a sync or push of `link` ran: no reason to skip any more, and the
-/// pause after server errors (server links only).
+/// pause after server errors (server and cloud account links only).
 fn record_backoff(state: &SyncState, link: &LinkState, error: Option<&str>) {
     *lock(&state.skipped) = None;
-    if link.kind == LinkKind::Webdav {
+    if link.kind != LinkKind::Folder {
         lock(&state.backoff).record_now(error);
     }
 }
@@ -437,12 +438,18 @@ fn with_plugin_folder<T>(
 }
 
 /// The link `previous` is replaced or removed: a cloud app's folder gets
-/// its permission back, a server's password is forgotten (unless the new
-/// link uses the same server folder, `keep`).
+/// its permission back, a server's password is forgotten, a cloud account
+/// is signed out (the provider revokes the token) – unless the new link
+/// uses the same folder or account (`keep`, its key).
 fn forget_link(app: &AppHandle, core: &Core, previous: &LinkState, keep: Option<&str>) {
     match previous.kind {
         LinkKind::Folder => release_folder(app, &previous.tree_uri),
         LinkKind::Webdav => sync_server::forget_password(core, &previous.tree_uri, keep),
+        LinkKind::Dropbox if keep == Some(previous.tree_uri.as_str()) => {}
+        LinkKind::Dropbox => match &previous.cloud {
+            Some(cloud) => sync_server::sign_out(core, cloud),
+            None => sync_server::forget_password(core, &previous.tree_uri, keep),
+        },
     }
 }
 
@@ -508,6 +515,26 @@ pub async fn link_webdav(
         let cfg: WebDavConfig = parse(config, sync_server::BAD_CONFIG)?;
         let link = sync_server::link_server(c, &cfg, now_ms())?;
         replace_link(&app, c, link)
+    })
+    .await
+}
+
+/// `link_dropbox(code)` → [`FolderStatus`]: finishes the Dropbox login the
+/// page started (`dropbox_login`) with the code the user copied, links the
+/// phone to Keystead's app folder on that account in place of the previous
+/// link and syncs. The refresh token is sealed by the Android Keystore and
+/// never returned. `invalid_input:dropbox_code` (a wrong code – the login
+/// still waits), `unsupported:dropbox_login_expired` (none waits). A failed
+/// first sync is not an error (`lastError`).
+#[tauri::command]
+pub async fn link_dropbox(
+    app: AppHandle,
+    core: Shared<'_>,
+    code: String,
+) -> CmdResult<FolderStatus> {
+    run(&core, true, move |c| {
+        let cloud = sync_server::dropbox_finish_login(c, &code)?;
+        replace_link(&app, c, sync_server::link_cloud(cloud, now_ms()))
     })
     .await
 }

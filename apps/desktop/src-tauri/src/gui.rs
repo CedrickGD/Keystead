@@ -201,10 +201,15 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::sync_conflict::resolve_sync_conflict,
             crate::sync_server::webdav_test,
             crate::sync_server::webdav_create_folder,
+            crate::sync_server::dropbox_login,
             #[cfg(desktop)]
             crate::mirror::set_sync_server,
             #[cfg(desktop)]
             crate::mirror::clear_sync_server,
+            #[cfg(desktop)]
+            crate::mirror::set_sync_dropbox,
+            #[cfg(desktop)]
+            crate::mirror::clear_sync_cloud,
             #[cfg(desktop)]
             commands::browser_status,
             #[cfg(desktop)]
@@ -242,6 +247,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mobile::sync::link_folder,
             #[cfg(mobile)]
             crate::mobile::sync::link_webdav,
+            #[cfg(mobile)]
+            crate::mobile::sync::link_dropbox,
             #[cfg(mobile)]
             crate::mobile::sync::sync_now,
             #[cfg(mobile)]
@@ -1009,6 +1016,7 @@ mod tests {
                 "folder_status",
                 "link_folder",
                 "link_webdav",
+                "link_dropbox",
                 "sync_now",
                 "unlink_folder",
                 "device_unlock_status",
@@ -1030,6 +1038,7 @@ mod tests {
             "totp_code",
             "webdav_test",
             "webdav_create_folder",
+            "dropbox_login",
         ] {
             assert!(phone.contains(name), "{name} must be on the phone");
         }
@@ -1052,6 +1061,8 @@ mod tests {
             "browser_status",
             "set_sync_server",
             "clear_sync_server",
+            "set_sync_dropbox",
+            "clear_sync_cloud",
         ] {
             assert!(!phone.contains(name), "{name} must stay desktop-only");
         }

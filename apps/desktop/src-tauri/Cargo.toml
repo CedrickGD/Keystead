@@ -57,6 +57,8 @@ percent-encoding = "2.3.2"
 # The mirror's version token of a folder copy and the pinned certificate's
 # fingerprint; the version the core already uses.
 sha2 = "0.11.0"
+# Dropbox's PKCE (`src/remote/dropbox.rs`); the versions the core uses.
+base64 = "0.23.1"
 
 # Desktop only (Windows, Linux, macOS): everything the phone has no use for –
 # browser bridge, terminal UI, tray, single instance, updater, the website

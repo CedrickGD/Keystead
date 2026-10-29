@@ -115,6 +115,12 @@ pub struct Settings {
     /// keeps the stored value). The phone ignores it (its server is part
     /// of its link). Loading drops one without a URL.
     pub sync_server: Option<SyncServer>,
+    /// Desktop: the cloud account (Dropbox, stage 2d) the app keeps its
+    /// vault copies on – one method per PC, as [`Settings::sync_server`].
+    /// No token: that is kept apart (`credentials` of the app). Only the
+    /// app's `set_sync_cloud` / `clear_sync_cloud` change it. The phone
+    /// ignores it. Loading drops one without an account id.
+    pub sync_cloud: Option<SyncCloud>,
     /// Phone: automatic syncs with a server run only on Wi-Fi (or
     /// Ethernet), not on mobile data ("Nur über WLAN synchronisieren";
     /// default off). A sync the user starts always runs. The desktop app
@@ -148,6 +154,7 @@ impl Default for Settings {
             device_unlock: false,
             mirror_folder: None,
             sync_server: None,
+            sync_cloud: None,
             sync_wifi_only: false,
             generator_presets: Vec::new(),
             generator_default: generator::PRESET_STANDARD.to_owned(),
@@ -182,6 +189,29 @@ pub struct SyncServer {
     /// before each write).
     #[serde(default)]
     pub cas: bool,
+}
+
+/// A cloud provider with an account of the user's (stage 2d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudProvider {
+    /// Dropbox's app folder `/Apps/Keystead`.
+    Dropbox,
+}
+
+/// A cloud account the vault copies are kept on (`Settings.syncCloud`, and
+/// the phone's link). No secrets: the provider's refresh token is stored
+/// apart; the name and e-mail are only shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCloud {
+    pub provider: CloudProvider,
+    /// The provider's id of the account (what the bases are recorded for).
+    pub account_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
 }
 
 /// Deserialises `key` from `obj` into `target`, keeping the current value if
@@ -248,6 +278,7 @@ impl Settings {
         take(&obj, "deviceUnlock", &mut s.device_unlock);
         take(&obj, "mirrorFolder", &mut s.mirror_folder);
         take(&obj, "syncServer", &mut s.sync_server);
+        take(&obj, "syncCloud", &mut s.sync_cloud);
         take(&obj, "syncWifiOnly", &mut s.sync_wifi_only);
         if let Some(serde_json::Value::Array(presets)) = obj.get("generatorPresets") {
             s.generator_presets = presets.iter().filter_map(preset_lenient).collect();
@@ -295,6 +326,13 @@ impl Settings {
             if server.folder.trim().is_empty() {
                 server.folder = default_sync_folder();
             }
+        }
+        if self
+            .sync_cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.account_id.trim().is_empty())
+        {
+            self.sync_cloud = None;
         }
         let mut presets: Vec<GeneratorPreset> = Vec::new();
         for preset in &self.generator_presets {
@@ -500,6 +538,35 @@ mod tests {
         let json = serde_json::to_value(Settings::default()).unwrap();
         assert!(json["mirrorFolder"].is_null());
         assert!(json.get("mirrorFolder").is_some());
+    }
+
+    #[test]
+    fn sync_cloud_parses_and_falls_back() {
+        let s = Settings::from_json_lenient(
+            r#"{"syncCloud":{"provider":"dropbox","accountId":"dbid:AA1","name":"Max","email":"max@example.com"}}"#,
+        );
+        assert_eq!(
+            s.sync_cloud,
+            Some(SyncCloud {
+                provider: CloudProvider::Dropbox,
+                account_id: "dbid:AA1".into(),
+                name: "Max".into(),
+                email: "max@example.com".into(),
+            })
+        );
+        for json in [
+            r#"{"syncCloud":null}"#,
+            r#"{"syncCloud":{"provider":"dropbox","accountId":" "}}"#,
+            r#"{"syncCloud":{"provider":"onedrive","accountId":"x"}}"#,
+            r#"{"syncCloud":{"accountId":"x"}}"#,
+        ] {
+            assert_eq!(Settings::from_json_lenient(json).sync_cloud, None, "{json}");
+        }
+        // A token is never part of it.
+        let s = Settings::from_json_lenient(
+            r#"{"syncCloud":{"provider":"dropbox","accountId":"x","refreshToken":"geheim"}}"#,
+        );
+        assert!(!serde_json::to_string(&s).unwrap().contains("geheim"));
     }
 
     #[test]
@@ -744,8 +811,9 @@ mod tests {
         assert_eq!(v["generatorPresets"], serde_json::json!([]));
         assert_eq!(v["generatorDefault"], "standard");
         assert!(v["syncServer"].is_null());
+        assert!(v["syncCloud"].is_null());
         assert_eq!(v["syncWifiOnly"], false);
-        assert_eq!(v.as_object().unwrap().len(), 19);
+        assert_eq!(v.as_object().unwrap().len(), 20);
     }
 
     #[test]
@@ -790,6 +858,12 @@ mod tests {
                 folder: "Keystead".into(),
                 cert_sha256: Some("00ff".into()),
                 cas: true,
+            }),
+            sync_cloud: Some(SyncCloud {
+                provider: CloudProvider::Dropbox,
+                account_id: "dbid:AA1".into(),
+                name: "Max".into(),
+                email: "max@example.com".into(),
             }),
             sync_wifi_only: true,
             generator_presets: vec![preset("p-1", "Bank")],

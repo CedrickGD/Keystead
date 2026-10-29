@@ -105,6 +105,9 @@ pub struct AppInfo {
     /// Attachments cannot be added, saved or removed here (the phone: they
     /// stay view-only – image previews – and an edit keeps the PC's).
     attachments_read_only: bool,
+    /// The sync methods besides a cloud folder this build can use
+    /// (`webdav`, and `dropbox` with an app key compiled in).
+    sync_providers: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +145,7 @@ fn app_info_of(core: &Core) -> AppInfo {
         extension_id: None,
         read_only: false,
         attachments_read_only: cfg!(mobile),
+        sync_providers: crate::sync_server::providers(),
     }
 }
 
@@ -725,7 +729,17 @@ fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
                 settings.sync_server.as_ref(),
             );
         }
-        if settings.mirror_folder != old.mirror_folder || settings.sync_server != old.sync_server {
+        if settings.sync_cloud != old.sync_cloud {
+            crate::mirror::cloud_setting_changed(
+                core,
+                old.sync_cloud.as_ref(),
+                settings.sync_cloud.as_ref(),
+            );
+        }
+        if settings.mirror_folder != old.mirror_folder
+            || settings.sync_server != old.sync_server
+            || settings.sync_cloud != old.sync_cloud
+        {
             crate::mirror::folder_changed(core);
         }
         if old.language != settings.language {
@@ -751,9 +765,10 @@ fn apply_side_effects(core: &Arc<Core>, old: &Settings, settings: &Settings) {
 /// it on without the prompt, nor off without removing the setup), the
 /// generator presets and the default preset to the preset commands,
 /// `syncServer` to `set_sync_server` / `clear_sync_server` (they test the
-/// server and store or remove its password) – except that a new
-/// `mirrorFolder` replaces the server (one method per PC), and only from a
-/// page that knew the server: a page that read the settings before
+/// server and store or remove its password), `syncCloud` to
+/// `set_sync_dropbox` / `clear_sync_cloud` – except that a new
+/// `mirrorFolder` replaces the server or account (one method per PC), and
+/// only from a page that knew them: a page that read the settings before
 /// `set_sync_server` still has the old folder and no server, and its save
 /// must not bring the folder back over the server (its `mirrorFolder` is
 /// ignored then).
@@ -762,13 +777,18 @@ fn from_the_page(mut page: Settings, stored: &Settings) -> Settings {
     page.generator_presets = stored.generator_presets.clone();
     page.generator_default = stored.generator_default.clone();
     let picks_folder = page.mirror_folder.is_some() && page.mirror_folder != stored.mirror_folder;
-    if stored.sync_server.is_some() && page.sync_server != stored.sync_server {
+    let stale = (stored.sync_server.is_some() && page.sync_server != stored.sync_server)
+        || (stored.sync_cloud.is_some() && page.sync_cloud != stored.sync_cloud);
+    if stale {
         page.mirror_folder = stored.mirror_folder.clone();
         page.sync_server = stored.sync_server.clone();
+        page.sync_cloud = stored.sync_cloud.clone();
     } else if picks_folder {
         page.sync_server = None;
+        page.sync_cloud = None;
     } else {
         page.sync_server = stored.sync_server.clone();
+        page.sync_cloud = stored.sync_cloud.clone();
     }
     page
 }

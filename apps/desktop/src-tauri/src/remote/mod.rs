@@ -36,8 +36,10 @@ use serde::Serialize;
 use crate::error::{AppError, AppResult};
 
 pub mod dav_xml;
+pub mod dropbox;
 #[cfg(any(mobile, test))]
 pub mod folder;
+pub mod http;
 #[cfg(test)]
 pub mod mem;
 #[cfg(test)]
@@ -161,6 +163,30 @@ pub trait Remote: Send + Sync {
     /// PC's mirror only (the phone never removes anything).
     #[cfg_attr(mobile, allow(dead_code))]
     fn delete(&self, path: &str, pre: Precondition) -> AppResult<()>;
+}
+
+impl<R: Remote + ?Sized> Remote for Box<R> {
+    fn key(&self) -> String {
+        (**self).key()
+    }
+    fn probe(&self) -> AppResult<Access> {
+        (**self).probe()
+    }
+    fn list(&self, dir: &str) -> AppResult<Vec<RemoteMeta>> {
+        (**self).list(dir)
+    }
+    fn get(&self, path: &str, max: u64) -> AppResult<(Vec<u8>, Option<String>)> {
+        (**self).get(path, max)
+    }
+    fn put(&self, path: &str, bytes: &[u8], pre: Precondition) -> AppResult<RemoteMeta> {
+        (**self).put(path, bytes, pre)
+    }
+    fn mkcol(&self, dir: &str) -> AppResult<()> {
+        (**self).mkcol(dir)
+    }
+    fn delete(&self, path: &str, pre: Precondition) -> AppResult<()> {
+        (**self).delete(path, pre)
+    }
 }
 
 impl<R: Remote + ?Sized> Remote for Arc<R> {

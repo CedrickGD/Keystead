@@ -5,7 +5,11 @@
 //! stored), opening the server for a sync ([`open`]), the pause after
 //! server errors ([`Backoff`]) and the commands `webdav_test` and
 //! `webdav_create_folder` (both platforms). See "Server sync (WebDAV)" in
-//! docs/ARCHITECTURE.md.
+//! docs/ARCHITECTURE.md. Since stage 2d also a cloud account (Dropbox,
+//! [`SyncCloud`]): the login ([`dropbox_start_login`] – the URL the page
+//! opens – and [`dropbox_finish_login`] with the code the user copied, the
+//! refresh token stored like a password), opening it ([`open_cloud`]) and
+//! the command `dropbox_login`. See "Cloud accounts (Dropbox)".
 //!
 //! The WebDAV client drives its requests on a runtime of its own
 //! (`Runtime::block_on`): it is only ever used on plain threads – the
@@ -13,16 +17,18 @@
 //! the phone's sync and push threads – never inside an async task (a unit
 //! test below runs it on Tauri's blocking pool).
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use keystead_core::settings::SyncServer;
+use keystead_core::settings::{CloudProvider, SyncCloud, SyncServer};
 use serde_json::Value;
 use zeroize::Zeroizing;
 
 use crate::commands::{parse, run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
+use crate::remote::dropbox::{self, DropboxRemote, Endpoints, Pkce};
 use crate::remote::webdav::{self, WebDavConfig, WebDavRemote, WebDavTest};
-use crate::remote::{self, Remote as _};
+use crate::remote::{self, Remote};
 use crate::state::{log, Core};
 
 /// `invalid_input:webdav_config`: the command's argument is not a server
@@ -230,8 +236,8 @@ pub enum LinkTarget {
     /// A cloud app's folder (Android: through the folder plugin): its tree
     /// URI.
     Folder(String),
-    /// A server's folder.
-    Server(Box<crate::remote::folder::RemoteDirFolder<WebDavRemote>>),
+    /// A server's folder or a cloud account's (WebDAV, Dropbox).
+    Server(Box<crate::remote::folder::RemoteDirFolder<Box<dyn Remote>>>),
 }
 
 /// The target of `link` (a server's is opened with its stored password;
@@ -247,6 +253,20 @@ pub fn target(core: &Core, link: &crate::folder_sync::LinkState) -> AppResult<Li
                 .as_ref()
                 .ok_or_else(|| AppError::invalid("server_link"))?;
             let remote = open(core, server)?;
+            if remote.key() != link.tree_uri {
+                return Err(AppError::invalid("server_link"));
+            }
+            let remote: Box<dyn Remote> = Box::new(remote);
+            Ok(LinkTarget::Server(Box::new(
+                crate::remote::folder::RemoteDirFolder::new(remote),
+            )))
+        }
+        LinkKind::Dropbox => {
+            let cloud = link
+                .cloud
+                .as_ref()
+                .ok_or_else(|| AppError::invalid("server_link"))?;
+            let remote = open_cloud(core, cloud)?;
             if remote.key() != link.tree_uri {
                 return Err(AppError::invalid("server_link"));
             }
@@ -276,8 +296,137 @@ pub fn link_server(
 }
 
 // ---------------------------------------------------------------------------
+// Cloud accounts (stage 2d: Dropbox)
+// ---------------------------------------------------------------------------
+
+/// `unsupported:dropbox_login_expired`: no login waits for a code (none was
+/// started here, or it is older than [`LOGIN_MAX_AGE`]) – start again.
+pub const LOGIN_EXPIRED: &str = "dropbox_login_expired";
+/// A started login waits this long for its code.
+pub const LOGIN_MAX_AGE: Duration = Duration::from_secs(15 * 60);
+
+/// The login that waits for its code: its PKCE verifier (never leaves the
+/// backend) and when it began. One at a time; a new start replaces it.
+static PENDING: Mutex<Option<(Zeroizing<String>, Instant)>> = Mutex::new(None);
+
+fn pending() -> std::sync::MutexGuard<'static, Option<(Zeroizing<String>, Instant)>> {
+    PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The sync methods this build can use besides a cloud folder
+/// (`AppInfo.syncProviders`): WebDAV always, Dropbox with an app key.
+pub fn providers() -> Vec<&'static str> {
+    let mut out = vec!["webdav"];
+    if dropbox::app_key().is_ok() {
+        out.push("dropbox");
+    }
+    out
+}
+
+/// Starts a Dropbox login: the page opens the returned URL in the browser,
+/// the user allows Keystead's app folder and copies the code Dropbox shows.
+pub fn dropbox_start_login() -> AppResult<String> {
+    let app_key = dropbox::app_key()?;
+    let pkce = Pkce::new()?;
+    *pending() = Some((pkce.verifier, Instant::now()));
+    Ok(dropbox::authorize_url(app_key, &pkce.challenge))
+}
+
+/// Finishes the login with the code: the account (no secret); its refresh
+/// token is stored under its key ("Server credentials"). A wrong code keeps
+/// the login waiting (the user may paste again); a success ends it.
+pub fn dropbox_finish_login(core: &Core, code: &str) -> AppResult<SyncCloud> {
+    let app_key = dropbox::app_key()?;
+    let verifier = match pending().as_ref() {
+        Some((verifier, at)) if at.elapsed() < LOGIN_MAX_AGE => verifier.clone(),
+        _ => return Err(AppError::unsupported(LOGIN_EXPIRED)),
+    };
+    let connected = dropbox::connect(app_key, code, &verifier, &Endpoints::current())?;
+    let cloud = SyncCloud {
+        provider: CloudProvider::Dropbox,
+        account_id: connected.account.account_id,
+        name: connected.account.name,
+        email: connected.account.email,
+    };
+    core.credentials().store(
+        &core.data_dir(),
+        &cloud_key(&cloud),
+        &connected.refresh_token,
+    )?;
+    *pending() = None;
+    Ok(cloud)
+}
+
+/// What the bases, the link and the token of a cloud account are recorded
+/// for (`dropbox:<account id>`).
+pub fn cloud_key(cloud: &SyncCloud) -> String {
+    match cloud.provider {
+        CloudProvider::Dropbox => dropbox::key_of(&cloud.account_id),
+    }
+}
+
+/// The cloud account for a sync, with its stored token
+/// (`unsupported:sync_credentials_missing` without one).
+pub fn open_cloud(core: &Core, cloud: &SyncCloud) -> AppResult<Box<dyn Remote>> {
+    let token = core
+        .credentials()
+        .require(&core.data_dir(), &cloud_key(cloud))?;
+    match cloud.provider {
+        CloudProvider::Dropbox => Ok(Box::new(DropboxRemote::new(
+            dropbox::app_key()?,
+            &cloud.account_id,
+            token,
+            Endpoints::current(),
+        )?)),
+    }
+}
+
+/// "Abmelden": the provider forgets the token (best effort – offline, it
+/// just stays valid there until it is revoked in the account's settings)
+/// and this device forgets it too.
+pub fn sign_out(core: &Core, cloud: &SyncCloud) {
+    let revoked = (|| -> AppResult<()> {
+        let token = core
+            .credentials()
+            .require(&core.data_dir(), &cloud_key(cloud))?;
+        match cloud.provider {
+            CloudProvider::Dropbox => DropboxRemote::new(
+                dropbox::app_key()?,
+                &cloud.account_id,
+                token,
+                Endpoints::current(),
+            )?
+            .revoke(),
+        }
+    })();
+    if let Err(e) = revoked {
+        log(format_args!(
+            "the provider did not revoke the token: {}",
+            e.code()
+        ));
+    }
+    forget_password(core, &cloud_key(cloud), None);
+}
+
+/// `link_dropbox` without the phone's glue: the new link of `cloud`.
+#[cfg(any(mobile, test))]
+pub fn link_cloud(cloud: SyncCloud, now: i64) -> crate::folder_sync::LinkState {
+    crate::folder_sync::LinkState::new_cloud(cloud_key(&cloud), cloud, now)
+}
+
+// ---------------------------------------------------------------------------
 // Commands (both platforms)
 // ---------------------------------------------------------------------------
+
+/// `dropbox_login` → the URL of Dropbox's page where the user allows
+/// Keystead's app folder (the page opens it in the browser);
+/// `unsupported:dropbox_not_configured` in a build without an app key.
+#[tauri::command]
+pub async fn dropbox_login(core: Shared<'_>) -> CmdResult<String> {
+    run(&core, true, |_| dropbox_start_login()).await
+}
 
 /// `webdav_test(config)` → [`WebDavTest`]: the settings form's connection
 /// test (server, certificate, login, folder). Nothing is stored; the
@@ -443,6 +592,85 @@ mod tests {
             }))
             .unwrap();
         assert!(test.ok, "{test:?}");
+    }
+
+    #[test]
+    fn a_dropbox_login_links_the_phone_and_signing_out_forgets_the_token() {
+        use crate::remote::dropbox::fake::FakeDropbox;
+        use crate::remote::dropbox::TEST_ENDPOINTS;
+
+        let fake = FakeDropbox::new();
+        TEST_ENDPOINTS.with(|e| *e.borrow_mut() = Some(fake.endpoints()));
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        // Nothing started: the code has no login to finish.
+        *pending() = None;
+        assert_eq!(
+            dropbox_finish_login(&core, "x").unwrap_err().code(),
+            "unsupported:dropbox_login_expired"
+        );
+        let url = dropbox_start_login().unwrap();
+        assert!(
+            url.starts_with("https://www.dropbox.com/oauth2/authorize?"),
+            "{url}"
+        );
+        assert!(!url.contains("redirect_uri"));
+        // The fake knows its own verifier (the started one is random).
+        *pending() = Some((Zeroizing::new(fake.verifier()), Instant::now()));
+        // A wrong code: refused, the login still waits for the right one.
+        assert_eq!(
+            dropbox_finish_login(&core, "falsch").unwrap_err().code(),
+            "invalid_input:dropbox_code"
+        );
+        let cloud = dropbox_finish_login(&core, &fake.code()).unwrap();
+        assert_eq!(cloud.account_id, "dbid:test-account");
+        assert_eq!(cloud.email, "max@example.com");
+        assert!(pending().is_none(), "a success ends the login");
+        let key = cloud_key(&cloud);
+        assert_eq!(key, "dropbox:dbid:test-account");
+        assert!(core
+            .credentials()
+            .load(&core.data_dir(), &key)
+            .unwrap()
+            .is_some());
+        assert!(!serde_json::to_string(&cloud).unwrap().contains("tok-"));
+
+        // The PC's vault in the app folder; the phone links and imports it.
+        let pc = VaultStore::new(dir.path().join("pc"));
+        let v = pc
+            .create_vault_with_params("Privat", "pc-pw", KdfParams::insecure_for_tests())
+            .unwrap();
+        let name = format!("{}.keystead", v.id());
+        fake.write(&name, &fs::read(v.path()).unwrap());
+        let mut link = link_cloud(cloud.clone(), 2);
+        assert_eq!(link.kind, LinkKind::Dropbox);
+        assert_eq!(link.tree_uri, key);
+        assert!(link.writable);
+        let LinkTarget::Server(folder) = target(&core, &link).unwrap() else {
+            panic!("a Dropbox link goes to Dropbox");
+        };
+        assert!(folder_sync::sync_folder(&core, &*folder, &mut link, 3).unwrap());
+        let result = link.files.iter().find(|f| f.file_name == name).unwrap();
+        assert_eq!(result.outcome, Outcome::Imported);
+        // A link whose account no longer has its key is refused.
+        let mut forged = link.clone();
+        forged.tree_uri = "dropbox:someone-else".into();
+        assert_eq!(
+            target(&core, &forged).err().unwrap().code(),
+            "invalid_input:server_link"
+        );
+
+        // Signing out: the token goes (here and at Dropbox).
+        sign_out(&core, &cloud);
+        assert_eq!(
+            core.credentials().load(&core.data_dir(), &key).unwrap(),
+            None
+        );
+        assert_eq!(
+            target(&core, &link).err().unwrap().code(),
+            "unsupported:sync_credentials_missing"
+        );
+        TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
     }
 
     #[test]

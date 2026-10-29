@@ -169,14 +169,14 @@ impl TestServer {
     }
 }
 
-struct Request {
-    method: String,
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
 }
 
-fn read_request(stream: &mut impl Read) -> Option<Request> {
+pub fn read_request(stream: &mut impl Read) -> Option<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
@@ -208,7 +208,7 @@ fn read_request(stream: &mut impl Read) -> Option<Request> {
     })
 }
 
-fn respond(stream: &mut impl Write, status: u16, headers: &[(&str, String)], body: &[u8]) {
+pub fn respond(stream: &mut impl Write, status: u16, headers: &[(&str, String)], body: &[u8]) {
     let mut head = format!("HTTP/1.1 {status} X\r\nConnection: close\r\n");
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));

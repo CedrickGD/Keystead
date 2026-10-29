@@ -109,7 +109,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use keystead_core::attachments;
 use keystead_core::format::{self, VaultFile};
 use keystead_core::model::{now_ms, VaultInfo};
-use keystead_core::settings::SyncServer;
+use keystead_core::settings::{SyncCloud, SyncServer};
 use keystead_core::sync::{self, RemoteProof, SyncBase, SyncDecision, SyncHead, VaultHeader};
 use keystead_core::vault::CopyCheck;
 use keystead_core::Error as CoreError;
@@ -383,6 +383,9 @@ pub enum LinkKind {
     Folder,
     /// A folder on a WebDAV server (stage 2c; `remote::webdav`).
     Webdav,
+    /// Keystead's app folder on a Dropbox account (stage 2d;
+    /// `remote::dropbox`).
+    Dropbox,
 }
 
 /// The linked folder (`<data>/sync/link.json`). No secrets: the folder's
@@ -399,6 +402,9 @@ pub struct LinkState {
     /// The server ([`LinkKind::Webdav`] only).
     #[serde(default)]
     pub server: Option<SyncServer>,
+    /// The cloud account ([`LinkKind::Dropbox`] only; no token).
+    #[serde(default)]
+    pub cloud: Option<SyncCloud>,
     /// The folder's address – what the sync bases are recorded for
     /// (Android: the tree URI the app holds a persisted permission for; a
     /// server: its folder's key, `webdav:<normalized folder URL>`).
@@ -432,6 +438,7 @@ impl LinkState {
         LinkState {
             kind: LinkKind::Folder,
             server: None,
+            cloud: None,
             tree_uri,
             folder_name,
             linked_at,
@@ -440,6 +447,19 @@ impl LinkState {
             last_sync_at: None,
             last_error: None,
             files: Vec::new(),
+        }
+    }
+
+    /// A link to the cloud account `cloud` under its key
+    /// (`remote::Remote::key`); its app folder is always writable.
+    pub fn new_cloud(key: String, cloud: SyncCloud, linked_at: i64) -> Self {
+        let folder_name = match cloud.provider {
+            keystead_core::settings::CloudProvider::Dropbox => "Dropbox".to_owned(),
+        };
+        LinkState {
+            kind: LinkKind::Dropbox,
+            cloud: Some(cloud),
+            ..LinkState::new(key, folder_name, linked_at, true)
         }
     }
 
@@ -508,6 +528,8 @@ pub struct FolderStatus {
     pub kind: Option<LinkKind>,
     /// The server of a [`LinkKind::Webdav`] link (no password).
     pub server: Option<SyncServer>,
+    /// The account of a [`LinkKind::Dropbox`] link (no token).
+    pub cloud: Option<SyncCloud>,
     /// The app may write the linked folder (`false` without one).
     pub writable: bool,
     /// A sync is running right now.
@@ -535,6 +557,7 @@ impl FolderStatus {
                 linked: false,
                 kind: None,
                 server: None,
+                cloud: None,
                 writable: false,
                 syncing: false,
                 folder_name: None,
@@ -549,6 +572,7 @@ impl FolderStatus {
                 linked: true,
                 kind: Some(link.kind),
                 server: link.server.clone(),
+                cloud: link.cloud.clone(),
                 writable: link.writable,
                 syncing: false,
                 folder_name: Some(link.folder_name.clone()),
@@ -2359,7 +2383,7 @@ mod tests {
         // An unknown kind (a later version's) is no link.
         fs::write(
             dir.path().join("sync/link.json"),
-            r#"{"kind":"dropbox","treeUri":"u","folderName":"F","linkedAt":5}"#,
+            r#"{"kind":"carrierpigeon","treeUri":"u","folderName":"F","linkedAt":5}"#,
         )
         .unwrap();
         assert_eq!(LinkState::load(dir.path()), None);
@@ -2393,6 +2417,7 @@ mod tests {
             keys,
             [
                 "basesSeeded",
+                "cloud",
                 "files",
                 "folderName",
                 "kind",
@@ -2406,6 +2431,7 @@ mod tests {
         );
         assert_eq!(json["kind"], "folder");
         assert!(json["server"].is_null());
+        assert!(json["cloud"].is_null());
         assert_eq!(json["files"][0]["outcome"], "updated");
         assert_eq!(json["files"][0]["passwordChanged"], true);
 
