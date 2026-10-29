@@ -35,7 +35,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { ApiError, IS_MOCK, api, openExternal } from "../../lib/api";
+import { IS_MOCK, api, openExternal } from "../../lib/api";
 import type {
   AppInfo,
   BrowserInfo,
@@ -71,8 +71,11 @@ import {
   RelinkBanner,
   SyncFileList,
   SyncSteps,
+  cloudNeedsSignIn,
   folderLost,
   methodSoonKey,
+  providerName,
+  useCloudProvidersText,
   needsRelink,
   serverNeedsPassword,
   useRelativeTimeTick,
@@ -1003,7 +1006,7 @@ function SyncSection() {
               stacked
             >
               <div className="setting-actions">
-                {serverNeedsPassword(status?.lastError) && (
+                {cloudNeedsSignIn(status?.lastError) && (
                   <Button
                     variant="primary"
                     icon={<KeyRound />}
@@ -1103,7 +1106,7 @@ function SyncSection() {
                 {status?.lastError && !syncing && (
                   <span className="callout callout-warning sync-error" role="status">
                     <TriangleAlert />
-                    <span>{errorFor(status.lastError)}</span>
+                    <span>{errorFor(status.lastError, cloud?.provider ?? null)}</span>
                   </span>
                 )}
                 {skipped && !syncing && <span className="sync-folder-desc">{skipped}</span>}
@@ -1172,11 +1175,13 @@ type SyncMethod = "none" | "folder" | "webdav" | CloudProvider;
  * (WebDAV)"); one method at a time.
  */
 function DesktopSyncSection() {
-  const { t, errorText, formatDateTime, formatRelative } = useT();
+  const { t, formatDateTime, formatRelative } = useT();
   const mirror = useMirror();
   const { info, settings } = useApp();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const [cloudForm, setCloudForm] = useState<CloudProvider | null>(null);
+  const confirm = useConfirm();
+  const syncErrorFor = useSyncErrorText();
   const status = mirror?.status ?? null;
   useRelativeTimeTick(Boolean(status?.lastMirroredAt || status?.lastPulledAt || status?.retryAt));
   if (!mirror) return null;
@@ -1196,7 +1201,21 @@ function DesktopSyncSection() {
     else if (next === "dropbox" || next === "gdrive") setCloudForm(next);
     else if (method === "folder") void mirror.turnOff();
     else if (method === "webdav") void mirror.clearServer();
-    else void mirror.clearCloud();
+    else void signOut();
+  };
+
+  // Signing out needs a new browser login to undo: asked first (also when the
+  // picker's arrow keys land on "Kein Abgleich").
+  const signOut = async () => {
+    if (!cloud) return;
+    const provider = providerName(cloud.provider);
+    const ok = await confirm({
+      title: t("sync.signOutConfirmTitle", { provider }),
+      message: t("sync.signOutConfirmText", { provider }),
+      confirmLabel: t("sync.signOut"),
+      tone: "warning",
+    });
+    if (ok) await mirror.clearCloud();
   };
 
   const state = (
@@ -1216,7 +1235,7 @@ function DesktopSyncSection() {
       {status?.lastError && (
         <span className="callout callout-warning mirror-error" role="status">
           <TriangleAlert />
-          <span>{errorText(new ApiError(status.lastError))}</span>
+          <span>{syncErrorFor(status.lastError, cloud?.provider ?? null)}</span>
         </span>
       )}
       {status?.retryAt && status.retryAt > Date.now() && (
@@ -1299,7 +1318,7 @@ function DesktopSyncSection() {
           stacked
         >
           <div className="setting-actions">
-            {serverNeedsPassword(status?.lastError) && (
+            {cloudNeedsSignIn(status?.lastError) && (
               <Button
                 variant="primary"
                 icon={<KeyRound />}
@@ -1309,7 +1328,7 @@ function DesktopSyncSection() {
                 {t("sync.signInAgain")}
               </Button>
             )}
-            <Button variant="ghost" loading={mirror.busy} onClick={() => void mirror.clearCloud()}>
+            <Button variant="ghost" loading={mirror.busy} onClick={() => void signOut()}>
               {t("sync.signOut")}
             </Button>
           </div>
@@ -1341,6 +1360,7 @@ function PhoneSection() {
   const mirror = useMirror();
   const openImport = useOpenImport();
   const { settings } = useApp();
+  const cloudProviders = useCloudProvidersText();
   if (!mirror) return null;
   const on = settings.mirrorFolder !== null || settings.syncServer !== null || settings.syncCloud !== null;
 
@@ -1430,6 +1450,7 @@ function PhoneSection() {
           </GuideStep>
           <GuideStep n={3} done={false} title={t("mirror.step3Title")}>
             <p>{t("mirror.step3Text")}</p>
+            {cloudProviders && <p>{t("mirror.stepCloudText", { providers: cloudProviders })}</p>}
             <div>
               <Button size="sm" variant="secondary" icon={<ExternalLink />} onClick={() => openExternal(releasesUrl())}>
                 {t("about.releasesOpen")}

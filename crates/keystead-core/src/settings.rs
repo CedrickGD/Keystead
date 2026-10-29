@@ -115,11 +115,12 @@ pub struct Settings {
     /// keeps the stored value). The phone ignores it (its server is part
     /// of its link). Loading drops one without a URL.
     pub sync_server: Option<SyncServer>,
-    /// Desktop: the cloud account (Dropbox, stage 2d) the app keeps its
-    /// vault copies on – one method per PC, as [`Settings::sync_server`].
-    /// No token: that is kept apart (`credentials` of the app). Only the
-    /// app's `set_sync_cloud` / `clear_sync_cloud` change it. The phone
-    /// ignores it. Loading drops one without an account id.
+    /// Desktop: the cloud account (Dropbox or Google Drive, stage 2d) the
+    /// app keeps its vault copies on – one method per PC, as
+    /// [`Settings::sync_server`]. No token: that is kept apart
+    /// (`credentials` of the app). Only the app's `set_sync_dropbox`,
+    /// `set_sync_gdrive` and `clear_sync_cloud` change it. The phone ignores
+    /// it. Loading drops one without an account id.
     pub sync_cloud: Option<SyncCloud>,
     /// Phone: automatic syncs with a server run only on Wi-Fi (or
     /// Ethernet), not on mobile data ("Nur über WLAN synchronisieren";

@@ -511,8 +511,9 @@ export interface Settings {
    */
   syncServer: SyncServer | null;
   /**
-   * Desktop: the cloud account (Dropbox, stage 2d) instead of a folder or server. No token. Only
-   * `set_sync_dropbox` / `clear_sync_cloud` change it (a new `mirrorFolder` clears it). The phone ignores it.
+   * Desktop: the cloud account (Dropbox or Google Drive, stage 2d) instead of a folder or server. No token. Only
+   * `set_sync_dropbox` / `set_sync_gdrive` / `clear_sync_cloud` change it (a new `mirrorFolder` clears it). The
+   * phone ignores it.
    */
   syncCloud: SyncCloud | null;
   /** Phone: automatic syncs with a server only on Wi-Fi ("Nur über WLAN synchronisieren"). Default false. */
@@ -641,6 +642,16 @@ export interface SyncServer {
 
 /** A cloud provider of a `SyncCloud`. */
 export type CloudProvider = "dropbox" | "gdrive";
+
+/** A waiting Google login (`gdrive_login`, `gdrive_login_ready`). No secret. */
+export interface GdriveLoginState {
+  /** Google allowed it: `link_gdrive` / `set_sync_gdrive` finish it. */
+  ready: boolean;
+  /** The page to open: the consent page (PC) or the one to enter the code at (phone). */
+  url: string;
+  /** The code the user enters there (the phone's device flow); null on the PC. */
+  userCode: string | null;
+}
 
 /**
  * A cloud account (Dropbox's app folder `/Apps/Keystead`, or the folder "Keystead" in a Google

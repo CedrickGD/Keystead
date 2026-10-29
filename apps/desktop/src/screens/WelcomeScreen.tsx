@@ -32,7 +32,15 @@ import { useNoDropTargetMode } from "../components/import/FileDrop";
 import { startOnSettings } from "../lib/startView";
 import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
-import { PhoneServerDialog, SyncFileList, SyncSteps, folderLost, useSyncErrorText } from "../components/FolderSync";
+import {
+  PhoneServerDialog,
+  SyncFileList,
+  SyncSteps,
+  folderLost,
+  providerName,
+  providerOf,
+  useSyncErrorText,
+} from "../components/FolderSync";
 import { DropboxDialog } from "../components/DropboxDialog";
 import { GdriveDialog } from "../components/GdriveDialog";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
@@ -203,8 +211,10 @@ function PhoneWelcome({ onCreate }: { onCreate: () => void }) {
 }
 
 /**
- * The welcome slot: the way to the first vault – a cloud folder, or a
- * WebDAV server (stage 2c) – or the linked folder's or server's state.
+ * The welcome slot: the way to the first vault – a cloud folder, a WebDAV
+ * server (stage 2c) or a cloud account (stage 2d) – or the linked folder's,
+ * server's or account's state (an account: sign in again, or choose another
+ * connection).
  */
 function PhoneVaultSource() {
   const { t } = useT();
@@ -217,8 +227,16 @@ function PhoneVaultSource() {
   const busy = folderSync?.busy ?? null;
   const linked = status?.linked === true;
   const server = status?.kind === "webdav" ? status.server : null;
+  const provider = providerOf(status);
   const lost = folderLost(status);
   const syncing = Boolean(status?.syncing) || busy === "sync";
+  const linkedTitle =
+    provider === "gdrive"
+      ? t("sync.gdriveEmptyTitle")
+      : provider === "dropbox"
+        ? t("sync.dropboxEmptyTitle")
+        : t("sync.linkedEmptyTitle", { folder: status?.folderName ?? "" });
+  const account = status?.cloud ? status.cloud.email || status.cloud.name : "";
 
   return (
     <>
@@ -227,17 +245,19 @@ function PhoneVaultSource() {
           <MonitorSmartphone />
         </span>
         <h2 className="choice-title" id="welcome-slot-title">
-          {linked && !lost ? t("sync.linkedEmptyTitle", { folder: status?.folderName ?? "" }) : t("sync.welcomeTitle")}
+          {linked && !lost ? linkedTitle : t("sync.welcomeTitle")}
         </h2>
       </div>
 
       {linked && !lost ? (
         <>
-          <p className="choice-desc">{t("sync.linkedEmptyText")}</p>
+          <p className="choice-desc">
+            {provider ? t("sync.cloudLinkedEmptyText", { account }) : t("sync.linkedEmptyText")}
+          </p>
           {status?.lastError && (
             <div className="callout callout-warning" role="status">
               <TriangleAlert />
-              <span>{errorFor(status.lastError)}</span>
+              <span>{errorFor(status.lastError, provider)}</span>
             </div>
           )}
           {status && <SyncFileList files={status.files} />}
@@ -252,7 +272,29 @@ function PhoneVaultSource() {
             >
               {t("sync.syncNow")}
             </Button>
-            {server ? (
+            {provider ? (
+              <>
+                <Button
+                  variant="secondary"
+                  block
+                  icon={<KeyRound />}
+                  loading={busy === provider}
+                  disabled={busy !== null && busy !== provider}
+                  onClick={() => setCloudForm(provider)}
+                >
+                  {t("sync.signInAgain")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  block
+                  loading={busy === "unlink"}
+                  disabled={busy !== null && busy !== "unlink"}
+                  onClick={() => void folderSync?.unlink()}
+                >
+                  {t("sync.otherMethod")}
+                </Button>
+              </>
+            ) : server ? (
               <Button
                 variant="secondary"
                 block
@@ -338,7 +380,13 @@ function PhoneVaultSource() {
       {cloudForm === "gdrive" && folderSync && (
         <GdriveDialog onConnect={folderSync.linkGdrive} onClose={() => setCloudForm(null)} />
       )}
-      <p className="subtle sync-note">{server ? t("sync.serverNote") : t("sync.folderNote")}</p>
+      <p className="subtle sync-note">
+        {provider
+          ? t("sync.cloudNote", { provider: providerName(provider) })
+          : server
+            ? t("sync.serverNote")
+            : t("sync.folderNote")}
+      </p>
       {serverForm && (
         <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
       )}

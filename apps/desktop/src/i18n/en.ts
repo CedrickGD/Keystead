@@ -966,6 +966,23 @@ export const en: Record<MessageKey, string> = {
   "sync.connectGdrive": "Connect to Google Drive",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox is coming soon.",
+  "sync.cloudError.authFailed": "{provider} no longer allows the access. Sign in again under Settings → Sync.",
+  "sync.cloudError.credentialsMissing":
+    "The access to {provider} is missing on this device. Sign in again under Settings → Sync.",
+  "sync.cloudError.gdriveFolderMissing":
+    "The folder “Keystead” is missing in your Google Drive (deleted or moved). Sign in again – Keystead makes it anew.",
+  "sync.signOutConfirmTitle": "Sign out of {provider}?",
+  "sync.signOutConfirmText":
+    "The PC then no longer syncs through {provider}. The files there stay; to connect again you sign in again.",
+  "sync.dropboxEmptyTitle": "There is no vault in your Dropbox yet",
+  "sync.gdriveEmptyTitle": "There is no vault in your Google Drive yet",
+  "sync.cloudLinkedEmptyText":
+    "Signed in as {account}. On the PC, check under Settings → Sync that the same account is connected there and has made a copy. Then tap “Sync now”.",
+  "sync.otherMethod": "Choose another connection",
+  "sync.cloudNote": "Keystead only puts its own encrypted vault files into {provider} – no Keystead server in between.",
+  "sync.stepCloudAccount":
+    "Or without a cloud app: connect the same {providers} account on the PC and here (“Connect to …”).",
+  "sync.providersBoth": "Dropbox or Google Drive",
   "sync.gdrive": "Google Drive",
   "sync.gdriveDesc":
     "Keystead syncs its own folder “Keystead” in your Google Drive – it sees none of your other files. At start, when you return to the app, after every change and when you ask it to.",
@@ -982,6 +999,13 @@ export const en: Record<MessageKey, string> = {
   "gdrive.waiting": "Waiting for the Google sign-in …",
   "gdrive.connecting": "Connecting to Google Drive …",
   "gdrive.openAgain": "Open the Google page again",
+  "gdrive.stepDevice1":
+    "Tap “Sign in with Google”: Keystead copies the code below and opens Google's page in the browser.",
+  "gdrive.stepDevice2":
+    "Sign in there with your Google account, paste the code and allow Keystead. Then it goes on here by itself.",
+  "gdrive.code": "Your code",
+  "gdrive.copyCode": "Copy code",
+  "gdrive.codeCopied": "Code copied",
   "sync.dropbox": "Dropbox",
   "sync.dropboxDesc":
     "Keystead syncs its own folder “Apps/Keystead” in your Dropbox – it sees nothing else of it. At start, when you return to the app, after every change and when you ask it to.",
@@ -1176,6 +1200,8 @@ export const en: Record<MessageKey, string> = {
   "mirror.step3Title": "Connect Keystead on the phone",
   "mirror.step3Text":
     "Install the Android app (the APK from the releases). Tap “Choose cloud folder” and pick the same folder through the cloud app (“Use this folder”, “Allow”) – or “Connect to a server (WebDAV)” with the same server and folder as here. From then on the phone fetches every new version itself.",
+  "mirror.stepCloudText":
+    "With {providers}: connect the same account on the PC and on the phone – no cloud app needed for that.",
   "mirror.privacy":
     "The folder holds encrypted files only: per vault “<vault id>.keystead” and its attachments. Your cloud or server provider sees file names, sizes, the vault name, revision and modification time, never the content – without your master password nobody opens the files. You can edit here and on the phone; if a vault was changed on both, Keystead asks which state counts.",
   "settings.autoLock": "Lock automatically",

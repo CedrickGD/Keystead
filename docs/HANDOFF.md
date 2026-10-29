@@ -1194,16 +1194,24 @@ Einstellungen und Willkommensbildschirm „Mit Dropbox verbinden“; Mock (Code
 **Noch nicht aktiv:** Die App bietet Dropbox erst an, wenn ein App-Schlüssel
 eingebaut ist. **Für den Besitzer (5 Minuten):**
 1. <https://www.dropbox.com/developers/apps> → „Create app“ → **Scoped
-   access** → **App folder** → Name z. B. „Keystead Sync“.
+   access** → **App folder** → Name **„Keystead“** (Dropbox nennt den Ordner
+   nach der App: `Apps/Keystead`, wie die Texte der App sagen; ist der Name
+   vergeben, einen anderen nehmen und unter Settings → „App folder name“
+   „Keystead“ eintragen, bevor sich jemand verbindet).
 2. Reiter **Permissions**: `files.metadata.read`, `files.content.read`,
    `files.content.write` ankreuzen → „Submit“.
 3. Reiter **Settings**: „Allow public clients (Implicit Grant & PKCE)“ auf
-   **Allow**; Redirect-URIs bleiben leer.
+   **Allow**; Redirect-URIs bleiben leer. Unter „Development users“
+   **„Enable additional users“** – sonst kann sich nur dein eigenes Konto
+   verbinden.
 4. Den **App key** (nicht das App secret!) im Repo als Variable anlegen:
    GitHub → Settings → Secrets and variables → Actions → **Variables** →
    `KEYSTEAD_DROPBOX_APP_KEY` (oder Claude geben, der setzt sie mit
    `gh variable set`). Lokal: `export KEYSTEAD_DROPBOX_APP_KEY=…` vor dem
    Build. Die nächste Beta bietet dann Dropbox an; README danach ergänzen.
+5. Später: Bevor 50 Konten verbunden sind, im App Console kostenlos die
+   **Production**-Freigabe beantragen (spätestens zwei Wochen nach dem
+   50. Konto, sonst nimmt die App keine neuen Konten mehr an).
 
 **Verifiziert:** Unit-Tests gegen den Fake (Login mit falschem/richtigem
 Code, Token-Erneuerung, widerrufener Token, Revisions-Konflikte, feindliche
@@ -1217,21 +1225,41 @@ Vertrag: ARCHITECTURE „Cloud accounts (Dropbox, Google Drive)“ → „Google
 Drive“; Entscheidung E24.
 
 **Was fertig ist:** `remote/gdrive.rs` (Drive v3, Bereich `drive.file`:
-Ordner „Keystead“ in „Meine Ablage“, Anhänge als Unterordner; Login mit PKCE
-und `state`, Rückleitung PC: Loopback-Listener `serve_loopback`, Handy:
-App-Schema über `MainActivity`-Intent-Filter + `KeysteadFolderPlugin`
-`onNewIntent`/`takeOAuthRedirect`; doppelte Namen: die älteste Datei gilt,
-eine verlorene Neuanlage wird wieder gelöscht; kein CAS – Version direkt vor
-dem Schreiben verglichen; Ordner bei jedem `probe` neu gesucht), Fake-Drive
-für die Tests, `CloudProvider::Gdrive`, Verbindungsart `gdrive`, Befehle
-`gdrive_login`, `gdrive_login_ready`, `link_gdrive`, `set_sync_gdrive`;
-Oberfläche `GdriveDialog.tsx` („Bei Google anmelden“ → wartet → verbindet
-selbst), PC: „Abgleich über … Google Drive“, Handy: Einstellungen und
-Willkommensbildschirm „Mit Google Drive verbinden“; Mock (Anmeldung gilt
-nach 2 s als zurückgekehrt).
+Ordner „Keystead“ in „Meine Ablage“, Anhänge als Unterordner; Login am PC
+mit PKCE und `state`, Rückleitung an den Loopback-Listener
+`serve_loopback`; am Handy der **Geräte-Code-Ablauf** – Keystead zeigt einen
+Code, der auf google.com/device eingegeben wird, keine Rückleitung in die
+App, kein Intent-Filter; doppelte Namen: die älteste Datei gilt, eine
+verlorene Neuanlage wird wieder gelöscht, Löschen nimmt alle gleichnamigen;
+kein CAS – Version direkt vor dem Schreiben verglichen; Ordner bei jedem
+`probe` neu gesucht; Abmelden vergisst nur den Zugang des Geräts, weil
+Googles Widerruf alle Geräte träfe), Fake-Drive für die Tests,
+`CloudProvider::Gdrive`, Verbindungsart `gdrive`, Befehle `gdrive_login`,
+`gdrive_login_ready`, `link_gdrive`, `set_sync_gdrive`; Oberfläche
+`GdriveDialog.tsx` („Bei Google anmelden“ → wartet → verbindet selbst; am
+Handy mit Code), PC: „Abgleich über … Google Drive“, Handy: Einstellungen
+und Willkommensbildschirm „Mit Google Drive verbinden“; Mock (Anmeldung
+gilt nach 2 s als erlaubt).
 
-**Noch nicht aktiv:** Die App bietet Google Drive erst an, wenn eine
-Client-ID eingebaut ist. **Für den Besitzer (ca. 15 Minuten, kostenlos):**
+**Review 2026-10-29** (Workflow: 8 Prüfer, je Fund 3 Gegenprüfer; 27 Funde,
+22 nach Zusammenführen, 17 bestätigt, keiner kritisch) – alle behoben:
+Google-Abmelden widerrief den Zugang aller Geräte (jetzt nur lokal
+vergessen); das Warten auf Google zählte als Aktivität (Auto-Sperre griff
+nicht); Fehlertexte ohne Gesamt-Zeitgrenze und die Download-Rate zählte die
+Upload-Zeit mit (`remote/http.rs`); Dialoge konnten eine laufende
+Anmeldung nicht fortsetzen (jetzt fortgesetzt, „Seite erneut öffnen“
+verwirft nichts mehr); fehlender Drive-Ordner ohne „Erneut anmelden“;
+Willkommensbildschirm für Cloud-Konten; Loopback-Frist pro Anfrage;
+Löschen nahm nur die älteste von mehreren gleichnamigen Dateien;
+Seitenlimit für Listings (Dropbox und Drive); WebDAV-Fehlertexte bei
+Cloud-Konten; Abmelden per Pfeiltaste ohne Rückfrage; Backoff-Race;
+Dropbox-Schritte („Enable additional users“, App-Name); Doku. Dazu der
+verworfene, aber sachlich richtige Hinweis, dass Google eigene URI-Schemata
+für Android nicht mehr unterstützt → Handy auf Geräte-Code umgebaut.
+
+**Noch nicht aktiv:** Die App bietet Google Drive erst an, wenn Client-ID
+und -Secret eingebaut sind. **Für den Besitzer (ca. 15 Minuten,
+kostenlos):**
 1. <https://console.cloud.google.com/> → neues Projekt „Keystead“.
 2. „APIs & Dienste“ → „Bibliothek“ → **Google Drive API** aktivieren.
 3. „Google Auth Platform“ (OAuth-Zustimmungsbildschirm): Typ **Extern**,
@@ -1242,28 +1270,29 @@ Client-ID eingebaut ist. **Für den Besitzer (ca. 15 Minuten, kostenlos):**
    hochladen (das würde eine Markenprüfung auslösen).
 4. „Clients“ → „Client erstellen“ → **Desktop-App** („Keystead PC“) →
    Client-ID und Client-Schlüssel notieren.
-5. „Clients“ → „Client erstellen“ → **Android** („Keystead Handy“):
-   Paketname `io.github.cedrickgd.keystead`, SHA-1 des Release-Schlüssels
-   (`keytool -list -v -keystore <keystore>` – Claude kann ihn auslesen,
-   wenn du den Keystore-Pfad nennst); danach im Client unter „Erweiterte
-   Einstellungen“ **„Benutzerdefiniertes URI-Schema aktivieren“**.
+5. „Clients“ → „Client erstellen“ → **TVs und Geräte mit eingeschränkter
+   Eingabe** („Keystead Handy“) → Client-ID und Client-Schlüssel notieren.
+   (Kein „Android“-Client: Google unterstützt dessen eigenes URI-Schema
+   nicht mehr.)
 6. Im Repo eintragen (GitHub → Settings → Secrets and variables →
    Actions, oder Claude mit `gh variable set` / `gh secret set`):
-   Variablen `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_ID`,
-   `KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID`, **Secret**
-   `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_SECRET`. Die nächste Beta bietet dann
+   **Variablen** `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_ID`,
+   `KEYSTEAD_GDRIVE_DEVICE_CLIENT_ID`, **Secrets**
+   `KEYSTEAD_GDRIVE_DESKTOP_CLIENT_SECRET`,
+   `KEYSTEAD_GDRIVE_DEVICE_CLIENT_SECRET`. Die nächste Beta bietet dann
    Google Drive an; README danach ergänzen.
 
 **Verifiziert:** Unit-Tests gegen den Fake (Login-Adresse, Rückleitung mit
 fremdem/richtigem `state`, abgelehnte Anmeldung, Loopback-Listener gegen
-einen echten Browser-Request, Token-Erneuerung, widerrufener Token,
-Fehlercodes, doppelte Namen und verlorene Neuanlage, veraltete Version,
-Paging, verschwundener Ordner, Handy-Import und PC-Spiegel über Drive);
-Clippy Desktop und Android; Klick-Test im Mock (PC und Handy).
-**Nicht verifiziert:** echtes Google-Konto und die Rückleitung am echten
-Handy (es fehlen die Client-IDs). Bekannte Grenze: Wird die App am Handy
-während der Anmeldung von Android beendet, ist die Anmeldung verloren
-(„abgelaufen“ – einfach neu starten).
+einen echten Browser-Request, Geräte-Code: wartend, „langsamer“, erlaubt,
+abgelehnt, abgelaufen, verbraucht; abgelehnter Code und unbekannter Client;
+Token-Erneuerung, widerrufener Token, Fehlercodes, doppelte Namen und
+verlorene Neuanlage, Löschen aller gleichnamigen, endlose Seiten, veraltete
+Version, Paging, verschwundener Ordner, Handy-Import und PC-Spiegel über
+Drive); Clippy Desktop und Android; Klick-Test im Mock (PC und Handy).
+**Nicht verifiziert:** echtes Google-Konto (es fehlen die Clients).
+Bekannte Grenze: Wird die App am Handy während der Anmeldung von Android
+beendet, ist die Anmeldung verloren („abgelaufen“ – einfach neu starten).
 
 ### Emulator-Checkliste für den Besitzer
 

@@ -59,6 +59,9 @@ pub const BAD_CODE: &str = "dropbox_code";
 pub const LIST_BODY_MAX: u64 = 8 * 1024 * 1024;
 /// A folder may list this many entries (pages included).
 pub const LIST_ENTRIES_MAX: usize = 10_000;
+/// A listing may take this many pages (empty pages count: a server must not
+/// keep a sync listing for ever).
+pub const LIST_PAGES_MAX: usize = 200;
 
 /// The app key, `unsupported:dropbox_not_configured` without one (the unit
 /// tests have one: the fake takes any).
@@ -533,7 +536,10 @@ impl Remote for DropboxRemote {
         )?;
         let mut out = Vec::new();
         let mut seen = 0usize;
-        loop {
+        for page_number in 1.. {
+            if page_number > LIST_PAGES_MAX {
+                return Err(AppError::unsupported(BAD_RESPONSE));
+            }
             let entries = page["entries"]
                 .as_array()
                 .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
@@ -555,6 +561,7 @@ impl Remote for DropboxRemote {
                 Op::Read,
             )?;
         }
+        unreachable!("the page loop returns")
     }
 
     fn get(&self, path: &str, max: u64) -> AppResult<(Vec<u8>, Option<String>)> {
@@ -841,6 +848,15 @@ mod tests {
         let e = remote.list("").unwrap_err();
         assert!(has_code(&e, BAD_RESPONSE), "{e:?}");
         fake.too_many_entries();
+        let e = remote.list("").unwrap_err();
+        assert!(has_code(&e, BAD_RESPONSE), "{e:?}");
+    }
+
+    #[test]
+    fn a_listing_of_endless_empty_pages_is_given_up() {
+        let fake = FakeDropbox::new();
+        let remote = remote(&fake);
+        fake.endless_empty_pages();
         let e = remote.list("").unwrap_err();
         assert!(has_code(&e, BAD_RESPONSE), "{e:?}");
     }

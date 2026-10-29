@@ -8,18 +8,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CloudOff, FolderOpen, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
-import { ApiError } from "../lib/api";
 import type { FolderStatus, SyncFileResult, SyncServer } from "../lib/types";
+import { providerOf, useSyncErrorText } from "../lib/syncErrors";
 import { useT, type MessageKey } from "../i18n";
 import { useFolderSync } from "../state/sync";
+import { useApp } from "../state/app";
 import { Button } from "./Controls";
 import { WebDavDialog } from "./WebDavForm";
 
-/** The text of an error code the sync recorded (`lastError`, a file's `error`). */
-export function useSyncErrorText(): (code: string) => string {
-  const { errorText } = useT();
-  return useCallback((code: string) => errorText(new ApiError(code)), [errorText]);
-}
+export { providerName, providerOf, useSyncErrorText } from "../lib/syncErrors";
 
 const OUTCOME_KEYS: Record<SyncFileResult["outcome"], MessageKey> = {
   imported: "sync.outcome.imported",
@@ -88,6 +85,14 @@ export function methodSoonKey(providers: string[]) {
 /** The server's password (or a cloud account's token) is missing or was refused: the user signs in again (both platforms). */
 export function serverNeedsPassword(lastError: string | null | undefined): boolean {
   return lastError === "unsupported:sync_credentials_missing" || lastError === "unsupported:sync_auth_failed";
+}
+
+/**
+ * A cloud account the user must sign in to again: its token is missing or refused, or its folder
+ * went (Google Drive's "Keystead" – the login makes it again).
+ */
+export function cloudNeedsSignIn(lastError: string | null | undefined): boolean {
+  return serverNeedsPassword(lastError) || lastError === "unsupported:sync_server_folder_missing";
 }
 
 /**
@@ -168,13 +173,27 @@ export function folderLost(status: FolderStatus | null): boolean {
 /** The steps that bring a vault from the PC to the phone. */
 export function SyncSteps() {
   const { t } = useT();
+  const providers = useCloudProvidersText();
   return (
     <ol className="sync-steps">
       <li>{t("sync.stepPc")}</li>
       <li>{t("sync.stepCloudApp")}</li>
       <li>{t("sync.stepPhone")}</li>
+      {providers && <li>{t("sync.stepCloudAccount", { providers })}</li>}
     </ol>
   );
+}
+
+/** The cloud accounts this build offers, as the texts name them ("Dropbox oder Google Drive"); null for none. */
+export function useCloudProvidersText(): string | null {
+  const { t } = useT();
+  const { info } = useApp();
+  const dropbox = info.syncProviders.includes("dropbox");
+  const gdrive = info.syncProviders.includes("gdrive");
+  if (dropbox && gdrive) return t("sync.providersBoth");
+  if (dropbox) return "Dropbox";
+  if (gdrive) return "Google Drive";
+  return null;
 }
 
 /** What the last sync did with each vault file of the folder. */
@@ -249,7 +268,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
           {syncing
             ? t("sync.syncing")
             : status.lastError
-              ? errorFor(status.lastError)
+              ? errorFor(status.lastError, providerOf(status))
               : status.lastSyncAt
                 ? t("sync.lastSync", { when: formatRelative(status.lastSyncAt) })
                 : t("sync.neverSynced")}

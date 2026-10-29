@@ -8,11 +8,13 @@
 //! docs/ARCHITECTURE.md. Since stage 2d also a cloud account (Dropbox or
 //! Google Drive, [`SyncCloud`]): the login (Dropbox: [`dropbox_start_login`]
 //! – the URL the page opens – and [`dropbox_finish_login`] with the code the
-//! user copied; Google: [`gdrive_start_login`], the redirect waited for by
-//! [`gdrive_check_login`], then [`gdrive_finish_login`]; the refresh token
-//! stored like a password), opening it ([`open_cloud`]) and the commands
-//! `dropbox_login`, `gdrive_login` and `gdrive_login_ready`. See "Cloud
-//! accounts (Dropbox, Google Drive)".
+//! user copied; Google: [`gdrive_start_login`] – the PC's loopback
+//! redirect, the phone's device code –, [`gdrive_check_login`] while the
+//! dialog waits, then [`gdrive_finish_login`]; the refresh token stored like
+//! a password; a waiting login is offered again), opening it
+//! ([`open_cloud`]), signing out ([`sign_out`]) and the commands
+//! `dropbox_login`, `dropbox_login_waiting`, `gdrive_login` and
+//! `gdrive_login_ready`. See "Cloud accounts (Dropbox, Google Drive)".
 //!
 //! The WebDAV client drives its requests on a runtime of its own
 //! (`Runtime::block_on`): it is only ever used on plain threads – the
@@ -24,6 +26,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keystead_core::settings::{CloudProvider, SyncCloud, SyncServer};
+use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
@@ -300,7 +303,7 @@ pub fn link_server(
 }
 
 // ---------------------------------------------------------------------------
-// Cloud accounts (stage 2d: Dropbox)
+// Cloud accounts (stage 2d: Dropbox, Google Drive)
 // ---------------------------------------------------------------------------
 
 /// `unsupported:dropbox_login_expired`: no login waits for a code (none was
@@ -308,12 +311,22 @@ pub fn link_server(
 pub const LOGIN_EXPIRED: &str = "dropbox_login_expired";
 /// A started login waits this long for its code.
 pub const LOGIN_MAX_AGE: Duration = Duration::from_secs(15 * 60);
+/// A waiting login is offered again – the same page, code and verifier –
+/// while it has at least this long left: "Seite erneut öffnen" and a dialog
+/// opened again continue it instead of throwing it away.
+const LOGIN_REUSE_LEFT: Duration = Duration::from_secs(3 * 60);
 
-/// The login that waits for its code: its PKCE verifier (never leaves the
-/// backend) and when it began. One at a time; a new start replaces it.
-static PENDING: Mutex<Option<(Zeroizing<String>, Instant)>> = Mutex::new(None);
+/// The Dropbox login that waits for its code: its PKCE verifier (never
+/// leaves the backend), its page and when it began. One at a time.
+struct DropboxLogin {
+    verifier: Zeroizing<String>,
+    url: String,
+    at: Instant,
+}
 
-fn pending() -> std::sync::MutexGuard<'static, Option<(Zeroizing<String>, Instant)>> {
+static PENDING: Mutex<Option<DropboxLogin>> = Mutex::new(None);
+
+fn pending() -> std::sync::MutexGuard<'static, Option<DropboxLogin>> {
     PENDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -321,7 +334,7 @@ fn pending() -> std::sync::MutexGuard<'static, Option<(Zeroizing<String>, Instan
 
 /// The sync methods this build can use besides a cloud folder
 /// (`AppInfo.syncProviders`): WebDAV always, Dropbox with an app key,
-/// Google Drive with a client id.
+/// Google Drive with this platform's client id and secret.
 pub fn providers() -> Vec<&'static str> {
     let mut out = vec!["webdav"];
     if dropbox::app_key().is_ok() {
@@ -333,13 +346,34 @@ pub fn providers() -> Vec<&'static str> {
     out
 }
 
-/// Starts a Dropbox login: the page opens the returned URL in the browser,
+/// Starts a Dropbox login – or offers the waiting one again (see
+/// [`LOGIN_REUSE_LEFT`]): the page opens the returned URL in the browser,
 /// the user allows Keystead's app folder and copies the code Dropbox shows.
 pub fn dropbox_start_login() -> AppResult<String> {
     let app_key = dropbox::app_key()?;
+    let mut pending = pending();
+    if let Some(login) = pending
+        .as_ref()
+        .filter(|l| l.at.elapsed() + LOGIN_REUSE_LEFT < LOGIN_MAX_AGE)
+    {
+        return Ok(login.url.clone());
+    }
     let pkce = Pkce::new()?;
-    *pending() = Some((pkce.verifier, Instant::now()));
-    Ok(dropbox::authorize_url(app_key, &pkce.challenge))
+    let url = dropbox::authorize_url(app_key, &pkce.challenge);
+    *pending = Some(DropboxLogin {
+        verifier: pkce.verifier,
+        url: url.clone(),
+        at: Instant::now(),
+    });
+    Ok(url)
+}
+
+/// Whether a Dropbox login waits for its code (the dialog opens at the code
+/// field again).
+pub fn dropbox_waiting() -> bool {
+    pending()
+        .as_ref()
+        .is_some_and(|l| l.at.elapsed() < LOGIN_MAX_AGE)
 }
 
 /// Finishes the login with the code: the account (no secret); its refresh
@@ -348,7 +382,7 @@ pub fn dropbox_start_login() -> AppResult<String> {
 pub fn dropbox_finish_login(core: &Core, code: &str) -> AppResult<SyncCloud> {
     let app_key = dropbox::app_key()?;
     let verifier = match pending().as_ref() {
-        Some((verifier, at)) if at.elapsed() < LOGIN_MAX_AGE => verifier.clone(),
+        Some(login) if login.at.elapsed() < LOGIN_MAX_AGE => login.verifier.clone(),
         _ => return Err(AppError::unsupported(LOGIN_EXPIRED)),
     };
     let connected = dropbox::connect(app_key, code, &verifier, &Endpoints::current())?;
@@ -368,21 +402,106 @@ pub fn dropbox_finish_login(core: &Core, code: &str) -> AppResult<SyncCloud> {
 }
 
 /// `unsupported:gdrive_login_expired`: no Google login waits (none was
-/// started here, it is older than [`LOGIN_MAX_AGE`], or its code was used).
+/// started here, it is older than [`LOGIN_MAX_AGE`], its codes expired, or
+/// it was finished).
 pub const GDRIVE_LOGIN_EXPIRED: &str = "gdrive_login_expired";
 
-/// The Google login that waits for its redirect. One at a time; a new start
-/// replaces it (the PC's listener of the old one then stops).
+/// How a Google login comes back (`remote::gdrive`): the PC's loopback
+/// redirect, the phone's device code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdriveFlow {
+    Loopback,
+    Device,
+}
+
+/// This platform's way.
+fn gdrive_flow() -> GdriveFlow {
+    if cfg!(mobile) {
+        GdriveFlow::Device
+    } else {
+        GdriveFlow::Loopback
+    }
+}
+
+/// What the page shows of a waiting Google login (`gdrive_login`,
+/// `gdrive_login_ready`). No secret: the user code is what the user types
+/// at Google's page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GdriveLoginState {
+    /// Google allowed it: `link_gdrive` / `set_sync_gdrive` finish it.
+    pub ready: bool,
+    /// The page to open: the consent page (PC), or the one where the code
+    /// is entered (phone, `google.com/device`).
+    pub url: String,
+    /// The code to enter there (the phone); `null` on the PC.
+    pub user_code: Option<String>,
+}
+
+enum GdriveWait {
+    /// The PC: the verifier, the loopback address, and the listener's code
+    /// once it came (`Some(None)`: the user refused).
+    Loopback {
+        verifier: Zeroizing<String>,
+        redirect: String,
+        outcome: Option<Option<Zeroizing<String>>>,
+    },
+    /// The phone: the device code, when to ask Google next, and what it
+    /// said.
+    Device {
+        device_code: Zeroizing<String>,
+        interval: Duration,
+        next_poll: Instant,
+        expires: Instant,
+        tokens: Option<gdrive::Tokens>,
+        refused: bool,
+    },
+}
+
+/// The Google login that waits. One at a time; a new start replaces it (the
+/// PC's listener of the old one then stops).
 struct GdriveLogin {
-    /// Which start this is (the PC's listener checks it).
-    #[cfg_attr(mobile, allow(dead_code))]
+    /// Which start this is (the PC's listener and a poll check it).
     id: u64,
-    verifier: Zeroizing<String>,
-    state: String,
-    redirect: String,
+    flow: GdriveFlow,
     at: Instant,
-    /// The redirect came: its code, or `None` when the user refused.
-    outcome: Option<Option<Zeroizing<String>>>,
+    url: String,
+    user_code: Option<String>,
+    wait: GdriveWait,
+}
+
+impl GdriveLogin {
+    fn left(&self) -> Duration {
+        let age = LOGIN_MAX_AGE.saturating_sub(self.at.elapsed());
+        match &self.wait {
+            GdriveWait::Device { expires, .. } => {
+                age.min(expires.saturating_duration_since(Instant::now()))
+            }
+            GdriveWait::Loopback { .. } => age,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        match &self.wait {
+            GdriveWait::Loopback { outcome, .. } => matches!(outcome, Some(Some(_))),
+            GdriveWait::Device { tokens, .. } => tokens.is_some(),
+        }
+    }
+
+    fn refused(&self) -> bool {
+        match &self.wait {
+            GdriveWait::Loopback { outcome, .. } => matches!(outcome, Some(None)),
+            GdriveWait::Device { refused, .. } => *refused,
+        }
+    }
+
+    fn state(&self) -> GdriveLoginState {
+        GdriveLoginState {
+            ready: self.ready(),
+            url: self.url.clone(),
+            user_code: self.user_code.clone(),
+        }
+    }
 }
 
 static GDRIVE_PENDING: Mutex<Option<GdriveLogin>> = Mutex::new(None);
@@ -394,103 +513,192 @@ fn gdrive_pending() -> std::sync::MutexGuard<'static, Option<GdriveLogin>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Starts a Google login: the page opens the returned URL in the browser;
-/// Google sends the user back with the code – on the PC to a listener on a
-/// loopback port (started here, it answers the browser and stops with the
-/// redirect, after [`LOGIN_MAX_AGE`] or when another login starts), on the
-/// phone to the app's scheme (`MainActivity` keeps the URI for
-/// [`gdrive_check_login`]).
-pub fn gdrive_start_login() -> AppResult<String> {
-    use std::sync::atomic::Ordering;
-    let client = gdrive::client()?;
-    let login = gdrive::Login::new()?;
-    let id = GDRIVE_STARTS.fetch_add(1, Ordering::Relaxed) + 1;
-    #[cfg(any(desktop, test))]
-    let (listener, redirect) = gdrive::listen_loopback()?;
-    #[cfg(not(any(desktop, test)))]
-    let redirect = gdrive::ANDROID_REDIRECT.to_owned();
-    let url = gdrive::authorize_url(&client.id, &redirect, &login.pkce.challenge, &login.state);
-    let at = Instant::now();
-    *gdrive_pending() = Some(GdriveLogin {
-        id,
-        verifier: login.pkce.verifier,
-        state: login.state.clone(),
-        redirect,
-        at,
-        outcome: None,
-    });
-    #[cfg(any(desktop, test))]
-    {
-        let state = login.state;
-        let spawned = std::thread::Builder::new()
-            .name("keystead-google-login".into())
-            .spawn(move || {
-                let current = || gdrive_pending().as_ref().is_some_and(|p| p.id == id);
-                let outcome = gdrive::serve_loopback(listener, &state, at + LOGIN_MAX_AGE, current);
-                if let Some(outcome) = outcome {
-                    if let Some(p) = gdrive_pending().as_mut().filter(|p| p.id == id) {
-                        p.outcome = Some(outcome.ok());
-                    }
-                }
-            });
-        if let Err(e) = spawned {
-            *gdrive_pending() = None;
-            return Err(AppError::io(format!("google login listener: {e}")));
-        }
-    }
-    Ok(url)
+/// Starts a Google login of this platform's way ([`gdrive_start`]).
+pub fn gdrive_start_login() -> AppResult<GdriveLoginState> {
+    gdrive_start(gdrive_flow())
 }
 
-/// Whether the redirect of the waiting Google login came (`redirect`: the
-/// URI the phone's activity received, if any – one of another login is
-/// ignored). `invalid_input:gdrive_redirect` when the user refused (the
-/// login ends), `unsupported:gdrive_login_expired` when none waits.
-pub fn gdrive_check_login(redirect: Option<&str>) -> AppResult<bool> {
+/// Starts a Google login – or offers the waiting one again (see
+/// [`LOGIN_REUSE_LEFT`]); the page opens `url`. **Loopback** (PC): a
+/// listener on a free loopback port, started here, answers the browser and
+/// stops with the redirect of its state, after [`LOGIN_MAX_AGE`] or when
+/// another login starts. **Device** (phone): Google gives a code the user
+/// enters at its page; [`gdrive_check_login`] asks whether it was allowed.
+pub fn gdrive_start(flow: GdriveFlow) -> AppResult<GdriveLoginState> {
+    use std::sync::atomic::Ordering;
+    let client = gdrive::client()?;
+    if let Some(login) = gdrive_pending()
+        .as_ref()
+        .filter(|l| l.flow == flow && !l.refused() && l.left() > LOGIN_REUSE_LEFT)
+    {
+        return Ok(login.state());
+    }
+    let id = GDRIVE_STARTS.fetch_add(1, Ordering::Relaxed) + 1;
+    let at = Instant::now();
+    match flow {
+        GdriveFlow::Loopback => {
+            let login = gdrive::Login::new()?;
+            let (listener, redirect) = gdrive::listen_loopback()?;
+            let url =
+                gdrive::authorize_url(&client.id, &redirect, &login.pkce.challenge, &login.state);
+            let started = GdriveLogin {
+                id,
+                flow,
+                at,
+                url,
+                user_code: None,
+                wait: GdriveWait::Loopback {
+                    verifier: login.pkce.verifier,
+                    redirect,
+                    outcome: None,
+                },
+            };
+            let state = started.state();
+            *gdrive_pending() = Some(started);
+            let login_state = login.state;
+            let spawned = std::thread::Builder::new()
+                .name("keystead-google-login".into())
+                .spawn(move || {
+                    let current = || gdrive_pending().as_ref().is_some_and(|p| p.id == id);
+                    let outcome =
+                        gdrive::serve_loopback(listener, &login_state, at + LOGIN_MAX_AGE, current);
+                    if let Some(outcome) = outcome {
+                        if let Some(p) = gdrive_pending().as_mut().filter(|p| p.id == id) {
+                            if let GdriveWait::Loopback { outcome: slot, .. } = &mut p.wait {
+                                *slot = Some(outcome.ok());
+                            }
+                        }
+                    }
+                });
+            if let Err(e) = spawned {
+                *gdrive_pending() = None;
+                return Err(AppError::io(format!("google login listener: {e}")));
+            }
+            Ok(state)
+        }
+        GdriveFlow::Device => {
+            let device = gdrive::start_device_login(&client, &gdrive::Endpoints::current())?;
+            let started = GdriveLogin {
+                id,
+                flow,
+                at,
+                url: device.verification_url,
+                user_code: Some(device.user_code),
+                wait: GdriveWait::Device {
+                    device_code: device.device_code,
+                    interval: device.interval,
+                    // The first ask comes right away (the user is still
+                    // typing: "pending"), then every interval.
+                    next_poll: at,
+                    expires: at + device.expires_in,
+                    tokens: None,
+                    refused: false,
+                },
+            };
+            let state = started.state();
+            *gdrive_pending() = Some(started);
+            Ok(state)
+        }
+    }
+}
+
+/// The state of the waiting Google login; a device login asks Google first
+/// when its interval has passed (outside the lock; no connection or a
+/// server error just waits for the next ask). `invalid_input:gdrive_redirect`
+/// when the user refused (the login ends), `unsupported:gdrive_login_expired`
+/// when none waits.
+pub fn gdrive_check_login() -> AppResult<GdriveLoginState> {
+    let poll = {
+        let mut pending = gdrive_pending();
+        let Some(login) = pending.as_ref().filter(|l| !l.left().is_zero()) else {
+            *pending = None;
+            return Err(AppError::unsupported(GDRIVE_LOGIN_EXPIRED));
+        };
+        match &login.wait {
+            GdriveWait::Device {
+                device_code,
+                next_poll,
+                tokens: None,
+                refused: false,
+                ..
+            } if Instant::now() >= *next_poll => Some((login.id, device_code.clone())),
+            _ => None,
+        }
+    };
+    if let Some((id, device_code)) = poll {
+        let answer = gdrive::client().and_then(|client| {
+            gdrive::poll_device_login(&client, &device_code, &gdrive::Endpoints::current())
+        });
+        let mut pending = gdrive_pending();
+        if let Some(login) = pending.as_mut().filter(|l| l.id == id) {
+            if let GdriveWait::Device {
+                interval,
+                next_poll,
+                expires,
+                tokens,
+                refused,
+                ..
+            } = &mut login.wait
+            {
+                let now = Instant::now();
+                match answer {
+                    Ok(gdrive::DevicePoll::Pending) => {}
+                    Ok(gdrive::DevicePoll::SlowDown) => *interval += Duration::from_secs(5),
+                    Ok(gdrive::DevicePoll::Done(t)) => *tokens = Some(t),
+                    Ok(gdrive::DevicePoll::Refused) => *refused = true,
+                    Ok(gdrive::DevicePoll::Expired) => *expires = now,
+                    Err(e)
+                        if remote::has_code(&e, remote::OFFLINE)
+                            || remote::has_code(&e, remote::SERVER_ERROR) => {}
+                    Err(e) => {
+                        *pending = None;
+                        return Err(e);
+                    }
+                }
+                *next_poll = now + *interval;
+            }
+        }
+    }
     let mut pending = gdrive_pending();
-    let Some(login) = pending.as_mut().filter(|l| l.at.elapsed() < LOGIN_MAX_AGE) else {
+    let Some(login) = pending.as_ref().filter(|l| !l.left().is_zero()) else {
         *pending = None;
         return Err(AppError::unsupported(GDRIVE_LOGIN_EXPIRED));
     };
-    if let Some(uri) = redirect {
-        if gdrive::state_of_redirect(uri).as_deref() == Some(login.state.as_str()) {
-            login.outcome = Some(gdrive::code_of_redirect(uri, &login.state).ok());
-        }
+    if login.refused() {
+        *pending = None;
+        return Err(AppError::invalid(gdrive::BAD_REDIRECT));
     }
-    match &login.outcome {
-        None => Ok(false),
-        Some(Some(_)) => Ok(true),
-        Some(None) => {
-            *pending = None;
-            Err(AppError::invalid(gdrive::BAD_REDIRECT))
-        }
-    }
+    Ok(login.state())
 }
 
-/// Finishes the Google login whose redirect came: exchanges the code (once
-/// – the login ends either way), makes the folder "Keystead" if there is
-/// none, stores the refresh token under the account's key and returns the
-/// account (no secret).
+/// Finishes the Google login Google allowed (a login not yet allowed keeps
+/// waiting): the PC exchanges its code (once – the login ends either way),
+/// the phone has its tokens already; then the folder "Keystead" is made if
+/// there is none, the refresh token stored under the account's key and the
+/// account returned (no secret).
 pub fn gdrive_finish_login(core: &Core) -> AppResult<SyncCloud> {
     let client = gdrive::client()?;
-    let login = gdrive_pending()
-        .take()
-        .filter(|l| l.at.elapsed() < LOGIN_MAX_AGE);
-    let Some(GdriveLogin {
-        verifier,
-        redirect,
-        outcome: Some(Some(code)),
-        ..
-    }) = login
-    else {
-        return Err(AppError::unsupported(GDRIVE_LOGIN_EXPIRED));
+    let endpoints = gdrive::Endpoints::current();
+    let login = {
+        let mut pending = gdrive_pending();
+        match pending.as_ref() {
+            Some(l) if l.ready() && !l.left().is_zero() => pending.take(),
+            _ => None,
+        }
     };
-    let connected = gdrive::connect(
-        &client,
-        &code,
-        &verifier,
-        &redirect,
-        &gdrive::Endpoints::current(),
-    )?;
+    let tokens = match login.map(|l| l.wait) {
+        Some(GdriveWait::Loopback {
+            verifier,
+            redirect,
+            outcome: Some(Some(code)),
+        }) => gdrive::exchange_code(&client, &code, &verifier, &redirect, &endpoints)?,
+        Some(GdriveWait::Device {
+            tokens: Some(tokens),
+            ..
+        }) => tokens,
+        _ => return Err(AppError::unsupported(GDRIVE_LOGIN_EXPIRED)),
+    };
+    let connected = gdrive::connect(&client, tokens, &endpoints)?;
     let cloud = SyncCloud {
         provider: CloudProvider::Gdrive,
         account_id: connected.account.account_id,
@@ -536,36 +744,32 @@ pub fn open_cloud(core: &Core, cloud: &SyncCloud) -> AppResult<Box<dyn Remote>> 
     }
 }
 
-/// "Abmelden": the provider forgets the token (best effort – offline, it
-/// just stays valid there until it is revoked in the account's settings)
-/// and this device forgets it too.
+/// "Abmelden": this device forgets the token. Dropbox is also told to
+/// revoke it (best effort – offline, it just stays valid there until it is
+/// revoked in the account's settings); Google is not – its revoke ends the
+/// grant of the whole project, i.e. the access of every other device of
+/// the account too (the user can remove Keystead's access in the Google
+/// account's settings, "Drittanbieter-Apps").
 pub fn sign_out(core: &Core, cloud: &SyncCloud) {
-    let revoked = (|| -> AppResult<()> {
-        let token = core
-            .credentials()
-            .require(&core.data_dir(), &cloud_key(cloud))?;
-        match cloud.provider {
-            CloudProvider::Dropbox => DropboxRemote::new(
+    if cloud.provider == CloudProvider::Dropbox {
+        let revoked = (|| -> AppResult<()> {
+            let token = core
+                .credentials()
+                .require(&core.data_dir(), &cloud_key(cloud))?;
+            DropboxRemote::new(
                 dropbox::app_key()?,
                 &cloud.account_id,
                 token,
                 Endpoints::current(),
             )?
-            .revoke(),
-            CloudProvider::Gdrive => GdriveRemote::new(
-                gdrive::client()?,
-                &cloud.account_id,
-                token,
-                gdrive::Endpoints::current(),
-            )?
-            .revoke(),
+            .revoke()
+        })();
+        if let Err(e) = revoked {
+            log(format_args!(
+                "the provider did not revoke the token: {}",
+                e.code()
+            ));
         }
-    })();
-    if let Err(e) = revoked {
-        log(format_args!(
-            "the provider did not revoke the token: {}",
-            e.code()
-        ));
     }
     forget_password(core, &cloud_key(cloud), None);
 }
@@ -582,40 +786,40 @@ pub fn link_cloud(cloud: SyncCloud, now: i64) -> crate::folder_sync::LinkState {
 // ---------------------------------------------------------------------------
 
 /// `dropbox_login` → the URL of Dropbox's page where the user allows
-/// Keystead's app folder (the page opens it in the browser);
-/// `unsupported:dropbox_not_configured` in a build without an app key.
+/// Keystead's app folder (the page opens it in the browser; a waiting login
+/// is offered again); `unsupported:dropbox_not_configured` in a build
+/// without an app key.
 #[tauri::command]
 pub async fn dropbox_login(core: Shared<'_>) -> CmdResult<String> {
     run(&core, true, |_| dropbox_start_login()).await
 }
 
-/// `gdrive_login` → the URL of Google's consent page for Keystead's folder
-/// (the page opens it in the browser, then asks `gdrive_login_ready`);
-/// `unsupported:gdrive_not_configured` in a build without a client id.
+/// `dropbox_login_waiting` → whether a Dropbox login waits for its code (the
+/// dialog opens at the code field). Asked when the dialog opens – no
+/// activity.
 #[tauri::command]
-pub async fn gdrive_login(core: Shared<'_>) -> CmdResult<String> {
+pub async fn dropbox_login_waiting(core: Shared<'_>) -> CmdResult<bool> {
+    run(&core, false, |_| Ok(dropbox_waiting())).await
+}
+
+/// `gdrive_login` → [`GdriveLoginState`]: Google's consent page (PC) or the
+/// page and code of a device login (phone) – the page opens `url`, then asks
+/// `gdrive_login_ready`; a waiting login is offered again.
+/// `unsupported:gdrive_not_configured` in a build without this platform's
+/// client.
+#[tauri::command]
+pub async fn gdrive_login(core: Shared<'_>) -> CmdResult<GdriveLoginState> {
     run(&core, true, |_| gdrive_start_login()).await
 }
 
-/// `gdrive_login_ready` → whether Google sent the user back (then
-/// `link_gdrive` / `set_sync_gdrive` finish the login). The page asks while
-/// its dialog waits; see [`gdrive_check_login`] for the errors.
+/// `gdrive_login_ready` → [`GdriveLoginState`] of the waiting login (`ready`:
+/// Google allowed it, then `link_gdrive` / `set_sync_gdrive` finish it). The
+/// page asks every second while its dialog waits, and when the dialog opens
+/// (to continue a waiting login) – no activity, so the idle lock still
+/// applies. Errors: see [`gdrive_check_login`].
 #[tauri::command]
-pub async fn gdrive_login_ready(
-    #[allow(unused_variables)] app: tauri::AppHandle,
-    core: Shared<'_>,
-) -> CmdResult<bool> {
-    run(&core, true, move |c| {
-        #[cfg(mobile)]
-        let redirect = crate::mobile::sync::take_oauth_redirect(&app, c)?;
-        #[cfg(not(mobile))]
-        let redirect: Option<String> = {
-            let _ = c;
-            None
-        };
-        gdrive_check_login(redirect.as_deref())
-    })
-    .await
+pub async fn gdrive_login_ready(core: Shared<'_>) -> CmdResult<GdriveLoginState> {
+    run(&core, false, |_| gdrive_check_login()).await
 }
 
 /// `webdav_test(config)` → [`WebDavTest`]: the settings form's connection
@@ -795,6 +999,7 @@ mod tests {
         let core = core(dir.path());
         // Nothing started: the code has no login to finish.
         *pending() = None;
+        assert!(!dropbox_waiting());
         assert_eq!(
             dropbox_finish_login(&core, "x").unwrap_err().code(),
             "unsupported:dropbox_login_expired"
@@ -805,8 +1010,11 @@ mod tests {
             "{url}"
         );
         assert!(!url.contains("redirect_uri"));
+        assert!(dropbox_waiting());
+        // Opened again: the same login (the code the user copied still fits).
+        assert_eq!(dropbox_start_login().unwrap(), url);
         // The fake knows its own verifier (the started one is random).
-        *pending() = Some((Zeroizing::new(fake.verifier()), Instant::now()));
+        pending().as_mut().unwrap().verifier = Zeroizing::new(fake.verifier());
         // A wrong code: refused, the login still waits for the right one.
         assert_eq!(
             dropbox_finish_login(&core, "falsch").unwrap_err().code(),
@@ -816,6 +1024,7 @@ mod tests {
         assert_eq!(cloud.account_id, "dbid:test-account");
         assert_eq!(cloud.email, "max@example.com");
         assert!(pending().is_none(), "a success ends the login");
+        assert!(!dropbox_waiting());
         let key = cloud_key(&cloud);
         assert_eq!(key, "dropbox:dbid:test-account");
         assert!(core
@@ -863,8 +1072,32 @@ mod tests {
         TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
     }
 
+    /// The Google tests share the one waiting login: one at a time.
+    static GOOGLE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn google_test() -> std::sync::MutexGuard<'static, ()> {
+        GOOGLE_TESTS.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The verifier of the waiting Google loopback login (the fake knows its
+    /// own; the started one is random).
+    fn use_fake_verifier(verifier: &str) {
+        match &mut gdrive_pending().as_mut().unwrap().wait {
+            GdriveWait::Loopback { verifier: v, .. } => *v = Zeroizing::new(verifier.to_owned()),
+            GdriveWait::Device { .. } => panic!("a loopback login"),
+        }
+    }
+
+    /// The waiting device login asks Google at the next check.
+    fn poll_now() {
+        if let GdriveWait::Device { next_poll, .. } = &mut gdrive_pending().as_mut().unwrap().wait {
+            *next_poll = Instant::now();
+        }
+    }
+
     #[test]
-    fn a_google_login_waits_for_its_redirect_and_links_the_phone() {
+    fn a_google_login_on_the_pc_waits_for_its_redirect() {
+        let _serial = google_test();
         use crate::remote::gdrive::fake::FakeDrive;
         use crate::remote::gdrive::TEST_ENDPOINTS;
 
@@ -874,26 +1107,32 @@ mod tests {
         let core = core(dir.path());
         *gdrive_pending() = None;
         assert_eq!(
-            gdrive_check_login(None).unwrap_err().code(),
+            gdrive_check_login().unwrap_err().code(),
             "unsupported:gdrive_login_expired"
         );
         assert_eq!(
             gdrive_finish_login(&core).unwrap_err().code(),
             "unsupported:gdrive_login_expired"
         );
-        let url = reqwest::Url::parse(&gdrive_start_login().unwrap()).unwrap();
+        let started = gdrive_start(GdriveFlow::Loopback).unwrap();
+        assert_eq!(started.user_code, None);
+        assert!(!started.ready);
+        let url = reqwest::Url::parse(&started.url).unwrap();
         let q: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(url.host_str(), Some("accounts.google.com"));
         assert!(q["redirect_uri"].starts_with("http://127.0.0.1:"));
         assert_eq!(q["scope"], gdrive::SCOPE);
-        assert!(!gdrive_check_login(None).unwrap(), "nothing came yet");
-        // Not yet there: finishing ends nothing.
+        // Opened again: the same login (same page, state and listener).
+        assert_eq!(gdrive_start(GdriveFlow::Loopback).unwrap(), started);
+        assert!(!gdrive_check_login().unwrap().ready, "nothing came yet");
+        // Not yet allowed: finishing ends nothing.
+        assert_eq!(
+            gdrive_finish_login(&core).unwrap_err().code(),
+            "unsupported:gdrive_login_expired"
+        );
         assert!(gdrive_pending().is_some());
-        // A redirect of another login (the phone's activity) is ignored.
-        let foreign = format!("{}?state=other&code=x", gdrive::ANDROID_REDIRECT);
-        assert!(!gdrive_check_login(Some(&foreign)).unwrap());
-        // Google sends the browser back (the fake knows its own verifier).
-        gdrive_pending().as_mut().unwrap().verifier = Zeroizing::new(fake.verifier());
+        // Google sends the browser back.
+        use_fake_verifier(&fake.verifier());
         let mut browser = std::net::TcpStream::connect((
             "127.0.0.1",
             reqwest::Url::parse(&q["redirect_uri"])
@@ -916,7 +1155,7 @@ mod tests {
             assert!(page.contains("abgeschlossen"), "{page}");
         }
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !gdrive_check_login(None).unwrap() {
+        while !gdrive_check_login().unwrap().ready {
             assert!(Instant::now() < deadline, "the redirect never arrived");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -924,9 +1163,88 @@ mod tests {
         assert_eq!(cloud.provider, CloudProvider::Gdrive);
         assert_eq!(cloud.email, "max@example.com");
         assert!(gdrive_pending().is_none(), "a code is used once");
-        let key = cloud_key(&cloud);
-        assert_eq!(key, "gdrive:perm-1");
+        assert_eq!(cloud_key(&cloud), "gdrive:perm-1");
         assert!(fake.has_folder());
+        // A refused login ends.
+        let started = gdrive_start(GdriveFlow::Loopback).unwrap();
+        let url = reqwest::Url::parse(&started.url).unwrap();
+        let q: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        let mut browser = std::net::TcpStream::connect((
+            "127.0.0.1",
+            reqwest::Url::parse(&q["redirect_uri"])
+                .unwrap()
+                .port()
+                .unwrap(),
+        ))
+        .unwrap();
+        {
+            use std::io::{Read as _, Write as _};
+            write!(
+                browser,
+                "GET /?state={}&error=access_denied HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                q["state"]
+            )
+            .unwrap();
+            let mut page = String::new();
+            browser.read_to_string(&mut page).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match gdrive_check_login() {
+                Ok(state) => assert!(!state.ready),
+                Err(e) => {
+                    assert_eq!(e.code(), "invalid_input:gdrive_redirect");
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "the refusal never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gdrive_pending().is_none());
+        TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_google_login_on_the_phone_is_a_device_code_and_links_the_folder() {
+        let _serial = google_test();
+        use crate::remote::gdrive::fake::{Device, FakeDrive, USER_CODE};
+        use crate::remote::gdrive::TEST_ENDPOINTS;
+
+        let fake = FakeDrive::new();
+        TEST_ENDPOINTS.with(|e| *e.borrow_mut() = Some(fake.endpoints()));
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        *gdrive_pending() = None;
+        let started = gdrive_start(GdriveFlow::Device).unwrap();
+        assert_eq!(started.user_code.as_deref(), Some(USER_CODE));
+        assert_eq!(started.url, "https://www.google.com/device");
+        assert!(!serde_json::to_string(&started)
+            .unwrap()
+            .contains("the-device-code"));
+        // The first check asks Google ("pending"), the next waits its interval.
+        assert!(!gdrive_check_login().unwrap().ready);
+        assert!(!gdrive_check_login().unwrap().ready);
+        assert_eq!(fake.device_polls(), 1);
+        // Opened again: the same code.
+        assert_eq!(gdrive_start(GdriveFlow::Device).unwrap(), started);
+        // "Slow down" waits longer; then the user allows.
+        fake.slow_down_next_poll();
+        poll_now();
+        assert!(!gdrive_check_login().unwrap().ready);
+        fake.set_device(Device::Allowed);
+        assert!(!gdrive_check_login().unwrap().ready, "within the interval");
+        poll_now();
+        assert!(gdrive_check_login().unwrap().ready);
+        let cloud = gdrive_finish_login(&core).unwrap();
+        assert_eq!(cloud.account_id, "perm-1");
+        assert!(gdrive_pending().is_none());
+        assert_eq!(fake.device(), Some(Device::Used));
+        let key = cloud_key(&cloud);
+        assert!(core
+            .credentials()
+            .load(&core.data_dir(), &key)
+            .unwrap()
+            .is_some());
 
         // The PC's vault in the Drive folder; the phone links and imports it.
         let pc = VaultStore::new(dir.path().join("pc"));
@@ -945,23 +1263,26 @@ mod tests {
         let result = link.files.iter().find(|f| f.file_name == name).unwrap();
         assert_eq!(result.outcome, Outcome::Imported);
 
-        // The phone's redirect: the user refused – the login ends.
-        gdrive_start_login().unwrap();
-        let state = gdrive_pending().as_ref().unwrap().state.clone();
-        let refused = format!(
-            "{}?state={state}&error=access_denied",
-            gdrive::ANDROID_REDIRECT
-        );
+        // A refused device login ends; an expired one too.
+        gdrive_start(GdriveFlow::Device).unwrap();
+        fake.set_device(Device::Refused);
         assert_eq!(
-            gdrive_check_login(Some(&refused)).unwrap_err().code(),
+            gdrive_check_login().unwrap_err().code(),
             "invalid_input:gdrive_redirect"
         );
         assert!(gdrive_pending().is_none());
+        gdrive_start(GdriveFlow::Device).unwrap();
+        fake.set_device(Device::Expired);
+        assert_eq!(
+            gdrive_check_login().unwrap_err().code(),
+            "unsupported:gdrive_login_expired"
+        );
 
-        // Signing out: Google forgets the token, this device too.
+        // Signing out: this device forgets the token; Google is not told
+        // (its revoke would end every other device's access too).
         assert_eq!(fake.refresh_tokens(), 1);
         sign_out(&core, &cloud);
-        assert_eq!(fake.refresh_tokens(), 0);
+        assert_eq!(fake.refresh_tokens(), 1);
         assert_eq!(
             core.credentials().load(&core.data_dir(), &key).unwrap(),
             None

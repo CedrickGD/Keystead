@@ -539,8 +539,8 @@ pub async fn link_dropbox(
     .await
 }
 
-/// `link_gdrive` → [`FolderStatus`]: finishes the Google login whose
-/// redirect came (`gdrive_login`, `gdrive_login_ready`), links the phone to
+/// `link_gdrive` → [`FolderStatus`]: finishes the Google login the user
+/// allowed (`gdrive_login`: the device code; `gdrive_login_ready`), links the phone to
 /// the folder "Keystead" in that Drive in place of the previous link and
 /// syncs. The refresh token is sealed by the Android Keystore and never
 /// returned. `unsupported:gdrive_login_expired` (none waits). A failed first
@@ -552,21 +552,6 @@ pub async fn link_gdrive(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderSt
         replace_link(&app, c, sync_server::link_cloud(cloud, now_ms()))
     })
     .await
-}
-
-/// The redirect of a Google login the activity received since the last
-/// call (`io.github.cedrickgd.keystead:/oauth2redirect?…`), if any.
-#[cfg(target_os = "android")]
-pub fn take_oauth_redirect(app: &AppHandle, _core: &Core) -> AppResult<Option<String>> {
-    let plugin = app
-        .try_state::<android::FolderPlugin>()
-        .ok_or_else(unsupported_platform)?;
-    plugin.take_oauth_redirect()
-}
-
-#[cfg(not(target_os = "android"))]
-pub fn take_oauth_redirect(_app: &AppHandle, _core: &Core) -> AppResult<Option<String>> {
-    Ok(None)
 }
 
 /// Makes `link` the phone's link (the previous one forgotten – its folder
@@ -782,12 +767,6 @@ mod android {
         kind: String,
     }
 
-    #[derive(Deserialize)]
-    struct Redirect {
-        #[serde(default)]
-        uri: Option<String>,
-    }
-
     #[derive(Serialize)]
     struct WriteArgs<'a> {
         tree: &'a str,
@@ -847,14 +826,6 @@ mod android {
                 }
                 Err(e) => Err(plugin_error(e)),
             }
-        }
-
-        /// The OAuth redirect `MainActivity` received (see the plugin).
-        pub fn take_oauth_redirect(&self) -> AppResult<Option<String>> {
-            self.0
-                .run_mobile_plugin::<Redirect>("takeOAuthRedirect", ())
-                .map(|r| r.uri)
-                .map_err(plugin_error)
         }
 
         /// `wifi`, `cellular`, `other` or `none` (see the plugin).

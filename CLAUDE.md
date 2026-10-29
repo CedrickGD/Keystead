@@ -68,7 +68,8 @@ clippy lints break CI otherwise).
   `CedrickGD/keys/keystead/`, CI secrets `ANDROID_KEYSTORE_BASE64`,
   `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`; certificate SHA-256 in
   `build.yml`/README); the main manifest has exactly `INTERNET` (the WebDAV
-  sync – the only network code on the phone) and `ACCESS_NETWORK_STATE`, no
+  and cloud-account sync – the only network code on the phone) and
+  `ACCESS_NETWORK_STATE`, no
   cleartext (`network_security_config.xml`); the APK gate allows only the
   permissions in `ANDROID_PERMISSIONS` (`android-apk.mjs`). The server
   password lives only in `credentials.rs` (DPAPI / Keystore), never in

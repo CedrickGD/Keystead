@@ -2,35 +2,44 @@
 //! user's My Drive that Keystead made itself, with the scope `drive.file`
 //! (the app sees only files it created – nothing else of the Drive).
 //!
-//! * **Login**: OAuth 2 code flow with PKCE and a random `state`; the
-//!   redirect goes to a loopback listener on the PC (`http://127.0.0.1:<port>`,
-//!   a "Desktop" client – its secret is not confidential, Google says so for
-//!   installed apps) or, on the phone, to the app's own scheme
-//!   (`io.github.cedrickgd.keystead:/oauth2redirect`, an "Android" client
-//!   with the custom scheme enabled; `MainActivity` hands the URI over). The
-//!   code is exchanged only with the verifier and only for the waiting
-//!   `state`, so a redirect another app or page fakes is refused. Client
-//!   ids from the build ([`DESKTOP_CLIENT_ID`], [`ANDROID_CLIENT_ID`]);
-//!   without one Google Drive is not offered. The refresh token is stored
-//!   like a server password, key [`key_of`] (the Drive user's
-//!   `permissionId`).
+//! * **Login, PC**: OAuth 2 code flow with PKCE and a random `state`; the
+//!   redirect goes to a loopback listener (`http://127.0.0.1:<port>`, a
+//!   "Desktop app" client). The code is exchanged only with the verifier and
+//!   only for the waiting `state`, so a redirect another page fakes is
+//!   refused.
+//! * **Login, phone**: the device flow (a "TVs and Limited Input devices"
+//!   client – Google allows `drive.file` there): Keystead shows a code, the
+//!   user enters it at the page Google names (`google.com/device`) and
+//!   allows the folder, Keystead asks the token endpoint until it answers.
+//!   No redirect into the app (Google no longer supports an Android app's
+//!   own URI scheme, nor a loopback redirect for Android clients).
+//! * Client ids and secrets from the build ([`DESKTOP_CLIENT_ID`],
+//!   [`DEVICE_CLIENT_ID`]; the secrets of installed apps are not
+//!   confidential, Google says so); without both of a platform Google Drive
+//!   is not offered. The refresh token is stored like a server password,
+//!   key [`key_of`] (the Drive user's `permissionId`). Signing out only
+//!   forgets it here: Google's revoke would end the access of **every**
+//!   device of the account (it drops the grant of the whole project).
 //! * **Layout**: the folder's files are the cloud folder's names; an
 //!   attachment folder is a sub-folder. Drive allows several files of one
 //!   name in a folder: the **oldest** (by `createdTime`) is the one, later
 //!   ones are ignored, and a create that turns out to be such a later one
 //!   is removed again and reported as `sync_remote_changed` (the next look
-//!   reads the older). Drive has no `If-Match` on uploads: `cas` is false –
+//!   reads the older); a delete removes every file of the name. Drive has no
+//!   `If-Match` on uploads: `cas` is false –
 //!   the engines read the copy again right before a write (as for rclone).
 //!   The ETag is the file's `version`, compared right before an update
 //!   or a delete. The folder is looked up by name in My Drive at each
 //!   [`Remote::probe`] (a trashed or moved one is missing, never empty).
 //! * **Answers are untrusted**: JSON at most [`super::dropbox::LIST_BODY_MAX`]
-//!   per page, ≤ [`super::dropbox::LIST_ENTRIES_MAX`] entries, names of one
-//!   segment only; errors are codes, never Google's texts.
+//!   per page, ≤ [`super::dropbox::LIST_ENTRIES_MAX`] entries and
+//!   [`super::dropbox::LIST_PAGES_MAX`] pages, names of one segment only;
+//!   errors are codes, never Google's texts.
 //! * Transport, TLS and the request ceilings: [`super::http`].
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use base64::Engine as _;
 use reqwest::header::CONTENT_TYPE;
@@ -39,7 +48,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use super::dropbox::{Pkce, LIST_BODY_MAX, LIST_ENTRIES_MAX};
+use super::dropbox::{Pkce, LIST_BODY_MAX, LIST_ENTRIES_MAX, LIST_PAGES_MAX};
 use super::http::{Answer, Http};
 use super::tls::Trust;
 use super::{
@@ -48,19 +57,20 @@ use super::{
 };
 use crate::error::{AppError, AppResult};
 
-/// The client id of Keystead's "Desktop" OAuth client (from the build's
-/// environment); `None` until the owner registered it.
+/// The client id of Keystead's "Desktop app" OAuth client (the PC; from the
+/// build's environment); `None` until the owner registered it.
 pub const DESKTOP_CLIENT_ID: Option<&str> = option_env!("KEYSTEAD_GDRIVE_DESKTOP_CLIENT_ID");
 /// Its secret – not confidential for an installed app (Google's own word);
-/// it only has to go with the code.
+/// Google wants it with the code.
 pub const DESKTOP_CLIENT_SECRET: Option<&str> =
     option_env!("KEYSTEAD_GDRIVE_DESKTOP_CLIENT_SECRET");
-/// The client id of the "Android" client (no secret; the custom scheme
-/// enabled in its advanced settings).
-pub const ANDROID_CLIENT_ID: Option<&str> = option_env!("KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID");
-/// The phone's redirect (the app's own scheme, the package name).
-#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
-pub const ANDROID_REDIRECT: &str = "io.github.cedrickgd.keystead:/oauth2redirect";
+/// The client id of the "TVs and Limited Input devices" client (the phone's
+/// device flow).
+pub const DEVICE_CLIENT_ID: Option<&str> = option_env!("KEYSTEAD_GDRIVE_DEVICE_CLIENT_ID");
+/// Its secret (not confidential either; Google wants it with each poll).
+pub const DEVICE_CLIENT_SECRET: Option<&str> = option_env!("KEYSTEAD_GDRIVE_DEVICE_CLIENT_SECRET");
+/// The device flow's grant type.
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// The scope: only the files Keystead made.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 /// The folder in My Drive.
@@ -69,37 +79,38 @@ const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// `unsupported:gdrive_not_configured`: this build has no client id.
 pub const NOT_CONFIGURED: &str = "gdrive_not_configured";
-/// `invalid_input:gdrive_redirect`: the redirect is not the waiting login's
-/// (another `state`, an error, no code).
+/// `invalid_input:gdrive_redirect`: Google did not confirm the login (the
+/// user refused, another `state`, no code, an expired or used code).
 pub const BAD_REDIRECT: &str = "gdrive_redirect";
 
 /// The OAuth client of this platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Client {
     pub id: String,
-    /// The Desktop client's (not confidential); none on the phone.
-    pub secret: Option<String>,
+    /// Not confidential (an installed app's), but Google wants it.
+    pub secret: String,
 }
 
-/// This build's client, `unsupported:gdrive_not_configured` without one
-/// (the unit tests have one: the fake takes any).
+/// This build's client – the PC's "Desktop app", the phone's device client
+/// –, `unsupported:gdrive_not_configured` without its id and secret (the
+/// unit tests have one: the fake takes any).
 pub fn client() -> AppResult<Client> {
     if cfg!(test) {
         return Ok(Client {
             id: "client-id".into(),
-            secret: Some("client-secret".into()),
+            secret: "client-secret".into(),
         });
     }
     let configured = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(str::to_owned);
-    let client = if cfg!(mobile) {
-        configured(ANDROID_CLIENT_ID).map(|id| Client { id, secret: None })
+    let (id, secret) = if cfg!(mobile) {
+        (DEVICE_CLIENT_ID, DEVICE_CLIENT_SECRET)
     } else {
-        configured(DESKTOP_CLIENT_ID).map(|id| Client {
-            id,
-            secret: configured(DESKTOP_CLIENT_SECRET),
-        })
+        (DESKTOP_CLIENT_ID, DESKTOP_CLIENT_SECRET)
     };
-    client.ok_or_else(|| AppError::unsupported(NOT_CONFIGURED))
+    match (configured(id), configured(secret)) {
+        (Some(id), Some(secret)) => Ok(Client { id, secret }),
+        _ => Err(AppError::unsupported(NOT_CONFIGURED)),
+    }
 }
 
 /// What the bases, the link and the refresh token are recorded for.
@@ -110,7 +121,7 @@ pub fn key_of(account_id: &str) -> String {
 /// Google's hosts (the unit tests point them at a fake).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoints {
-    /// `https://oauth2.googleapis.com/` – the token, revoke.
+    /// `https://oauth2.googleapis.com/` – the token, the device code.
     pub oauth: Url,
     /// `https://www.googleapis.com/` – Drive (files, uploads, about).
     pub api: Url,
@@ -181,7 +192,7 @@ pub fn authorize_url(client_id: &str, redirect: &str, challenge: &str, state: &s
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
         .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent");
+        .append_pair("prompt", "select_account consent");
     url.to_string()
 }
 
@@ -210,7 +221,7 @@ pub fn code_of_redirect(redirect: &str, state: &str) -> AppResult<Zeroizing<Stri
 
 /// The PC's redirect: a listener on a free loopback port and its address
 /// (`http://127.0.0.1:<port>/`, what the Desktop client allows).
-#[cfg(any(desktop, test))]
+#[cfg_attr(mobile, allow(dead_code))]
 pub fn listen_loopback() -> AppResult<(std::net::TcpListener, String)> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| AppError::io(format!("loopback listener: {e}")))?;
@@ -225,8 +236,9 @@ pub fn listen_loopback() -> AppResult<(std::net::TcpListener, String)> {
 /// login with `state` comes (its code, or `invalid_input:gdrive_redirect`
 /// when the user refused), `waiting` says no or `until` passes (`None`).
 /// Other requests (another state, the favicon) get a 404 and are otherwise
-/// ignored; a request head is at most 8 KiB and 5 s.
-#[cfg(any(desktop, test))]
+/// ignored; a request head is at most 8 KiB and 5 s in all (and no longer
+/// than `waiting` and `until` allow).
+#[cfg_attr(mobile, allow(dead_code))]
 pub fn serve_loopback(
     listener: std::net::TcpListener,
     state: &str,
@@ -247,11 +259,16 @@ pub fn serve_loopback(
             }
         };
         let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let deadline = (Instant::now() + Duration::from_secs(5)).min(until);
         let mut head = Vec::new();
         let mut buf = [0u8; 1024];
         while head.len() < 8 * 1024 && !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || !waiting() {
+                break;
+            }
+            let _ = stream.set_read_timeout(Some(left));
             match stream.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => head.extend_from_slice(&buf[..n]),
@@ -285,9 +302,9 @@ pub fn serve_loopback(
     None
 }
 
-#[cfg(any(desktop, test))]
+#[cfg_attr(mobile, allow(dead_code))]
 const LOOPBACK_DONE: &str = "<!doctype html><meta charset=utf-8><title>Keystead</title><body style=\"font-family:system-ui;margin:3em\"><h1>Keystead</h1><p>Anmeldung bei Google abgeschlossen – du kannst dieses Fenster schließen und zu Keystead zurückkehren.</p><p>Signed in to Google – you can close this window and return to Keystead.</p>";
-#[cfg(any(desktop, test))]
+#[cfg_attr(mobile, allow(dead_code))]
 const LOOPBACK_REFUSED: &str = "<!doctype html><meta charset=utf-8><title>Keystead</title><body style=\"font-family:system-ui;margin:3em\"><h1>Keystead</h1><p>Die Anmeldung wurde nicht erlaubt. Starte sie in Keystead erneut.</p><p>The sign-in was not allowed. Start it again in Keystead.</p>";
 
 /// Who the Drive user is (shown in the settings; no secret).
@@ -318,6 +335,183 @@ struct TokenAnswer {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
+}
+
+/// What the token endpoint gave a login: the refresh token (the secret) and
+/// a first access token.
+pub struct Tokens {
+    pub refresh: Zeroizing<String>,
+    pub access: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens").finish_non_exhaustive()
+    }
+}
+
+fn tokens_of(answer: &Answer) -> AppResult<Tokens> {
+    let tokens: TokenAnswer = parse(&answer.body)?;
+    let refresh = tokens
+        .refresh_token
+        .filter(|t| !t.is_empty())
+        .map(Zeroizing::new)
+        .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
+    Ok(Tokens {
+        refresh,
+        access: Zeroizing::new(tokens.access_token),
+    })
+}
+
+/// The `error` of an OAuth answer (`invalid_grant`, `authorization_pending`,
+/// …; only matched, never shown).
+fn oauth_error(answer: &Answer) -> String {
+    serde_json::from_slice::<Value>(&answer.body)
+        .ok()
+        .and_then(|v| v["error"].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Exchanges a code of the loopback login (with the verifier and the
+/// redirect it came to) for the tokens. A code Google does not take
+/// (`invalid_grant`: expired, used) is `invalid_input:gdrive_redirect`; a
+/// client Google does not know is `unsupported:gdrive_not_configured`.
+pub fn exchange_code(
+    client: &Client,
+    code: &str,
+    verifier: &str,
+    redirect: &str,
+    endpoints: &Endpoints,
+) -> AppResult<Tokens> {
+    let http = Http::new(Trust::System)?;
+    let body = form(&[
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", client.id.as_str()),
+        ("client_secret", client.secret.as_str()),
+        ("code_verifier", verifier),
+        ("redirect_uri", redirect),
+    ]);
+    let answer = post_form(&http, endpoints.oauth("token"), &body)?;
+    if answer.status.is_success() {
+        return tokens_of(&answer);
+    }
+    match (answer.status.as_u16(), oauth_error(&answer).as_str()) {
+        (400, "invalid_grant") => Err(AppError::invalid(BAD_REDIRECT)),
+        (400 | 401, _) => Err(AppError::unsupported(NOT_CONFIGURED)),
+        _ => Err(api_error(&answer, Op::Read)),
+    }
+}
+
+/// A started device login (the phone): the code the user enters at
+/// `verification_url`, and what Keystead asks the token endpoint with.
+pub struct DeviceLogin {
+    pub device_code: Zeroizing<String>,
+    pub user_code: String,
+    pub verification_url: String,
+    /// How long the codes are valid.
+    pub expires_in: Duration,
+    /// How long to wait between two polls.
+    pub interval: Duration,
+}
+
+impl std::fmt::Debug for DeviceLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceLogin")
+            .field("user_code", &self.user_code)
+            .field("verification_url", &self.verification_url)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Starts a device login. The answer is checked: a code of at most 64
+/// plain characters, an `https` page on google.com (the page opens it).
+pub fn start_device_login(client: &Client, endpoints: &Endpoints) -> AppResult<DeviceLogin> {
+    let http = Http::new(Trust::System)?;
+    let body = form(&[("client_id", client.id.as_str()), ("scope", SCOPE)]);
+    let answer = post_form(&http, endpoints.oauth("device/code"), &body)?;
+    if !answer.status.is_success() {
+        return Err(match answer.status.as_u16() {
+            400 | 401 | 403 => AppError::unsupported(NOT_CONFIGURED),
+            _ => api_error(&answer, Op::Read),
+        });
+    }
+    let v: Value = parse(&answer.body)?;
+    let text = |key: &str| v[key].as_str().map(str::to_owned);
+    let device_code = text("device_code")
+        .filter(|c| !c.is_empty() && c.len() <= 1024)
+        .map(Zeroizing::new)
+        .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
+    let user_code = text("user_code")
+        .filter(|c| {
+            !c.is_empty() && c.len() <= 64 && c.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+        })
+        .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
+    let verification_url = text("verification_url")
+        .or_else(|| text("verification_uri"))
+        .filter(|u| {
+            Url::parse(u).is_ok_and(|url| {
+                url.scheme() == "https"
+                    && url
+                        .host_str()
+                        .is_some_and(|h| h == "google.com" || h.ends_with(".google.com"))
+            })
+        })
+        .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
+    let seconds = |key: &str, default: u64, max: u64| {
+        Duration::from_secs(v[key].as_u64().unwrap_or(default).clamp(1, max))
+    };
+    Ok(DeviceLogin {
+        device_code,
+        user_code,
+        verification_url,
+        expires_in: seconds("expires_in", 1800, 3600),
+        interval: seconds("interval", 5, 60),
+    })
+}
+
+/// What a poll of a device login found.
+#[derive(Debug)]
+pub enum DevicePoll {
+    /// The user has not allowed it yet.
+    Pending,
+    /// Too often: wait longer.
+    SlowDown,
+    /// Allowed: the tokens.
+    Done(Tokens),
+    /// The user refused.
+    Refused,
+    /// The codes expired.
+    Expired,
+}
+
+/// Asks the token endpoint whether the user allowed the device login.
+pub fn poll_device_login(
+    client: &Client,
+    device_code: &str,
+    endpoints: &Endpoints,
+) -> AppResult<DevicePoll> {
+    let http = Http::new(Trust::System)?;
+    let body = form(&[
+        ("client_id", client.id.as_str()),
+        ("client_secret", client.secret.as_str()),
+        ("device_code", device_code),
+        ("grant_type", DEVICE_GRANT),
+    ]);
+    let answer = post_form(&http, endpoints.oauth("token"), &body)?;
+    if answer.status.is_success() {
+        return tokens_of(&answer).map(DevicePoll::Done);
+    }
+    Ok(match oauth_error(&answer).as_str() {
+        "authorization_pending" => DevicePoll::Pending,
+        "slow_down" => DevicePoll::SlowDown,
+        "access_denied" => DevicePoll::Refused,
+        "expired_token" | "invalid_grant" => DevicePoll::Expired,
+        "invalid_client" | "unauthorized_client" => {
+            return Err(AppError::unsupported(NOT_CONFIGURED))
+        }
+        _ => return Err(api_error(&answer, Op::Read)),
+    })
 }
 
 fn form(pairs: &[(&str, &str)]) -> Zeroizing<String> {
@@ -375,40 +569,12 @@ fn api_error(answer: &Answer, op: Op) -> AppError {
     AppError::unsupported(code)
 }
 
-/// Exchanges a code (with the verifier, and the redirect it came to) for
-/// the tokens and asks whose Drive it is; makes the folder if there is
-/// none yet (the app's own – it is never made by a sync otherwise).
-pub fn connect(
-    client: &Client,
-    code: &str,
-    verifier: &str,
-    redirect: &str,
-    endpoints: &Endpoints,
-) -> AppResult<Connected> {
+/// With the tokens of a login: asks whose Drive it is and makes the folder
+/// if there is none yet (the app's own – it is never made by a sync
+/// otherwise).
+pub fn connect(client: &Client, tokens: Tokens, endpoints: &Endpoints) -> AppResult<Connected> {
     let http = Http::new(Trust::System)?;
-    let mut pairs = vec![
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("client_id", client.id.as_str()),
-        ("code_verifier", verifier),
-        ("redirect_uri", redirect),
-    ];
-    if let Some(secret) = &client.secret {
-        pairs.push(("client_secret", secret.as_str()));
-    }
-    let answer = post_form(&http, endpoints.oauth("token"), &form(&pairs))?;
-    if answer.status == StatusCode::BAD_REQUEST {
-        return Err(AppError::invalid(BAD_REDIRECT));
-    }
-    if !answer.status.is_success() {
-        return Err(api_error(&answer, Op::Read));
-    }
-    let tokens: TokenAnswer = parse(&answer.body)?;
-    let refresh = tokens
-        .refresh_token
-        .map(Zeroizing::new)
-        .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
-    let access = Zeroizing::new(tokens.access_token);
+    let Tokens { refresh, access } = tokens;
     let request = http
         .request(
             Method::GET,
@@ -518,15 +684,13 @@ impl GdriveRemote {
                 return Ok(token);
             }
         }
-        let mut pairs = vec![
+        let body = form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", self.refresh.as_str()),
             ("client_id", self.client.id.as_str()),
-        ];
-        if let Some(secret) = &self.client.secret {
-            pairs.push(("client_secret", secret.as_str()));
-        }
-        let answer = post_form(&self.http, self.endpoints.oauth("token"), &form(&pairs))?;
+            ("client_secret", self.client.secret.as_str()),
+        ]);
+        let answer = post_form(&self.http, self.endpoints.oauth("token"), &body)?;
         if matches!(answer.status.as_u16(), 400 | 401) {
             return Err(AppError::unsupported(AUTH_FAILED));
         }
@@ -613,8 +777,12 @@ impl GdriveRemote {
             query.push_str(extra);
         }
         let mut out = Vec::new();
+        let mut seen = 0usize;
         let mut page_token: Option<String> = None;
-        loop {
+        for page_number in 0.. {
+            if page_number >= LIST_PAGES_MAX {
+                return Err(AppError::unsupported(BAD_RESPONSE));
+            }
             let mut url = self.endpoints.api("drive/v3/files");
             {
                 let mut pairs = url.query_pairs_mut();
@@ -635,6 +803,10 @@ impl GdriveRemote {
             let files = page["files"]
                 .as_array()
                 .ok_or_else(|| AppError::unsupported(BAD_RESPONSE))?;
+            seen += files.len();
+            if seen > LIST_ENTRIES_MAX {
+                return Err(AppError::unsupported(BAD_RESPONSE));
+            }
             for f in files {
                 let (Some(id), Some(name)) = (f["id"].as_str(), f["name"].as_str()) else {
                     continue;
@@ -647,11 +819,12 @@ impl GdriveRemote {
                     version: f["version"].as_str().map(str::to_owned),
                     created: f["createdTime"].as_str().unwrap_or_default().to_owned(),
                 });
-                if out.len() > LIST_ENTRIES_MAX {
-                    return Err(AppError::unsupported(BAD_RESPONSE));
-                }
             }
             match page["nextPageToken"].as_str() {
+                // The same page again: an answer that never ends.
+                Some(token) if page_token.as_deref() == Some(token) => {
+                    return Err(AppError::unsupported(BAD_RESPONSE))
+                }
                 Some(token) if !token.is_empty() => page_token = Some(token.to_owned()),
                 _ => break,
             }
@@ -728,17 +901,22 @@ impl GdriveRemote {
             .map(|f| f.id))
     }
 
-    /// The file at `path` (the oldest of its name).
-    fn file(&self, path: &str) -> AppResult<Option<(String, DriveFile)>> {
+    /// The files at `path`, the oldest (the one) first.
+    fn files_at(&self, path: &str) -> AppResult<Vec<DriveFile>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
         let Some(parent) = self.dir_id(dir)? else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         Ok(self
             .children(&parent, &format!("name={}", quoted(name)))?
             .into_iter()
-            .find(|f| !f.dir)
-            .map(|f| (parent, f)))
+            .filter(|f| !f.dir)
+            .collect())
+    }
+
+    /// The file at `path` (the oldest of its name).
+    fn file(&self, path: &str) -> AppResult<Option<DriveFile>> {
+        Ok(self.files_at(path)?.into_iter().next())
     }
 
     fn meta(path: &str, f: &DriveFile) -> RemoteMeta {
@@ -824,16 +1002,6 @@ impl GdriveRemote {
             Err(api_error(&answer, Op::Write))
         }
     }
-
-    /// "Abmelden": Google forgets the token.
-    pub fn revoke(&self) -> AppResult<()> {
-        let body = form(&[("token", self.refresh.as_str())]);
-        let answer = post_form(&self.http, self.endpoints.oauth("revoke"), &body)?;
-        if answer.status.is_success() || answer.status == StatusCode::BAD_REQUEST {
-            return Ok(());
-        }
-        Err(api_error(&answer, Op::Read))
-    }
 }
 
 impl Remote for GdriveRemote {
@@ -872,7 +1040,7 @@ impl Remote for GdriveRemote {
 
     fn get(&self, path: &str, max: u64) -> AppResult<(Vec<u8>, Option<String>)> {
         check_path(path)?;
-        let Some((_, file)) = self.file(path)? else {
+        let Some(file) = self.file(path)? else {
             return Err(AppError::unsupported(FILE_MISSING));
         };
         let url = self
@@ -901,10 +1069,10 @@ impl Remote for GdriveRemote {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
         match self.file(path)? {
             Some(_) if pre == Precondition::IfNoneMatch => Err(AppError::unsupported(CHANGED)),
-            Some((_, file)) if matches!(&pre, Precondition::IfMatch(v) if file.version.as_deref() != Some(v.as_str())) => {
+            Some(file) if matches!(&pre, Precondition::IfMatch(v) if file.version.as_deref() != Some(v.as_str())) => {
                 Err(AppError::unsupported(CHANGED))
             }
-            Some((_, file)) => {
+            Some(file) => {
                 let url = self.endpoints.api(&format!(
                     "upload/drive/v3/files/{}?uploadType=media&fields=id,size,version,createdTime",
                     file.id
@@ -993,13 +1161,20 @@ impl Remote for GdriveRemote {
                 None => Err(AppError::unsupported(FILE_MISSING)),
             };
         }
-        let Some((_, file)) = self.file(path)? else {
+        let files = self.files_at(path)?;
+        let Some(file) = files.first() else {
             return Err(AppError::unsupported(FILE_MISSING));
         };
         if let Precondition::IfMatch(version) = &pre {
             if file.version.as_deref() != Some(version.as_str()) {
                 return Err(AppError::unsupported(CHANGED));
             }
+        }
+        // The later files of the name first (ignored, but they would become
+        // "the" file once the oldest is gone); a failure leaves the oldest,
+        // so the engine's next try finds it unchanged.
+        for later in &files[1..] {
+            self.delete_id(&later.id)?;
         }
         self.delete_id(&file.id)
     }
@@ -1021,7 +1196,7 @@ mod tests {
     }
 
     fn signed_in(fake: &FakeDrive) -> GdriveRemote {
-        let connected = connect(
+        let tokens = exchange_code(
             &client().unwrap(),
             &fake.code(),
             &fake.verifier(),
@@ -1029,6 +1204,7 @@ mod tests {
             &fake.endpoints(),
         )
         .unwrap();
+        let connected = connect(&client().unwrap(), tokens, &fake.endpoints()).unwrap();
         GdriveRemote::new(
             client().unwrap(),
             &connected.account.account_id,
@@ -1038,12 +1214,14 @@ mod tests {
         .unwrap()
     }
 
+    const LOOPBACK: &str = "http://127.0.0.1:1234/";
+
     #[test]
     fn the_login_url_and_the_redirect() {
         let login = Login::new().unwrap();
         let url = Url::parse(&authorize_url(
             "cid",
-            ANDROID_REDIRECT,
+            LOOPBACK,
             &login.pkce.challenge,
             &login.state,
         ))
@@ -1051,12 +1229,13 @@ mod tests {
         assert_eq!(url.host_str(), Some("accounts.google.com"));
         let pairs: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(pairs["scope"], SCOPE);
-        assert_eq!(pairs["redirect_uri"], ANDROID_REDIRECT);
+        assert_eq!(pairs["redirect_uri"], LOOPBACK);
         assert_eq!(pairs["code_challenge_method"], "S256");
         assert_eq!(pairs["state"], login.state);
         assert_eq!(pairs["access_type"], "offline");
+        assert_eq!(pairs["prompt"], "select_account consent");
         // Only the waiting state's code.
-        let good = format!("{ANDROID_REDIRECT}?state={}&code=4/abc", login.state);
+        let good = format!("{LOOPBACK}?state={}&code=4/abc", login.state);
         assert_eq!(
             state_of_redirect(&good).as_deref(),
             Some(login.state.as_str())
@@ -1066,12 +1245,9 @@ mod tests {
             "4/abc"
         );
         for bad in [
-            format!("{ANDROID_REDIRECT}?state=other&code=4/abc"),
-            format!(
-                "{ANDROID_REDIRECT}?state={}&error=access_denied",
-                login.state
-            ),
-            format!("{ANDROID_REDIRECT}?state={}", login.state),
+            format!("{LOOPBACK}?state=other&code=4/abc"),
+            format!("{LOOPBACK}?state={}&error=access_denied", login.state),
+            format!("{LOOPBACK}?state={}", login.state),
             "nonsense".to_owned(),
         ] {
             assert_eq!(
@@ -1196,6 +1372,120 @@ mod tests {
         fake.add_file(&vault(), b"x");
         assert!(remote.probe().unwrap().exists);
         assert_eq!(remote.list("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_phone_login_is_a_device_code() {
+        use super::fake::{Device, USER_CODE};
+        let fake = FakeDrive::new();
+        let client = client().unwrap();
+        let login = start_device_login(&client, &fake.endpoints()).unwrap();
+        assert_eq!(login.user_code, USER_CODE);
+        assert_eq!(login.verification_url, "https://www.google.com/device");
+        assert_eq!(login.interval, Duration::from_secs(5));
+        assert!(!format!("{login:?}").contains("the-device-code"));
+        let poll = |fake: &FakeDrive| {
+            poll_device_login(&client, &login.device_code, &fake.endpoints()).unwrap()
+        };
+        assert!(matches!(poll(&fake), DevicePoll::Pending));
+        fake.slow_down_next_poll();
+        assert!(matches!(poll(&fake), DevicePoll::SlowDown));
+        fake.set_device(Device::Allowed);
+        let DevicePoll::Done(tokens) = poll(&fake) else {
+            panic!("allowed: the tokens");
+        };
+        let connected = connect(&client, tokens, &fake.endpoints()).unwrap();
+        assert_eq!(connected.account.account_id, "perm-1");
+        assert!(fake.has_folder());
+        // The code is used once.
+        assert!(matches!(poll(&fake), DevicePoll::Expired));
+        fake.set_device(Device::Refused);
+        assert!(matches!(poll(&fake), DevicePoll::Refused));
+        fake.set_device(Device::Expired);
+        assert!(matches!(poll(&fake), DevicePoll::Expired));
+        fake.fail_next_token(401, "invalid_client");
+        assert_eq!(
+            poll_device_login(&client, &login.device_code, &fake.endpoints())
+                .unwrap_err()
+                .code(),
+            "unsupported:gdrive_not_configured"
+        );
+        // A page the answer names must be Google's, over https.
+        for url in [
+            "https://evil.example/device",
+            "http://www.google.com/device",
+            "javascript:alert(1)",
+        ] {
+            fake.set_device_url(url);
+            assert!(
+                has_code(
+                    &start_device_login(&client, &fake.endpoints()).unwrap_err(),
+                    BAD_RESPONSE
+                ),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_google_refuses_and_a_client_it_does_not_know() {
+        let fake = FakeDrive::new();
+        let client = client().unwrap();
+        let exchange = || {
+            exchange_code(
+                &client,
+                &fake.code(),
+                &fake.verifier(),
+                LOOPBACK,
+                &fake.endpoints(),
+            )
+        };
+        for (status, error, code) in [
+            (400, "invalid_grant", "invalid_input:gdrive_redirect"),
+            (401, "invalid_client", "unsupported:gdrive_not_configured"),
+            (
+                400,
+                "redirect_uri_mismatch",
+                "unsupported:gdrive_not_configured",
+            ),
+            (500, "backend", "unsupported:sync_server_error"),
+        ] {
+            fake.fail_next_token(status, error);
+            assert_eq!(exchange().unwrap_err().code(), code, "{error}");
+        }
+        assert!(exchange().is_ok());
+        // A wrong code or verifier: Google's invalid_grant.
+        assert_eq!(
+            exchange_code(
+                &client,
+                "4/other",
+                &fake.verifier(),
+                LOOPBACK,
+                &fake.endpoints()
+            )
+            .unwrap_err()
+            .code(),
+            "invalid_input:gdrive_redirect"
+        );
+    }
+
+    #[test]
+    fn a_delete_takes_every_file_of_the_name_and_endless_listings_end() {
+        let fake = FakeDrive::new();
+        let remote = signed_in(&fake);
+        fake.add_file(&vault(), b"older");
+        fake.add_file(&vault(), b"newer");
+        let version = remote.get(&vault(), 100).unwrap().1.unwrap();
+        remote
+            .delete(&vault(), Precondition::IfMatch(version))
+            .unwrap();
+        assert_eq!(fake.count(&vault()), 0, "no newer copy comes back");
+        assert!(has_code(
+            &remote.get(&vault(), 100).unwrap_err(),
+            FILE_MISSING
+        ));
+        fake.endless_pages();
+        assert!(has_code(&remote.list("").unwrap_err(), BAD_RESPONSE));
     }
 
     #[test]

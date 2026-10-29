@@ -35,6 +35,7 @@ struct State {
     fail_next: Option<(u16, Value)>,
     oversize_next: bool,
     too_many: bool,
+    empty_pages: bool,
 }
 
 pub struct FakeDropbox {
@@ -175,6 +176,11 @@ impl FakeDropbox {
     pub fn too_many_entries(&self) {
         self.state().too_many = true;
     }
+
+    /// Every page from now on is empty and says there is more.
+    pub fn endless_empty_pages(&self) {
+        self.state().empty_pages = true;
+    }
 }
 
 fn serve(state: &Mutex<State>, stream: &mut std::net::TcpStream) {
@@ -290,8 +296,12 @@ fn serve(state: &Mutex<State>, stream: &mut std::net::TcpStream) {
                         .map(|i| json!({".tag": "file", "name": format!("f{i}"), "rev": "1", "size": 1}))
                         .collect();
                 }
-                let page: Vec<Value> = entries.iter().skip(offset).take(st.page_size).cloned().collect();
-                let more = offset + page.len() < entries.len();
+                let mut page: Vec<Value> = entries.iter().skip(offset).take(st.page_size).cloned().collect();
+                let mut more = offset + page.len() < entries.len();
+                if st.empty_pages {
+                    page.clear();
+                    more = true;
+                }
                 let mut text = json!({"entries": page, "cursor": format!("{dir}|{}", offset + st.page_size),
                     "has_more": more})
                 .to_string();

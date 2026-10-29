@@ -13,6 +13,7 @@ import type { FolderStatus, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
+import { useSyncErrorText } from "../lib/syncErrors";
 
 export type SyncAction = "link" | "server" | "dropbox" | "gdrive" | "sync" | "unlink";
 
@@ -72,6 +73,7 @@ export function FolderSyncProvider({
   children: ReactNode;
 }) {
   const { t, tp, errorText } = useT();
+  const syncErrorFor = useSyncErrorText();
   const toast = useToast();
   const confirm = useConfirm();
   const [status, setStatus] = useState<FolderStatus | null>(null);
@@ -177,7 +179,7 @@ export function FolderSyncProvider({
         const linked = await api.linkDropbox(code);
         setStatus(linked);
         onStatus(linked);
-        if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+        if (linked.lastError) toast.error(syncErrorFor(linked.lastError, "dropbox"));
         else if (usableVaults(linked) === 0) toast.info(t("sync.dropboxLinkedEmpty"));
         else toast.success(tp("sync.dropboxLinkedVaults", usableVaults(linked)));
         return true;
@@ -188,7 +190,7 @@ export function FolderSyncProvider({
         setBusy(null);
       }
     },
-    [errorText, onStatus, t, toast, tp],
+    [errorText, onStatus, syncErrorFor, t, toast, tp],
   );
 
   const linkGdrive = useCallback(async () => {
@@ -197,7 +199,7 @@ export function FolderSyncProvider({
       const linked = await api.linkGdrive();
       setStatus(linked);
       onStatus(linked);
-      if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+      if (linked.lastError) toast.error(syncErrorFor(linked.lastError, "gdrive"));
       else if (usableVaults(linked) === 0) toast.info(t("sync.gdriveLinkedEmpty"));
       else toast.success(tp("sync.gdriveLinkedVaults", usableVaults(linked)));
       return true;
@@ -207,7 +209,7 @@ export function FolderSyncProvider({
     } finally {
       setBusy(null);
     }
-  }, [errorText, onStatus, t, toast, tp]);
+  }, [errorText, onStatus, syncErrorFor, t, toast, tp]);
 
   const sync = useCallback(async () => {
     setBusy("sync");

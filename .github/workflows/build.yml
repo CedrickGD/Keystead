@@ -318,8 +318,10 @@ jobs:
         env:
           KEYSTEAD_VERSION_LABEL: ${{ steps.version.outputs.version }}
           KEYSTEAD_DROPBOX_APP_KEY: ${{ vars.KEYSTEAD_DROPBOX_APP_KEY }}
-          # Google's "Android" client (custom URI scheme; no secret).
-          KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID: ${{ vars.KEYSTEAD_GDRIVE_ANDROID_CLIENT_ID }}
+          # Google's "TVs and Limited Input devices" client (the phone's
+          # device flow; its secret is not confidential either).
+          KEYSTEAD_GDRIVE_DEVICE_CLIENT_ID: ${{ vars.KEYSTEAD_GDRIVE_DEVICE_CLIENT_ID }}
+          KEYSTEAD_GDRIVE_DEVICE_CLIENT_SECRET: ${{ secrets.KEYSTEAD_GDRIVE_DEVICE_CLIENT_SECRET }}
         run: npx tauri android build --apk --target aarch64 --ci
 
       - name: Remove the signing key

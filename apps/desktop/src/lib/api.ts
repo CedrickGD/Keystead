@@ -12,6 +12,7 @@ import type {
   FolderConflictCopy,
   FolderOffer,
   FolderStatus,
+  GdriveLoginState,
   GeneratedPasswordInfo,
   GeneratorOptions,
   GeneratorPresets,
@@ -282,13 +283,18 @@ export const api = {
   dropboxLogin: () => call<string>("dropbox_login"),
   /** Desktop: finishes the Dropbox login with the code; the copies go to the app folder from now on. */
   setSyncDropbox: (code: string) => call<MirrorStatus>("set_sync_dropbox", { code }),
-  /** Both platforms: starts a Google login – the URL of the consent page to open in the browser. */
-  gdriveLogin: () => call<string>("gdrive_login"),
-  /** Both platforms: whether Google sent the user back to the waiting login (then link/set it). */
-  gdriveLoginReady: () => call<boolean>("gdrive_login_ready"),
-  /** Desktop: finishes the Google login whose redirect came; the copies go to the Drive folder from now on. */
+  /** Both platforms: whether a Dropbox login waits for its code (the dialog opens at the code field). */
+  dropboxLoginWaiting: () => call<boolean>("dropbox_login_waiting"),
+  /**
+   * Both platforms: starts a Google login (or offers the waiting one again) – the page to open: the
+   * consent page (PC) or Google's page for the device code (phone, `userCode`).
+   */
+  gdriveLogin: () => call<GdriveLoginState>("gdrive_login"),
+  /** Both platforms: the waiting Google login – `ready` once Google allowed it (then link/set it). */
+  gdriveLoginReady: () => call<GdriveLoginState>("gdrive_login_ready"),
+  /** Desktop: finishes the Google login Google allowed; the copies go to the Drive folder from now on. */
   setSyncGdrive: () => call<MirrorStatus>("set_sync_gdrive"),
-  /** Desktop: signs the cloud account out (the token is revoked and forgotten; the copies there stay). */
+  /** Desktop: signs the cloud account out (forgotten here, Dropbox also revokes it; the copies there stay). */
   clearSyncCloud: () => call<MirrorStatus>("clear_sync_cloud"),
   /** Both platforms: the server form's connection test – nothing is stored. */
   webdavTest: (config: WebDavConfig) => call<WebDavTest>("webdav_test", { config }),
@@ -361,7 +367,7 @@ export const api = {
   linkWebdav: (config: WebDavConfig) => call<FolderStatus>("link_webdav", { config }),
   /** Phone: finishes the Dropbox login with the code and links the app folder (then syncs). */
   linkDropbox: (code: string) => call<FolderStatus>("link_dropbox", { code }),
-  /** Phone: finishes the Google login whose redirect came and links the Drive folder (then syncs). */
+  /** Phone: finishes the Google login Google allowed and links the Drive folder (then syncs). */
   linkGdrive: () => call<FolderStatus>("link_gdrive"),
   /** Syncs now; rejects with the sync's error (also recorded in `lastError`). */
   syncNow: () => call<FolderStatus>("sync_now"),

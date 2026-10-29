@@ -202,6 +202,7 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::sync_server::webdav_test,
             crate::sync_server::webdav_create_folder,
             crate::sync_server::dropbox_login,
+            crate::sync_server::dropbox_login_waiting,
             crate::sync_server::gdrive_login,
             crate::sync_server::gdrive_login_ready,
             #[cfg(desktop)]
@@ -740,7 +741,6 @@ mod tests {
             "writeFile",
             "writeConflictCopy",
             "networkKind",
-            "takeOAuthRedirect",
         ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),
@@ -754,21 +754,7 @@ mod tests {
         assert!(network.contains("getNetworkCapabilities"));
         assert!(network.contains("TRANSPORT_WIFI"));
         assert!(network.contains("TRANSPORT_CELLULAR"));
-        // A Google sign-in's redirect: only the app's scheme and path, kept
-        // for Rust (which checks the state), taken once.
-        let redirect = &folder[folder.find("override fun onNewIntent").unwrap()..];
-        let redirect = &redirect[..redirect.find("\n  }").unwrap()];
-        assert!(redirect.contains("Intent.ACTION_VIEW"));
-        assert!(redirect.contains("data.scheme != OAUTH_SCHEME || data.path != OAUTH_PATH"));
-        assert!(
-            folder.contains(r#"private const val OAUTH_SCHEME = "io.github.cedrickgd.keystead""#)
-        );
-        assert!(folder.contains(r#"private const val OAUTH_PATH = "/oauth2redirect""#));
-        assert!(folder.contains("redirect.getAndSet(null)"));
-        assert_eq!(
-            format!("{}:{}", "io.github.cedrickgd.keystead", "/oauth2redirect"),
-            crate::remote::gdrive::ANDROID_REDIRECT
-        );
+        assert!(!folder.contains("onNewIntent"), "no redirect is taken in");
 
         // The server password's plugin: AES-256-GCM in the Android
         // Keystore, no authentication per use but only while the phone is
@@ -819,12 +805,12 @@ mod tests {
         assert!(manifest.contains(r#"android:allowBackup="false""#));
         assert!(manifest.contains(r#"android:dataExtractionRules="@xml/data_extraction_rules""#));
         assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
-        // Two intent filters: the launcher's and the Google sign-in's
-        // redirect (the app's own scheme only, to the singleTask activity).
-        assert_eq!(manifest.matches("<intent-filter>").count(), 2);
-        assert_eq!(manifest.matches("<data ").count(), 1);
-        assert!(manifest.contains(r#"<data android:scheme="io.github.cedrickgd.keystead" />"#));
-        assert!(manifest.contains(r#"android:launchMode="singleTask""#));
+        // One intent filter, the launcher's: nothing else can start the
+        // activity with data (the Google sign-in needs no redirect into the
+        // app – the phone uses the device flow).
+        assert_eq!(manifest.matches("<intent-filter>").count(), 1);
+        assert!(!manifest.contains("<data "));
+        assert!(!manifest.contains("android.intent.action.VIEW"));
         assert!(manifest.contains(r#"android.webkit.WebView.EnableSafeBrowsing""#));
         let permissions: BTreeSet<&str> = manifest
             .split("<uses-permission")
@@ -1068,6 +1054,7 @@ mod tests {
             "webdav_test",
             "webdav_create_folder",
             "dropbox_login",
+            "dropbox_login_waiting",
             "gdrive_login",
             "gdrive_login_ready",
         ] {

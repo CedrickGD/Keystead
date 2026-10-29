@@ -5,9 +5,11 @@
 // allowed Keystead's app folder, the user pastes it here, and "Verbinden"
 // hands it to the caller's `onConnect` (`link_dropbox` on the phone,
 // `set_sync_dropbox` on the PC). Neither the code nor a token is kept by the
-// page.
+// page. Opened again while a login waits (after the phone's background lock,
+// say), it opens at the code field: the backend still has that login's
+// verifier, and "Dropbox-Seite erneut öffnen" offers the same page again.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Cloud, ExternalLink, PlugZap, TriangleAlert } from "lucide-react";
 import { api, openExternal } from "../lib/api";
 import { useT } from "../i18n";
@@ -28,6 +30,22 @@ export function DropboxDialog({
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<"open" | "connect" | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // A login that still waits: straight to the code field.
+  useEffect(() => {
+    let gone = false;
+    api
+      .dropboxLoginWaiting()
+      .then((waiting) => {
+        if (!gone && waiting) setOpened(true);
+      })
+      .catch(() => {
+        /* start from the beginning */
+      });
+    return () => {
+      gone = true;
+    };
+  }, []);
 
   const open = async () => {
     setBusy("open");
@@ -51,6 +69,10 @@ export function DropboxDialog({
       if (await onConnect(code.trim())) {
         setCode("");
         onClose();
+      } else if (!(await api.dropboxLoginWaiting().catch(() => false))) {
+        // The login expired: start again with "Bei Dropbox anmelden".
+        setOpened(false);
+        setCode("");
       }
     } finally {
       setBusy(null);

@@ -76,7 +76,9 @@
 // it), the code "demo" connects (any other is `invalid_input:dropbox_code`);
 // the phone links the account like a folder, the PC keeps its copies there.
 // Google Drive likewise: "Bei Google anmelden" opens Google's page (it refuses
-// the demo client), and the login counts as sent back two seconds later.
+// the demo client; the phone gets the device code "WDJB-MJHT" and
+// google.com/device), and the login counts as allowed two seconds later. A
+// dialog opened again while a login waits continues it (both providers).
 // `?update=available` announces a fake update ~1 s after start (banner),
 // `?update=portable` the same for a portable copy (download link instead of
 // install), `?update=none` makes "Nach Updates suchen" find nothing; by
@@ -1067,8 +1069,22 @@ const MOCK_GDRIVE: SyncCloud = {
   email: "demo@gmail.com",
 };
 
-/** When the mock's Google login started (it is "sent back" two seconds later). */
+/** When the mock's Google login started (it is "allowed" two seconds later). */
 let gdriveLoginAt: number | null = null;
+/** When the mock's Dropbox login started. */
+let dropboxLoginAt: number | null = null;
+
+/** The waiting Google login as `gdrive_login` / `gdrive_login_ready` answer. */
+function mockGdriveState(at: number) {
+  const phone = isPhone();
+  return {
+    ready: Date.now() - at >= 2000,
+    url: phone
+      ? "https://www.google.com/device"
+      : "https://accounts.google.com/o/oauth2/v2/auth?client_id=demo&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file&code_challenge_method=S256&access_type=offline",
+    userCode: phone ? "WDJB-MJHT" : null,
+  };
+}
 
 /** The mock's Google login once it came back (and ends it). */
 function mockGdriveFinish(): SyncCloud {
@@ -1080,7 +1096,9 @@ function mockGdriveFinish(): SyncCloud {
 /** A Dropbox login of the mock: the code "demo" connects. */
 function mockDropboxCode(args: Record<string, unknown>): SyncCloud {
   const code = typeof args.code === "string" ? args.code.trim() : "";
+  if (dropboxLoginAt === null) fail("unsupported:dropbox_login_expired");
   if (code !== "demo") fail("invalid_input:dropbox_code");
+  dropboxLoginAt = null;
   return { ...MOCK_DROPBOX };
 }
 
@@ -2171,16 +2189,20 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return mirrorStatus();
     }
 
+    case "dropbox_login_waiting":
+      return dropboxLoginAt !== null && Date.now() - dropboxLoginAt < 15 * 60_000;
+
     case "dropbox_login":
+      dropboxLoginAt = Date.now();
       return "https://www.dropbox.com/oauth2/authorize?client_id=demo&response_type=code&code_challenge_method=S256&token_access_type=offline";
 
     case "gdrive_login":
-      gdriveLoginAt = Date.now();
-      return "https://accounts.google.com/o/oauth2/v2/auth?client_id=demo&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file&code_challenge_method=S256&access_type=offline";
+      if (gdriveLoginAt === null) gdriveLoginAt = Date.now();
+      return mockGdriveState(gdriveLoginAt);
 
     case "gdrive_login_ready":
       if (gdriveLoginAt === null) fail("unsupported:gdrive_login_expired");
-      return Date.now() - gdriveLoginAt >= 2000;
+      return mockGdriveState(gdriveLoginAt);
 
     case "set_sync_gdrive": {
       const cloud = mockGdriveFinish();
@@ -2507,6 +2529,7 @@ const PHONE_COMMANDS = new Set([
   "webdav_test",
   "webdav_create_folder",
   "dropbox_login",
+  "dropbox_login_waiting",
   "link_dropbox",
   "gdrive_login",
   "gdrive_login_ready",

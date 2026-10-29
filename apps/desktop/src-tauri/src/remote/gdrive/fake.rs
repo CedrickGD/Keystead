@@ -1,10 +1,12 @@
 //! An in-process fake of Google's OAuth and Drive v3 for the unit tests:
-//! the token endpoint (code + PKCE verifier, refresh tokens), revoke,
-//! `about`, `files.list` with the queries [`super::GdriveRemote`] sends
+//! the token endpoint (code + PKCE verifier and secret, refresh tokens, the
+//! device flow's polls), the device code endpoint, `about`, `files.list` with the queries [`super::GdriveRemote`] sends
 //! (parent, name, folder type, not trashed) and paging, `alt=media`,
 //! multipart create, media update, folder create and delete – and faults
-//! (expired and revoked tokens, an error for the next write, a file of the
-//! same name that another device makes just before ours, hostile names).
+//! (expired and revoked tokens, an error for the next write or token
+//! answer, a file of the same name that another device makes just before
+//! ours, hostile names, a device login the user allows, refuses or lets
+//! expire, "slow down").
 //! Plain HTTP on 127.0.0.1; `/oauth/…` and `/api/…` stand for the two
 //! hosts.
 
@@ -21,6 +23,20 @@ use crate::remote::test_server::{read_request, respond};
 const CODE: &str = "4/the-code-google-sent";
 const VERIFIER: &str = "the-verifier";
 const PERMISSION_ID: &str = "perm-1";
+const DEVICE_CODE: &str = "the-device-code";
+pub const USER_CODE: &str = "WDJB-MJHT";
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+
+/// Where a device login is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Pending,
+    Allowed,
+    Refused,
+    Expired,
+    /// The tokens were taken (the code is used).
+    Used,
+}
 
 #[derive(Debug, Clone)]
 struct File {
@@ -40,7 +56,13 @@ struct State {
     files: BTreeMap<String, File>,
     page_size: Option<usize>,
     fail_next_write: Option<(u16, String)>,
+    fail_next_token: Option<(u16, String)>,
     before_create: Option<(String, Vec<u8>)>,
+    device: Option<Device>,
+    device_url: Option<String>,
+    slow_down_next: bool,
+    device_polls: u32,
+    endless_pages: bool,
 }
 
 impl State {
@@ -283,6 +305,39 @@ impl FakeDrive {
         self.state().access.clear();
     }
 
+    /// The next answer of the token endpoint is Google's `error`.
+    pub fn fail_next_token(&self, status: u16, error: &str) {
+        self.state().fail_next_token = Some((status, error.to_owned()));
+    }
+
+    /// The state of the device login (`None` until one started).
+    pub fn device(&self) -> Option<Device> {
+        self.state().device
+    }
+
+    pub fn set_device(&self, device: Device) {
+        self.state().device = Some(device);
+    }
+
+    /// The page the next device login names.
+    pub fn set_device_url(&self, url: &str) {
+        self.state().device_url = Some(url.to_owned());
+    }
+
+    /// The next poll gets "slow down".
+    pub fn slow_down_next_poll(&self) {
+        self.state().slow_down_next = true;
+    }
+
+    pub fn device_polls(&self) -> u32 {
+        self.state().device_polls
+    }
+
+    /// Every listing page from now on is empty and names a next one.
+    pub fn endless_pages(&self) {
+        self.state().endless_pages = true;
+    }
+
     pub fn revoke_refresh_tokens(&self) {
         self.state().refresh.clear();
     }
@@ -321,9 +376,60 @@ fn serve(state: &Mutex<State>, stream: &mut std::net::TcpStream) {
     let query: BTreeMap<String, String> = url.query_pairs().into_owned().collect();
     let path = url.path().to_owned();
     let (status, body): (u16, Value) = 'answer: {
+        if path == "/oauth/device/code" {
+            let f = form(&request.body);
+            if f.get("scope").map(String::as_str) != Some(super::SCOPE)
+                || !f.contains_key("client_id")
+            {
+                break 'answer (400, json!({"error": "invalid_scope"}));
+            }
+            st.device = Some(Device::Pending);
+            let url = st
+                .device_url
+                .clone()
+                .unwrap_or_else(|| "https://www.google.com/device".to_owned());
+            break 'answer (
+                200,
+                json!({"device_code": DEVICE_CODE, "user_code": USER_CODE, "verification_url": url,
+                    "expires_in": 1800, "interval": 5}),
+            );
+        }
         if path == "/oauth/token" {
             let f = form(&request.body);
+            if let Some((status, error)) = st.fail_next_token.take() {
+                break 'answer (status, json!({"error": error}));
+            }
+            let secret_ok = f.get("client_secret").map(String::as_str) == Some("client-secret");
             break 'answer match f.get("grant_type").map(String::as_str) {
+                Some(DEVICE_GRANT) if !secret_ok => (401, json!({"error": "invalid_client"})),
+                Some(DEVICE_GRANT)
+                    if f.get("device_code").map(String::as_str) == Some(DEVICE_CODE) =>
+                {
+                    st.device_polls += 1;
+                    if std::mem::take(&mut st.slow_down_next) {
+                        break 'answer (403, json!({"error": "slow_down"}));
+                    }
+                    match st.device {
+                        Some(Device::Allowed) => {
+                            st.device = Some(Device::Used);
+                            let (refresh, access) = (st.token(), st.token());
+                            st.refresh.insert(refresh.clone());
+                            st.access.insert(access.clone());
+                            (
+                                200,
+                                json!({"access_token": access, "expires_in": 3599, "refresh_token": refresh,
+                                "scope": super::SCOPE, "token_type": "Bearer"}),
+                            )
+                        }
+                        Some(Device::Pending) => (428, json!({"error": "authorization_pending"})),
+                        Some(Device::Refused) => (403, json!({"error": "access_denied"})),
+                        Some(Device::Expired) => (400, json!({"error": "expired_token"})),
+                        _ => (400, json!({"error": "invalid_grant"})),
+                    }
+                }
+                Some("authorization_code") if !secret_ok => {
+                    (401, json!({"error": "invalid_client"}))
+                }
                 Some("authorization_code")
                     if f.get("code").map(String::as_str) == Some(CODE)
                         && f.get("code_verifier").map(String::as_str) == Some(VERIFIER)
@@ -348,11 +454,6 @@ fn serve(state: &Mutex<State>, stream: &mut std::net::TcpStream) {
                 }
                 _ => (400, json!({"error": "invalid_grant"})),
             };
-        }
-        if path == "/oauth/revoke" {
-            let token = form(&request.body).remove("token").unwrap_or_default();
-            st.refresh.remove(&token);
-            break 'answer (200, json!({}));
         }
         let token = request
             .headers
@@ -413,6 +514,9 @@ fn serve(state: &Mutex<State>, stream: &mut std::net::TcpStream) {
                 let mut v = json!({"files": page});
                 if offset + size < hits.len() {
                     v["nextPageToken"] = json!((offset + size).to_string());
+                }
+                if st.endless_pages {
+                    v = json!({"files": [], "nextPageToken": (offset + 1).to_string()});
                 }
                 (200, v)
             }

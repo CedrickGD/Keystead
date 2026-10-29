@@ -2215,7 +2215,8 @@ pub struct MirrorTracker {
     /// before the state lock.
     pass: Mutex<()>,
     /// Counts the starts over ([`MirrorTracker::reset`]): a round that began
-    /// before one does not carry its server errors into the new pause.
+    /// before one does not carry its server errors into the new pause
+    /// (bumped and compared under `backoff`'s lock).
     epoch: AtomicU64,
     /// Deleted vaults whose copy could not be removed yet: tried again with
     /// every pass (while the app runs).
@@ -2282,9 +2283,14 @@ impl MirrorTracker {
     }
 
     fn reset(&self) {
-        self.epoch.fetch_add(1, Ordering::SeqCst);
+        {
+            // Under the backoff's lock: a round comparing its epoch there
+            // sees either the old pause or the new epoch, never both.
+            let mut backoff = lock(&self.backoff);
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+            backoff.reset();
+        }
         *lock(&self.progress) = Progress::default();
-        lock(&self.backoff).reset();
         *lock(&self.server) = None;
     }
 
@@ -2547,8 +2553,11 @@ fn process_round(core: &Core, jobs: Vec<Job>, scan_anyway: Option<bool>) {
         return;
     };
     let results = run_round(core, &*store, jobs, scan_anyway);
-    if tracker.epoch.load(Ordering::SeqCst) == epoch {
-        lock(&tracker.backoff).record_now(results.error.as_deref());
+    {
+        let mut backoff = lock(&tracker.backoff);
+        if tracker.epoch.load(Ordering::SeqCst) == epoch {
+            backoff.record_now(results.error.as_deref());
+        }
     }
     if tracker.record(core, store.key(), results) {
         core.emit(EVENT_STATUS, tracker.status(core));
@@ -4803,14 +4812,16 @@ mod tests {
 
             let fake = FakeDrive::new();
             TEST_ENDPOINTS.with(|e| *e.borrow_mut() = Some(fake.endpoints()));
-            let connected = gdrive::connect(
-                &gdrive::client().unwrap(),
+            let client = gdrive::client().unwrap();
+            let tokens = gdrive::exchange_code(
+                &client,
                 &fake.code(),
                 &fake.verifier(),
                 "http://127.0.0.1:1/",
                 &fake.endpoints(),
             )
             .unwrap();
+            let connected = gdrive::connect(&client, tokens, &fake.endpoints()).unwrap();
             let cloud = SyncCloud {
                 provider: keystead_core::settings::CloudProvider::Gdrive,
                 account_id: connected.account.account_id.clone(),

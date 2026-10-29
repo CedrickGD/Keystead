@@ -1503,12 +1503,30 @@ mark {
   margin-right: 0;
 }
 
-/* The Google Drive login (components/GdriveDialog.tsx) while it waits. */
+/* The Google Drive login (components/GdriveDialog.tsx): the phone's device
+   code, large enough to read and type, and the line while it waits. */
 .gdrive-wait {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--text-muted);
+  color: var(--text-3);
+}
+
+.gdrive-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.gdrive-code-label {
+  color: var(--text-3);
+}
+
+.gdrive-code-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
 /* The WebDAV server form (components/WebDavForm.tsx): its notes stack their

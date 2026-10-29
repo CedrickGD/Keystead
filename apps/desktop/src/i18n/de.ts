@@ -994,6 +994,25 @@ export const de = {
   "sync.connectGdrive": "Mit Google Drive verbinden",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox folgt bald.",
+  "sync.cloudError.authFailed":
+    "{provider} erlaubt den Zugang nicht mehr. Melde dich unter Einstellungen → Synchronisierung erneut an.",
+  "sync.cloudError.credentialsMissing":
+    "Der Zugang zu {provider} fehlt auf diesem Gerät. Melde dich unter Einstellungen → Synchronisierung erneut an.",
+  "sync.cloudError.gdriveFolderMissing":
+    "Der Ordner „Keystead“ fehlt in deinem Google Drive (gelöscht oder verschoben). Melde dich erneut an – Keystead legt ihn neu an.",
+  "sync.signOutConfirmTitle": "Von {provider} abmelden?",
+  "sync.signOutConfirmText":
+    "Der PC gleicht dann nicht mehr über {provider} ab. Die Dateien dort bleiben liegen; zum erneuten Verbinden meldest du dich wieder an.",
+  "sync.dropboxEmptyTitle": "In deiner Dropbox liegt noch kein Tresor",
+  "sync.gdriveEmptyTitle": "In deinem Google Drive liegt noch kein Tresor",
+  "sync.cloudLinkedEmptyText":
+    "Angemeldet als {account}. Prüfe am PC unter Einstellungen → Synchronisierung, ob dort dasselbe Konto verbunden ist und schon eine Kopie gemacht hat. Tippe dann auf „Jetzt synchronisieren“.",
+  "sync.otherMethod": "Andere Verbindung wählen",
+  "sync.cloudNote":
+    "Keystead legt nur seine eigenen, verschlüsselten Tresor-Dateien in {provider} ab – ohne Keystead-Server dazwischen.",
+  "sync.stepCloudAccount":
+    "Oder ohne Cloud-App: am PC und hier dasselbe Konto bei {providers} verbinden („Mit … verbinden“).",
+  "sync.providersBoth": "Dropbox oder Google Drive",
   "sync.gdrive": "Google Drive",
   "sync.gdriveDesc":
     "Keystead gleicht seinen eigenen Ordner „Keystead“ in deinem Google Drive ab – deine anderen Dateien sieht es nicht. Beim Start, beim Zurückkehren in die App, nach jeder Änderung und auf Knopfdruck.",
@@ -1011,6 +1030,13 @@ export const de = {
   "gdrive.waiting": "Warte auf die Anmeldung bei Google …",
   "gdrive.connecting": "Verbinde mit Google Drive …",
   "gdrive.openAgain": "Google-Seite erneut öffnen",
+  "gdrive.stepDevice1":
+    "Auf „Bei Google anmelden“ tippen: Keystead kopiert den Code unten und öffnet Googles Seite im Browser.",
+  "gdrive.stepDevice2":
+    "Dort mit deinem Google-Konto anmelden, den Code einfügen und Keystead den Zugriff erlauben. Danach geht es hier von selbst weiter.",
+  "gdrive.code": "Dein Code",
+  "gdrive.copyCode": "Code kopieren",
+  "gdrive.codeCopied": "Code kopiert",
   "sync.dropbox": "Dropbox",
   "sync.dropboxDesc":
     "Keystead gleicht seinen eigenen Ordner „Apps/Keystead“ in deiner Dropbox ab – sonst sieht es nichts davon. Beim Start, beim Zurückkehren in die App, nach jeder Änderung und auf Knopfdruck.",
@@ -1209,6 +1235,8 @@ export const de = {
   "mirror.step3Title": "Keystead auf dem Handy verbinden",
   "mirror.step3Text":
     "Installiere die Android-App (die APK aus den Releases). Tippe auf „Cloud-Ordner wählen“ und wähle denselben Ordner über die Cloud-App („Diesen Ordner verwenden“, „Zulassen“) – oder auf „Mit Server verbinden (WebDAV)“ mit demselben Server und Ordner wie hier. Danach holt das Handy jede neue Version selbst.",
+  "mirror.stepCloudText":
+    "Mit {providers}: Am PC und am Handy dasselbe Konto verbinden – eine Cloud-App braucht es dafür nicht.",
   "mirror.privacy":
     "Im Ordner liegen nur verschlüsselte Dateien: je Tresor „<Tresor-ID>.keystead“ und seine Anhänge. Dein Cloud- oder Server-Anbieter sieht Dateinamen, Größen, Tresorname, Revision und Änderungszeit, nie den Inhalt – ohne dein Master-Passwort öffnet niemand die Dateien. Bearbeiten kannst du hier und auf dem Handy; wurde ein Tresor auf beiden geändert, fragt Keystead, welcher Stand gilt.",
   "settings.autoLock": "Automatisch sperren",
