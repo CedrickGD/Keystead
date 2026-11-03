@@ -136,8 +136,9 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
     args.initialUri
       ?.takeIf { it.startsWith("content://") }
       ?.let { intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(it)) }
-    // Show advanced roots (SD cards, USB drives, NAS/SMB providers, internal storage).
-    intent.putExtra(DocumentsContract.EXTRA_SHOW_ADVANCED, true)
+    // Best-effort hint to show advanced roots. The constant is a hidden
+    // system API, absent from the public SDK; use its key and the legacy key.
+    intent.putExtra("android.provider.extra.SHOW_ADVANCED", true)
     intent.putExtra("android.content.extra.SHOW_ADVANCED", true)
     // Ask for write access too: the phone writes its edits back.
     intent.addFlags(READ_WRITE or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
