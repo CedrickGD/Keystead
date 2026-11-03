@@ -647,10 +647,10 @@ pub async fn link_path(
     app: AppHandle,
     core: Shared<'_>,
     path: String,
-    #[serde(default)] create: bool,
+    create: Option<bool>,
 ) -> CmdResult<FolderStatus> {
     run(&core, true, move |c| {
-        let picked = check_path_folder(&app, &path, create)?;
+        let picked = check_path_folder(&app, &path, create.unwrap_or(false))?;
         let link = LinkState::new(picked.tree, picked.name, now_ms(), picked.writable);
         replace_link(&app, c, link)
     })
