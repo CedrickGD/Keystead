@@ -763,7 +763,11 @@ mod tests {
                 "{command}"
             );
         }
-        assert!(folder.contains("EXTRA_SHOW_ADVANCED"));
+        // The advanced-roots hint is hidden from the public Android SDK;
+        // use the current and legacy intent keys without referencing its constant.
+        assert!(folder.contains(r#"putExtra("android.provider.extra.SHOW_ADVANCED", true)"#));
+        assert!(folder.contains(r#"putExtra("android.content.extra.SHOW_ADVANCED", true)"#));
+        assert!(!folder.contains("DocumentsContract.EXTRA_SHOW_ADVANCED"));
         assert!(source_registers_the_folder_plugin());
         // The Wi-Fi check: the active network's transports, nothing more.
         let network = &folder[folder.find("fun networkKind").unwrap()..];
