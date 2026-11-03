@@ -94,14 +94,14 @@ pub struct Blob {
 /// (tauri-plugin-biometric 2.5.0, `BiometricActivity.kt`): the phone's
 /// autofill (stage 3) decrypts a [`Blob::sealed`] with it in its own
 /// activity – it only ever gets the key, never makes, deletes or resets it.
-#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+#[cfg_attr(not(test), expect(dead_code))]
 pub const PLUGIN_KEY_ALIAS: &str = "tauri-plugin-biometric-key";
 
 /// The parts of a [`Blob::sealed`] (the plugin's `base64(ciphertext);base64(iv)`,
 /// standard base64): `(iv, ciphertext)` – an IV of 12 bytes, a ciphertext of
 /// at least 17 (data and the 16-byte GCM tag). `None` for anything else.
 /// Not secret: only the Keystore key, after a fingerprint, opens it.
-#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn plugin_sealed_parts(sealed: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut parts = sealed.split(';');
     let (Some(ct), Some(iv), None) = (parts.next(), parts.next(), parts.next()) else {

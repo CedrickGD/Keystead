@@ -379,7 +379,7 @@ fn probe(data_dir: &Path, id: &str) -> Probe {
 /// (`_held`, so no sync stores an unconfirmed copy meanwhile) and must
 /// change nothing on disk: the phone's autofill reads the vault under that
 /// lock. A stale record does not count and stays as it is.
-#[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn unconfirmed_while_locked(
     _held: &MutexGuard<'static, ()>,
     data_dir: &Path,

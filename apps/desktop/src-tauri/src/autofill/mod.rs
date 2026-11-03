@@ -13,7 +13,7 @@
 //! Never Tauri, never the app's `Core`: the service and its activity may run
 //! without either. Nothing here logs or writes.
 
-#![cfg_attr(not(target_os = "android"), allow(dead_code))]
+#![allow(dead_code)]
 
 pub mod browsers;
 pub mod classify;
