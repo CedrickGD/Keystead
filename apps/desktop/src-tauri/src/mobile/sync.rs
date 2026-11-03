@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keystead_core::model::VaultInfo;
+use serde::{Deserialize, Serialize};
 use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
@@ -50,6 +51,47 @@ use crate::remote::webdav::WebDavConfig;
 use crate::state::{log, Core};
 use crate::sync_conflict::{self, Keep};
 use crate::sync_server::{self, Backoff, LinkTarget};
+
+/// A quick-select storage root on the phone (`/storage/emulated/0`, a
+/// mounted SD/USB volume, `/storage`, `/mnt`, `/`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageRoot {
+    pub name: String,
+    pub path: String,
+}
+
+/// Whether the phone app holds All-Files-Access (`MANAGE_EXTERNAL_STORAGE` on
+/// Android 11+, `READ/WRITE_EXTERNAL_STORAGE` on Android 10) and the roots
+/// the folder browser offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageAccess {
+    pub granted: bool,
+    pub roots: Vec<StorageRoot>,
+}
+
+/// A subdirectory inside a browsed filesystem path on the phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathDirEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// What [`browse_phone_path`] found at a filesystem path on the phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub exists: bool,
+    pub readable: bool,
+    pub writable: bool,
+    pub granted: bool,
+    pub roots: Vec<StorageRoot>,
+    pub entries: Vec<PathDirEntry>,
+}
 
 /// The plugin's name (`plugin:keystead-folder|…` – never granted to the
 /// webview).
@@ -554,6 +596,67 @@ pub async fn link_gdrive(app: AppHandle, core: Shared<'_>) -> CmdResult<FolderSt
     .await
 }
 
+/// `storage_access` → [`StorageAccess`]: whether All-Files-Access is granted
+/// on the phone and the storage roots for direct path selection.
+#[tauri::command]
+pub async fn storage_access(app: AppHandle, core: Shared<'_>) -> CmdResult<StorageAccess> {
+    run(&core, false, move |_| query_storage_access(&app)).await
+}
+
+/// `request_storage_access` → [`StorageAccess`]: opens Android's All-Files-Access
+/// permission screen for Keystead (when not yet granted) and returns the
+/// updated access status once the user returns.
+#[tauri::command]
+pub async fn request_storage_access(app: AppHandle, core: Shared<'_>) -> CmdResult<StorageAccess> {
+    core.touch_activity();
+    ask_storage_access(&app).await.map_err(|e| e.code())
+}
+
+/// `browse_phone_path(path)` → [`PathListing`]: lists the subdirectories of a
+/// filesystem path on the phone (defaulting to primary external storage when
+/// `path` is `None`).
+#[tauri::command]
+pub async fn browse_phone_path(
+    app: AppHandle,
+    core: Shared<'_>,
+    path: Option<String>,
+) -> CmdResult<PathListing> {
+    run(&core, true, move |_| browse_path(&app, path)).await
+}
+
+/// `create_phone_folder(parent, name)` → the created directory's canonical
+/// path on the phone.
+#[tauri::command]
+pub async fn create_phone_folder(
+    app: AppHandle,
+    core: Shared<'_>,
+    parent: String,
+    name: String,
+) -> CmdResult<String> {
+    run(&core, true, move |_| {
+        create_path_folder(&app, &parent, &name)
+    })
+    .await
+}
+
+/// `link_path(path, create)` → [`FolderStatus`]: links a direct filesystem
+/// path on the phone (`/storage/…`, `/mnt/…`, `/sdcard/…`, etc., optionally
+/// creating the directory first) in place of the previous link and syncs.
+#[tauri::command]
+pub async fn link_path(
+    app: AppHandle,
+    core: Shared<'_>,
+    path: String,
+    #[serde(default)] create: bool,
+) -> CmdResult<FolderStatus> {
+    run(&core, true, move |c| {
+        let picked = check_path_folder(&app, &path, create)?;
+        let link = LinkState::new(picked.tree, picked.name, now_ms(), picked.writable);
+        replace_link(&app, c, link)
+    })
+    .await
+}
+
 /// Makes `link` the phone's link (the previous one forgotten – its folder
 /// permission given back, or its server password removed – and its
 /// conflicts if it was another folder) and syncs.
@@ -680,6 +783,71 @@ async fn pick_folder(_app: &AppHandle, _initial: Option<String>) -> AppResult<Op
     Err(unsupported_platform())
 }
 
+#[cfg(target_os = "android")]
+fn query_storage_access(app: &AppHandle) -> AppResult<StorageAccess> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.storage_access()
+}
+
+#[cfg(not(target_os = "android"))]
+fn query_storage_access(_app: &AppHandle) -> AppResult<StorageAccess> {
+    Err(unsupported_platform())
+}
+
+#[cfg(target_os = "android")]
+async fn ask_storage_access(app: &AppHandle) -> AppResult<StorageAccess> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.request_storage_access().await
+}
+
+#[cfg(not(target_os = "android"))]
+async fn ask_storage_access(_app: &AppHandle) -> AppResult<StorageAccess> {
+    Err(unsupported_platform())
+}
+
+#[cfg(target_os = "android")]
+fn browse_path(app: &AppHandle, path: Option<String>) -> AppResult<PathListing> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.browse_path(path)
+}
+
+#[cfg(not(target_os = "android"))]
+fn browse_path(_app: &AppHandle, _path: Option<String>) -> AppResult<PathListing> {
+    Err(unsupported_platform())
+}
+
+#[cfg(target_os = "android")]
+fn create_path_folder(app: &AppHandle, parent: &str, name: &str) -> AppResult<String> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.create_path_folder(parent, name)
+}
+
+#[cfg(not(target_os = "android"))]
+fn create_path_folder(_app: &AppHandle, _parent: &str, _name: &str) -> AppResult<String> {
+    Err(unsupported_platform())
+}
+
+#[cfg(target_os = "android")]
+fn check_path_folder(app: &AppHandle, path: &str, create: bool) -> AppResult<Picked> {
+    let plugin = app
+        .try_state::<android::FolderPlugin>()
+        .ok_or_else(unsupported_platform)?;
+    plugin.check_path_folder(path, create)
+}
+
+#[cfg(not(target_os = "android"))]
+fn check_path_folder(_app: &AppHandle, _path: &str, _create: bool) -> AppResult<Picked> {
+    Err(unsupported_platform())
+}
+
 /// Gives the folder's persisted permission back (best effort).
 fn release_folder(app: &AppHandle, tree: &str) {
     #[cfg(target_os = "android")]
@@ -704,7 +872,7 @@ mod android {
     use tauri::plugin::PluginHandle;
     use tauri::Wry;
 
-    use super::Picked;
+    use super::{PathListing, Picked, StorageAccess};
     use crate::error::{AppError, AppResult};
     use crate::folder_sync::{self, RemoteEntry, RemoteFolder};
 
@@ -724,6 +892,28 @@ mod android {
         name: String,
         #[serde(default)]
         writable: bool,
+    }
+
+    #[derive(Serialize)]
+    struct BrowsePathArgs {
+        path: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct CreatePathFolderArgs<'a> {
+        parent: &'a str,
+        name: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct CreatedPath {
+        path: String,
+    }
+
+    #[derive(Serialize)]
+    struct CheckPathFolderArgs<'a> {
+        path: &'a str,
+        create: bool,
     }
 
     #[derive(Serialize)]
@@ -840,6 +1030,49 @@ mod android {
             self.0
                 .run_mobile_plugin::<serde_json::Value>("releaseFolder", TreeArgs { tree })
                 .map(|_| ())
+                .map_err(plugin_error)
+        }
+
+        pub fn storage_access(&self) -> AppResult<StorageAccess> {
+            self.0
+                .run_mobile_plugin::<StorageAccess>("storageAccess", ())
+                .map_err(plugin_error)
+        }
+
+        pub async fn request_storage_access(&self) -> AppResult<StorageAccess> {
+            self.0
+                .run_mobile_plugin_async::<StorageAccess>("requestStorageAccess", ())
+                .await
+                .map_err(plugin_error)
+        }
+
+        pub fn browse_path(&self, path: Option<String>) -> AppResult<PathListing> {
+            self.0
+                .run_mobile_plugin::<PathListing>("browsePath", BrowsePathArgs { path })
+                .map_err(plugin_error)
+        }
+
+        pub fn create_path_folder(&self, parent: &str, name: &str) -> AppResult<String> {
+            self.0
+                .run_mobile_plugin::<CreatedPath>(
+                    "createPathFolder",
+                    CreatePathFolderArgs { parent, name },
+                )
+                .map(|c| c.path)
+                .map_err(plugin_error)
+        }
+
+        pub fn check_path_folder(&self, path: &str, create: bool) -> AppResult<Picked> {
+            self.0
+                .run_mobile_plugin::<PickedFolder>(
+                    "checkPathFolder",
+                    CheckPathFolderArgs { path, create },
+                )
+                .map(|p| Picked {
+                    tree: p.tree,
+                    name: p.name,
+                    writable: p.writable,
+                })
                 .map_err(plugin_error)
         }
     }

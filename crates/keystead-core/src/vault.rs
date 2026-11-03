@@ -396,11 +396,9 @@ impl UnlockedVault {
             .iter()
             .filter(|i| !i.is_trashed() && i.item_type == ItemType::Login)
             .filter(|i| {
-                i.login.as_ref().is_some_and(|l| {
-                    l.uris
-                        .iter()
-                        .any(|u| matching::app_uri_matches(u, package))
-                })
+                i.login
+                    .as_ref()
+                    .is_some_and(|l| l.uris.iter().any(|u| matching::app_uri_matches(u, package)))
             })
             .collect();
         sort_by_name(&mut v);

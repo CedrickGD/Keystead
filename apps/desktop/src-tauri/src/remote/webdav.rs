@@ -497,6 +497,21 @@ impl WebDavRemote {
         Ok(())
     }
 
+    /// Lists the child folders of `cfg`'s folder (`webdav_list_folders`):
+    /// with an empty `folder` (`""` or `"/"`), lists the folders directly
+    /// under `cfg.url`. Sorted case-insensitively.
+    pub fn list_folders(cfg: &WebDavConfig) -> AppResult<Vec<String>> {
+        let remote = WebDavRemote::new(cfg)?;
+        let (_, entries) = remote.list_url(&remote.collection, Op::Folder)?;
+        let mut dirs: Vec<String> = entries
+            .into_iter()
+            .filter(|e| e.dir)
+            .map(|e| e.name)
+            .collect();
+        dirs.sort_by_key(|a| a.to_ascii_lowercase());
+        Ok(dirs)
+    }
+
     /// The connection test of the settings form (`webdav_test`): the
     /// server URL, the certificate, the credentials, the folder.
     pub fn test(cfg: &WebDavConfig) -> WebDavTest {

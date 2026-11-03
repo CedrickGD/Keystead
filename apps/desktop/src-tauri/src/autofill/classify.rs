@@ -140,11 +140,12 @@ fn role(node: &Node) -> Role {
 fn origins(req: &FillRequest) -> Vec<Option<(String, Option<String>)>> {
     let mut out: Vec<Option<(String, Option<String>)>> = Vec::with_capacity(req.nodes.len());
     for node in &req.nodes {
-        let own = node
-            .web_domain
-            .as_ref()
-            .filter(|d| !d.is_empty())
-            .map(|d| (d.to_ascii_lowercase(), node.web_scheme.as_ref().map(|s| s.to_ascii_lowercase())));
+        let own = node.web_domain.as_ref().filter(|d| !d.is_empty()).map(|d| {
+            (
+                d.to_ascii_lowercase(),
+                node.web_scheme.as_ref().map(|s| s.to_ascii_lowercase()),
+            )
+        });
         let inherited = node.parent.and_then(|p| out[p as usize].clone());
         out.push(own.or(inherited));
     }

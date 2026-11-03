@@ -749,7 +749,7 @@ mod tests {
         assert_eq!((got_iv, got_ct), (vec![2u8; 12], vec![1u8; 40]));
         for bad in [
             format!("{iv};{ct}"),
-            format!("{ct}"),
+            ct.clone(),
             format!("{ct};{iv};{iv}"),
             format!("{ct};***"),
             format!("{};{iv}", crypto::b64_encode(&[1u8; 16])),

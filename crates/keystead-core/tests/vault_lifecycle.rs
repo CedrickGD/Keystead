@@ -331,7 +331,12 @@ fn logins_for_an_android_app() {
     let mut v = create(&store, "Privat");
     v.save_item(login("Bank", "max", "x", "androidapp://de.bank.app"))
         .unwrap();
-    let mut fav = login("Bank (Arbeit)", "work", "x", "android://Xk1Q==@de.bank.app/");
+    let mut fav = login(
+        "Bank (Arbeit)",
+        "work",
+        "x",
+        "android://Xk1Q==@de.bank.app/",
+    );
     fav.favorite = true;
     v.save_item(fav).unwrap();
     v.save_item(login("Bank web", "max", "x", "https://bank.de"))

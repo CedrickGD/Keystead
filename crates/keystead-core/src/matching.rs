@@ -238,7 +238,9 @@ mod tests {
         for good in ["com.x", "com.example.app", "de.bank_x.app2", "A.b"] {
             assert!(is_android_package(good), "{good}");
         }
-        for bad in ["com", "com..x", "1com.x", "com.x/y", "com.x.", ".com.x", "com.-x", "", "com.x y"] {
+        for bad in [
+            "com", "com..x", "1com.x", "com.x/y", "com.x.", ".com.x", "com.-x", "", "com.x y",
+        ] {
             assert!(!is_android_package(bad), "{bad}");
         }
         let pkg = android_app_package;
@@ -264,18 +266,47 @@ mod tests {
             uri: u.into(),
             match_type: m,
         };
-        for m in [UriMatch::Domain, UriMatch::Host, UriMatch::StartsWith, UriMatch::Exact] {
+        for m in [
+            UriMatch::Domain,
+            UriMatch::Host,
+            UriMatch::StartsWith,
+            UriMatch::Exact,
+        ] {
             assert!(app_uri_matches(&stored("androidapp://com.x", m), "com.x"));
         }
-        assert!(!app_uri_matches(&stored("androidapp://com.x", UriMatch::Never), "com.x"));
-        assert!(!app_uri_matches(&stored("androidapp://com.x", UriMatch::Domain), "com.x.evil"));
-        assert!(!app_uri_matches(&stored("androidapp://com.x.evil", UriMatch::Domain), "com.x"));
-        assert!(!app_uri_matches(&stored("androidapp://com.x", UriMatch::Domain), "COM.X"));
-        assert!(!app_uri_matches(&stored("androidapp://com.e", UriMatch::Domain), "com.x"));
-        assert!(!app_uri_matches(&stored("com.x.app", UriMatch::Domain), "com.x.app"));
+        assert!(!app_uri_matches(
+            &stored("androidapp://com.x", UriMatch::Never),
+            "com.x"
+        ));
+        assert!(!app_uri_matches(
+            &stored("androidapp://com.x", UriMatch::Domain),
+            "com.x.evil"
+        ));
+        assert!(!app_uri_matches(
+            &stored("androidapp://com.x.evil", UriMatch::Domain),
+            "com.x"
+        ));
+        assert!(!app_uri_matches(
+            &stored("androidapp://com.x", UriMatch::Domain),
+            "COM.X"
+        ));
+        assert!(!app_uri_matches(
+            &stored("androidapp://com.e", UriMatch::Domain),
+            "com.x"
+        ));
+        assert!(!app_uri_matches(
+            &stored("com.x.app", UriMatch::Domain),
+            "com.x.app"
+        ));
         // An app URI never matches a web page, a web URI never an app.
-        assert!(!uri_matches(&stored("androidapp://com.github", UriMatch::Domain), "https://github.com/"));
-        assert!(!app_uri_matches(&stored("https://github.com", UriMatch::Domain), "com.github"));
+        assert!(!uri_matches(
+            &stored("androidapp://com.github", UriMatch::Domain),
+            "https://github.com/"
+        ));
+        assert!(!app_uri_matches(
+            &stored("https://github.com", UriMatch::Domain),
+            "com.github"
+        ));
     }
 
     #[test]
@@ -283,8 +314,14 @@ mod tests {
         let url = web_domain_url;
         assert_eq!(url("github.com").as_deref(), Some("https://github.com/"));
         assert_eq!(url("GitHub.COM.").as_deref(), Some("https://github.com/"));
-        assert_eq!(url("münchen.de").as_deref(), Some("https://xn--mnchen-3ya.de/"));
-        assert_eq!(url("192.168.1.10").as_deref(), Some("https://192.168.1.10/"));
+        assert_eq!(
+            url("münchen.de").as_deref(),
+            Some("https://xn--mnchen-3ya.de/")
+        );
+        assert_eq!(
+            url("192.168.1.10").as_deref(),
+            Some("https://192.168.1.10/")
+        );
         for bad in [
             "",
             ".",

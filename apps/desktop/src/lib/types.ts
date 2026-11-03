@@ -664,7 +664,7 @@ export interface SyncCloud {
   email: string;
 }
 
-/** What the server form sends (`webdav_test`, `webdav_create_folder`, `link_webdav`, `set_sync_server`). */
+/** What the server form sends (`webdav_test`, `webdav_create_folder`, `webdav_list_folders`, `link_webdav`, `set_sync_server`). */
 export interface WebDavConfig {
   url: string;
   user: string;
@@ -672,6 +672,36 @@ export interface WebDavConfig {
   password: string;
   folder: string;
   certSha256: string | null;
+}
+
+/** A quick-select storage root on the phone (`storage_access`, `browse_phone_path`). */
+export interface StorageRoot {
+  name: string;
+  path: string;
+}
+
+/** Whether the phone app holds All-Files-Access and the quick-select roots (`storage_access`, `request_storage_access`). */
+export interface StorageAccess {
+  granted: boolean;
+  roots: StorageRoot[];
+}
+
+/** A child directory inside a browsed phone path (`browse_phone_path`). */
+export interface PathDirEntry {
+  name: string;
+  path: string;
+}
+
+/** Result of `browse_phone_path` on the phone. */
+export interface PathListing {
+  path: string;
+  parent: string | null;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  granted: boolean;
+  roots: StorageRoot[];
+  entries: PathDirEntry[];
 }
 
 /** A server certificate the system does not trust (to confirm by its SHA-256). */

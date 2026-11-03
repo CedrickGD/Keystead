@@ -1,16 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Network (stage 2c, E6 revised): INTERNET for the server and account
-     sync (WebDAV, Dropbox, Google Drive – the Rust clients, the only network
-     code of the phone app; a sign-in happens in the system browser) and
-     ACCESS_NETWORK_STATE for "Nur über WLAN synchronisieren" – nothing else
-     (the APK gate in .github/scripts/android-apk.mjs refuses any other
-     permission). No cleartext, the system's trust anchors only
+<!-- Network (stage 2c, E6 revised) and storage access: INTERNET for the
+     server and account sync (WebDAV, Dropbox, Google Drive – the Rust clients,
+     the only network code of the phone app; a sign-in happens in the system
+     browser), ACCESS_NETWORK_STATE for "Nur über WLAN synchronisieren", and
+     MANAGE_EXTERNAL_STORAGE (plus READ/WRITE_EXTERNAL_STORAGE up to API 29)
+     so the user can choose any local or mounted NAS/external path on the
+     phone – nothing else (the APK gate in .github/scripts/android-apk.mjs
+     refuses any other permission). The DOCUMENTS_PROVIDER <queries> entry
+     makes third-party storage/NAS providers visible to DocumentsContract on
+     Android 11+. No cleartext, the system's trust anchors only
      (res/xml/network_security_config.xml). A unit test in src/gui.rs
      guards this file (see "Mobile (Android)" in docs/ARCHITECTURE.md). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+    <queries>
+        <intent>
+            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+        </intent>
+    </queries>
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -24,6 +37,7 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.keystead_desktop"
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="${usesCleartextTraffic}">

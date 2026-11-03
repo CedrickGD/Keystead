@@ -67,6 +67,7 @@ import { useFolderSync } from "../../state/sync";
 import { useDeviceUnlock } from "../../state/deviceUnlock";
 import { useMirror } from "../../state/mirror";
 import {
+  PhonePathDialog,
   PhoneServerDialog,
   RelinkBanner,
   SyncFileList,
@@ -914,6 +915,7 @@ function SyncSection() {
   const skippedText = useSkippedText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const [cloudForm, setCloudForm] = useState<CloudProvider | null>(null);
+  const [pathForm, setPathForm] = useState(false);
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync) return null;
   const { status, busy, link, sync, unlink } = folderSync;
@@ -930,6 +932,7 @@ function SyncSection() {
       {serverForm && (
         <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
       )}
+      {pathForm && <PhonePathDialog initialPath={status?.folderName} onClose={() => setPathForm(false)} />}
       {cloudForm === "dropbox" && (
         <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setCloudForm(null)} />
       )}
@@ -950,6 +953,15 @@ function SyncSection() {
               onClick={() => void link()}
             >
               {t("sync.pickFolder")}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<HardDrive />}
+              loading={busy === "path"}
+              disabled={!status || busy !== null}
+              onClick={() => setPathForm(true)}
+            >
+              {t("sync.pickPath")}
             </Button>
             <Button
               variant="secondary"
@@ -1081,6 +1093,15 @@ function SyncSection() {
                   onClick={() => void link()}
                 >
                   {folderLost(status) ? t("sync.repick") : t("sync.changeFolder")}
+                </Button>
+                <Button
+                  variant="secondary"
+                  icon={<HardDrive />}
+                  loading={busy === "path"}
+                  disabled={busy !== null && busy !== "path"}
+                  onClick={() => setPathForm(true)}
+                >
+                  {t("sync.changePath")}
                 </Button>
                 <Button
                   variant="ghost"

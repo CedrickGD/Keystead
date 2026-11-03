@@ -66,8 +66,16 @@ fn a_chrome_login_form() {
         true,
         vec![
             web_root("github.com", "https"),
-            html(0, "text", json!({"htmlName": "login", "htmlAutocomplete": "username", "focused": true})),
-            html(1, "password", json!({"htmlName": "password", "htmlAutocomplete": "current-password"})),
+            html(
+                0,
+                "text",
+                json!({"htmlName": "login", "htmlAutocomplete": "username", "focused": true}),
+            ),
+            html(
+                1,
+                "password",
+                json!({"htmlName": "password", "htmlAutocomplete": "current-password"}),
+            ),
         ],
     );
     let f = fields(&form).unwrap();
@@ -99,14 +107,20 @@ fn two_step_logins_and_sign_up_forms() {
     let plain = request(
         "com.android.chrome",
         true,
-        vec![web_root("example.com", "https"), html(0, "text", json!({"focused": true}))],
+        vec![
+            web_root("example.com", "https"),
+            html(0, "text", json!({"focused": true})),
+        ],
     );
     assert_eq!(fields(&plain), None);
     // Step 2: the password alone.
     let step2 = request(
         "com.android.chrome",
         true,
-        vec![web_root("example.com", "https"), html(0, "password", json!({"focused": true}))],
+        vec![
+            web_root("example.com", "https"),
+            html(0, "password", json!({"focused": true})),
+        ],
     );
     assert_eq!(fields(&step2).unwrap().password, Some(0));
     // Sign-up: a new password is never filled.
@@ -116,7 +130,11 @@ fn two_step_logins_and_sign_up_forms() {
         vec![
             web_root("example.com", "https"),
             html(0, "email", json!({"htmlAutocomplete": "username"})),
-            html(1, "password", json!({"htmlAutocomplete": "new-password", "focused": true})),
+            html(
+                1,
+                "password",
+                json!({"htmlAutocomplete": "new-password", "focused": true}),
+            ),
         ],
     );
     assert_eq!(fields(&signup), None);
@@ -126,7 +144,11 @@ fn two_step_logins_and_sign_up_forms() {
         true,
         vec![
             web_root("example.com", "https"),
-            html(0, "password", json!({"htmlAutocomplete": "current-password", "focused": true})),
+            html(
+                0,
+                "password",
+                json!({"htmlAutocomplete": "current-password", "focused": true}),
+            ),
             html(1, "password", json!({"htmlAutocomplete": "new-password"})),
             html(2, "password", json!({"htmlAutocomplete": "new-password"})),
         ],
@@ -159,7 +181,10 @@ fn firefox_html_without_hints_and_native_apps() {
         ],
     );
     let f = fields(&app).unwrap();
-    assert_eq!((f.username, f.password, f.origin.clone()), (Some(0), Some(1), None));
+    assert_eq!(
+        (f.username, f.password, f.origin.clone()),
+        (Some(0), Some(1), None)
+    );
     assert_eq!(
         target(&app),
         Some(Target::App {
@@ -170,7 +195,11 @@ fn firefox_html_without_hints_and_native_apps() {
     let bare = request(
         "de.shop.app",
         false,
-        vec![json!({}), native(0, TEXT, json!({})), native(1, TEXT_PASSWORD, json!({"focused": true}))],
+        vec![
+            json!({}),
+            native(0, TEXT, json!({})),
+            native(1, TEXT_PASSWORD, json!({"focused": true})),
+        ],
     );
     assert_eq!(fields(&bare).unwrap().username, Some(0));
     // An e-mail input type is a username.
@@ -188,20 +217,33 @@ fn what_is_never_a_password_or_a_username() {
     let visible = request(
         "de.app.x",
         false,
-        vec![json!({}), native(0, TEXT, json!({"hints": ["password"], "focused": true}))],
+        vec![
+            json!({}),
+            native(0, TEXT, json!({"hints": ["password"], "focused": true})),
+        ],
     );
     assert_eq!(fields(&visible), None);
     // A number password needs a password hint; a one-time code never counts.
     let pin = request(
         "de.app.x",
         false,
-        vec![json!({}), native(0, NUMBER_PASSWORD, json!({"focused": true}))],
+        vec![
+            json!({}),
+            native(0, NUMBER_PASSWORD, json!({"focused": true})),
+        ],
     );
     assert_eq!(fields(&pin), None);
     let pin = request(
         "de.app.x",
         false,
-        vec![json!({}), native(0, NUMBER_PASSWORD, json!({"hints": ["password"], "focused": true}))],
+        vec![
+            json!({}),
+            native(
+                0,
+                NUMBER_PASSWORD,
+                json!({"hints": ["password"], "focused": true}),
+            ),
+        ],
     );
     assert_eq!(fields(&pin).unwrap().password, Some(0));
     let otp = request(
@@ -209,7 +251,11 @@ fn what_is_never_a_password_or_a_username() {
         false,
         vec![
             json!({}),
-            native(0, TEXT_PASSWORD, json!({"hints": ["smsOTPCode"], "focused": true})),
+            native(
+                0,
+                TEXT_PASSWORD,
+                json!({"hints": ["smsOTPCode"], "focused": true}),
+            ),
         ],
     );
     assert_eq!(fields(&otp), None);
@@ -228,7 +274,11 @@ fn what_is_never_a_password_or_a_username() {
         true,
         vec![
             web_root("example.com", "https"),
-            html(0, "text", json!({"htmlAutocomplete": "cc-number", "htmlName": "account", "focused": true})),
+            html(
+                0,
+                "text",
+                json!({"htmlAutocomplete": "cc-number", "htmlName": "account", "focused": true}),
+            ),
         ],
     );
     assert_eq!(fields(&card), None);
@@ -300,16 +350,62 @@ fn whose_login_it_is() {
             host: host.into(),
         })
     };
-    assert_eq!(target(&login("com.android.chrome", true, Some("GitHub.com."), "https")), web("github.com"));
-    assert_eq!(target(&login("org.mozilla.firefox", true, Some("münchen.de"), "HTTPS")), web("xn--mnchen-3ya.de"));
+    assert_eq!(
+        target(&login(
+            "com.android.chrome",
+            true,
+            Some("GitHub.com."),
+            "https"
+        )),
+        web("github.com")
+    );
+    assert_eq!(
+        target(&login(
+            "org.mozilla.firefox",
+            true,
+            Some("münchen.de"),
+            "HTTPS"
+        )),
+        web("xn--mnchen-3ya.de")
+    );
     // A browser whose signer is not pinned, without a domain, or over http.
-    assert_eq!(target(&login("com.android.chrome", false, Some("github.com"), "https")), None);
-    assert_eq!(target(&login("com.android.chrome", true, None, "https")), None);
-    assert_eq!(target(&login("com.android.chrome", true, Some("github.com"), "http")), None);
+    assert_eq!(
+        target(&login(
+            "com.android.chrome",
+            false,
+            Some("github.com"),
+            "https"
+        )),
+        None
+    );
+    assert_eq!(
+        target(&login("com.android.chrome", true, None, "https")),
+        None
+    );
+    assert_eq!(
+        target(&login(
+            "com.android.chrome",
+            true,
+            Some("github.com"),
+            "http"
+        )),
+        None
+    );
     let mut no_scheme = login("com.android.chrome", true, Some("github.com"), "https");
-    no_scheme["nodes"][0].as_object_mut().unwrap().remove("webScheme");
+    no_scheme["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("webScheme");
     assert_eq!(target(&no_scheme), None);
-    assert_eq!(target(&login("com.android.chrome", true, Some("bank.com@evil.com"), "https")), None);
+    assert_eq!(
+        target(&login(
+            "com.android.chrome",
+            true,
+            Some("bank.com@evil.com"),
+            "https"
+        )),
+        None
+    );
     // Any other app: its package, whatever domain its web view reports.
     assert_eq!(
         target(&login("com.evil.app", false, Some("bank.com"), "https")),
@@ -318,7 +414,13 @@ fn whose_login_it_is() {
         })
     );
     // Keystead itself and the system: nothing; a compatibility request too.
-    for refused in [OWN, "android", "com.android.settings", "com.android.systemui", "notapackage"] {
+    for refused in [
+        OWN,
+        "android",
+        "com.android.settings",
+        "com.android.systemui",
+        "notapackage",
+    ] {
         assert_eq!(target(&login(refused, false, None, "")), None, "{refused}");
     }
     let mut compat = login("com.android.chrome", true, Some("github.com"), "https");
@@ -331,7 +433,14 @@ fn whose_login_it_is() {
 
 #[test]
 fn requests_out_of_bounds_are_refused() {
-    let ok = request("de.app.x", false, vec![json!({}), native(0, TEXT_PASSWORD, json!({"focused": true}))]);
+    let ok = request(
+        "de.app.x",
+        false,
+        vec![
+            json!({}),
+            native(0, TEXT_PASSWORD, json!({"focused": true})),
+        ],
+    );
     assert!(parse_request(&ok.to_string()).is_some());
     let mut wrong_version = ok.clone();
     wrong_version["v"] = json!(2);
@@ -342,7 +451,11 @@ fn requests_out_of_bounds_are_refused() {
     let mut parent_after = ok.clone();
     parent_after["nodes"][1]["parent"] = json!(1);
     assert!(parse_request(&parent_after.to_string()).is_none());
-    let many = request("de.app.x", false, (0..=NODES_MAX).map(|_| json!({})).collect());
+    let many = request(
+        "de.app.x",
+        false,
+        (0..=NODES_MAX).map(|_| json!({})).collect(),
+    );
     assert!(parse_request(&many.to_string()).is_none());
     assert!(parse_request(&" ".repeat(REQUEST_MAX + 1)).is_none());
     assert!(parse_request("not json").is_none());
@@ -356,7 +469,11 @@ fn the_pinned_browsers() {
         assert!(!b.sha256.is_empty());
         for pin in b.sha256 {
             assert_eq!(pin.len(), 64, "{pin}");
-            assert!(pin.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)), "{pin}");
+            assert!(
+                pin.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+                "{pin}"
+            );
         }
     }
     assert!(pins_for("com.android.chrome").is_some());

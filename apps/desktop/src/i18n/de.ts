@@ -965,6 +965,29 @@ export const de = {
   "sync.stepPhone":
     "Hier: „Cloud-Ordner wählen“ tippen und denselben Ordner über die Cloud-App auswählen („Diesen Ordner verwenden“, „Zulassen“) – oder „Mit Server verbinden (WebDAV)“ mit demselben Server und Ordner wie am PC.",
   "sync.pickFolder": "Cloud-Ordner wählen",
+  "sync.pickPath": "Pfad direkt wählen / eingeben",
+  "sync.changePath": "Pfad direkt wählen",
+  "sync.pathDialogTitle": "Ordner oder Pfad wählen",
+  "sync.pathDialogSubtitle":
+    "Wähle einen beliebigen Pfad auf dem Gerät, einem verbundenen NAS, einer SD-Karte oder einem USB-Laufwerk – oder gib ihn direkt ein.",
+  "sync.pathInputLabel": "Ordnerpfad",
+  "sync.pathInputHint":
+    "Jeder Pfad ist möglich (z. B. /storage/emulated/0/Keystead, /storage/…, /mnt/…). Existiert der Ordner noch nicht, legt Keystead ihn beim Verbinden an.",
+  "sync.pathOpen": "Öffnen",
+  "sync.pathRoots": "Speicherorte",
+  "sync.pathUp": "Übergeordneter Ordner (..)",
+  "sync.pathSubfolders": "Unterordner in „{path}“",
+  "sync.pathNoSubfolders": "Keine Unterordner in diesem Verzeichnis.",
+  "sync.pathNotReadable":
+    "Dieses Verzeichnis kann noch nicht direkt aufgelistet werden – gib den gewünschten Unterordner direkt ein oder schalte den Vollzugriff frei.",
+  "sync.pathGrantTitle": "Vollzugriff auf alle Pfade freigeben",
+  "sync.pathGrantText":
+    "Damit Keystead auf jeden Ordner außerhalb des Standard-App-Speichers (z. B. eingebundene NAS-Ordner, /storage oder /mnt) direkt zugreifen darf, erlaube „Zugriff auf alle Dateien“ in den Android-Einstellungen.",
+  "sync.pathGrantButton": "In Android freigeben",
+  "sync.pathNewFolder": "Neuer Ordner",
+  "sync.pathNewFolderPlaceholder": "Ordnername",
+  "sync.pathCreateFolder": "Anlegen",
+  "sync.pathUse": "Diesen Pfad verbinden",
   "sync.folderNote":
     "Keystead legt nur seine eigenen, verschlüsselten Tresor-Dateien ab – im Cloud-Ordner (die Übertragung übernimmt deine Cloud-App) oder direkt auf deinem Server. Ein Keystead-Server ist nie im Spiel.",
   "sync.method": "Abgleich über",
@@ -1206,7 +1229,11 @@ export const de = {
     "Auf diesem System merkt sich Keystead das Passwort nur, bis die App beendet wird – danach fragt es erneut.",
   "webdav.folder": "Ordner auf dem Server",
   "webdav.folderHint":
-    "Keystead legt dort nur seine verschlüsselten Tresor-Dateien ab. Nimm am PC und am Handy denselben Server und Ordner.",
+    "Keystead legt dort nur seine verschlüsselten Tresor-Dateien ab (beliebiger Pfad wie „Keystead“ oder „NAS/Tresore“, oder „/“ für das Hauptverzeichnis). Nimm am PC und am Handy denselben Server und Ordner.",
+  "webdav.browse": "Ordner durchsuchen",
+  "webdav.browseRoot": "Hauptverzeichnis (/)",
+  "webdav.browseUp": "Übergeordneter Ordner (..)",
+  "webdav.browseEmpty": "Keine weiteren Unterordner gefunden.",
   "webdav.test": "Verbindung testen",
   "webdav.connect": "Verbinden",
   "webdav.ok": "Verbindung steht – der Ordner ist bereit.",
