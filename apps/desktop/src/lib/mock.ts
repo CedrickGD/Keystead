@@ -117,12 +117,9 @@ import type {
   MirrorStatus,
   PairedClient,
   PairingRequest,
-  PathListing,
   SecretField,
   SessionState,
   Settings,
-  StorageAccess,
-  StorageRoot,
   SyncConflict,
   SyncFileResult,
   SyncCloud,
@@ -1107,52 +1104,8 @@ function mockDropboxCode(args: Record<string, unknown>): SyncCloud {
 
 /** Server folders made with "Ordner anlegen" (by URL and folder). */
 const mockCreatedFolders = new Set<string>();
-let mockStorageGranted = true;
-const mockPhoneFolders = new Map<string, string[]>([
-  ["/", ["mnt", "sdcard", "storage"]],
-  ["/storage", ["emulated", "NAS-Share", "SD-Card"]],
-  ["/storage/emulated", ["0"]],
-  ["/storage/emulated/0", ["Documents", "Download", "Keystead", "Nextcloud"]],
-  ["/storage/NAS-Share", ["Backups", "Keystead", "Tresore"]],
-  ["/storage/SD-Card", ["Keystead"]],
-  ["/mnt", ["nas", "Runtime", "sdcard", "user"]],
-  ["/mnt/nas", ["Keystead", "Safe"]],
-]);
 
-function mockStorageRoots(): StorageRoot[] {
-  return [
-    { name: "/storage/emulated/0", path: "/storage/emulated/0" },
-    { name: "NAS-Share", path: "/storage/NAS-Share" },
-    { name: "SD-Card", path: "/storage/SD-Card" },
-    { name: "/storage", path: "/storage" },
-    { name: "/mnt", path: "/mnt" },
-    { name: "/", path: "/" },
-  ];
-}
-
-function mockBrowsePath(rawPath: string | null): PathListing {
-  const normalized = (rawPath?.trim() || "/storage/emulated/0").replace(/\/+$/, "") || "/";
-  const children = mockPhoneFolders.get(normalized);
-  const exists = Boolean(children) || normalized.startsWith("/storage/") || normalized.startsWith("/mnt/");
-  const entries = (children ?? []).map((name) => ({
-    name,
-    path: normalized === "/" ? `/${name}` : `${normalized}/${name}`,
-  }));
-  const lastSlash = normalized.lastIndexOf("/");
-  const parent = normalized === "/" ? null : lastSlash <= 0 ? "/" : normalized.slice(0, lastSlash);
-  return {
-    path: normalized,
-    parent,
-    exists,
-    readable: exists,
-    writable: exists && mockStorageGranted,
-    granted: mockStorageGranted,
-    roots: mockStorageRoots(),
-    entries,
-  };
-}
-
-function parseWebDavConfig(input: unknown, allowEmptyFolder = false): WebDavConfig {
+function parseWebDavConfig(input: unknown): WebDavConfig {
   const c = input as Partial<WebDavConfig> | null;
   if (!c || typeof c.url !== "string" || typeof c.user !== "string" || typeof c.password !== "string") {
     fail("invalid_input:webdav_config");
@@ -1160,8 +1113,7 @@ function parseWebDavConfig(input: unknown, allowEmptyFolder = false): WebDavConf
   const url = c.url.trim();
   const host = url.replace(/^https:\/\//i, "").split("/")[0] ?? "";
   if (!/^https:\/\/[^/]/i.test(url) || host.includes("@")) fail("invalid_input:server_url");
-  const rawFolder = typeof c.folder === "string" ? c.folder.trim() : "";
-  const folder = rawFolder ? rawFolder : allowEmptyFolder ? "" : "Keystead";
+  const folder = typeof c.folder === "string" && c.folder.trim() ? c.folder.trim() : "Keystead";
   if (folder.split("/").some((part) => part === "." || part === "..") || folder.includes("\\")) {
     fail("invalid_input:server_folder");
   }
@@ -2226,17 +2178,6 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return mockWebdavTest(cfg);
     }
 
-    case "webdav_list_folders": {
-      const cfg = parseWebDavConfig(args.config, true);
-      await sleep(300);
-      const probe = mockWebdavTest({ ...cfg, folder: cfg.folder || "Keystead" });
-      if (!probe.ok && !probe.folderMissing) fail(probe.code ?? "unsupported:sync_server_error");
-      const clean = cfg.folder.replace(/^\/+|\/+$/g, "");
-      if (!clean) return ["Backups", "Keystead", "NAS", "Tresore"];
-      if (clean === "NAS" || clean === "Backups") return ["Keystead", "Privat", "Arbeit"];
-      return [];
-    }
-
     case "set_sync_server": {
       const cfg = parseWebDavConfig(args.config);
       await sleep(600);
@@ -2437,57 +2378,6 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return folderStatus();
     }
 
-    case "storage_access": {
-      const access: StorageAccess = { granted: mockStorageGranted, roots: mockStorageRoots() };
-      return access;
-    }
-
-    case "request_storage_access": {
-      await sleep(300);
-      mockStorageGranted = true;
-      return { granted: mockStorageGranted, roots: mockStorageRoots() };
-    }
-
-    case "browse_phone_path": {
-      const path = optStr(args, "path") || null;
-      return mockBrowsePath(path);
-    }
-
-    case "create_phone_folder": {
-      const parent = str(args, "parent").trim().replace(/\/+$/, "") || "/";
-      const name = str(args, "name").trim();
-      if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
-        fail("invalid_input:folder_write");
-      }
-      const list = mockPhoneFolders.get(parent) ?? [];
-      if (!list.includes(name)) {
-        mockPhoneFolders.set(parent, [...list, name].sort((a, b) => a.localeCompare(b)));
-      }
-      const created = parent === "/" ? `/${name}` : `${parent}/${name}`;
-      if (!mockPhoneFolders.has(created)) mockPhoneFolders.set(created, []);
-      return created;
-    }
-
-    case "link_path": {
-      const path = str(args, "path").trim().replace(/\/+$/, "") || "/";
-      const create = Boolean(args.create);
-      if (!path.startsWith("/")) fail("invalid_input:folder_write");
-      if (create && !mockPhoneFolders.has(path)) {
-        mockPhoneFolders.set(path, []);
-      }
-      await sleep(500);
-      s.sync.link = { folderName: path, linkedAt: Date.now(), writable: true, kind: "folder", server: null };
-      s.sync.lost = false;
-      s.sync.lastError = null;
-      s.lastActivity = Date.now();
-      try {
-        await mockSyncFolder();
-      } catch {
-        /* recorded in lastError */
-      }
-      return folderStatus();
-    }
-
     case "link_webdav": {
       const cfg = parseWebDavConfig(args.config);
       await sleep(700);
@@ -2635,15 +2525,9 @@ const PHONE_COMMANDS = new Set([
   "save_settings",
   "folder_status",
   "link_folder",
-  "storage_access",
-  "request_storage_access",
-  "browse_phone_path",
-  "create_phone_folder",
-  "link_path",
   "link_webdav",
   "webdav_test",
   "webdav_create_folder",
-  "webdav_list_folders",
   "dropbox_login",
   "dropbox_login_waiting",
   "link_dropbox",

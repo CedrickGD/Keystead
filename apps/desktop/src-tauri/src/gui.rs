@@ -201,7 +201,6 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::sync_conflict::resolve_sync_conflict,
             crate::sync_server::webdav_test,
             crate::sync_server::webdav_create_folder,
-            crate::sync_server::webdav_list_folders,
             crate::sync_server::dropbox_login,
             crate::sync_server::dropbox_login_waiting,
             crate::sync_server::gdrive_login,
@@ -251,16 +250,6 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             crate::mobile::sync::folder_status,
             #[cfg(mobile)]
             crate::mobile::sync::link_folder,
-            #[cfg(mobile)]
-            crate::mobile::sync::storage_access,
-            #[cfg(mobile)]
-            crate::mobile::sync::request_storage_access,
-            #[cfg(mobile)]
-            crate::mobile::sync::browse_phone_path,
-            #[cfg(mobile)]
-            crate::mobile::sync::create_phone_folder,
-            #[cfg(mobile)]
-            crate::mobile::sync::link_path,
             #[cfg(mobile)]
             crate::mobile::sync::link_webdav,
             #[cfg(mobile)]
@@ -747,11 +736,6 @@ mod tests {
             "pickFolder",
             "releaseFolder",
             "folderAccess",
-            "storageAccess",
-            "requestStorageAccess",
-            "browsePath",
-            "createPathFolder",
-            "checkPathFolder",
             "listChildren",
             "copyFile",
             "writeFile",
@@ -763,11 +747,10 @@ mod tests {
                 "{command}"
             );
         }
-        // The advanced-roots hint is hidden from the public Android SDK;
-        // use the current and legacy intent keys without referencing its constant.
+        // The picker shows the advanced roots (device storage, SD, USB) –
+        // a hint, no permission; no access outside the picked tree.
         assert!(folder.contains(r#"putExtra("android.provider.extra.SHOW_ADVANCED", true)"#));
         assert!(folder.contains(r#"putExtra("android.content.extra.SHOW_ADVANCED", true)"#));
-        assert!(!folder.contains("DocumentsContract.EXTRA_SHOW_ADVANCED"));
         assert!(source_registers_the_folder_plugin());
         // The Wi-Fi check: the active network's transports, nothing more.
         let network = &folder[folder.find("fun networkKind").unwrap()..];
@@ -846,13 +829,9 @@ mod tests {
             BTreeSet::from([
                 "android.permission.INTERNET",
                 "android.permission.ACCESS_NETWORK_STATE",
-                "android.permission.MANAGE_EXTERNAL_STORAGE",
-                "android.permission.READ_EXTERNAL_STORAGE",
-                "android.permission.WRITE_EXTERNAL_STORAGE",
             ])
         );
-        assert_eq!(manifest.matches("<uses-permission").count(), 5);
-        assert!(manifest.contains("android.content.action.DOCUMENTS_PROVIDER"));
+        assert_eq!(manifest.matches("<uses-permission").count(), 2);
         assert!(!manifest.contains("uses-permission-sdk-23"));
         assert!(
             manifest.contains(r#"android:networkSecurityConfig="@xml/network_security_config""#)
@@ -1054,11 +1033,6 @@ mod tests {
             BTreeSet::from([
                 "folder_status",
                 "link_folder",
-                "storage_access",
-                "request_storage_access",
-                "browse_phone_path",
-                "create_phone_folder",
-                "link_path",
                 "link_webdav",
                 "link_dropbox",
                 "link_gdrive",
@@ -1083,7 +1057,6 @@ mod tests {
             "totp_code",
             "webdav_test",
             "webdav_create_folder",
-            "webdav_list_folders",
             "dropbox_login",
             "dropbox_login_waiting",
             "gdrive_login",

@@ -938,29 +938,6 @@ export const en: Record<MessageKey, string> = {
   "sync.stepPhone":
     "Here: tap “Choose cloud folder” and pick that same folder through the cloud app (“Use this folder”, “Allow”) – or “Connect to a server (WebDAV)” with the same server and folder as on the PC.",
   "sync.pickFolder": "Choose cloud folder",
-  "sync.pickPath": "Choose or enter path directly",
-  "sync.changePath": "Choose path directly",
-  "sync.pathDialogTitle": "Choose folder or path",
-  "sync.pathDialogSubtitle":
-    "Choose any path on the device, a connected NAS, an SD card or a USB drive – or type it directly.",
-  "sync.pathInputLabel": "Folder path",
-  "sync.pathInputHint":
-    "Any path is supported (e.g. /storage/emulated/0/Keystead, /storage/…, /mnt/…). If the folder does not exist yet, Keystead creates it when linking.",
-  "sync.pathOpen": "Open",
-  "sync.pathRoots": "Locations",
-  "sync.pathUp": "Parent folder (..)",
-  "sync.pathSubfolders": "Subfolders in “{path}”",
-  "sync.pathNoSubfolders": "No subfolders in this directory.",
-  "sync.pathNotReadable":
-    "This directory cannot be listed directly yet – enter the desired subfolder directly or grant all-files access.",
-  "sync.pathGrantTitle": "Grant access to all paths",
-  "sync.pathGrantText":
-    "So Keystead can access any folder outside standard app storage (e.g. mounted NAS folders, /storage or /mnt) directly, allow “All files access” in Android settings.",
-  "sync.pathGrantButton": "Allow in Android",
-  "sync.pathNewFolder": "New folder",
-  "sync.pathNewFolderPlaceholder": "Folder name",
-  "sync.pathCreateFolder": "Create",
-  "sync.pathUse": "Link this path",
   "sync.folderNote":
     "Keystead stores only its own encrypted vault files – in the cloud folder (your cloud app does the transfer) or directly on your server. A Keystead server is never involved.",
   "sync.method": "Sync through",
@@ -1195,11 +1172,7 @@ export const en: Record<MessageKey, string> = {
   "webdav.passwordMemory": "On this system Keystead keeps the password only until the app quits – then it asks again.",
   "webdav.folder": "Folder on the server",
   "webdav.folderHint":
-    "Keystead puts only its encrypted vault files there (any path such as “Keystead” or “NAS/Vaults”, or “/” for the root directory). Use the same server and folder on the PC and the phone.",
-  "webdav.browse": "Browse folders",
-  "webdav.browseRoot": "Root directory (/)",
-  "webdav.browseUp": "Parent folder (..)",
-  "webdav.browseEmpty": "No further subfolders found.",
+    "Keystead puts only its encrypted vault files there. Use the same server and folder on the PC and the phone.",
   "webdav.test": "Test connection",
   "webdav.connect": "Connect",
   "webdav.ok": "Connected – the folder is ready.",

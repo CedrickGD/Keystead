@@ -29,13 +29,11 @@ import type {
   MasterPasswordChanged,
   MirrorStatus,
   PairingRequest,
-  PathListing,
   PwnedReport,
   SavedGeneratorPreset,
   SecretField,
   SessionState,
   Settings,
-  StorageAccess,
   SyncConflict,
   SyncNotice,
   Strength,
@@ -302,8 +300,6 @@ export const api = {
   webdavTest: (config: WebDavConfig) => call<WebDavTest>("webdav_test", { config }),
   /** Both platforms: "Ordner anlegen" – creates the server's sync folder, then tests again. */
   webdavCreateFolder: (config: WebDavConfig) => call<WebDavTest>("webdav_create_folder", { config }),
-  /** Both platforms: lists child directories inside `config.folder` (or directly below `config.url` when empty). */
-  webdavListFolders: (config: WebDavConfig) => call<string[]>("webdav_list_folders", { config }),
   /** Desktop: the vaults in the mirror folder the PC does not have (as the last scan found them). */
   folderOffers: () => call<FolderOffer[]>("folder_offers"),
   /** Desktop: takes an offered vault from the mirror folder (on trial: it opens with its own master password). */
@@ -364,16 +360,6 @@ export const api = {
    * first sync is in `lastError`.
    */
   linkFolder: () => call<FolderStatus | null>("link_folder"),
-  /** Phone: whether All-Files-Access is granted and the quick-select storage roots. */
-  storageAccess: () => call<StorageAccess>("storage_access"),
-  /** Phone: opens Android's All-Files-Access settings for Keystead and returns the updated status. */
-  requestStorageAccess: () => call<StorageAccess>("request_storage_access"),
-  /** Phone: lists child directories of a filesystem path (defaulting to primary external storage). */
-  browsePhonePath: (path?: string | null) => call<PathListing>("browse_phone_path", { path: path ?? null }),
-  /** Phone: creates a folder inside `parent` and returns its canonical path. */
-  createPhoneFolder: (parent: string, name: string) => call<string>("create_phone_folder", { parent, name }),
-  /** Phone: links a direct filesystem path (`/storage/…`, `/mnt/…`, etc.) and syncs. */
-  linkPath: (path: string, create = false) => call<FolderStatus>("link_path", { path, create }),
   /**
    * Links a folder on a WebDAV server instead (stage 2c) and syncs; the connection test must pass
    * (its code as the error). The password is sealed by the Android Keystore, never returned.

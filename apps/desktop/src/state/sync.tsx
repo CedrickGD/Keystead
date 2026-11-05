@@ -15,7 +15,7 @@ import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
 import { useSyncErrorText } from "../lib/syncErrors";
 
-export type SyncAction = "link" | "path" | "server" | "dropbox" | "gdrive" | "sync" | "unlink";
+export type SyncAction = "link" | "server" | "dropbox" | "gdrive" | "sync" | "unlink";
 
 export interface FolderSyncApi {
   /** null until the first answer. */
@@ -24,8 +24,6 @@ export interface FolderSyncApi {
   busy: SyncAction | null;
   /** Opens the system folder picker and links the choice (then syncs). */
   link: () => Promise<void>;
-  /** Links a direct filesystem path on the phone (then syncs); resolves to whether it worked. */
-  linkPath: (path: string, create?: boolean) => Promise<boolean>;
   /** Links a folder on a WebDAV server (then syncs); resolves to whether it worked. */
   linkServer: (config: WebDavConfig) => Promise<boolean>;
   /** Finishes the Dropbox login with the code and links the app folder (then syncs). */
@@ -152,28 +150,6 @@ export function FolderSyncProvider({
     }
   }, [errorText, onStatus, t, toast, tp]);
 
-  const linkPath = useCallback(
-    async (path: string, create = true) => {
-      setBusy("path");
-      try {
-        const linked = await api.linkPath(path, create);
-        setStatus(linked);
-        onStatus(linked);
-        const folder = linked.folderName ?? path;
-        if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
-        else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
-        else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
-        return true;
-      } catch (err) {
-        toast.error(errorText(err));
-        return false;
-      } finally {
-        setBusy(null);
-      }
-    },
-    [errorText, onStatus, t, toast, tp],
-  );
-
   const linkServer = useCallback(
     async (config: WebDavConfig) => {
       setBusy("server");
@@ -274,8 +250,8 @@ export function FolderSyncProvider({
   relinkRef.current = () => void link();
 
   const value = useMemo<FolderSyncApi | null>(
-    () => (enabled ? { status, busy, link, linkPath, linkServer, linkDropbox, linkGdrive, sync, unlink } : null),
-    [enabled, status, busy, link, linkPath, linkServer, linkDropbox, linkGdrive, sync, unlink],
+    () => (enabled ? { status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink } : null),
+    [enabled, status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink],
   );
   return <FolderSyncContext.Provider value={value}>{children}</FolderSyncContext.Provider>;
 }

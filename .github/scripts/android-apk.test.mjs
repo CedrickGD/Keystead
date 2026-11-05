@@ -103,10 +103,10 @@ test("badging fields", () => {
     "android.permission.INTERNET",
   ]);
   assert.deepEqual(apkProblems({ badging: sdk23, signers: [DEBUG_HEX], expect }), []);
-  const calendar = parseBadging(
-    BADGING.replace("application-label", "uses-permission-sdk-23: name='android.permission.READ_CALENDAR'\napplication-label"),
+  const storage = parseBadging(
+    BADGING.replace("application-label", "uses-permission-sdk-23: name='android.permission.READ_EXTERNAL_STORAGE'\napplication-label"),
   );
-  assert.match(apkProblems({ badging: calendar, signers: [DEBUG_HEX], expect })[0], /READ_CALENDAR/);
+  assert.match(apkProblems({ badging: storage, signers: [DEBUG_HEX], expect })[0], /READ_EXTERNAL_STORAGE/);
   // `maxSdkVersion` after the name does not hide a permission either.
   assert.deepEqual(
     parseBadging("uses-permission: name='android.permission.INTERNET' maxSdkVersion='32'\n").permissions,
@@ -148,9 +148,6 @@ test("the release gates", () => {
   const allowed = [
     "android.permission.INTERNET",
     "android.permission.ACCESS_NETWORK_STATE",
-    "android.permission.MANAGE_EXTERNAL_STORAGE",
-    "android.permission.READ_EXTERNAL_STORAGE",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
     "android.permission.USE_BIOMETRIC",
     "android.permission.USE_FINGERPRINT",
     "io.github.cedrickgd.keystead.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",

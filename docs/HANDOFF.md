@@ -1398,14 +1398,8 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    Abschnitt „Stufe 2c“ oben). ~~**2d**~~ Dropbox und Google Drive: **Code
    fertig** (2026-10-29, Abschnitte „Stufe 2d“ oben) – aktiv erst, wenn der
    Besitzer die App bei Dropbox bzw. Google registriert und die Schlüssel
-   als Repo-Variablen einträgt (Anleitungen dort). **2026-11-03**: Freie
-   Pfadauswahl & Ordner-Browser auf Android (`MANAGE_EXTERNAL_STORAGE`,
-   `DOCUMENTS_PROVIDER`-`<queries>`, `EXTRA_SHOW_ADVANCED`, `file://`-URIs in
-   `KeysteadFolderPlugin.kt`, Commands `storage_access`,
-   `request_storage_access`, `browse_phone_path`, `create_phone_folder`,
-   `link_path` sowie `PhonePathDialog`) und interaktiver Ordner-Browser im
-   WebDAV-Dialog (`webdav_list_folders`, beide Plattformen). Später: OneDrive,
-   evtl. PC↔Handy direkt im WLAN.
+   als Repo-Variablen einträgt (Anleitungen dort). Später: OneDrive, evtl.
+   PC↔Handy direkt im WLAN.
 3. **Autofill** (Stufe 3, E11):
    ein Android-`AutofillService` in Kotlin (gleicher Prozess wie die
    Rust-Bibliothek, JNI), zuerst die Minimalvariante – nur Browser/Domain,

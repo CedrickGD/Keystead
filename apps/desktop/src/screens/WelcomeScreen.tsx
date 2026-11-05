@@ -33,7 +33,6 @@ import { startOnSettings } from "../lib/startView";
 import { isPhonePlatform } from "../lib/phone";
 import { useFolderSync } from "../state/sync";
 import {
-  PhonePathDialog,
   PhoneServerDialog,
   SyncFileList,
   SyncSteps,
@@ -224,7 +223,6 @@ function PhoneVaultSource() {
   const [cloudForm, setCloudForm] = useState<"dropbox" | "gdrive" | null>(null);
   const errorFor = useSyncErrorText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
-  const [pathForm, setPathForm] = useState(false);
   const status = folderSync?.status ?? null;
   const busy = folderSync?.busy ?? null;
   const linked = status?.linked === true;
@@ -308,28 +306,16 @@ function PhoneVaultSource() {
                 {t("sync.changeServer")}
               </Button>
             ) : (
-              <>
-                <Button
-                  variant="secondary"
-                  block
-                  icon={<FolderOpen />}
-                  loading={busy === "link"}
-                  disabled={busy !== null && busy !== "link"}
-                  onClick={() => void folderSync?.link()}
-                >
-                  {t("sync.otherFolder")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  block
-                  icon={<HardDrive />}
-                  loading={busy === "path"}
-                  disabled={busy !== null && busy !== "path"}
-                  onClick={() => setPathForm(true)}
-                >
-                  {t("sync.changePath")}
-                </Button>
-              </>
+              <Button
+                variant="secondary"
+                block
+                icon={<FolderOpen />}
+                loading={busy === "link"}
+                disabled={busy !== null && busy !== "link"}
+                onClick={() => void folderSync?.link()}
+              >
+                {t("sync.otherFolder")}
+              </Button>
             )}
           </div>
         </>
@@ -351,16 +337,6 @@ function PhoneVaultSource() {
             onClick={() => void folderSync?.link()}
           >
             {lost ? t("sync.repick") : t("sync.pickFolder")}
-          </Button>
-          <Button
-            variant="secondary"
-            block
-            icon={<HardDrive />}
-            loading={busy === "path"}
-            disabled={!folderSync || busy !== null}
-            onClick={() => setPathForm(true)}
-          >
-            {t("sync.pickPath")}
           </Button>
           <Button
             variant="secondary"
@@ -414,7 +390,6 @@ function PhoneVaultSource() {
       {serverForm && (
         <PhoneServerDialog initial={serverForm === "edit" ? server : null} onClose={() => setServerForm(null)} />
       )}
-      {pathForm && <PhonePathDialog initialPath={status?.folderName} onClose={() => setPathForm(false)} />}
     </>
   );
 }

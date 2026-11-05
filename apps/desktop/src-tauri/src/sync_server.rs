@@ -847,18 +847,6 @@ pub async fn webdav_create_folder(core: Shared<'_>, config: Value) -> CmdResult<
     .await
 }
 
-/// `webdav_list_folders(config)` → the child folder names inside `config.folder`
-/// (or directly below `config.url` when `config.folder` is empty), sorted
-/// case-insensitively, so the user can browse the server or NAS interactively.
-#[tauri::command]
-pub async fn webdav_list_folders(core: Shared<'_>, config: Value) -> CmdResult<Vec<String>> {
-    run(&core, true, move |_| {
-        let cfg: WebDavConfig = parse(config, BAD_CONFIG)?;
-        WebDavRemote::list_folders(&cfg)
-    })
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;

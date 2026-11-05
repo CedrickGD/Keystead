@@ -36,17 +36,13 @@ export const ANDROID_MIN_SDK = 29;
  * The only permissions the APK may request (the merged manifest; anything
  * else fails the gate – see "Android project" in docs/ARCHITECTURE.md):
  * INTERNET for the server sync (stage 2c, WebDAV), ACCESS_NETWORK_STATE for
- * "Nur über WLAN synchronisieren", MANAGE_EXTERNAL_STORAGE (plus
- * READ/WRITE_EXTERNAL_STORAGE up to API 29) for direct folder path sync,
- * USE_BIOMETRIC / USE_FINGERPRINT from androidx.biometric (fingerprint unlock)
- * and androidx.core's signature-protected receiver permission.
+ * "Nur über WLAN synchronisieren", USE_BIOMETRIC / USE_FINGERPRINT from
+ * androidx.biometric (fingerprint unlock) and androidx.core's
+ * signature-protected receiver permission.
  */
 export const ANDROID_PERMISSIONS = [
   "android.permission.INTERNET",
   "android.permission.ACCESS_NETWORK_STATE",
-  "android.permission.MANAGE_EXTERNAL_STORAGE",
-  "android.permission.READ_EXTERNAL_STORAGE",
-  "android.permission.WRITE_EXTERNAL_STORAGE",
   "android.permission.USE_BIOMETRIC",
   "android.permission.USE_FINGERPRINT",
   `${ANDROID_PACKAGE}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,

@@ -9,7 +9,7 @@
 // with each call; the page never stores it.
 
 import { useId, useState } from "react";
-import { CircleCheck, Folder, FolderOpen, FolderPlus, FolderUp, PlugZap, Server, ShieldAlert, TriangleAlert } from "lucide-react";
+import { CircleCheck, FolderPlus, PlugZap, Server, ShieldAlert, TriangleAlert } from "lucide-react";
 import { ApiError, api } from "../lib/api";
 import type { CertInfo, SyncServer, WebDavConfig, WebDavTest } from "../lib/types";
 import { useT } from "../i18n";
@@ -19,7 +19,7 @@ import { Modal } from "./Modal";
 /** The folder the form suggests (the backend's default as well). */
 export const DEFAULT_SERVER_FOLDER = "Keystead";
 
-type Busy = "test" | "create" | "browse" | "connect" | null;
+type Busy = "test" | "create" | "connect" | null;
 
 /** `ab12…` → `AB:12:…`, the way servers and browsers show a fingerprint. */
 function fingerprint(hex: string): string {
@@ -58,20 +58,12 @@ export function WebDavDialog({
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [showErrors, setShowErrors] = useState(false);
-  const [browsedPath, setBrowsedPath] = useState<string | null>(null);
-  const [browsedDirs, setBrowsedDirs] = useState<string[] | null>(null);
-
-  const normalizedFolder = (): string => {
-    const trimmed = folder.trim();
-    if (trimmed === "/") return "/";
-    return trimmed || DEFAULT_SERVER_FOLDER;
-  };
 
   const config = (certSha256 = cert?.url.trim() === url.trim() ? cert.sha256 : null): WebDavConfig => ({
     url: url.trim(),
     user: user.trim(),
     password,
-    folder: normalizedFolder(),
+    folder: folder.trim() || DEFAULT_SERVER_FOLDER,
     certSha256,
   });
   const missing = {
@@ -86,28 +78,6 @@ export function WebDavDialog({
     set(value);
     setTest(null);
     setError(null);
-  };
-
-  const browseFolder = async (targetFolder: string) => {
-    setShowErrors(true);
-    if (!complete) return;
-    setBusy("browse");
-    setError(null);
-    const clean = targetFolder.replace(/^\/+|\/+$/g, "");
-    try {
-      const dirs = await api.webdavListFolders({
-        ...config(),
-        folder: clean,
-      });
-      setBrowsedPath(clean);
-      setBrowsedDirs(dirs);
-      setFolder(clean || "/");
-      setTest(null);
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(null);
-    }
   };
 
   const run = async (kind: Exclude<Busy, null>, call: () => Promise<WebDavTest>) => {
@@ -221,82 +191,18 @@ export function WebDavDialog({
         <PasswordInput id={ids.password} value={password} onChange={changed(setPassword)} mono={false} />
       </Field>
       <Field label={t("webdav.folder")} htmlFor={ids.folder} hint={t("webdav.folderHint")}>
-        <div className="rename-form">
-          <input
-            id={ids.folder}
-            className="input"
-            value={folder}
-            onChange={(e) => changed(setFolder)(e.target.value)}
-            placeholder={DEFAULT_SERVER_FOLDER}
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-          <Button
-            variant="secondary"
-            icon={<FolderOpen />}
-            loading={busy === "browse"}
-            disabled={!complete || (busy !== null && busy !== "browse")}
-            onClick={() => void browseFolder(browsedPath ?? "")}
-          >
-            {t("webdav.browse")}
-          </Button>
-        </div>
+        <input
+          id={ids.folder}
+          className="input"
+          value={folder}
+          onChange={(e) => changed(setFolder)(e.target.value)}
+          placeholder={DEFAULT_SERVER_FOLDER}
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
       </Field>
-
-      {browsedDirs !== null && (
-        <div
-          style={{
-            maxHeight: 180,
-            overflowY: "auto",
-            border: "1px solid var(--border-subtle, rgba(128,128,128,0.25))",
-            borderRadius: 8,
-            padding: 6,
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 6px" }}>
-            <code className="mono">{browsedPath ? `/${browsedPath}` : t("webdav.browseRoot")}</code>
-            {browsedPath && (
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<FolderUp />}
-                disabled={busy !== null}
-                onClick={() => {
-                  const idx = browsedPath.lastIndexOf("/");
-                  void browseFolder(idx < 0 ? "" : browsedPath.slice(0, idx));
-                }}
-              >
-                {t("webdav.browseUp")}
-              </Button>
-            )}
-          </div>
-          {browsedDirs.map((dir) => {
-            const sub = browsedPath ? `${browsedPath}/${dir}` : dir;
-            return (
-              <Button
-                key={sub}
-                size="sm"
-                variant="ghost"
-                icon={<Folder />}
-                disabled={busy !== null}
-                onClick={() => void browseFolder(sub)}
-              >
-                {dir}
-              </Button>
-            );
-          })}
-          {browsedDirs.length === 0 && (
-            <span className="subtle" style={{ padding: "4px 6px" }}>
-              {t("webdav.browseEmpty")}
-            </span>
-          )}
-        </div>
-      )}
 
       {error && (
         <div className="callout callout-danger" role="alert">
