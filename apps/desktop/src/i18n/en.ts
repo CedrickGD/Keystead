@@ -126,7 +126,7 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.sync_unlock_raced":
     "The vault was updated by the sync while it was being unlocked. Please unlock it once more.",
   "error.unsupported.sync_offline": "The server cannot be reached – no internet connection, or the address is wrong.",
-  "error.unsupported.sync_auth_failed": "The server refused the login. Check the user name and app password.",
+  "error.unsupported.sync_auth_failed": "The server refused the login. Check the user name and password.",
   "error.unsupported.sync_server_folder_missing":
     "The folder does not exist on the server (any more). Create it in the server form (“Create folder”) or choose another one.",
   "error.unsupported.sync_server_not_webdav":
@@ -150,6 +150,9 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.gdrive_not_configured": "This version cannot connect to Google Drive yet.",
   "error.unsupported.gdrive_login_expired": "The Google sign-in expired. Start it again with “Sign in with Google”.",
   "error.input.gdrive_redirect": "Google did not confirm the sign-in (cancelled or not allowed). Start it again.",
+  "error.input.smb_config":
+    "The server, share or folder is not valid like that (no spaces in the server name, no “..” in the folder).",
+  "error.unsupported.smb_share_missing": "The server has no share of that name. Check the name (case does not matter).",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",
   "error.input.attachment_name_too_long": "The file name is too long (200 characters at most).",
@@ -964,6 +967,13 @@ export const en: Record<MessageKey, string> = {
   "sync.methodDropbox": "Dropbox",
   "sync.methodSoonGdrive": "Google Drive is coming soon.",
   "sync.connectGdrive": "Connect to Google Drive",
+  "sync.connectSmb": "Connect to an SMB share",
+  "sync.smb": "SMB share",
+  "sync.smbUser": "Signed in as {user}",
+  "sync.smbGuest": "Connected as a guest",
+  "sync.smbDesc":
+    "Keystead syncs directly with this folder on the share – at start, when you return to the app, after every change and when you ask it to.",
+  "sync.changeSmb": "Change share",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox is coming soon.",
   "sync.cloudError.authFailed": "{provider} no longer allows the access. Sign in again under Settings → Sync.",
@@ -1006,6 +1016,31 @@ export const en: Record<MessageKey, string> = {
   "gdrive.code": "Your code",
   "gdrive.copyCode": "Copy code",
   "gdrive.codeCopied": "Code copied",
+  "smb.title": "Connect to an SMB share",
+  "smb.changeTitle": "Change SMB share",
+  "smb.subtitle":
+    "A folder on a Windows share or a NAS (Synology, QNAP, FRITZ!Box, Samba …) – ideally the one the PC uses as its cloud folder. Best within your own network.",
+  "smb.server": "Server",
+  "smb.serverHint":
+    "Name or IP address, e.g. nas.local, 192.168.1.10 or fritz.box – optionally with a port (nas:4455).",
+  "smb.share": "Share",
+  "smb.sharePlaceholder": "e.g. Data",
+  "smb.shareHint": "The share's name, e.g. “Data” from \\\\nas\\Data.",
+  "smb.folder": "Folder",
+  "smb.folderHint": "The folder in the share, e.g. “Keystead” or “Backups/Keystead”; empty = the share itself.",
+  "smb.user": "User name",
+  "smb.password": "Password",
+  "smb.passwordHint":
+    "Keystead stores it encrypted on this device. Leave it (and the user name) empty for guest access.",
+  "smb.domain": "Domain (optional)",
+  "smb.domainHint": "Only needed in company networks; leave it empty otherwise.",
+  "smb.test": "Test connection",
+  "smb.connect": "Connect",
+  "smb.testOk": "The connection works – Keystead can write to the folder.",
+  "smb.testReadOnly":
+    "The connection works, but Keystead may not write to this folder – changes from the phone will not reach the PC then.",
+  "smb.folderMissing": "The folder “{folder}” does not exist on the share yet.",
+  "smb.createFolder": "Create folder",
   "sync.dropbox": "Dropbox",
   "sync.dropboxDesc":
     "Keystead syncs its own folder “Apps/Keystead” in your Dropbox – it sees nothing else of it. At start, when you return to the app, after every change and when you ask it to.",

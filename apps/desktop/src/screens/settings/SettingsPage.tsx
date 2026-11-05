@@ -85,6 +85,7 @@ import {
 import { WebDavDialog } from "../../components/WebDavForm";
 import { DropboxDialog } from "../../components/DropboxDialog";
 import { GdriveDialog } from "../../components/GdriveDialog";
+import { SmbDialog } from "../../components/SmbDialog";
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -914,12 +915,14 @@ function SyncSection() {
   const skippedText = useSkippedText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
   const [cloudForm, setCloudForm] = useState<CloudProvider | null>(null);
+  const [smbForm, setSmbForm] = useState<"new" | "edit" | null>(null);
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync) return null;
   const { status, busy, link, sync, unlink } = folderSync;
   const linked = status?.linked === true;
   const server = status?.kind === "webdav" ? status.server : null;
   const cloud = status?.kind === "dropbox" || status?.kind === "gdrive" ? status.cloud : null;
+  const smb = status?.kind === "smb" ? status.smb : null;
   const dropboxAvailable = info.syncProviders.includes("dropbox");
   const gdriveAvailable = info.syncProviders.includes("gdrive");
   const soon = methodSoonKey(info.syncProviders);
@@ -934,6 +937,13 @@ function SyncSection() {
         <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setCloudForm(null)} />
       )}
       {cloudForm === "gdrive" && <GdriveDialog onConnect={folderSync.linkGdrive} onClose={() => setCloudForm(null)} />}
+      {smbForm && (
+        <SmbDialog
+          initial={smbForm === "edit" ? smb : null}
+          onConnect={folderSync.linkSmb}
+          onClose={() => setSmbForm(null)}
+        />
+      )}
     </>
   );
 
@@ -959,6 +969,15 @@ function SyncSection() {
               onClick={() => setServerForm("new")}
             >
               {t("sync.connectServer")}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<HardDrive />}
+              loading={busy === "smb"}
+              disabled={!status || busy !== null}
+              onClick={() => setSmbForm("new")}
+            >
+              {t("sync.connectSmb")}
             </Button>
             {dropboxAvailable && (
               <Button
@@ -1017,6 +1036,41 @@ function SyncSection() {
                     {t("sync.signInAgain")}
                   </Button>
                 )}
+                <Button
+                  variant="ghost"
+                  icon={<FolderOpen />}
+                  loading={busy === "link"}
+                  disabled={busy !== null && busy !== "link"}
+                  onClick={() => void link()}
+                >
+                  {t("sync.switchToFolder")}
+                </Button>
+              </div>
+            </SettingRow>
+          ) : smb ? (
+            <SettingRow
+              title={t("sync.smb")}
+              description={
+                <>
+                  <strong className="sync-folder-name">{status?.folderName}</strong>
+                  <span className="sync-folder-desc">
+                    {smb.user ? t("sync.smbUser", { user: smb.user }) : t("sync.smbGuest")}
+                  </span>
+                  <span className="sync-folder-desc">{t("sync.smbDesc")}</span>
+                </>
+              }
+              stacked
+            >
+              <div className="setting-actions">
+                <Button
+                  variant={serverNeedsPassword(status?.lastError) ? "primary" : "secondary"}
+                  icon={serverNeedsPassword(status?.lastError) ? <KeyRound /> : <HardDrive />}
+                  loading={busy === "smb"}
+                  disabled={busy !== null && busy !== "smb"}
+                  onClick={() => setSmbForm("edit")}
+                >
+                  {serverNeedsPassword(status?.lastError) ? t("sync.reenterPassword") : t("sync.changeSmb")}
+                </Button>
                 <Button
                   variant="ghost"
                   icon={<FolderOpen />}
@@ -1124,7 +1178,7 @@ function SyncSection() {
               {t("sync.syncNow")}
             </Button>
           </SettingRow>
-          {(server || cloud) && (
+          {(server || cloud || smb) && (
             <SettingRow title={t("sync.wifiOnly")} description={t("sync.wifiOnlyDesc")}>
               <Switch
                 checked={settings.syncWifiOnly}

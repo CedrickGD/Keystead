@@ -388,6 +388,8 @@ pub enum LinkKind {
     Dropbox,
     /// The folder "Keystead" in a Google Drive (stage 2d; `remote::gdrive`).
     Gdrive,
+    /// A folder on an SMB share (a Windows share, a NAS; `remote::smb`).
+    Smb,
 }
 
 /// The linked folder (`<data>/sync/link.json`). No secrets: the folder's
@@ -408,6 +410,9 @@ pub struct LinkState {
     /// only; no token).
     #[serde(default)]
     pub cloud: Option<SyncCloud>,
+    /// The share ([`LinkKind::Smb`] only; no password).
+    #[serde(default)]
+    pub smb: Option<crate::remote::smb::SyncSmb>,
     /// The folder's address – what the sync bases are recorded for
     /// (Android: the tree URI the app holds a persisted permission for; a
     /// server: its folder's key, `webdav:<normalized folder URL>`).
@@ -442,6 +447,7 @@ impl LinkState {
             kind: LinkKind::Folder,
             server: None,
             cloud: None,
+            smb: None,
             tree_uri,
             folder_name,
             linked_at,
@@ -475,6 +481,22 @@ impl LinkState {
         LinkState {
             kind: LinkKind::Webdav,
             server: Some(server),
+            ..LinkState::new(key, folder_name, linked_at, writable)
+        }
+    }
+
+    /// A link to the folder `key` (`remote::Remote::key`) on the SMB share
+    /// `smb`.
+    pub fn new_smb(
+        key: String,
+        smb: crate::remote::smb::SyncSmb,
+        linked_at: i64,
+        writable: bool,
+    ) -> Self {
+        let folder_name = smb.label();
+        LinkState {
+            kind: LinkKind::Smb,
+            smb: Some(smb),
             ..LinkState::new(key, folder_name, linked_at, writable)
         }
     }
@@ -536,6 +558,8 @@ pub struct FolderStatus {
     /// The account of a [`LinkKind::Dropbox`] or [`LinkKind::Gdrive`] link
     /// (no token).
     pub cloud: Option<SyncCloud>,
+    /// The share of a [`LinkKind::Smb`] link (no password).
+    pub smb: Option<crate::remote::smb::SyncSmb>,
     /// The app may write the linked folder (`false` without one).
     pub writable: bool,
     /// A sync is running right now.
@@ -564,6 +588,7 @@ impl FolderStatus {
                 kind: None,
                 server: None,
                 cloud: None,
+                smb: None,
                 writable: false,
                 syncing: false,
                 folder_name: None,
@@ -579,6 +604,7 @@ impl FolderStatus {
                 kind: Some(link.kind),
                 server: link.server.clone(),
                 cloud: link.cloud.clone(),
+                smb: link.smb.clone(),
                 writable: link.writable,
                 syncing: false,
                 folder_name: Some(link.folder_name.clone()),
@@ -2431,6 +2457,7 @@ mod tests {
                 "lastSyncAt",
                 "linkedAt",
                 "server",
+                "smb",
                 "treeUri",
                 "writable"
             ]
@@ -2438,6 +2465,7 @@ mod tests {
         assert_eq!(json["kind"], "folder");
         assert!(json["server"].is_null());
         assert!(json["cloud"].is_null());
+        assert!(json["smb"].is_null());
         assert_eq!(json["files"][0]["outcome"], "updated");
         assert_eq!(json["files"][0]["passwordChanged"], true);
 

@@ -255,6 +255,12 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(mobile)]
             crate::mobile::sync::link_webdav,
             #[cfg(mobile)]
+            crate::mobile::sync::smb_test,
+            #[cfg(mobile)]
+            crate::mobile::sync::smb_create_folder,
+            #[cfg(mobile)]
+            crate::mobile::sync::link_smb,
+            #[cfg(mobile)]
             crate::mobile::sync::link_dropbox,
             #[cfg(mobile)]
             crate::mobile::sync::link_gdrive,
@@ -1037,6 +1043,9 @@ mod tests {
                 "link_folder",
                 "phone_check_update",
                 "link_webdav",
+                "smb_test",
+                "smb_create_folder",
+                "link_smb",
                 "link_dropbox",
                 "link_gdrive",
                 "sync_now",

@@ -46,6 +46,7 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 use crate::commands::{parse, run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
 use crate::folder_sync::{self, FolderStatus, LinkKind, LinkState, RemoteFolder};
+use crate::remote::smb::{self, SmbConfig, SmbRemote, SmbTest};
 use crate::remote::webdav::WebDavConfig;
 use crate::state::{log, Core};
 use crate::sync_conflict::{self, Keep};
@@ -444,7 +445,9 @@ fn with_plugin_folder<T>(
 fn forget_link(app: &AppHandle, core: &Core, previous: &LinkState, keep: Option<&str>) {
     match previous.kind {
         LinkKind::Folder => release_folder(app, &previous.tree_uri),
-        LinkKind::Webdav => sync_server::forget_password(core, &previous.tree_uri, keep),
+        LinkKind::Webdav | LinkKind::Smb => {
+            sync_server::forget_password(core, &previous.tree_uri, keep)
+        }
         LinkKind::Dropbox | LinkKind::Gdrive if keep == Some(previous.tree_uri.as_str()) => {}
         LinkKind::Dropbox | LinkKind::Gdrive => match &previous.cloud {
             Some(cloud) => sync_server::sign_out(core, cloud),
@@ -514,6 +517,51 @@ pub async fn link_webdav(
     run(&core, true, move |c| {
         let cfg: WebDavConfig = parse(config, sync_server::BAD_CONFIG)?;
         let link = sync_server::link_server(c, &cfg, now_ms())?;
+        replace_link(&app, c, link)
+    })
+    .await
+}
+
+/// `smb_test(config)` → `SmbTest`: the SMB form's connection test (share,
+/// login, folder, a test file). Nothing is stored; the password is not
+/// echoed.
+#[tauri::command]
+pub async fn smb_test(core: Shared<'_>, config: serde_json::Value) -> CmdResult<SmbTest> {
+    run(&core, true, move |_| {
+        let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
+        Ok(SmbRemote::test(&cfg))
+    })
+    .await
+}
+
+/// `smb_create_folder(config)` → `SmbTest`: "Ordner anlegen" – the folder on
+/// the share is made (segment by segment; one that exists is fine) and the
+/// connection tested again. Never done by a sync.
+#[tauri::command]
+pub async fn smb_create_folder(core: Shared<'_>, config: serde_json::Value) -> CmdResult<SmbTest> {
+    run(&core, true, move |_| {
+        let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
+        let share = cfg.share()?;
+        SmbRemote::new(&share, cfg.password.clone())?.create_folder()?;
+        Ok(SmbRemote::test(&cfg))
+    })
+    .await
+}
+
+/// `link_smb(config)` → [`FolderStatus`]: links the phone to a folder on an
+/// SMB share (a Windows share, a NAS) in place of the previous link and
+/// syncs. The connection test must pass (its code otherwise); the password
+/// is sealed by the Android Keystore (`crate::credentials`) and never
+/// returned. A failed first sync is not an error (`lastError`).
+#[tauri::command]
+pub async fn link_smb(
+    app: AppHandle,
+    core: Shared<'_>,
+    config: serde_json::Value,
+) -> CmdResult<FolderStatus> {
+    run(&core, true, move |c| {
+        let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
+        let link = sync_server::link_smb(c, &cfg, now_ms())?;
         replace_link(&app, c, link)
     })
     .await

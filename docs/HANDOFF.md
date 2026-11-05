@@ -1,4 +1,4 @@
-# Übergabe – Stand Keystead (2026-10-24)
+# Übergabe – Stand Keystead (2026-11-05)
 
 Kurzfassung für eine neue (lokale) Claude-Sitzung. Projektregeln stehen in
 [`CLAUDE.md`](../CLAUDE.md), die technischen Verträge in
@@ -38,10 +38,11 @@ WebView2 (ist auf Win 10/11 vorhanden).
   `Keystead-<version>-android.apk` (Job `android`, mit dem Release-Keystore
   signiert; CI bricht ab, wenn das Zertifikat nicht
   `B7:3D:75:…:3C:AA` ist). `versionCode` = Run-Nummer – deshalb
-  `.github/workflows/build.yml` **nie umbenennen**. Die Android-App
-  aktualisiert sich nicht selbst und sucht auch nicht nach Updates (seit
-  Stufe 2c hat sie `INTERNET`, aber nur für den WebDAV-Abgleich); neue APK
-  über die alte installieren, „Über Keystead“ verlinkt die Releases. Release-Notes und README nennen sie
+  `.github/workflows/build.yml` **nie umbenennen**. Seit Stufe 2e
+  (2026-11-05) sucht die Android-App selbst nach Updates (`latest.json`) und
+  zeigt ein Banner – auch ohne geöffneten Tresor; „Herunterladen“ holt die
+  APK, Android installiert sie über die alte. „Über Keystead“ verlinkt die
+  Releases. Release-Notes und README nennen sie
   „frühe Vorschau“: nur lesen, die Tresore kommen über den Cloud-Ordner
   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“), einen Tresor
   anlegen kann sie nicht. **Seit Stufe 2b (2026-10-23, noch nicht
@@ -1293,6 +1294,55 @@ Drive); Clippy Desktop und Android; Klick-Test im Mock (PC und Handy).
 **Nicht verifiziert:** echtes Google-Konto (es fehlen die Clients).
 Bekannte Grenze: Wird die App am Handy während der Anmeldung von Android
 beendet, ist die Anmeldung verloren („abgelaufen“ – einfach neu starten).
+
+### Stufe 2e – SMB-Freigabe, Update am Handy, App-Icon (2026-11-05)
+
+Anlass: Andere Agenten (6e93e60 … 4b5a3b8) hatten auf Wunsch „raus aus dem
+Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
+(`MANAGE_EXTERNAL_STORAGE` u. a.) und einen freien Pfad-Browser gebaut.
+
+- **Revert** (`81e2a5f`): Speicher-Berechtigungen, `requestLegacyExternalStorage`,
+  `DOCUMENTS_PROVIDER`-Query, Pfad-/Ordner-Browser (`storage_access`,
+  `browse_phone_path`, `create_phone_folder`, `link_path`,
+  `webdav_list_folders`) entfernt. Behalten: die dead_code-Attribute aus
+  `6adbd24` und im System-Ordnerpicker die `SHOW_ADVANCED`-Extras (zeigen
+  Gerätespeicher, SD-Karte, USB – ohne Berechtigung). Ein mit-zurückgedrehter
+  Clippy-Fix in `device_unlock.rs` (`ct.clone()`) ist wiederhergestellt.
+- **Update am Handy ohne Tresor** (`c094f0b`): `update::phone_check_update`
+  (liest `latest.json` des Kanals, semver-Vergleich, höchstens 3 Redirects und
+  nur zu GitHub-Hosts, respektiert die Einstellung „nach Updates suchen“ außer
+  bei manueller Prüfung); `PhoneUpdateBanner` auf Willkommens-, Entsperr- und
+  Hauptbildschirm, „Herunterladen“ öffnet `Keystead-<version>-android.apk`.
+  Installieren macht weiterhin Android (APK öffnen → „Aktualisieren“).
+- **App-Icon** (`c094f0b`): adaptives Launcher-Icon (Verlauf + Schild,
+  monochrom für Themen-Icons), mipmap-PNGs aus `keystead-1024.png`.
+- **SMB** (Vertrag: ARCHITECTURE „SMB shares (phone)“): `remote/smb.rs`
+  (`SmbRemote`, Crate `smb2` 0.42, reines Rust, SMB2/3 mit NTLM; Schreiben
+  über Temp-Datei + Umbenennen; kein CAS, ETag = Änderungszeit + Größe),
+  `LinkKind::Smb`, `LinkState.smb`, `sync_server::link_smb`, Befehle
+  `smb_test`, `smb_create_folder`, `link_smb` (nur Handy); Passwort über
+  `core.credentials()` unter `smb://user@server/share/folder`, nie in
+  `link.json`. Oberfläche `SmbDialog.tsx` (Server, Freigabe, Ordner,
+  Benutzer, Passwort, Domäne; „Verbindung testen“, „Ordner anlegen“),
+  Einträge im Willkommensbildschirm und in den Handy-Einstellungen; Mock
+  (Server `demo` klappt, `fail` lehnt die Anmeldung ab). **Keine neue
+  Android-Berechtigung** (INTERNET war schon da). Der Anmeldefehler-Text
+  sagt jetzt neutral „Benutzername und Passwort“ (vorher „App-Passwort“).
+
+**Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
+Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),
+`tsc`, `node --test` 99 grün, Gradle `compileUniversalDebugKotlin`;
+Debug-APK baut, installiert im Emulator, Berechtigungen im APK nur die
+erlaubten; Klick-Test im Mock (Handy): Update-Banner ohne Tresor, SMB-Test →
+Ordner anlegen → Verbinden → 2 Tresore, abgelehnte Anmeldung.
+**Nicht verifiziert:** SMB gegen eine echte Freigabe (impacket als
+Testserver wurde von Windows Defender als HackTool gesperrt – nicht
+umgangen; Docker fehlt). Test für den Besitzer: in der App mit der eigenen
+Freigabe, oder `cargo test -p keystead-desktop --lib against_a_real_share --
+--ignored` mit `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`, `_PASSWORD`,
+`_FOLDER`. Icon/Banner in der laufenden APK nicht angesehen (Emulator hing am
+Geräte-PIN). Die Beta mit diesem Stand muss einmal per Hand installiert
+werden; danach bietet das Banner Updates an.
 
 ### Emulator-Checkliste für den Besitzer
 

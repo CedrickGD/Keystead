@@ -651,6 +651,29 @@ export interface SyncServer {
   cas: boolean;
 }
 
+/** An SMB share as the phone's link stores it (no password). */
+export interface SyncSmb {
+  server: string;
+  share: string;
+  /** Below the share, `/`-separated; "" = its top. */
+  folder: string;
+  user: string;
+  domain: string;
+}
+
+/** What the SMB form sends (`smb_test`, `smb_create_folder`, `link_smb`). */
+export interface SmbConfig extends SyncSmb {
+  password: string;
+}
+
+/** What the SMB connection test found. No secrets. */
+export interface SmbTest {
+  ok: boolean;
+  code: string | null;
+  folderMissing: boolean;
+  writable: boolean;
+}
+
 /** A cloud provider of a `SyncCloud`. */
 export type CloudProvider = "dropbox" | "gdrive";
 
@@ -714,11 +737,13 @@ export interface WebDavTest {
 export interface FolderStatus {
   linked: boolean;
   /** What the phone is linked to (null without a link). */
-  kind: "folder" | "webdav" | CloudProvider | null;
+  kind: "folder" | "webdav" | "smb" | CloudProvider | null;
   /** The server of a `webdav` link (no password). */
   server: SyncServer | null;
   /** The account of a `dropbox` link (no token). */
   cloud: SyncCloud | null;
+  /** The share of an `smb` link (no password). */
+  smb: SyncSmb | null;
   /** The app may write the linked folder (false for a read-only link or none). */
   writable: boolean;
   syncing: boolean;

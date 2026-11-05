@@ -43,6 +43,8 @@ pub mod gdrive;
 pub mod http;
 #[cfg(test)]
 pub mod mem;
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+pub mod smb;
 #[cfg(test)]
 pub mod test_server;
 pub mod tls;

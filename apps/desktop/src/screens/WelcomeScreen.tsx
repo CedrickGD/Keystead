@@ -43,6 +43,7 @@ import {
 } from "../components/FolderSync";
 import { DropboxDialog } from "../components/DropboxDialog";
 import { GdriveDialog } from "../components/GdriveDialog";
+import { SmbDialog } from "../components/SmbDialog";
 import { clearRecoveryUnconfirmed, markRecoveryUnconfirmed } from "../lib/recoveryMarker";
 import {
   MasterPasswordFields,
@@ -223,10 +224,12 @@ function PhoneVaultSource() {
   const [cloudForm, setCloudForm] = useState<"dropbox" | "gdrive" | null>(null);
   const errorFor = useSyncErrorText();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
+  const [smbForm, setSmbForm] = useState<"new" | "edit" | null>(null);
   const status = folderSync?.status ?? null;
   const busy = folderSync?.busy ?? null;
   const linked = status?.linked === true;
   const server = status?.kind === "webdav" ? status.server : null;
+  const smb = status?.kind === "smb" ? status.smb : null;
   const provider = providerOf(status);
   const lost = folderLost(status);
   const syncing = Boolean(status?.syncing) || busy === "sync";
@@ -294,6 +297,17 @@ function PhoneVaultSource() {
                   {t("sync.otherMethod")}
                 </Button>
               </>
+            ) : smb ? (
+              <Button
+                variant="secondary"
+                block
+                icon={<HardDrive />}
+                loading={busy === "smb"}
+                disabled={busy !== null && busy !== "smb"}
+                onClick={() => setSmbForm("edit")}
+              >
+                {t("sync.changeSmb")}
+              </Button>
             ) : server ? (
               <Button
                 variant="secondary"
@@ -348,6 +362,16 @@ function PhoneVaultSource() {
           >
             {t("sync.connectServer")}
           </Button>
+          <Button
+            variant="secondary"
+            block
+            icon={<HardDrive />}
+            loading={busy === "smb"}
+            disabled={!folderSync || busy !== null}
+            onClick={() => setSmbForm("new")}
+          >
+            {t("sync.connectSmb")}
+          </Button>
           {info.syncProviders.includes("dropbox") && (
             <Button
               variant="secondary"
@@ -377,13 +401,16 @@ function PhoneVaultSource() {
       {cloudForm === "dropbox" && folderSync && (
         <DropboxDialog onConnect={folderSync.linkDropbox} onClose={() => setCloudForm(null)} />
       )}
+      {smbForm && folderSync && (
+        <SmbDialog initial={smbForm === "edit" ? smb : null} onConnect={folderSync.linkSmb} onClose={() => setSmbForm(null)} />
+      )}
       {cloudForm === "gdrive" && folderSync && (
         <GdriveDialog onConnect={folderSync.linkGdrive} onClose={() => setCloudForm(null)} />
       )}
       <p className="subtle sync-note">
         {provider
           ? t("sync.cloudNote", { provider: providerName(provider) })
-          : server
+          : server || smb
             ? t("sync.serverNote")
             : t("sync.folderNote")}
       </p>

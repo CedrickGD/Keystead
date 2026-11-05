@@ -128,7 +128,7 @@ export const de = {
     "Der Tresor wurde während des Entsperrens von der Synchronisierung aktualisiert. Bitte entsperre ihn noch einmal.",
   "error.unsupported.sync_offline":
     "Der Server ist nicht erreichbar – keine Internetverbindung, oder die Adresse stimmt nicht.",
-  "error.unsupported.sync_auth_failed": "Der Server hat die Anmeldung abgelehnt. Prüfe Benutzername und App-Passwort.",
+  "error.unsupported.sync_auth_failed": "Der Server hat die Anmeldung abgelehnt. Prüfe Benutzername und Passwort.",
   "error.unsupported.sync_server_folder_missing":
     "Den Ordner gibt es auf dem Server nicht (mehr). Lege ihn im Server-Formular an („Ordner anlegen“) oder wähle einen anderen.",
   "error.unsupported.sync_server_not_webdav":
@@ -156,6 +156,10 @@ export const de = {
     "Die Anmeldung bei Google ist abgelaufen. Starte sie erneut mit „Bei Google anmelden“.",
   "error.input.gdrive_redirect":
     "Google hat die Anmeldung nicht bestätigt (abgebrochen oder nicht erlaubt). Starte sie erneut.",
+  "error.input.smb_config":
+    "Server, Freigabe oder Ordner sind so nicht gültig (keine Leerzeichen im Servernamen, kein „..“ im Ordner).",
+  "error.unsupported.smb_share_missing":
+    "Diese Freigabe gibt es auf dem Server nicht. Prüfe den Namen (Groß-/Kleinschreibung egal).",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
   "error.input.attachment_name_required": "Die Datei hat keinen Namen.",
   "error.input.attachment_name_too_long": "Der Dateiname ist zu lang (max. 200 Zeichen).",
@@ -992,6 +996,13 @@ export const de = {
   "sync.methodDropbox": "Dropbox",
   "sync.methodSoonGdrive": "Google Drive folgt bald.",
   "sync.connectGdrive": "Mit Google Drive verbinden",
+  "sync.connectSmb": "Mit SMB-Freigabe verbinden",
+  "sync.smb": "SMB-Freigabe",
+  "sync.smbUser": "Angemeldet als {user}",
+  "sync.smbGuest": "Als Gast verbunden",
+  "sync.smbDesc":
+    "Keystead gleicht direkt mit diesem Ordner auf der Freigabe ab – beim Start, beim Zurückkehren in die App, nach jeder Änderung und auf Knopfdruck.",
+  "sync.changeSmb": "Freigabe ändern",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox folgt bald.",
   "sync.cloudError.authFailed":
@@ -1037,6 +1048,31 @@ export const de = {
   "gdrive.code": "Dein Code",
   "gdrive.copyCode": "Code kopieren",
   "gdrive.codeCopied": "Code kopiert",
+  "smb.title": "Mit SMB-Freigabe verbinden",
+  "smb.changeTitle": "SMB-Freigabe ändern",
+  "smb.subtitle":
+    "Ein Ordner auf einer Windows-Freigabe oder einem NAS (Synology, QNAP, FRITZ!Box, Samba …) – am besten derselbe, den der PC als Cloud-Ordner nutzt. Am besten nur im eigenen Netz.",
+  "smb.server": "Server",
+  "smb.serverHint":
+    "Name oder IP-Adresse, z. B. nas.local, 192.168.1.10 oder fritz.box – optional mit Port (nas:4455).",
+  "smb.share": "Freigabe",
+  "smb.sharePlaceholder": "z. B. Daten",
+  "smb.shareHint": "Der Name der Freigabe, z. B. „Daten“ aus \\\\nas\\Daten.",
+  "smb.folder": "Ordner",
+  "smb.folderHint": "Der Ordner in der Freigabe, z. B. „Keystead“ oder „Backups/Keystead“; leer = die Freigabe selbst.",
+  "smb.user": "Benutzername",
+  "smb.password": "Passwort",
+  "smb.passwordHint":
+    "Keystead speichert es verschlüsselt auf diesem Gerät. Leer lassen (mit leerem Benutzernamen) für Gastzugriff.",
+  "smb.domain": "Domäne (optional)",
+  "smb.domainHint": "Nur in Firmennetzen nötig; sonst leer lassen.",
+  "smb.test": "Verbindung testen",
+  "smb.connect": "Verbinden",
+  "smb.testOk": "Verbindung klappt – Keystead kann in den Ordner schreiben.",
+  "smb.testReadOnly":
+    "Verbindung klappt, aber Keystead darf in diesen Ordner nicht schreiben – Änderungen vom Handy kommen dann nicht auf den PC.",
+  "smb.folderMissing": "Den Ordner „{folder}“ gibt es auf der Freigabe noch nicht.",
+  "smb.createFolder": "Ordner anlegen",
   "sync.dropbox": "Dropbox",
   "sync.dropboxDesc":
     "Keystead gleicht seinen eigenen Ordner „Apps/Keystead“ in deiner Dropbox ab – sonst sieht es nichts davon. Beim Start, beim Zurückkehren in die App, nach jeder Änderung und auf Knopfdruck.",

@@ -9,13 +9,13 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, subscribeEffect } from "../lib/api";
-import type { FolderStatus, WebDavConfig } from "../lib/types";
+import type { FolderStatus, SmbConfig, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
 import { useSyncErrorText } from "../lib/syncErrors";
 
-export type SyncAction = "link" | "server" | "dropbox" | "gdrive" | "sync" | "unlink";
+export type SyncAction = "link" | "server" | "smb" | "dropbox" | "gdrive" | "sync" | "unlink";
 
 export interface FolderSyncApi {
   /** null until the first answer. */
@@ -28,6 +28,8 @@ export interface FolderSyncApi {
   linkServer: (config: WebDavConfig) => Promise<boolean>;
   /** Finishes the Dropbox login with the code and links the app folder (then syncs). */
   linkDropbox: (code: string) => Promise<boolean>;
+  /** Links a folder on an SMB share (the connection test must pass) and syncs. */
+  linkSmb: (config: SmbConfig) => Promise<boolean>;
   /** Finishes the Google login whose redirect came and links the Drive folder (then syncs). */
   linkGdrive: () => Promise<boolean>;
   /** Syncs now. */
@@ -172,6 +174,28 @@ export function FolderSyncProvider({
     [errorText, onStatus, t, toast, tp],
   );
 
+  const linkSmb = useCallback(
+    async (config: SmbConfig) => {
+      setBusy("smb");
+      try {
+        const linked = await api.linkSmb(config);
+        setStatus(linked);
+        onStatus(linked);
+        const folder = linked.folderName ?? "";
+        if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+        else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
+        else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
+        return true;
+      } catch (err) {
+        toast.error(errorText(err));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [errorText, onStatus, t, toast, tp],
+  );
+
   const linkDropbox = useCallback(
     async (code: string) => {
       setBusy("dropbox");
@@ -250,8 +274,8 @@ export function FolderSyncProvider({
   relinkRef.current = () => void link();
 
   const value = useMemo<FolderSyncApi | null>(
-    () => (enabled ? { status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink } : null),
-    [enabled, status, busy, link, linkServer, linkDropbox, linkGdrive, sync, unlink],
+    () => (enabled ? { status, busy, link, linkServer, linkSmb, linkDropbox, linkGdrive, sync, unlink } : null),
+    [enabled, status, busy, link, linkServer, linkSmb, linkDropbox, linkGdrive, sync, unlink],
   );
   return <FolderSyncContext.Provider value={value}>{children}</FolderSyncContext.Provider>;
 }

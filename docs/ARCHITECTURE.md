@@ -1692,6 +1692,52 @@ comes later.
   Android it crosses the plugin bridge as a JSON string (Kotlin strings
   cannot be wiped).
 
+## SMB shares (phone)
+
+Since 2026-11-05 (owner's request: "go out of the phone's storage, e.g. SMB").
+The phone reaches a folder on a Windows share or a NAS directly – the PC
+mounts the same share itself and uses it as its cloud folder ("Cloud-folder
+mirror"), so both meet in the cloud folder's layout. No Android permission
+beyond `INTERNET` (the system folder picker still never gives the app more
+than the picked tree; the phone never asks for access to all files).
+
+* **Client** (`remote::smb::SmbRemote`, a `Remote`): SMB 2/3 in pure Rust
+  (`smb2` crate, MIT/Apache-2.0), NTLM login (user, password, optional
+  domain; empty user = guest), signing and encryption as the server asks, on
+  a current-thread runtime of its own. Connection 30 s, a request
+  `REQUEST_BASE` plus its bytes at `MIN_RATE` (`remote::http`); a lost
+  connection is made again for the next request.
+* **Writes**: to `.<name>.<random>.tmp` next to the file, then renamed over
+  it (`replace_if_exists`; for "only if new" without replacing – an existing
+  name is `sync_remote_changed`). No conditional write in SMB: `cas` false,
+  the ETag is the change time and size, compared right before an update or a
+  delete; a read checks it before and after (changed meanwhile:
+  `sync_remote_changed`). Answers capped like the other remotes.
+* **Link**: `LinkState.kind` `"smb"`, `smb: SyncSmb { server, share, folder,
+  user, domain }` (no password), `treeUri` = the key
+  `smb://user@server/share/folder` (lower case), `folderName`
+  `\server\shareolder`. The password: `crate::credentials` under that key.
+  Sync timing, "Nur über WLAN" and the pause after server errors as for a
+  WebDAV server.
+* **Errors**: login refused / guest refused → `sync_auth_failed`, access
+  denied → `sync_not_writable` (writes) or `sync_auth_failed`, not found →
+  `sync_file_missing` (the folder: `sync_server_folder_missing`, the share:
+  `smb_share_missing`), disk full → `sync_server_quota`, connection lost,
+  timeout → `sync_offline`, malformed → `sync_server_response`, else
+  `sync_server_error`.
+* **Security**: NTLM does not prove the server's identity – meant for the
+  user's own network; the vault files are encrypted end to end anyway.
+* **UI** (`components/SmbDialog.tsx`): server, share, folder (default
+  "Keystead"), user, password, domain; "Verbindung testen", "Ordner
+  anlegen", "Verbinden". Phone settings and welcome screen: "Mit
+  SMB-Freigabe verbinden"; a linked share shows `\server\shareolder` and the
+  user with "Freigabe ändern" / "Passwort erneut eingeben". Mock: server
+  "demo" answers, "fail" refuses the login.
+* **Tests**: the form's normalization, paths, an unreachable server, the
+  link's key and missing password; a real share only with
+  `cargo test … against_a_real_share -- --ignored` and
+  `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`, `_PASSWORD` (`_FOLDER`).
+
 ## Cloud accounts (Dropbox, Google Drive)
 
 Stage 2d (owner's order E17: WebDAV, then Google Drive and Dropbox; Dropbox
@@ -2906,6 +2952,9 @@ history. The bridge's own writes are not affected.
 | `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_gdrive` | – | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Google login Google allowed (`gdrive_login`: the device code the user entered; `gdrive_login_ready`) and links the phone to the folder "Keystead" of that Drive in place of the previous link, then syncs. The refresh token is sealed by the Android Keystore and never returned. `unsupported:gdrive_login_expired`, `unsupported:gdrive_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_webdav` | `config: WebDavConfig` | **Phone only** (see "Server sync (WebDAV)"). `FolderStatus` – links the phone to a folder on a WebDAV server in place of the previous link (a cloud folder's permission is given back, another server's password removed, the recorded conflicts of another folder forgotten) and syncs. The connection test must pass (its code otherwise – e.g. `unsupported:sync_server_folder_missing`, `unsupported:sync_server_certificate`; nothing changes); the password is sealed by the Android Keystore and never returned. A failed first sync is no error (`lastError`). `invalid_input:webdav_config`, `invalid_input:server_url`, `invalid_input:server_folder` |
+| `smb_test` | `config: SmbConfig { server, share, folder, user, password, domain }` | **Phone only** (see "SMB shares (phone)"). `SmbTest { ok, code, folderMissing, writable }` – connects (SMB 2/3, NTLM), opens the share, lists the folder and writes and removes a test file. Nothing is stored; the password is not echoed. `invalid_input:smb_config`, `unsupported:smb_share_missing`, `unsupported:sync_auth_failed`, `unsupported:sync_offline` … as `code` |
+| `smb_create_folder` | `config: SmbConfig` | **Phone only.** `SmbTest` – "Ordner anlegen": makes the folder on the share segment by segment (one that exists is fine), then tests again. Never done by a sync |
+| `link_smb` | `config: SmbConfig` | **Phone only.** `FolderStatus` – links the phone to the folder on the share in place of the previous link (the connection test must pass; its code otherwise, `unsupported:sync_server_folder_missing` for a missing folder) and syncs. The password is sealed by the Android Keystore under the share's key (`smb://user@server/share/folder`) and never returned; a failed first sync is no error (`lastError`) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
 | `unlink_folder` | – | **Phone only.** `FolderStatus` (unlinked) – gives the folder's permission back (a server: removes its stored password; a cloud account: signed out – the token forgotten, Dropbox also revokes it) and removes `link.json` and the recorded conflicts; the vault copies and their sync bases stay on the phone (and are no longer synced) |
 | `webdav_test` | `config: WebDavConfig` | **Both platforms** (see "Server sync (WebDAV)"). `WebDavTest { ok, code, certificate: CertInfo\|null, suggestedUrl, folderMissing, writable, cas }` – the settings form's connection test (`WebDavConfig { url, user, password, folder = "Keystead", certSha256? }`): server, certificate (untrusted → `code` `unsupported:sync_server_certificate` with `certificate { sha256, subject, issuer, notBefore, notAfter }` to confirm), login, folder (`folderMissing`), write access and `If-Match`; a same-host https redirect or Nextcloud's WebDAV folder as `suggestedUrl`. Nothing stored, the password never echoed; the bad input is `invalid_input:webdav_config` / `server_url` / `server_folder`, everything the server says is in `code` |
@@ -2921,7 +2970,7 @@ history. The bridge's own writes are not affected.
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
 | `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login`, `dropbox_login_waiting`, `gdrive_login`, `gdrive_login_ready` (the server, Dropbox and Google forms, both platforms), and the phone's own `folder_status`, `link_folder`, `phone_check_update`, `link_webdav`, `link_dropbox`, `link_gdrive`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server and cloud-account sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server and account settings and the network and desktop integrations (the server and account sync is the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login`, `dropbox_login_waiting`, `gdrive_login`, `gdrive_login_ready` (the server, Dropbox and Google forms, both platforms), and the phone's own `folder_status`, `link_folder`, `phone_check_update`, `link_webdav`, `smb_test`, `smb_create_folder`, `link_smb`, `link_dropbox`, `link_gdrive`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server and cloud-account sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server and account settings and the network and desktop integrations (the server and account sync is the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
 (and on the desktop the master password's: `Core::unlock` goes through

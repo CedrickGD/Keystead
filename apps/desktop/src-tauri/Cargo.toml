@@ -23,6 +23,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Version comparison: the updater (desktop) and the phone's update check.
+semver = "1"
+# SMB2/3 shares as a sync method (pure Rust, MIT/Apache-2.0; owner's OK 2026-11-05).
+smb2 = { version = "0.42", default-features = false, features = ["tokio"] }
 keystead-core = { path = "../../../crates/keystead-core" }
 # Without features here; the desktop table below adds the tray icon.
 tauri = { version = "2", features = [] }
@@ -96,7 +100,6 @@ image = { version = "0.25", default-features = false, features = ["png", "ico", 
 # The icon fetcher's DNS lookup, parallel downloads and per-site deadline
 # (tokio is Tauri's runtime; listed for the features used directly).
 tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
-semver = "1"
 time = { version = "0.3", features = ["formatting"] }
 # Opens websites and the data folder with the system handler (ShellExecuteW
 # on Windows: no `cmd /c start` quoting pitfalls, no console flash).

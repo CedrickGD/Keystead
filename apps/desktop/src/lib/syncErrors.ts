@@ -22,7 +22,7 @@ export function providerOf(status: FolderStatus | null | undefined): CloudProvid
 /**
  * The text of an error code the sync recorded (`lastError`, a file's `error`). With `provider` (a
  * cloud account's link or the PC's method) its own words where the server's texts would mislead
- * ("Benutzername und App-Passwort", "Server-Formular").
+ * ("Benutzername und Passwort", "Server-Formular").
  */
 export function useSyncErrorText(): (code: string, provider?: CloudProvider | null) => string {
   const { t, errorText } = useT();

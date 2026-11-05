@@ -14,6 +14,8 @@ import type {
   FolderStatus,
   GdriveLoginState,
   PhoneUpdate,
+  SmbConfig,
+  SmbTest,
   GeneratedPasswordInfo,
   GeneratorOptions,
   GeneratorPresets,
@@ -366,6 +368,12 @@ export const api = {
    * (its code as the error). The password is sealed by the Android Keystore, never returned.
    */
   linkWebdav: (config: WebDavConfig) => call<FolderStatus>("link_webdav", { config }),
+  /** Phone: the SMB form's connection test (share, login, folder, write access) – nothing is stored. */
+  smbTest: (config: SmbConfig) => call<SmbTest>("smb_test", { config }),
+  /** Phone: "Ordner anlegen" on the share, then the test again. */
+  smbCreateFolder: (config: SmbConfig) => call<SmbTest>("smb_create_folder", { config }),
+  /** Phone: links a folder on an SMB share (the test must pass) and syncs; the password is sealed. */
+  linkSmb: (config: SmbConfig) => call<FolderStatus>("link_smb", { config }),
   /** Phone: finishes the Dropbox login with the code and links the app folder (then syncs). */
   linkDropbox: (code: string) => call<FolderStatus>("link_dropbox", { code }),
   /** Phone: finishes the Google login Google allowed and links the Drive folder (then syncs). */

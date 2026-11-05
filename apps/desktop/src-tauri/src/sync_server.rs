@@ -268,6 +268,21 @@ pub fn target(core: &Core, link: &crate::folder_sync::LinkState) -> AppResult<Li
                 crate::remote::folder::RemoteDirFolder::new(remote),
             )))
         }
+        LinkKind::Smb => {
+            let smb = link
+                .smb
+                .as_ref()
+                .ok_or_else(|| AppError::invalid("server_link"))?;
+            let password = core.credentials().require(&core.data_dir(), &smb.key())?;
+            let remote = crate::remote::smb::SmbRemote::new(smb, password)?;
+            if remote.key() != link.tree_uri {
+                return Err(AppError::invalid("server_link"));
+            }
+            let remote: Box<dyn Remote> = Box::new(remote);
+            Ok(LinkTarget::Server(Box::new(
+                crate::remote::folder::RemoteDirFolder::new(remote),
+            )))
+        }
         LinkKind::Dropbox | LinkKind::Gdrive => {
             let cloud = link
                 .cloud
@@ -282,6 +297,35 @@ pub fn target(core: &Core, link: &crate::folder_sync::LinkState) -> AppResult<Li
             )))
         }
     }
+}
+
+/// `link_smb` without the phone's glue: the connection test must pass
+/// (its code otherwise – `unsupported:sync_server_folder_missing` for a
+/// folder that is not there yet), then the password is stored under the
+/// share's key and the new link returned.
+#[cfg(any(mobile, test))]
+pub fn link_smb(
+    core: &Core,
+    cfg: &crate::remote::smb::SmbConfig,
+    now: i64,
+) -> AppResult<crate::folder_sync::LinkState> {
+    let smb = cfg.share()?;
+    let test = crate::remote::smb::SmbRemote::test(cfg);
+    if test.folder_missing {
+        return Err(AppError::unsupported(remote::FOLDER_MISSING));
+    }
+    if let Some(code) = test.code {
+        return Err(AppError::Code(code));
+    }
+    let key = smb.key();
+    core.credentials()
+        .store(&core.data_dir(), &key, &cfg.password)?;
+    Ok(crate::folder_sync::LinkState::new_smb(
+        key,
+        smb,
+        now,
+        test.writable,
+    ))
 }
 
 /// `link_webdav` without the phone's glue: connects ([`connect`]) and
@@ -1288,6 +1332,59 @@ mod tests {
             None
         );
         TEST_ENDPOINTS.with(|e| *e.borrow_mut() = None);
+    }
+
+    #[test]
+    fn an_smb_link_needs_a_share_that_answers_and_its_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        // A closed port: offline, nothing stored.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let cfg: crate::remote::smb::SmbConfig = serde_json::from_value(serde_json::json!({
+            "server": format!("127.0.0.1:{port}"),
+            "share": "Daten",
+            "folder": "Keystead",
+            "user": "max",
+            "password": "pw",
+        }))
+        .unwrap();
+        assert_eq!(
+            link_smb(&core, &cfg, 1).unwrap_err().code(),
+            "unsupported:sync_offline"
+        );
+        let smb = cfg.share().unwrap();
+        assert_eq!(
+            core.credentials()
+                .load(&core.data_dir(), &smb.key())
+                .unwrap(),
+            None
+        );
+        // A link without its password: missing, not a wrong target.
+        let link = crate::folder_sync::LinkState::new_smb(smb.key(), smb.clone(), 1, true);
+        assert_eq!(link.kind, LinkKind::Smb);
+        assert_eq!(link.folder_name, smb.label());
+        assert!(link.folder_name.ends_with(r"\Daten\Keystead"));
+        assert_eq!(
+            target(&core, &link).err().unwrap().code(),
+            "unsupported:sync_credentials_missing"
+        );
+        // Another share's key: refused.
+        let mut forged = link.clone();
+        forged.tree_uri = "smb://x@other/share/".into();
+        core.credentials()
+            .store(&core.data_dir(), &smb.key(), &Zeroizing::new("pw".into()))
+            .unwrap();
+        assert_eq!(
+            target(&core, &forged).err().unwrap().code(),
+            "invalid_input:server_link"
+        );
+        let json = serde_json::to_string(&link).unwrap();
+        assert!(
+            json.contains("\"kind\":\"smb\"") && !json.contains("pw"),
+            "{json}"
+        );
     }
 
     #[test]

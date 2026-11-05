@@ -66,7 +66,7 @@ export function isUsable(file: SyncFileResult): boolean {
 
 /** A folder is linked, but only for reading: the phone's changes do not reach the PC. */
 export function needsRelink(status: FolderStatus | null): boolean {
-  return status?.linked === true && status.kind !== "webdav" && !status.writable && !folderLost(status);
+  return status?.linked === true && status.kind === "folder" && !status.writable && !folderLost(status);
 }
 
 /**

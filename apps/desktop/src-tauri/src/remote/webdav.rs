@@ -83,7 +83,9 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b'}');
 
 /// The password straight into a [`Zeroizing`] string.
-fn zeroizing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Zeroizing<String>, D::Error> {
+pub(crate) fn zeroizing<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Zeroizing<String>, D::Error> {
     String::deserialize(d).map(Zeroizing::new)
 }
 

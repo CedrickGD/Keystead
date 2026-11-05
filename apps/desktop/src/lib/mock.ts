@@ -122,7 +122,9 @@ import type {
   Settings,
   SyncConflict,
   SyncFileResult,
+  SmbConfig,
   SyncCloud,
+  SyncSmb,
   SyncServer,
   TotpCode,
   UpdateInfo,
@@ -226,9 +228,10 @@ interface MockSync {
     folderName: string;
     linkedAt: number;
     writable: boolean;
-    kind: "folder" | "webdav" | "dropbox" | "gdrive";
+    kind: "folder" | "webdav" | "smb" | "dropbox" | "gdrive";
     server: SyncServer | null;
     cloud?: SyncCloud | null;
+    smb?: SyncSmb | null;
   } | null;
   lastSyncAt: number | null;
   lastError: string | null;
@@ -1069,6 +1072,9 @@ const MOCK_GDRIVE: SyncCloud = {
   email: "demo@gmail.com",
 };
 
+/** Folders made with the SMB form's "Ordner anlegen". */
+const mockSmbFolders = new Set<string>();
+
 /** When the mock's Google login started (it is "allowed" two seconds later). */
 let gdriveLoginAt: number | null = null;
 /** When the mock's Dropbox login started. */
@@ -1461,6 +1467,7 @@ function folderStatus(): FolderStatus {
     kind: sync.link?.kind ?? null,
     server: clone(sync.link?.server ?? null),
     cloud: clone(sync.link?.cloud ?? null),
+    smb: clone(sync.link?.smb ?? null),
     writable: sync.link?.writable ?? false,
     syncing: sync.syncing,
     folderName: sync.link?.folderName ?? null,
@@ -2411,6 +2418,39 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return folderStatus();
     }
 
+    case "smb_test":
+    case "smb_create_folder": {
+      // The server "demo" answers (folder "Keystead" after "Ordner anlegen"),
+      // "fail" refuses the login, anything else is offline.
+      const cfg = (args.config ?? {}) as SmbConfig;
+      await sleep(500);
+      const server = String(cfg.server ?? "").trim();
+      if (!server || !String(cfg.share ?? "").trim()) fail("invalid_input:smb_config");
+      if (server === "fail") return { ok: false, code: "unsupported:sync_auth_failed", folderMissing: false, writable: false };
+      if (server !== "demo") return { ok: false, code: "unsupported:sync_offline", folderMissing: false, writable: false };
+      if (command === "smb_create_folder") mockSmbFolders.add(String(cfg.folder ?? ""));
+      const exists = String(cfg.folder ?? "").trim() === "" || mockSmbFolders.has(String(cfg.folder ?? ""));
+      return { ok: exists, code: null, folderMissing: !exists, writable: exists };
+    }
+
+    case "link_smb": {
+      const cfg = (args.config ?? {}) as SmbConfig;
+      await sleep(700);
+      if (String(cfg.server).trim() !== "demo") fail("unsupported:sync_offline");
+      const smb = { server: "demo", share: cfg.share.trim(), folder: cfg.folder.trim(), user: cfg.user.trim(), domain: "" };
+      const folderName = "\\\\demo\\" + smb.share + (smb.folder ? "\\" + smb.folder.replace(/\//g, "\\") : "");
+      s.sync.link = { folderName, linkedAt: Date.now(), writable: true, kind: "smb", server: null, smb };
+      s.sync.lost = false;
+      s.sync.lastError = null;
+      s.lastActivity = Date.now();
+      try {
+        await mockSyncFolder();
+      } catch {
+        /* recorded in lastError */
+      }
+      return folderStatus();
+    }
+
     case "link_gdrive": {
       const cloud = mockGdriveFinish();
       await sleep(700);
@@ -2552,6 +2592,9 @@ const PHONE_COMMANDS = new Set([
   "gdrive_login_ready",
   "link_gdrive",
   "phone_check_update",
+  "smb_test",
+  "smb_create_folder",
+  "link_smb",
   "sync_now",
   "unlink_folder",
   "device_unlock_status",
