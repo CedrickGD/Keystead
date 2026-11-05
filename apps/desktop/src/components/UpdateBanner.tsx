@@ -1,6 +1,7 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ChevronDown, CircleAlert, CircleArrowUp, Download, ExternalLink, RefreshCw, X } from "lucide-react";
-import { ApiError, openExternal } from "../lib/api";
+import { ApiError, api, openExternal } from "../lib/api";
+import type { PhoneUpdate } from "../lib/types";
 import { useT } from "../i18n";
 import { useUpdate } from "../state/update";
 import { Button } from "./Controls";
@@ -155,6 +156,105 @@ export function UpdateBanner() {
         <div className="update-notes" id={notesId}>
           {dateText && <div className="update-notes-date">{t("update.releasedOn", { date: dateText })}</div>}
           <div className="update-notes-text selectable">{info.notes}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The phone's check this start (asked once; the banner shows on every screen). */
+let phoneCheck: Promise<PhoneUpdate> | null = null;
+const PHONE_DISMISSED_KEY = "keystead.phoneUpdateDismissed";
+
+function dismissedVersion(): string | null {
+  try {
+    return localStorage.getItem(PHONE_DISMISSED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The phone: a newer version on the update channel – from the welcome screen
+ * on, so no vault is needed. "Herunterladen" opens its APK in the browser;
+ * Android's installer updates the app over the installed one (the vaults
+ * stay). Asked once per start, a few seconds in; "Später" hides that version.
+ */
+export function PhoneUpdateBanner() {
+  const { t } = useT();
+  const [update, setUpdate] = useState<PhoneUpdate | null>(null);
+  const [dismissed, setDismissed] = useState(dismissedVersion);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notesId = useId();
+
+  useEffect(() => {
+    let gone = false;
+    const timer = window.setTimeout(() => {
+      phoneCheck ??= api.phoneCheckUpdate(false);
+      phoneCheck
+        .then((u) => {
+          if (!gone) setUpdate(u);
+        })
+        .catch(() => {
+          phoneCheck = null; // offline: try again at the next screen
+        });
+    }, 3000);
+    return () => {
+      gone = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  if (!update?.available || !update.apkUrl || !update.version || dismissed === update.version) return null;
+  const { apkUrl, version, notes } = update;
+  const later = () => {
+    try {
+      localStorage.setItem(PHONE_DISMISSED_KEY, version);
+    } catch {
+      /* only for this start */
+    }
+    setDismissed(version);
+  };
+
+  return (
+    <div className="update-banner" role="region" aria-label={t("update.regionLabel")}>
+      <div className="update-row">
+        <span className="update-icon">
+          <CircleArrowUp />
+        </span>
+        <div className="update-text">
+          <strong>{t("update.available", { version })}</strong>
+          <span className="update-sub">
+            {t("update.phoneHint")}
+            {notes && (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  className="link-btn"
+                  aria-expanded={notesOpen}
+                  aria-controls={notesId}
+                  onClick={() => setNotesOpen((open) => !open)}
+                >
+                  {t("update.whatsNew")}
+                  <ChevronDown className={`chev ${notesOpen ? "open" : ""}`} aria-hidden />
+                </button>
+              </>
+            )}
+          </span>
+        </div>
+        <div className="update-actions">
+          <Button size="sm" variant="primary" icon={<Download />} onClick={() => openExternal(apkUrl)}>
+            {t("update.download")}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={later}>
+            {t("update.later")}
+          </Button>
+        </div>
+      </div>
+      {notes && notesOpen && (
+        <div className="update-notes" id={notesId}>
+          <div className="update-notes-text selectable">{notes}</div>
         </div>
       )}
     </div>

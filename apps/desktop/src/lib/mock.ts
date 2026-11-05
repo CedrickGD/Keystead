@@ -2294,6 +2294,23 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "pending_update":
       return mockPendingUpdate ? clone(mockPendingUpdate) : null;
 
+    case "phone_check_update": {
+      // The phone: the same offer as the PC's, as an APK link (`?update=available`).
+      await sleep(400);
+      const info = mockUpdateInfo(true);
+      const available = mockUpdateMode() === "available" && info.version !== null && info.version !== info.currentVersion;
+      return {
+        available,
+        currentVersion: info.currentVersion,
+        version: info.version,
+        notes: info.notes,
+        apkUrl: available
+          ? `https://github.com/CedrickGD/Keystead/releases/download/v${info.version}/Keystead-${info.version}-android.apk`
+          : null,
+        releaseUrl: info.releaseUrl,
+      };
+    }
+
     case "install_update":
       return installMockUpdate();
 
@@ -2534,6 +2551,7 @@ const PHONE_COMMANDS = new Set([
   "gdrive_login",
   "gdrive_login_ready",
   "link_gdrive",
+  "phone_check_update",
   "sync_now",
   "unlink_folder",
   "device_unlock_status",

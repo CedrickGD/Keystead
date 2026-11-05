@@ -251,6 +251,8 @@ fn build_app(background: bool) -> tauri::Result<tauri::App> {
             #[cfg(mobile)]
             crate::mobile::sync::link_folder,
             #[cfg(mobile)]
+            crate::update::phone_check_update,
+            #[cfg(mobile)]
             crate::mobile::sync::link_webdav,
             #[cfg(mobile)]
             crate::mobile::sync::link_dropbox,
@@ -1033,6 +1035,7 @@ mod tests {
             BTreeSet::from([
                 "folder_status",
                 "link_folder",
+                "phone_check_update",
                 "link_webdav",
                 "link_dropbox",
                 "link_gdrive",

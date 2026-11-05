@@ -18,10 +18,13 @@
 //! Only installed copies update themselves (`canInstall`): the portable
 //! build gets a link to the release page instead.
 //!
-//! The phone has no in-app updates (no update check there): only the
-//! release facts (`REPO_URL`, the endpoints, `release_url`, `UpdateInfo`,
-//! `version_label`) are compiled there – for the About page and a later
-//! update hint –, everything that talks to the plugin is `#[cfg(desktop)]`.
+//! The phone does not install updates itself: `phone_check_update` reads the
+//! channel's `latest.json` (the same file) and, for a newer version, names
+//! its APK on the release ([`apk_url`]); the page offers it from the
+//! welcome screen on (no vault needed) and opens it in the browser, and
+//! Android's package installer updates the app (same key, higher
+//! versionCode – the vaults stay). Everything that talks to the plugin is
+//! `#[cfg(desktop)]`.
 #![cfg_attr(mobile, allow(dead_code))]
 
 #[cfg(desktop)]
@@ -108,6 +111,127 @@ pub fn version_label(package_version: &str) -> String {
         .filter(|label| !label.is_empty())
         .unwrap_or(package_version)
         .to_owned()
+}
+
+/// The APK of `version` on its release.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+pub fn apk_url(version: &str) -> String {
+    format!("{REPO_URL}/releases/download/v{version}/Keystead-{version}-android.apk")
+}
+
+/// Result of `phone_check_update`: a newer version and its APK, or none.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneUpdate {
+    pub available: bool,
+    pub current_version: String,
+    /// The version `latest.json` names (`null` if the channel has none yet).
+    pub version: Option<String>,
+    pub notes: Option<String>,
+    /// The APK to open in the browser (only when `available`).
+    pub apk_url: Option<String>,
+    pub release_url: String,
+}
+
+/// What a channel's `latest.json` (`body`; `None`: the channel has none
+/// yet) offers the running `current` version on the phone. A file that is
+/// not one (no parsable `version`) is `io:update_manifest`.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+pub fn phone_update_from(
+    current: &str,
+    body: Option<&[u8]>,
+) -> crate::error::AppResult<PhoneUpdate> {
+    let release = match body {
+        None => None,
+        Some(body) => {
+            let json: serde_json::Value = serde_json::from_slice(body)
+                .map_err(|_| crate::error::AppError::io("update_manifest"))?;
+            let text = json["version"]
+                .as_str()
+                .ok_or_else(|| crate::error::AppError::io("update_manifest"))?;
+            let version = semver::Version::parse(text.trim_start_matches('v'))
+                .map_err(|_| crate::error::AppError::io("update_manifest"))?;
+            let notes = json["notes"]
+                .as_str()
+                .map(str::to_owned)
+                .filter(|n| !n.trim().is_empty());
+            Some((version, notes))
+        }
+    };
+    let available = match (&release, semver::Version::parse(current)) {
+        (Some((offered, _)), Ok(running)) => *offered > running,
+        // A development build without a version: offer the release.
+        (Some(_), Err(_)) => true,
+        (None, _) => false,
+    };
+    let version = release.as_ref().map(|(v, _)| v.to_string());
+    Ok(PhoneUpdate {
+        available,
+        current_version: current.to_owned(),
+        apk_url: version.as_deref().filter(|_| available).map(apk_url),
+        release_url: release_url(version.as_deref()),
+        notes: release.and_then(|(_, n)| n),
+        version,
+    })
+}
+
+/// `phone_check_update` → [`PhoneUpdate`]: reads the channel's
+/// `latest.json` from GitHub (only that file; nothing about the vaults) –
+/// when `updateCheck` is off, only on request. Not user activity.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn phone_check_update(
+    core: crate::commands::Shared<'_>,
+    manual: Option<bool>,
+) -> crate::commands::CmdResult<PhoneUpdate> {
+    crate::commands::run(&core, false, move |c| {
+        let (channel, enabled) = {
+            let st = c.state();
+            (st.settings.update_channel, st.settings.update_check)
+        };
+        if !enabled && manual != Some(true) {
+            return phone_update_from(c.app_version(), None);
+        }
+        let http = crate::remote::http::Http::new(crate::remote::tls::Trust::System)?;
+        let mut url = reqwest::Url::parse(endpoint(channel))
+            .map_err(|_| crate::error::AppError::io("update_manifest"))?;
+        // GitHub answers a release download with a redirect to its storage:
+        // followed at most three times, https and GitHub's hosts only.
+        for _ in 0..4 {
+            let answer = http.send(
+                http.request(reqwest::Method::GET, url.clone()),
+                0,
+                1024 * 1024,
+                "update_manifest",
+            )?;
+            match answer.status.as_u16() {
+                200 => return phone_update_from(c.app_version(), Some(&answer.body)),
+                404 | 410 => return phone_update_from(c.app_version(), None),
+                301 | 302 | 303 | 307 | 308 => {
+                    url = answer
+                        .headers
+                        .get(reqwest::header::LOCATION)
+                        .and_then(|l| l.to_str().ok())
+                        .and_then(|l| url.join(l).ok())
+                        .filter(github_host)
+                        .ok_or_else(|| crate::error::AppError::io("update_manifest"))?;
+                }
+                status => return Err(crate::error::AppError::io(format!("http {status}"))),
+            }
+        }
+        Err(crate::error::AppError::io("update_manifest"))
+    })
+    .await
+}
+
+/// Where the phone's update check may be sent: https on GitHub.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+fn github_host(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str().is_some_and(|h| {
+            h == "github.com" || h.ends_with(".github.com") || h.ends_with(".githubusercontent.com")
+        })
 }
 
 /// Result of `check_update`, payload of `update://available`.
@@ -611,6 +735,41 @@ fn refuse_while_terminal_ui_runs() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phone_finds_a_newer_apk() {
+        let manifest = br#"{"version":"2.0.1-beta.30","notes":"Neu: SMB","platforms":{}}"#;
+        let u = phone_update_from("2.0.1-beta.27", Some(manifest)).unwrap();
+        assert!(u.available);
+        assert_eq!(u.version.as_deref(), Some("2.0.1-beta.30"));
+        assert_eq!(u.notes.as_deref(), Some("Neu: SMB"));
+        assert_eq!(
+            u.apk_url.as_deref(),
+            Some("https://github.com/CedrickGD/Keystead/releases/download/v2.0.1-beta.30/Keystead-2.0.1-beta.30-android.apk")
+        );
+        // The same, an older one, none: nothing to download.
+        for current in ["2.0.1-beta.30", "2.0.1"] {
+            let u = phone_update_from(current, Some(manifest)).unwrap();
+            assert!(!u.available && u.apk_url.is_none(), "{current}");
+        }
+        let none = phone_update_from("2.0.1-beta.27", None).unwrap();
+        assert!(!none.available && none.version.is_none());
+        assert_eq!(
+            phone_update_from("2.0.1-beta.27", Some(b"<html>"))
+                .unwrap_err()
+                .code(),
+            "io:update_manifest"
+        );
+        assert!(github_host(
+            &reqwest::Url::parse("https://release-assets.githubusercontent.com/x").unwrap()
+        ));
+        assert!(!github_host(
+            &reqwest::Url::parse("http://github.com/x").unwrap()
+        ));
+        assert!(!github_host(
+            &reqwest::Url::parse("https://github.com.evil.io/x").unwrap()
+        ));
+    }
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()

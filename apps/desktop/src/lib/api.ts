@@ -13,6 +13,7 @@ import type {
   FolderOffer,
   FolderStatus,
   GdriveLoginState,
+  PhoneUpdate,
   GeneratedPasswordInfo,
   GeneratorOptions,
   GeneratorPresets,
@@ -390,6 +391,11 @@ export const api = {
 
   /** Checks the configured update channel now (network errors → `io:<detail>`). */
   checkUpdate: () => call<UpdateInfo>("check_update"),
+  /**
+   * Phone: a newer version on the update channel and its APK (`manual`: also with `updateCheck` off).
+   * Reads only the channel's `latest.json` from GitHub.
+   */
+  phoneCheckUpdate: (manual: boolean) => call<PhoneUpdate>("phone_check_update", { manual }),
   /** The update the last (background) check found, without a network request. */
   pendingUpdate: () => call<UpdateInfo | null>("pending_update"),
   /**

@@ -1358,6 +1358,7 @@ export const de = {
   "update.available": "Keystead {version} ist verfügbar",
   "update.availableHint": "Installation in wenigen Sekunden, danach startet Keystead neu",
   "update.portableHint": "Diese Version aktualisiert sich nicht selbst – lade die neue Version herunter",
+  "update.phoneHint": "Herunterladen, die Datei öffnen und „Aktualisieren“ tippen – deine Tresore bleiben erhalten.",
   "update.whatsNew": "Was ist neu?",
   "update.releaseNotes": "Versionshinweise",
   "update.releasedOn": "Veröffentlicht am {date}",

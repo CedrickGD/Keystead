@@ -1323,6 +1323,7 @@ export const en: Record<MessageKey, string> = {
   "update.available": "Keystead {version} is available",
   "update.availableHint": "Installs in a few seconds, then Keystead restarts",
   "update.portableHint": "This copy doesn't update itself – download the new version",
+  "update.phoneHint": "Download it, open the file and tap “Update” – your vaults stay.",
   "update.whatsNew": "What's new?",
   "update.releaseNotes": "Release notes",
   "update.releasedOn": "Released on {date}",

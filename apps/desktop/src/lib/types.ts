@@ -529,6 +529,17 @@ export interface Settings {
 
 export type UpdateChannel = "beta" | "stable";
 
+/** Result of `phone_check_update`: a newer version on the channel and its APK (the phone). */
+export interface PhoneUpdate {
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  notes: string | null;
+  /** The APK to open in the browser (only when `available`). */
+  apkUrl: string | null;
+  releaseUrl: string;
+}
+
 /** Result of `check_update`, payload of `update://available`. */
 export interface UpdateInfo {
   available: boolean;

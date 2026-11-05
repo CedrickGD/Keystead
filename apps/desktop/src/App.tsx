@@ -11,7 +11,7 @@ import { Button } from "./components/Controls";
 import { Logo } from "./components/Logo";
 import { AppContext, type AppContextValue } from "./state/app";
 import { UpdateProvider } from "./state/update";
-import { UpdateBanner } from "./components/UpdateBanner";
+import { PhoneUpdateBanner, UpdateBanner } from "./components/UpdateBanner";
 import { RecoveryReminder } from "./components/RecoveryReminder";
 import { WelcomeScreen } from "./screens/WelcomeScreen";
 import { UnlockScreen } from "./screens/UnlockScreen";
@@ -362,8 +362,10 @@ function AppRoot({
   const frame = (
     <>
       <div className="app-frame">
-        {/* New versions: above the main window and the unlock screen. The phone has no in-app updates. */}
+        {/* New versions: above the main window and the unlock screen; the phone also on the welcome screen
+            (no vault needed) – it offers the APK, Android's installer updates the app. */}
         {!mobile && (screen === "main" || screen === "unlock") && <UpdateBanner />}
+        {mobile && (screen === "main" || screen === "unlock" || screen === "welcome") && <PhoneUpdateBanner />}
         {/* A new recovery key that was never confirmed as stored (lost to a lock / reload); recovery keys are PC-only. */}
         {!mobile && screen === "main" && vault && <RecoveryReminder key={vault.id} />}
         <div className="app-frame-body">
