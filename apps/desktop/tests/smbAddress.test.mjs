@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatSmbAddress, parseSmbAddress } from "../src/lib/smbAddress.mjs";
+import { formatSmbAddress, isDriveAddress, parseSmbAddress } from "../src/lib/smbAddress.mjs";
 
 const nas = (folder, user = "") => ({ server: "nas", share: "Daten", folder, user });
 
@@ -46,6 +46,23 @@ test("incomplete: no server or no share yet", () => {
   for (const text of ["", "   ", null, undefined, "nas", "\\\\nas\\", "smb://nas", "smb://", "@/Daten"]) {
     assert.equal(parseSmbAddress(text), null, String(text));
   }
+});
+
+test("a PC drive is no address (the form asks for the path behind it)", () => {
+  for (const text of ["Z:\\Personal Data\\VaultSync", "z:/Daten", "  Z:", "Z:\\"]) {
+    assert.equal(isDriveAddress(text), true, text);
+    assert.equal(parseSmbAddress(text), null, text);
+  }
+  // A port is no drive, nor is a one-letter server with a share.
+  for (const text of ["nas:4455/Daten", "a:445/Daten", "z/Daten", "\\\\z\\Daten", "", null]) {
+    assert.equal(isDriveAddress(text), false, String(text));
+  }
+  assert.deepEqual(parseSmbAddress("192.168.2.201/personal_folder/Personal Data/VaultSync"), {
+    server: "192.168.2.201",
+    share: "personal_folder",
+    folder: "Personal Data/VaultSync",
+    user: "",
+  });
 });
 
 test("a linked share back as an address line", () => {

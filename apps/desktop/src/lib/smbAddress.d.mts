@@ -11,4 +11,6 @@ export interface SmbAddress {
 
 export declare function parseSmbAddress(text: string | null | undefined): SmbAddress | null;
 
+export declare function isDriveAddress(text: string | null | undefined): boolean;
+
 export declare function formatSmbAddress(share: { server: string; share: string; folder?: string | null }): string;

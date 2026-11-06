@@ -11,7 +11,7 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronRight, CircleCheck, FolderPlus, HardDrive, PlugZap, TriangleAlert } from "lucide-react";
 import { ApiError, api } from "../lib/api";
-import { formatSmbAddress, parseSmbAddress } from "../lib/smbAddress.mjs";
+import { formatSmbAddress, isDriveAddress, parseSmbAddress } from "../lib/smbAddress.mjs";
 import type { SmbConfig, SmbTest, SyncSmb } from "../lib/types";
 import { useT } from "../i18n";
 import { Button, Field, PasswordInput } from "./Controls";
@@ -86,14 +86,17 @@ export function SmbDialog({
     }
   };
 
-  // Under the address: what Keystead read from it, so a typo shows at once.
+  // Under the address: what Keystead read from it, so a typo shows at once;
+  // a PC drive (`Z:\…`) gets told what to write instead.
   const addressHint = parsed
     ? parsed.folder
       ? t("smb.addressParsed", { server: parsed.server, share: parsed.share, folder: parsed.folder })
       : t("smb.addressParsedRoot", { server: parsed.server, share: parsed.share })
-    : address.trim() !== ""
-      ? t("smb.addressIncomplete")
-      : t("smb.addressHint");
+    : isDriveAddress(address)
+      ? t("smb.addressDrive", { drive: address.trim().slice(0, 2).toUpperCase() })
+      : address.trim() !== ""
+        ? t("smb.addressIncomplete")
+        : t("smb.addressHint");
 
   return (
     <Modal

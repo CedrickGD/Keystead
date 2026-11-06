@@ -1057,6 +1057,8 @@ export const de = {
   "smb.addressParsed": "Server {server} · Freigabe {share} · Ordner {folder}",
   "smb.addressParsedRoot": "Server {server} · Freigabe {share} · ohne Unterordner",
   "smb.addressIncomplete": "Es fehlt noch die Freigabe, z. B. 192.168.1.10/Daten.",
+  "smb.addressDrive":
+    "{drive} ist ein Laufwerk deines PCs – das kennt das Handy nicht. Trag stattdessen den Netzwerkpfad dahinter ein (Explorer → Dieser PC zeigt ihn neben dem Laufwerk, z. B. \\\\192.168.1.10\\Daten), also 192.168.1.10/Daten/….",
   "smb.user": "Benutzername",
   "smb.userHint": "Dieselben Zugangsdaten wie in deiner Datei-App.",
   "smb.password": "Passwort",

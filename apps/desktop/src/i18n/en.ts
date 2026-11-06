@@ -1025,6 +1025,8 @@ export const en: Record<MessageKey, string> = {
   "smb.addressParsed": "Server {server} · share {share} · folder {folder}",
   "smb.addressParsedRoot": "Server {server} · share {share} · no subfolder",
   "smb.addressIncomplete": "The share is still missing, e.g. 192.168.1.10/Data.",
+  "smb.addressDrive":
+    "{drive} is a drive of your PC – the phone does not know it. Enter the network path behind it instead (Explorer → This PC shows it next to the drive, e.g. \\\\192.168.1.10\\Data), so 192.168.1.10/Data/….",
   "smb.user": "User name",
   "smb.userHint": "The same login as in your file app.",
   "smb.password": "Password",

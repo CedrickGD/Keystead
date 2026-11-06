@@ -1730,7 +1730,10 @@ than the picked tree; the phone never asks for access to all files).
 * **UI** (`components/SmbDialog.tsx`): one address line as a file app or
   Windows shows it – `192.168.1.10/Daten/Keystead`, `\\nas\Daten\Keystead`,
   `smb://nas/Daten/Keystead` (also with a port; `lib/smbAddress.mjs` splits
-  it into server, share and folder and the hint below shows the parts),
+  it into server, share and folder and the hint below shows the parts; a PC
+  drive such as `Z:\Daten` is refused with a hint to enter the network path
+  behind it, and the backend refuses a server with an empty or bad port,
+  `Z:` included, as `invalid_input:smb_config` instead of "offline"),
   user, password; the domain only under "Erweitert". "Verbindung testen",
   "Ordner anlegen", "Verbinden". Phone settings and welcome screen: "Mit
   SMB-Freigabe verbinden"; a linked share shows `\\server\share\folder` and the

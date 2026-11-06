@@ -97,6 +97,12 @@ impl SmbConfig {
         {
             return Err(bad());
         }
+        // `nas:` or a PC drive (`Z:`): no port – a wrong form, not "offline".
+        if let Some(port) = port_of(server) {
+            if !matches!(port.parse::<u16>(), Ok(p) if p > 0) {
+                return Err(bad());
+            }
+        }
         let share = self.share.trim().trim_matches(['/', '\\']);
         if share.is_empty()
             || share.len() > 80
@@ -133,6 +139,18 @@ impl SmbConfig {
             user: user.to_owned(),
             domain: domain.to_owned(),
         })
+    }
+}
+
+/// The port written after the server (`nas:4455`, `[fe80::1]:446`), as
+/// [`SyncSmb::addr`] reads it; `None` without one (also a bare IPv6 address).
+fn port_of(server: &str) -> Option<&str> {
+    if let Some(rest) = server.strip_prefix('[') {
+        rest.split_once("]:").map(|(_, port)| port)
+    } else if server.matches(':').count() == 1 {
+        server.split_once(':').map(|(_, port)| port)
+    } else {
+        None
     }
 }
 
@@ -646,11 +664,28 @@ mod tests {
             "[fe80::1]:446"
         );
         assert_eq!(config("nas", "x", "").share().unwrap().folder, "");
+        assert_eq!(
+            config(
+                "192.168.2.201",
+                "personal_folder",
+                "Personal Data/VaultSync"
+            )
+            .share()
+            .unwrap()
+            .label(),
+            "\\\\192.168.2.201\\personal_folder\\Personal Data\\VaultSync"
+        );
         for (server, share, folder) in [
             ("", "x", ""),
             ("nas host", "x", ""),
             ("user@nas", "x", ""),
             ("nas/x", "x", ""),
+            ("Z:", "Personal Data", "VaultSync"),
+            ("nas:", "x", ""),
+            ("nas:0", "x", ""),
+            ("nas:99999", "x", ""),
+            ("nas:44a", "x", ""),
+            ("[fe80::1]:", "x", ""),
             ("nas", "", ""),
             ("nas", "a:b", ""),
             ("nas", "x", "a/../b"),

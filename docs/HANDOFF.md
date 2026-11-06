@@ -1333,6 +1333,17 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   (Server `demo` klappt, `fail` lehnt die Anmeldung ab). **Keine neue
   Android-Berechtigung** (INTERNET war schon da). Der Anmeldefehler-Text
   sagt jetzt neutral „Benutzername und Passwort“ (vorher „App-Passwort“).
+- **2026-11-06 nachmittags:** Adresszeile lehnt ein PC-Laufwerk (`Z:\…`) mit
+  Hinweis ab (Besitzer: „Ja, Hinweis einbauen“); `SmbConfig::share()` lehnt
+  einen Server mit leerem/ungültigem Port (auch `Z:`) als `smb_config` ab.
+- **Offen – „Server nicht erreichbar“ am Handy (Besitzer, 2026-11-06):**
+  Vom PC aus sind 192.168.2.201:445 offen und `smb2` 0.42.1 handelt mit dem
+  NAS SMB 3.1.1 aus (Negotiate-Probe ohne Login) – Crate und NAS passen.
+  Stärkster Verdacht (unbelegt, Android-Version des Handys unbekannt):
+  **Android 17 Local Network Protection** – die App hat `targetSdk = 37`, im
+  Manifest fehlt `ACCESS_LOCAL_NETWORK` und es gibt keine Laufzeitanfrage;
+  TCP ins LAN läuft dann laut Google in einen Timeout → `OFFLINE`. Die obige
+  Aussage „keine neue Android-Berechtigung“ gilt nur bis Android 16.
 
 **Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
 Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),
