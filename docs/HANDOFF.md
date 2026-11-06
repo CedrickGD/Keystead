@@ -1352,6 +1352,9 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   Windows + aarch64-Android, fmt, `tsc`, `node --test`, Gradle
   `compileUniversalDebugKotlin`. **Nicht verifiziert:** auf einem echten
   Android-17-Gerät (Dialog, Freigabe erreichbar).
+  **Veröffentlicht als v2.0.1-beta.30** (Commit `b3278d1` `[release]`,
+  CI-Lauf 42255436398 grün; APK-Berechtigungen laut Gate inkl.
+  `ACCESS_LOCAL_NETWORK`; `updater-beta/latest.json` = 2.0.1-beta.30).
 
 **Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
 Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),
