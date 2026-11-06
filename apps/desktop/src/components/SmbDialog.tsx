@@ -1,18 +1,23 @@
 // The phone's SMB form ("Mit SMB-Freigabe verbinden"): a folder on a Windows
-// share or a NAS – server, share, folder, user, password (and a domain, if
-// the network has one). "Verbindung testen" checks share, login, folder and
-// write access (`smb_test`; nothing is stored), "Ordner anlegen" makes a
-// missing folder (`smb_create_folder`), "Verbinden" links it (`link_smb`,
-// the password is sealed on the device). The password lives in this
-// dialog's state only. See "SMB shares (phone)" in docs/ARCHITECTURE.md.
+// share or a NAS – one address line as a file app or Windows shows it
+// (`192.168.1.10/Daten/Keystead`, `\\nas\Daten\Keystead`, `smb://…`; read by
+// lib/smbAddress.mjs), user and password; a domain only under "Erweitert".
+// "Verbindung testen" checks share, login, folder and write access
+// (`smb_test`; nothing is stored), "Ordner anlegen" makes a missing folder
+// (`smb_create_folder`), "Verbinden" links it (`link_smb`, the password is
+// sealed on the device). The password lives in this dialog's state only. See
+// "SMB shares (phone)" in docs/ARCHITECTURE.md.
 
-import { useId, useState } from "react";
-import { CircleCheck, FolderPlus, HardDrive, PlugZap, TriangleAlert } from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import { ChevronRight, CircleCheck, FolderPlus, HardDrive, PlugZap, TriangleAlert } from "lucide-react";
 import { ApiError, api } from "../lib/api";
+import { formatSmbAddress, parseSmbAddress } from "../lib/smbAddress.mjs";
 import type { SmbConfig, SmbTest, SyncSmb } from "../lib/types";
 import { useT } from "../i18n";
 import { Button, Field, PasswordInput } from "./Controls";
 import { Modal } from "./Modal";
+
+const PLAIN_INPUT = { autoComplete: "off", autoCapitalize: "off", autoCorrect: "off", spellCheck: false } as const;
 
 export function SmbDialog({
   initial,
@@ -26,27 +31,40 @@ export function SmbDialog({
   onClose: () => void;
 }) {
   const { t, errorText } = useT();
-  const ids = { server: useId(), share: useId(), folder: useId(), user: useId(), password: useId(), domain: useId() };
-  const [config, setConfig] = useState<SmbConfig>({
-    server: initial?.server ?? "",
-    share: initial?.share ?? "",
-    folder: initial?.folder ?? "Keystead",
-    user: initial?.user ?? "",
-    password: "",
-    domain: initial?.domain ?? "",
-  });
+  const ids = { address: useId(), user: useId(), password: useId(), domain: useId() };
+  const [address, setAddress] = useState(initial ? formatSmbAddress(initial) : "");
+  const [user, setUser] = useState(initial?.user ?? "");
+  const [password, setPassword] = useState("");
+  const [domain, setDomain] = useState(initial?.domain ?? "");
+  const [advanced, setAdvanced] = useState(Boolean(initial?.domain));
   const [test, setTest] = useState<SmbTest | null>(null);
   const [busy, setBusy] = useState<"test" | "folder" | "connect" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const set = (key: keyof SmbConfig) => (value: string) => {
-    setConfig((c) => ({ ...c, [key]: value }));
+  const parsed = useMemo(() => parseSmbAddress(address), [address]);
+  const config: SmbConfig | null = parsed && {
+    server: parsed.server,
+    share: parsed.share,
+    folder: parsed.folder,
+    user,
+    password,
+    domain,
+  };
+
+  const changed = <T,>(apply: (value: T) => void) => (value: T) => {
+    apply(value);
     setTest(null);
     setError(null);
   };
-  const complete = config.server.trim() !== "" && config.share.trim() !== "";
+  const changeAddress = changed((value: string) => {
+    setAddress(value);
+    // `smb://ich@nas/…`: the user goes to its own field (if that is empty).
+    const named = parseSmbAddress(value)?.user;
+    if (named && user.trim() === "") setUser(named);
+  });
 
   const run = async (what: "test" | "folder") => {
+    if (!config) return;
     setBusy(what);
     setError(null);
     try {
@@ -59,6 +77,7 @@ export function SmbDialog({
   };
 
   const connect = async () => {
+    if (!config) return;
     setBusy("connect");
     try {
       if (await onConnect(config)) onClose();
@@ -66,6 +85,15 @@ export function SmbDialog({
       setBusy(null);
     }
   };
+
+  // Under the address: what Keystead read from it, so a typo shows at once.
+  const addressHint = parsed
+    ? parsed.folder
+      ? t("smb.addressParsed", { server: parsed.server, share: parsed.share, folder: parsed.folder })
+      : t("smb.addressParsedRoot", { server: parsed.server, share: parsed.share })
+    : address.trim() !== ""
+      ? t("smb.addressIncomplete")
+      : t("smb.addressHint");
 
   return (
     <Modal
@@ -85,80 +113,52 @@ export function SmbDialog({
               {t("smb.connect")}
             </Button>
           ) : (
-            <Button type="submit" variant="primary" loading={busy === "test"} disabled={!complete}>
+            <Button type="submit" variant="primary" loading={busy === "test"} disabled={!config}>
               {t("smb.test")}
             </Button>
           )}
         </>
       }
     >
-      <Field label={t("smb.server")} htmlFor={ids.server} hint={t("smb.serverHint")}>
+      <Field label={t("smb.address")} htmlFor={ids.address} hint={addressHint}>
         <input
-          id={ids.server}
+          id={ids.address}
           className="input mono"
-          value={config.server}
-          onChange={(e) => set("server")(e.target.value)}
-          placeholder="192.168.1.10"
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
+          value={address}
+          onChange={(e) => changeAddress(e.target.value)}
+          placeholder={t("smb.addressPlaceholder")}
           inputMode="url"
           autoFocus
+          {...PLAIN_INPUT}
         />
       </Field>
-      <Field label={t("smb.share")} htmlFor={ids.share} hint={t("smb.shareHint")}>
-        <input
-          id={ids.share}
-          className="input"
-          value={config.share}
-          onChange={(e) => set("share")(e.target.value)}
-          placeholder={t("smb.sharePlaceholder")}
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-      </Field>
-      <Field label={t("smb.folder")} htmlFor={ids.folder} hint={t("smb.folderHint")}>
-        <input
-          id={ids.folder}
-          className="input"
-          value={config.folder}
-          onChange={(e) => set("folder")(e.target.value)}
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-      </Field>
-      <Field label={t("smb.user")} htmlFor={ids.user}>
+      <Field label={t("smb.user")} htmlFor={ids.user} hint={t("smb.userHint")}>
         <input
           id={ids.user}
           className="input"
-          value={config.user}
-          onChange={(e) => set("user")(e.target.value)}
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
+          value={user}
+          onChange={(e) => changed(setUser)(e.target.value)}
+          {...PLAIN_INPUT}
         />
       </Field>
       <Field label={t("smb.password")} htmlFor={ids.password} hint={t("smb.passwordHint")}>
-        <PasswordInput id={ids.password} value={config.password} onChange={set("password")} />
+        <PasswordInput id={ids.password} value={password} onChange={changed(setPassword)} />
       </Field>
-      <Field label={t("smb.domain")} htmlFor={ids.domain} hint={t("smb.domainHint")}>
-        <input
-          id={ids.domain}
-          className="input"
-          value={config.domain}
-          onChange={(e) => set("domain")(e.target.value)}
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-      </Field>
+      <button type="button" className="collapse-toggle" aria-expanded={advanced} onClick={() => setAdvanced((open) => !open)}>
+        <ChevronRight className="collapse-chevron" />
+        <span>{t("smb.advanced")}</span>
+      </button>
+      {advanced && (
+        <Field label={t("smb.domain")} htmlFor={ids.domain} hint={t("smb.domainHint")}>
+          <input
+            id={ids.domain}
+            className="input"
+            value={domain}
+            onChange={(e) => changed(setDomain)(e.target.value)}
+            {...PLAIN_INPUT}
+          />
+        </Field>
+      )}
       {test?.ok && (
         <div className="callout callout-success" role="status">
           <CircleCheck />
@@ -168,7 +168,7 @@ export function SmbDialog({
       {test?.folderMissing && (
         <div className="callout callout-warning" role="status">
           <TriangleAlert />
-          <span>{t("smb.folderMissing", { folder: config.folder.trim() || "/" })}</span>
+          <span>{t("smb.folderMissing", { folder: parsed?.folder || "/" })}</span>
           <Button size="sm" variant="secondary" icon={<FolderPlus />} loading={busy === "folder"} onClick={() => void run("folder")}>
             {t("smb.createFolder")}
           </Button>

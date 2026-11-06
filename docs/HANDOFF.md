@@ -1322,8 +1322,13 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   `LinkKind::Smb`, `LinkState.smb`, `sync_server::link_smb`, Befehle
   `smb_test`, `smb_create_folder`, `link_smb` (nur Handy); Passwort über
   `core.credentials()` unter `smb://user@server/share/folder`, nie in
-  `link.json`. Oberfläche `SmbDialog.tsx` (Server, Freigabe, Ordner,
-  Benutzer, Passwort, Domäne; „Verbindung testen“, „Ordner anlegen“),
+  `link.json`. Oberfläche `SmbDialog.tsx` – seit 2026-11-06 vereinfacht
+  (Besitzer: „viel zu kompliziert“): **eine Adresszeile** wie in der
+  Datei-App (`192.168.1.10/Daten/Keystead`, `\\nas\Daten\Keystead` oder
+  `smb://…`, zerlegt von `lib/smbAddress.mjs`, Node-Tests
+  `tests/smbAddress.test.mjs`; darunter live „Server … · Freigabe … ·
+  Ordner …“), Benutzer, Passwort, Domäne nur unter „Erweitert“;
+  „Verbindung testen“, „Ordner anlegen“),
   Einträge im Willkommensbildschirm und in den Handy-Einstellungen; Mock
   (Server `demo` klappt, `fail` lehnt die Anmeldung ab). **Keine neue
   Android-Berechtigung** (INTERNET war schon da). Der Anmeldefehler-Text
@@ -1342,7 +1347,16 @@ Freigabe, oder `cargo test -p keystead-desktop --lib against_a_real_share --
 --ignored` mit `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`, `_PASSWORD`,
 `_FOLDER`. Icon/Banner in der laufenden APK nicht angesehen (Emulator hing am
 Geräte-PIN). Die Beta mit diesem Stand muss einmal per Hand installiert
-werden; danach bietet das Banner Updates an.
+werden; danach bietet das Banner Updates an. Veröffentlicht als
+`v2.0.1-beta.28` (2026-11-05).
+
+**Wunsch des Besitzers (2026-11-06):** lieber die SMB-Verbindung nutzen,
+die schon in seiner Datei-App am Handy eingerichtet ist. Das geht ohne
+Codeänderung über „Cloud-Ordner wählen“ (System-Ordnerpicker, SAF) – aber
+nur, wenn die Datei-App ihr Netzlaufwerk als DocumentsProvider mit
+Ordnerauswahl anbietet; für Samsung „Eigene Dateien“ (Netzwerkspeicher)
+ist das unbelegt, eher nicht. Er prüft das selbst (Picker → ☰). Bis dahin
+der vereinfachte SMB-Dialog oben.
 
 ### Emulator-Checkliste für den Besitzer
 

@@ -1716,7 +1716,7 @@ than the picked tree; the phone never asks for access to all files).
 * **Link**: `LinkState.kind` `"smb"`, `smb: SyncSmb { server, share, folder,
   user, domain }` (no password), `treeUri` = the key
   `smb://user@server/share/folder` (lower case), `folderName`
-  `\server\shareolder`. The password: `crate::credentials` under that key.
+  `\\server\share\folder`. The password: `crate::credentials` under that key.
   Sync timing, "Nur über WLAN" and the pause after server errors as for a
   WebDAV server.
 * **Errors**: login refused / guest refused → `sync_auth_failed`, access
@@ -1727,12 +1727,15 @@ than the picked tree; the phone never asks for access to all files).
   `sync_server_error`.
 * **Security**: NTLM does not prove the server's identity – meant for the
   user's own network; the vault files are encrypted end to end anyway.
-* **UI** (`components/SmbDialog.tsx`): server, share, folder (default
-  "Keystead"), user, password, domain; "Verbindung testen", "Ordner
-  anlegen", "Verbinden". Phone settings and welcome screen: "Mit
-  SMB-Freigabe verbinden"; a linked share shows `\server\shareolder` and the
-  user with "Freigabe ändern" / "Passwort erneut eingeben". Mock: server
-  "demo" answers, "fail" refuses the login.
+* **UI** (`components/SmbDialog.tsx`): one address line as a file app or
+  Windows shows it – `192.168.1.10/Daten/Keystead`, `\\nas\Daten\Keystead`,
+  `smb://nas/Daten/Keystead` (also with a port; `lib/smbAddress.mjs` splits
+  it into server, share and folder and the hint below shows the parts),
+  user, password; the domain only under "Erweitert". "Verbindung testen",
+  "Ordner anlegen", "Verbinden". Phone settings and welcome screen: "Mit
+  SMB-Freigabe verbinden"; a linked share shows `\\server\share\folder` and the
+  user with "Freigabe ändern" (the address line filled in) / "Passwort
+  erneut eingeben". Mock: server "demo" answers, "fail" refuses the login.
 * **Tests**: the form's normalization, paths, an unreachable server, the
   link's key and missing password; a real share only with
   `cargo test … against_a_real_share -- --ignored` and
