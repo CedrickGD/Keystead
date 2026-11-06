@@ -143,11 +143,12 @@ test("the release gates", () => {
   assert.match(problems({ versionCode: null })[0], /versionCode is missing/);
   assert.match(problems({ minSdk: 24 })[0], /minSdk is 24, expected 29/);
   // Only the allowed permissions (stage 2c: the network for the server
-  // sync, the fingerprint unlock's) – the APK of 2.0.1-beta.20 had the last
-  // three of them.
+  // sync, the home network for SMB on Android 17+, the fingerprint
+  // unlock's) – the APK of 2.0.1-beta.20 had the last three of them.
   const allowed = [
     "android.permission.INTERNET",
     "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_LOCAL_NETWORK",
     "android.permission.USE_BIOMETRIC",
     "android.permission.USE_FINGERPRINT",
     "io.github.cedrickgd.keystead.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",

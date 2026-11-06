@@ -148,6 +148,7 @@ pub fn backs_off(code: &str) -> bool {
     };
     [
         remote::OFFLINE,
+        remote::smb::LOCAL_NETWORK,
         remote::SERVER_ERROR,
         remote::BAD_RESPONSE,
         remote::QUOTA,
@@ -950,6 +951,7 @@ mod tests {
             remote::AUTH_FAILED,
             remote::CERTIFICATE,
             remote::FOLDER_MISSING,
+            remote::smb::LOCAL_NETWORK,
         ] {
             b.record(Some(&AppError::unsupported(code).code()), t0, w0);
             assert_eq!(b.delay(), Some(minutes(1)), "{code}");

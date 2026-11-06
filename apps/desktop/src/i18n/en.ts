@@ -151,7 +151,9 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.gdrive_login_expired": "The Google sign-in expired. Start it again with “Sign in with Google”.",
   "error.input.gdrive_redirect": "Google did not confirm the sign-in (cancelled or not allowed). Start it again.",
   "error.input.smb_config":
-    "The server, share or folder is not valid like that (no spaces in the server name, no “..” in the folder).",
+    "The server, share or folder is not valid like that (no spaces in the server name, no drive letter like Z:, no “..” in the folder).",
+  "error.unsupported.smb_local_network":
+    "Keystead may not reach your home network. Allow it under Settings → Apps → Keystead → Permissions → “Nearby devices” and try again.",
   "error.unsupported.smb_share_missing": "The server has no share of that name. Check the name (case does not matter).",
   "error.input.attachments_too_many": "Too many attachments – 10 per item at most.",
   "error.input.attachment_name_required": "The file has no name.",

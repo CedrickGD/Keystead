@@ -206,12 +206,14 @@ folder and copies them in, and writes the vault files it changed back
 | Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
 | Desktop mirror | 2a (E7), 2b | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder; since 2b it takes the phone's edits back (scans, pull, conflicts) and offers vaults made on the phone | "Cloud-folder mirror (desktop) and phone link" |
-| Network | 1a–2b: none (E6); 2c: the server sync; 2d: cloud accounts | `INTERNET` + `ACCESS_NETWORK_STATE` for the WebDAV server or cloud account (Dropbox, Google Drive) the user links, nothing else; still no update check | "Network (stage 2c)" below; "Server sync (WebDAV)"; "Cloud accounts (Dropbox, Google Drive)" |
+| Network | 1a–2b: none (E6); 2c: the server sync; 2d: cloud accounts | `INTERNET` + `ACCESS_NETWORK_STATE` for the WebDAV server or cloud account (Dropbox, Google Drive) the user links, `ACCESS_LOCAL_NETWORK` for an SMB share in the home network (Android 17+, asked for at runtime), nothing else; still no update check | "Network (stage 2c)" below; "Server sync (WebDAV)"; "Cloud accounts (Dropbox, Google Drive)" |
 
 * **Network (stage 2c)** – decision E6 revised by the owner on
   2026-10-23 (sync for everyone, over Wi-Fi and mobile data): the APK
   requests `INTERNET`, for the server sync only, and `ACCESS_NETWORK_STATE`,
-  for "Nur über WLAN synchronisieren" (whether the phone is on Wi-Fi); the
+  for "Nur über WLAN synchronisieren" (whether the phone is on Wi-Fi) – and,
+  since 2026-11-06 (stage 2e, owner's OK), `ACCESS_LOCAL_NETWORK` for an SMB
+  share in the home network (see "SMB shares (phone)"); the
   merged manifest adds androidx.biometric's `USE_BIOMETRIC` /
   `USE_FINGERPRINT` and androidx.core's signature-protected receiver
   permission – nothing else (the APK gate's allowlist `ANDROID_PERMISSIONS`,
@@ -765,8 +767,8 @@ folder and copies them in, and writes the vault files it changed back
   * **Manifest**: the plugin's library adds its `BiometricActivity` and
     androidx.biometric's `USE_BIOMETRIC` / `USE_FINGERPRINT` (normal
     permissions, granted at install) to the **merged** manifest; the app's
-    own `AndroidManifest.xml` declares only `INTERNET` and
-    `ACCESS_NETWORK_STATE` (stage 2c), and the APK gate checks the merged
+    own `AndroidManifest.xml` declares only `INTERNET`,
+    `ACCESS_NETWORK_STATE` (stage 2c) and `ACCESS_LOCAL_NETWORK` (stage 2e), and the APK gate checks the merged
     result against its allowlist.
   * **Known limits**: the "reset" note lives in memory (after the process
     ends the vault just has no fingerprint unlock any more – the switch
@@ -893,8 +895,9 @@ itself, like on the desktop, for the navigation and new-window hooks); the
 CSP and everything else are inherited unchanged. CI adds
 `bundle.android.versionCode` (below). Hardening on top of the template,
 guarded by unit tests in `gui.rs` (`include_str!` of the committed files):
-* `AndroidManifest.xml`: exactly two permissions – `INTERNET` (the server
-  sync, stage 2c) and `ACCESS_NETWORK_STATE` ("Nur über WLAN") – and
+* `AndroidManifest.xml`: exactly three permissions – `INTERNET` (the server
+  sync, stage 2c), `ACCESS_NETWORK_STATE` ("Nur über WLAN") and
+  `ACCESS_LOCAL_NETWORK` (SMB in the home network, stage 2e) – and
   `android:networkSecurityConfig="@xml/network_security_config"`
   (`res/xml/network_security_config.xml`: `cleartextTrafficPermitted="false"`,
   the system's trust anchors only, no `user` certificates, no domain
@@ -1129,7 +1132,7 @@ updates"):
   badging` (package `io.github.cedrickgd.keystead`, the expected
   versionName and versionCode, minSdk 29, only the permissions of
   `ANDROID_PERMISSIONS` – `INTERNET`, `ACCESS_NETWORK_STATE`,
-  `USE_BIOMETRIC`, `USE_FINGERPRINT` and the package's
+  `ACCESS_LOCAL_NETWORK`, `USE_BIOMETRIC`, `USE_FINGERPRINT` and the package's
   `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, also checked as
   `<uses-permission-sdk-23>` –, not debuggable, `arm64-v8a` code). The step summary shows the APK's
   SHA-256 and the signer certificate. The artifact `Keystead-<version>-
@@ -1697,9 +1700,21 @@ comes later.
 Since 2026-11-05 (owner's request: "go out of the phone's storage, e.g. SMB").
 The phone reaches a folder on a Windows share or a NAS directly – the PC
 mounts the same share itself and uses it as its cloud folder ("Cloud-folder
-mirror"), so both meet in the cloud folder's layout. No Android permission
-beyond `INTERNET` (the system folder picker still never gives the app more
+mirror"), so both meet in the cloud folder's layout. No access to files
+beyond the share (the system folder picker still never gives the app more
 than the picked tree; the phone never asks for access to all files).
+
+* **Home network (Android 17+)**: an app that targets API 37 (Keystead does)
+  reaches the local network only with `ACCESS_LOCAL_NETWORK`, a runtime
+  permission in the "Geräte in der Nähe" group; without it, a connection to
+  a NAS or PC just times out. The manifest declares it; `smb_test`,
+  `smb_create_folder` and `link_smb` first ask for it (the folder plugin's
+  `requestLocalNetwork`: the system's dialog unless the user answered
+  before; before Android 17 always granted, never asked). Refused, a share
+  that cannot be reached is `unsupported:smb_local_network` (the text says
+  where to allow it) instead of `sync_offline` – also for a sync of a linked
+  share (`localNetwork`, checked only after such an error), which pauses
+  like `sync_offline`. Asked for only by the SMB form, never at start.
 
 * **Client** (`remote::smb::SmbRemote`, a `Remote`): SMB 2/3 in pure Rust
   (`smb2` crate, MIT/Apache-2.0), NTLM login (user, password, optional
@@ -1738,7 +1753,8 @@ than the picked tree; the phone never asks for access to all files).
   "Ordner anlegen", "Verbinden". Phone settings and welcome screen: "Mit
   SMB-Freigabe verbinden"; a linked share shows `\\server\share\folder` and the
   user with "Freigabe ändern" (the address line filled in) / "Passwort
-  erneut eingeben". Mock: server "demo" answers, "fail" refuses the login.
+  erneut eingeben". Mock: server "demo" answers, "fail" refuses the login,
+  "lan" stands for the home network refused.
 * **Tests**: the form's normalization, paths, an unreachable server, the
   link's key and missing password; a real share only with
   `cargo test … against_a_real_share -- --ignored` and
@@ -2958,7 +2974,7 @@ history. The bridge's own writes are not affected.
 | `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_gdrive` | – | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Google login Google allowed (`gdrive_login`: the device code the user entered; `gdrive_login_ready`) and links the phone to the folder "Keystead" of that Drive in place of the previous link, then syncs. The refresh token is sealed by the Android Keystore and never returned. `unsupported:gdrive_login_expired`, `unsupported:gdrive_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_webdav` | `config: WebDavConfig` | **Phone only** (see "Server sync (WebDAV)"). `FolderStatus` – links the phone to a folder on a WebDAV server in place of the previous link (a cloud folder's permission is given back, another server's password removed, the recorded conflicts of another folder forgotten) and syncs. The connection test must pass (its code otherwise – e.g. `unsupported:sync_server_folder_missing`, `unsupported:sync_server_certificate`; nothing changes); the password is sealed by the Android Keystore and never returned. A failed first sync is no error (`lastError`). `invalid_input:webdav_config`, `invalid_input:server_url`, `invalid_input:server_folder` |
-| `smb_test` | `config: SmbConfig { server, share, folder, user, password, domain }` | **Phone only** (see "SMB shares (phone)"). `SmbTest { ok, code, folderMissing, writable }` – connects (SMB 2/3, NTLM), opens the share, lists the folder and writes and removes a test file. Nothing is stored; the password is not echoed. `invalid_input:smb_config`, `unsupported:smb_share_missing`, `unsupported:sync_auth_failed`, `unsupported:sync_offline` … as `code` |
+| `smb_test` | `config: SmbConfig { server, share, folder, user, password, domain }` | **Phone only** (see "SMB shares (phone)"). `SmbTest { ok, code, folderMissing, writable }` – connects (SMB 2/3, NTLM), opens the share, lists the folder and writes and removes a test file. Nothing is stored; the password is not echoed. `invalid_input:smb_config`, `unsupported:smb_share_missing`, `unsupported:sync_auth_failed`, `unsupported:sync_offline`, `unsupported:smb_local_network` … as `code`. Asks for the home network first (Android 17+) |
 | `smb_create_folder` | `config: SmbConfig` | **Phone only.** `SmbTest` – "Ordner anlegen": makes the folder on the share segment by segment (one that exists is fine), then tests again. Never done by a sync |
 | `link_smb` | `config: SmbConfig` | **Phone only.** `FolderStatus` – links the phone to the folder on the share in place of the previous link (the connection test must pass; its code otherwise, `unsupported:sync_server_folder_missing` for a missing folder) and syncs. The password is sealed by the Android Keystore under the share's key (`smb://user@server/share/folder`) and never returned; a failed first sync is no error (`lastError`) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |

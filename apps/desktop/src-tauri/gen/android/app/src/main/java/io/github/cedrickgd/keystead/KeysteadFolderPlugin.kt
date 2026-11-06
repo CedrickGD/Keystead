@@ -20,7 +20,12 @@
 // Besides the folder, the sync asks one thing of the system here:
 // `networkKind` – whether the phone is on Wi-Fi or mobile data right now
 // ("Nur über WLAN synchronisieren" for a server link; ACCESS_NETWORK_STATE,
-// no network I/O). A unit test in src-tauri/src/gui.rs guards this file.
+// no network I/O) – and, for an SMB share (a NAS, a PC), the home network:
+// Android 17 (API 37) lets an app that targets it reach the local network
+// only with ACCESS_LOCAL_NETWORK, a runtime permission ("Geräte in der
+// Nähe"); before, INTERNET was enough (`localNetwork`,
+// `requestLocalNetwork`). A unit test in src-tauri/src/gui.rs guards this
+// file.
 package io.github.cedrickgd.keystead
 
 import android.app.Activity
@@ -29,12 +34,16 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import androidx.activity.result.ActivityResult
+import app.tauri.PermissionState
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
@@ -93,7 +102,14 @@ class WriteConflictCopyArgs {
   lateinit var source: String
 }
 
-@TauriPlugin
+// The home network (Android 17+): declared in the manifest, asked for only
+// when the user tests or links an SMB share.
+private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+private const val LOCAL_NETWORK = "localNetwork"
+// Android 17: before it, INTERNET grants the local network too.
+private const val LOCAL_NETWORK_SDK = 37
+
+@TauriPlugin(permissions = [Permission(strings = [LOCAL_NETWORK_PERMISSION], alias = LOCAL_NETWORK)])
 class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
   private val io = Executors.newSingleThreadExecutor()
 
@@ -209,6 +225,41 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
       else -> "other"
     }
     invoke.resolve(JSObject().apply { put("kind", kind) })
+  }
+
+  // May the app reach the home network (an SMB share)? { state } –
+  // "granted" (always before Android 17), "prompt" or "denied" (the user
+  // refused for good: only the app's settings can allow it now).
+  @Command
+  fun localNetwork(invoke: Invoke) {
+    invoke.resolve(localNetworkState())
+  }
+
+  // Asks the user (the system's dialog) unless the answer is known; the
+  // same { state } as `localNetwork` once they answered.
+  @Command
+  fun requestLocalNetwork(invoke: Invoke) {
+    val state = localNetworkState()
+    if (state.getString("state") != "prompt") {
+      invoke.resolve(state)
+      return
+    }
+    requestPermissionForAlias(LOCAL_NETWORK, invoke, "localNetworkAnswered")
+  }
+
+  @PermissionCallback
+  private fun localNetworkAnswered(invoke: Invoke) {
+    invoke.resolve(localNetworkState())
+  }
+
+  private fun localNetworkState(): JSObject {
+    val state = when {
+      Build.VERSION.SDK_INT < LOCAL_NETWORK_SDK -> "granted"
+      getPermissionState(LOCAL_NETWORK) == PermissionState.GRANTED -> "granted"
+      getPermissionState(LOCAL_NETWORK) == PermissionState.DENIED -> "denied"
+      else -> "prompt"
+    }
+    return JSObject().apply { put("state", state) }
   }
 
   @Command

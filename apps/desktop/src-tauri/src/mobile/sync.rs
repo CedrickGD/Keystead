@@ -46,6 +46,7 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 use crate::commands::{parse, run, CmdResult, Shared};
 use crate::error::{AppError, AppResult};
 use crate::folder_sync::{self, FolderStatus, LinkKind, LinkState, RemoteFolder};
+use crate::remote;
 use crate::remote::smb::{self, SmbConfig, SmbRemote, SmbTest};
 use crate::remote::webdav::WebDavConfig;
 use crate::state::{log, Core};
@@ -404,9 +405,67 @@ fn with_folder<T>(
     f: impl FnOnce(&dyn RemoteFolder) -> AppResult<T>,
 ) -> AppResult<T> {
     match sync_server::target(core, link)? {
+        LinkTarget::Server(folder) if link.kind == LinkKind::Smb => {
+            f(&*folder).map_err(|e| local_network_error(e, || local_network_allowed(app)))
+        }
         LinkTarget::Server(folder) => f(&*folder),
         LinkTarget::Folder(tree) => with_plugin_folder(app, core, &tree, f),
     }
+}
+
+/// `sync_offline` from an SMB share while the phone may not reach the home
+/// network (Android 17+, the permission refused): that is the reason
+/// (`unsupported:smb_local_network`), not the server.
+fn local_network_error(e: AppError, allowed: impl FnOnce() -> bool) -> AppError {
+    if remote::has_code(&e, remote::OFFLINE) && !allowed() {
+        AppError::unsupported(smb::LOCAL_NETWORK)
+    } else {
+        e
+    }
+}
+
+/// Whether the app may reach the home network now (the folder plugin's
+/// `localNetwork`; always before Android 17). Unknown counts as yes – the
+/// server's own error is shown then.
+#[cfg(target_os = "android")]
+fn local_network_allowed(app: &AppHandle) -> bool {
+    match app.try_state::<android::FolderPlugin>() {
+        Some(plugin) => match plugin.local_network() {
+            Ok(state) => state == "granted",
+            Err(_) => true,
+        },
+        None => true,
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn local_network_allowed(_app: &AppHandle) -> bool {
+    true
+}
+
+/// Before the SMB form reaches a share: asks for the home network (the
+/// system's dialog, unless the user answered before) and returns whether it
+/// is allowed. Unknown counts as yes.
+#[cfg(target_os = "android")]
+async fn ask_local_network(app: &AppHandle) -> bool {
+    let Some(plugin) = app.try_state::<android::FolderPlugin>() else {
+        return true;
+    };
+    match plugin.request_local_network().await {
+        Ok(state) => state == "granted",
+        Err(e) => {
+            log(format_args!(
+                "could not ask for the local network: {}",
+                e.code()
+            ));
+            true
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+async fn ask_local_network(_app: &AppHandle) -> bool {
+    true
 }
 
 /// Runs `f` with the folder `tree` through the plugin.
@@ -524,12 +583,19 @@ pub async fn link_webdav(
 
 /// `smb_test(config)` → `SmbTest`: the SMB form's connection test (share,
 /// login, folder, a test file). Nothing is stored; the password is not
-/// echoed.
+/// echoed. Asks for the home network first (Android 17+,
+/// [`ask_local_network`]); refused, a share that cannot be reached is
+/// `unsupported:smb_local_network`.
 #[tauri::command]
-pub async fn smb_test(core: Shared<'_>, config: serde_json::Value) -> CmdResult<SmbTest> {
+pub async fn smb_test(
+    app: AppHandle,
+    core: Shared<'_>,
+    config: serde_json::Value,
+) -> CmdResult<SmbTest> {
+    let allowed = ask_local_network(&app).await;
     run(&core, true, move |_| {
         let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
-        Ok(SmbRemote::test(&cfg))
+        Ok(local_network_test(SmbRemote::test(&cfg), allowed))
     })
     .await
 }
@@ -538,30 +604,48 @@ pub async fn smb_test(core: Shared<'_>, config: serde_json::Value) -> CmdResult<
 /// the share is made (segment by segment; one that exists is fine) and the
 /// connection tested again. Never done by a sync.
 #[tauri::command]
-pub async fn smb_create_folder(core: Shared<'_>, config: serde_json::Value) -> CmdResult<SmbTest> {
+pub async fn smb_create_folder(
+    app: AppHandle,
+    core: Shared<'_>,
+    config: serde_json::Value,
+) -> CmdResult<SmbTest> {
+    let allowed = ask_local_network(&app).await;
     run(&core, true, move |_| {
         let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
         let share = cfg.share()?;
-        SmbRemote::new(&share, cfg.password.clone())?.create_folder()?;
-        Ok(SmbRemote::test(&cfg))
+        SmbRemote::new(&share, cfg.password.clone())?
+            .create_folder()
+            .map_err(|e| local_network_error(e, || allowed))?;
+        Ok(local_network_test(SmbRemote::test(&cfg), allowed))
     })
     .await
+}
+
+/// [`local_network_error`] for the form's test.
+fn local_network_test(mut test: SmbTest, allowed: bool) -> SmbTest {
+    if !allowed && test.code == Some(AppError::unsupported(remote::OFFLINE).code()) {
+        test.code = Some(AppError::unsupported(smb::LOCAL_NETWORK).code());
+    }
+    test
 }
 
 /// `link_smb(config)` → [`FolderStatus`]: links the phone to a folder on an
 /// SMB share (a Windows share, a NAS) in place of the previous link and
 /// syncs. The connection test must pass (its code otherwise); the password
 /// is sealed by the Android Keystore (`crate::credentials`) and never
-/// returned. A failed first sync is not an error (`lastError`).
+/// returned. A failed first sync is not an error (`lastError`). Asks for
+/// the home network first, as [`smb_test`] does.
 #[tauri::command]
 pub async fn link_smb(
     app: AppHandle,
     core: Shared<'_>,
     config: serde_json::Value,
 ) -> CmdResult<FolderStatus> {
+    let allowed = ask_local_network(&app).await;
     run(&core, true, move |c| {
         let cfg: SmbConfig = parse(config, smb::BAD_CONFIG)?;
-        let link = sync_server::link_smb(c, &cfg, now_ms())?;
+        let link = sync_server::link_smb(c, &cfg, now_ms())
+            .map_err(|e| local_network_error(e, || allowed))?;
         replace_link(&app, c, link)
     })
     .await
@@ -815,6 +899,11 @@ mod android {
         kind: String,
     }
 
+    #[derive(Deserialize)]
+    struct LocalNetwork {
+        state: String,
+    }
+
     #[derive(Serialize)]
     struct WriteArgs<'a> {
         tree: &'a str,
@@ -881,6 +970,25 @@ mod android {
             self.0
                 .run_mobile_plugin::<Network>("networkKind", ())
                 .map(|n| n.kind)
+                .map_err(plugin_error)
+        }
+
+        /// May the app reach the home network: `granted` (always before
+        /// Android 17), `prompt` or `denied` (see the plugin).
+        pub fn local_network(&self) -> AppResult<String> {
+            self.0
+                .run_mobile_plugin::<LocalNetwork>("localNetwork", ())
+                .map(|n| n.state)
+                .map_err(plugin_error)
+        }
+
+        /// Asks the user for the home network unless they answered before;
+        /// the state then.
+        pub async fn request_local_network(&self) -> AppResult<String> {
+            self.0
+                .run_mobile_plugin_async::<LocalNetwork>("requestLocalNetwork", ())
+                .await
+                .map(|n| n.state)
                 .map_err(plugin_error)
         }
 

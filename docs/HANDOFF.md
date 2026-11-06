@@ -1336,14 +1336,22 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
 - **2026-11-06 nachmittags:** Adresszeile lehnt ein PC-Laufwerk (`Z:\…`) mit
   Hinweis ab (Besitzer: „Ja, Hinweis einbauen“); `SmbConfig::share()` lehnt
   einen Server mit leerem/ungültigem Port (auch `Z:`) als `smb_config` ab.
-- **Offen – „Server nicht erreichbar“ am Handy (Besitzer, 2026-11-06):**
+- **„Server nicht erreichbar“ am Handy (Besitzer, 2026-11-06):**
   Vom PC aus sind 192.168.2.201:445 offen und `smb2` 0.42.1 handelt mit dem
   NAS SMB 3.1.1 aus (Negotiate-Probe ohne Login) – Crate und NAS passen.
-  Stärkster Verdacht (unbelegt, Android-Version des Handys unbekannt):
-  **Android 17 Local Network Protection** – die App hat `targetSdk = 37`, im
-  Manifest fehlt `ACCESS_LOCAL_NETWORK` und es gibt keine Laufzeitanfrage;
-  TCP ins LAN läuft dann laut Google in einen Timeout → `OFFLINE`. Die obige
-  Aussage „keine neue Android-Berechtigung“ gilt nur bis Android 16.
+  Ursache (sehr wahrscheinlich, Android-Version des Handys noch unbestätigt):
+  **Android 17 Local Network Protection** – `targetSdk = 37`, ohne
+  `ACCESS_LOCAL_NETWORK` läuft TCP ins LAN laut Google in einen Timeout →
+  `OFFLINE`. **Behoben (Besitzer: „Ja, einbauen“):** Manifest +
+  APK-Gate + `gui.rs`-Test um `ACCESS_LOCAL_NETWORK` erweitert;
+  `KeysteadFolderPlugin` `localNetwork` / `requestLocalNetwork` (Tauri-
+  Berechtigungs-Alias, vor Android 17 immer „granted“); `smb_test`,
+  `smb_create_folder`, `link_smb` fragen vorher; abgelehnt →
+  `unsupported:smb_local_network` statt `sync_offline` (auch beim Sync,
+  pausiert wie offline). Verifiziert: `cargo test --lib` 333 grün, Clippy
+  Windows + aarch64-Android, fmt, `tsc`, `node --test`, Gradle
+  `compileUniversalDebugKotlin`. **Nicht verifiziert:** auf einem echten
+  Android-17-Gerät (Dialog, Freigabe erreichbar).
 
 **Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
 Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),

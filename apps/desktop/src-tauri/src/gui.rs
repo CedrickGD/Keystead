@@ -749,6 +749,8 @@ mod tests {
             "writeFile",
             "writeConflictCopy",
             "networkKind",
+            "localNetwork",
+            "requestLocalNetwork",
         ] {
             assert!(
                 folder.contains(&format!("fun {command}(invoke: Invoke)")),
@@ -767,6 +769,19 @@ mod tests {
         assert!(network.contains("TRANSPORT_WIFI"));
         assert!(network.contains("TRANSPORT_CELLULAR"));
         assert!(!folder.contains("onNewIntent"), "no redirect is taken in");
+        // The home network (SMB, Android 17+): the one runtime permission,
+        // under one alias, asked for only by `requestLocalNetwork`; before
+        // Android 17 INTERNET grants it (never asked for there).
+        assert!(folder.contains(
+            r#"private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK""#
+        ));
+        assert!(folder.contains(
+            "@TauriPlugin(permissions = [Permission(strings = [LOCAL_NETWORK_PERMISSION], alias = LOCAL_NETWORK)])"
+        ));
+        assert!(folder.contains("private const val LOCAL_NETWORK_SDK = 37"));
+        assert!(folder.contains("Build.VERSION.SDK_INT < LOCAL_NETWORK_SDK -> \"granted\""));
+        assert_eq!(folder.matches("requestPermissionForAlias(").count(), 1);
+        assert!(!folder.contains("requestAllPermissions"));
 
         // The server password's plugin: AES-256-GCM in the Android
         // Keystore, no authentication per use but only while the phone is
@@ -810,8 +825,9 @@ mod tests {
         assert!(secret_rs.contains(r#""KeysteadSecretPlugin","#));
         assert!(secret_rs.contains(r#"pub const PLUGIN_NAME: &str = "keystead-secret";"#));
 
-        // The network (stage 2c): exactly INTERNET (the server sync) and
-        // ACCESS_NETWORK_STATE (the Wi-Fi check), no cleartext, the system's
+        // The network (stage 2c): exactly INTERNET (the server sync),
+        // ACCESS_NETWORK_STATE (the Wi-Fi check) and ACCESS_LOCAL_NETWORK
+        // (SMB in the home network, Android 17+), no cleartext, the system's
         // trust anchors only (the sync's TLS is Rust's own anyway).
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains(r#"android:allowBackup="false""#));
@@ -837,9 +853,10 @@ mod tests {
             BTreeSet::from([
                 "android.permission.INTERNET",
                 "android.permission.ACCESS_NETWORK_STATE",
+                "android.permission.ACCESS_LOCAL_NETWORK",
             ])
         );
-        assert_eq!(manifest.matches("<uses-permission").count(), 2);
+        assert_eq!(manifest.matches("<uses-permission").count(), 3);
         assert!(!manifest.contains("uses-permission-sdk-23"));
         assert!(
             manifest.contains(r#"android:networkSecurityConfig="@xml/network_security_config""#)

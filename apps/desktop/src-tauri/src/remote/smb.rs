@@ -42,6 +42,10 @@ use crate::error::{AppError, AppResult};
 pub const BAD_CONFIG: &str = "smb_config";
 /// `unsupported:smb_share_missing`: the server has no such share.
 pub const SHARE_MISSING: &str = "smb_share_missing";
+/// `unsupported:smb_local_network`: the phone may not reach the home network
+/// (Android 17+ without `ACCESS_LOCAL_NETWORK` – its connections there time
+/// out); `mobile::sync` says so instead of `sync_offline`.
+pub const LOCAL_NETWORK: &str = "smb_local_network";
 /// The time a connection (TCP, negotiation, login, share) may take.
 pub const CONNECT_LIMIT: Duration = Duration::from_secs(30);
 const DEFAULT_PORT: u16 = 445;

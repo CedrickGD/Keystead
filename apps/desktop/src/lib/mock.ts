@@ -2421,12 +2421,14 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "smb_test":
     case "smb_create_folder": {
       // The server "demo" answers (folder "Keystead" after "Ordner anlegen"),
-      // "fail" refuses the login, anything else is offline.
+      // "fail" refuses the login, "lan" stands for the home network refused
+      // (Android 17+), anything else is offline.
       const cfg = (args.config ?? {}) as SmbConfig;
       await sleep(500);
       const server = String(cfg.server ?? "").trim();
       if (!server || !String(cfg.share ?? "").trim()) fail("invalid_input:smb_config");
       if (server === "fail") return { ok: false, code: "unsupported:sync_auth_failed", folderMissing: false, writable: false };
+      if (server === "lan") return { ok: false, code: "unsupported:smb_local_network", folderMissing: false, writable: false };
       if (server !== "demo") return { ok: false, code: "unsupported:sync_offline", folderMissing: false, writable: false };
       if (command === "smb_create_folder") mockSmbFolders.add(String(cfg.folder ?? ""));
       const exists = String(cfg.folder ?? "").trim() === "" || mockSmbFolders.has(String(cfg.folder ?? ""));

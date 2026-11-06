@@ -157,7 +157,9 @@ export const de = {
   "error.input.gdrive_redirect":
     "Google hat die Anmeldung nicht bestätigt (abgebrochen oder nicht erlaubt). Starte sie erneut.",
   "error.input.smb_config":
-    "Server, Freigabe oder Ordner sind so nicht gültig (keine Leerzeichen im Servernamen, kein „..“ im Ordner).",
+    "Server, Freigabe oder Ordner sind so nicht gültig (keine Leerzeichen im Servernamen, kein Laufwerksbuchstabe wie Z:, kein „..“ im Ordner).",
+  "error.unsupported.smb_local_network":
+    "Keystead darf dein Heimnetz nicht erreichen. Erlaube es unter Einstellungen → Apps → Keystead → Berechtigungen → „Geräte in der Nähe“ und versuch es noch mal.",
   "error.unsupported.smb_share_missing":
     "Diese Freigabe gibt es auf dem Server nicht. Prüfe den Namen (Groß-/Kleinschreibung egal).",
   "error.input.attachments_too_many": "Zu viele Anhänge – höchstens 10 pro Element.",
