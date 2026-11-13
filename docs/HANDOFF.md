@@ -1496,6 +1496,19 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     beta.31 („nicht erreichbar nur noch, wenn sich der Server nicht
     anwählen lässt“ – der Code meldet das auch für einen nicht auflösbaren
     Namen und eine im Betrieb abgerissene Verbindung).
+    **Veröffentlicht als v2.0.1-beta.32** (Texte `cef6270`, Release-Commit
+    `6295cf5`, CI-Lauf 43520105637 komplett grün; APK
+    `Keystead-2.0.1-beta.32-android.apk`, SHA-256 `b74bfa4d…4dd1`,
+    versionCode 32, Signatur = `build.yml`; `updater-beta/latest.json` =
+    2.0.1-beta.32). Vor dem Release lokal grün (Windows): `npm run build`,
+    fmt, Clippy `-D warnings` (Windows und aarch64-Android), `cargo test
+    --workspace` (Desktop-Lib 337 / 6 ignoriert), `node --test` 104,
+    Klicktest im Mock (Handy, de/en: Entsperr-Bildschirm, Einstellungen,
+    Toast nach „Jetzt synchronisieren“, Willkommensbildschirm mit
+    fehlgeschlagener Datei, SMB-Formular). Nicht im Mock gesehen: die
+    Pausenzeile am PC (der Mock kennt dort keine Pause). **Am Gerät noch
+    nicht gesehen:** ob das Handy mit beta.31 die beta.32 von selbst
+    anbietet – der Besitzer sieht nach; nichts per adb installiert.
   - **Nicht umgesetzt (offen):** `probe()` meldet immer `writable: true`
     (nur-lesbare Freigabe kippt nach dem ersten Sync auf schreibbar); der
     Verbindungstest übt `stat`/Lesen/Umbenennen nicht; echter anonymer Login
