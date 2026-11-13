@@ -67,8 +67,10 @@ clippy lints break CI otherwise).
   `gen/android/keystore.properties` never enter the repo (keystore in
   `CedrickGD/keys/keystead/`, CI secrets `ANDROID_KEYSTORE_BASE64`,
   `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`; certificate SHA-256 in
-  `build.yml`/README); the main manifest has exactly `INTERNET` (the WebDAV
-  and cloud-account sync – the only network code on the phone),
+  `build.yml`/README); the main manifest has exactly `INTERNET` (the phone's
+  sync clients – WebDAV, Dropbox, Google Drive, SMB – and the update check
+  that reads `latest.json` from GitHub, `update::phone_check_update`: the
+  only network code on the phone),
   `ACCESS_NETWORK_STATE` and `ACCESS_LOCAL_NETWORK` (SMB in the home network,
   Android 17+, asked for at runtime), no
   cleartext (`network_security_config.xml`); the APK gate allows only the

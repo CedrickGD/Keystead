@@ -247,7 +247,10 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
   // Asks the user while Android still shows its dialog; the same { state }
   // as `localNetwork` once they answered. Not asked while it is granted,
   // and not once it was refused for good: Android would answer without a
-  // dialog then, and the request would still pause the activity.
+  // dialog then (per AOSP, Android 17 does so inside the app, without
+  // starting its permission activity – not checked on a vendor build; so a
+  // refusal for good this plugin did not see coming, which stays "prompt",
+  // should cost nothing either).
   @Command
   fun requestLocalNetwork(invoke: Invoke) {
     val state = localNetworkState()

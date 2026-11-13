@@ -152,10 +152,13 @@ OneDrive – mit diesen Apps ist das noch ungeprüft, siehe unten) oder **direkt
    ```
    Jede echte Keystead-APK trägt dieses Zertifikat, und Android installiert ein
    Update nur, wenn es mit demselben Zertifikat signiert ist.
-4. **Updates:** die neuere APK herunterladen und über die vorhandene
-   installieren – deine Daten bleiben. Die App sucht nicht selbst nach neuen
-   Versionen; unter **Einstellungen → Über Keystead** öffnet „Releases auf
-   GitHub öffnen“ die Releases-Seite im Browser.
+4. **Updates:** Kurz nach dem Start sieht die App bei GitHub nach, ob es eine
+   neuere Version gibt, und zeigt dann einen Hinweis mit „Herunterladen“. Die
+   APK öffnen und über die vorhandene installieren („Aktualisieren“) – deine
+   Daten bleiben. Von selbst installiert die App nichts. Vorschau-Versionen
+   bis 2.0.1-beta.30 bekamen neue Betas noch nicht angeboten – dort einmal von
+   Hand aktualisieren. Unter **Einstellungen → Über Keystead** öffnet
+   „Releases auf GitHub öffnen“ die Releases-Seite im Browser.
 
 **Tresor aufs Handy holen:**
 
@@ -261,10 +264,16 @@ Tags und Typen filtern, Passwörter aufdecken und kopieren (die Zwischenablage
 wird wie am PC wieder geleert), 2FA-Codes, Bildvorschau von Anhängen,
 Sicherheitsbericht (ohne Prüfung auf geleakte Passwörter), automatische Sperre.
 Verlässt du die App, sperrt sie sich nach 1 Minute (einstellbar unter
-Einstellungen → Sicherheit: sofort, 1 min, 5 min, nie). Ins Internet geht die
-App nur zu einem WebDAV-Server, den du selbst verbindest (dafür hat sie seit
-dieser Version die Berechtigung „Internet“ und „Netzwerkstatus“ – sonst
-keine); mit dem Cloud-Ordner sendet sie nichts. Sie verhindert Screenshots und
+Einstellungen → Sicherheit: sofort, 1 min, 5 min, nie). Ins Netz geht die
+App nur für den Abgleich, den du selbst einrichtest – etwa zu deinem
+WebDAV-Server oder zu einer SMB-Freigabe in deinem Heimnetz –, und zu GitHub,
+um kurz nach dem Start nach einer neueren Version zu sehen (nur die
+Versionsdatei `latest.json`, keine Tresordaten). Dafür hat sie die
+Berechtigungen „Internet“ und „Netzwerkstatus“ und – nur für eine
+SMB-Freigabe im Heimnetz ab Android 17, erst beim Testen oder Verbinden
+erfragt – „Geräte in der Nähe“ (Zugriff aufs lokale Netzwerk); sonst hat sie
+nur noch die für den Fingerabdruck. Mit dem Cloud-Ordner sendet sie außer
+dieser Update-Abfrage nichts. Sie verhindert Screenshots und
 wird von Android nicht in die Cloud gesichert.
 
 **Mit Fingerabdruck entsperren** (Einstellungen → Sicherheit; aus, bis du es
@@ -326,8 +335,9 @@ den Hinweis bis zum nächsten Start aus.
   die App blockiert ist.
 - Die **portable ZIP-Version** aktualisiert sich nicht selbst; sie meldet neue
   Versionen mit einem Link zum Download.
-- Die **Android-App** sucht nicht nach Updates; die neuere APK installierst du
-  über die alte, siehe [Android-App](#android-app-vorschau).
+- Die **Android-App** installiert Updates nicht selbst: Sie sieht kurz nach dem
+  Start nach einer neueren Version und bietet deren APK zum Herunterladen an;
+  du installierst sie über die alte, siehe [Android-App](#android-app-vorschau).
 - Bei der Prüfung wird nur eine Versionsdatei (`latest.json`) von GitHub abgerufen –
   keine Tresordaten, keine Kennungen.
 
@@ -580,8 +590,11 @@ e.g. Nextcloud or OneDrive – not checked with these apps yet, see below) or
    ```
    Every genuine Keystead APK carries this certificate, and Android installs
    an update only if it is signed with the same one.
-4. **Updates:** download the newer APK and install it over the old one – your
-   data stays. The app does not look for new versions itself; under
+4. **Updates:** shortly after it starts, the app checks on GitHub whether a
+   newer version exists and then shows a notice with “Download”. Open the APK
+   and install it over the old one (“Update”) – your data stays. The app
+   installs nothing by itself. Preview versions up to 2.0.1-beta.30 were not
+   offered new betas yet – update those once by hand. Under
    **Settings → About Keystead**, “Open releases on GitHub” opens the releases
    page in the browser.
 
@@ -678,9 +691,15 @@ tags and types, reveal and copy passwords (the clipboard is cleared again as on
 the PC), 2FA codes, image previews of attachments, the security report (without
 the leaked-password check), auto-lock. When you leave the app it locks after
 1 minute (adjustable under Settings → Security: immediately, 1 min, 5 min,
-never). The app goes online only to a WebDAV server you connect yourself (for
-that it has the “internet” and “network state” permissions since this version
-– no others); with the cloud folder it sends nothing. It blocks screenshots and
+never). The app goes online only for the sync you set up yourself – for
+example to your WebDAV server or to an SMB share in your home network – and
+to GitHub, to look for a newer version shortly after it starts (only the
+version file `latest.json`, no vault data). For that it has the “internet”
+and “network state” permissions and – only for an SMB share in the home
+network on Android 17 or newer, asked for when you test or link the share –
+“Nearby devices” (access to the local network); beyond those it only has
+the one for the fingerprint. With the cloud folder it sends nothing but that
+update check. It blocks screenshots and
 is not backed up to the cloud by Android.
 
 **Unlock with fingerprint** (Settings → Security; off until you turn it on –
@@ -739,8 +758,9 @@ restarts. **Later** hides the banner until the next start.
   for the app.
 - The **portable ZIP version** does not update itself; it announces new versions with
   a download link.
-- The **Android app** does not look for updates; install the newer APK over the
-  old one, see [Android app](#android-app-preview).
+- The **Android app** does not install updates itself: shortly after it starts
+  it looks for a newer version and offers its APK for download; you install it
+  over the old one, see [Android app](#android-app-preview).
 - The check only fetches a version file (`latest.json`) from GitHub – no vault data,
   no identifiers.
 

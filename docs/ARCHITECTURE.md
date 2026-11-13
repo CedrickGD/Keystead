@@ -22,7 +22,10 @@ cloud that the user links through the system picker – the cloud's own app
 a WebDAV server of the user's (see "Server sync (WebDAV)"; then the PC can
 use the same server instead of a folder). The provider sees the encrypted
 files with their plain-text header (vault name, revision, times), never
-their content. The phone goes online only to such a server.
+their content. The phone goes online only to such a server – or to the SMB
+share or cloud account the user linked instead ("SMB shares (phone)", "Cloud
+accounts (Dropbox, Google Drive)") – and to GitHub for its update check
+(`latest.json`, see "In-app updates").
 
 This document is the binding contract between the components. If you change
 an interface here, change every side.
@@ -206,33 +209,43 @@ folder and copies them in, and writes the vault files it changed back
 | Cloud-folder link and copy-in | 2a | the phone links one folder and copies vault files and attachments in – each copy on trial until it opens | "Cloud-folder sync (phone)" |
 | Phone write-back, conflicts | 2b | read/write permission; the phone pushes its edits (verified by reading back), a sync base per vault tells pull, push and conflict apart; conflicts are resolved by the user | "Cloud-folder sync (phone)" |
 | Desktop mirror | 2a (E7), 2b | "Kopie im Cloud-Ordner aktuell halten": the PC writes the encrypted copies into that folder; since 2b it takes the phone's edits back (scans, pull, conflicts) and offers vaults made on the phone | "Cloud-folder mirror (desktop) and phone link" |
-| Network | 1a–2b: none (E6); 2c: the server sync; 2d: cloud accounts | `INTERNET` + `ACCESS_NETWORK_STATE` for the WebDAV server or cloud account (Dropbox, Google Drive) the user links, `ACCESS_LOCAL_NETWORK` for an SMB share in the home network (Android 17+, asked for at runtime), nothing else; still no update check | "Network (stage 2c)" below; "Server sync (WebDAV)"; "Cloud accounts (Dropbox, Google Drive)" |
+| Network | 1a–2b: none (E6); 2c: the server sync; 2d: cloud accounts; 2e: SMB shares, the update check | `INTERNET` + `ACCESS_NETWORK_STATE` for the WebDAV server, SMB share or cloud account (Dropbox, Google Drive) the user links and, since 2026-11-05, for the update check (`phone_check_update`: the channel's `latest.json` from GitHub), `ACCESS_LOCAL_NETWORK` for an SMB share in the home network (Android 17+, asked for at runtime), no other permission | "Network (stage 2c)" below; "Server sync (WebDAV)"; "SMB shares (phone)"; "Cloud accounts (Dropbox, Google Drive)"; "In-app updates" |
 
 * **Network (stage 2c)** – decision E6 revised by the owner on
   2026-10-23 (sync for everyone, over Wi-Fi and mobile data): the APK
-  requests `INTERNET`, for the server sync only, and `ACCESS_NETWORK_STATE`,
+  requests `INTERNET` – for the sync with a server, share or cloud account
+  and, since 2026-11-05, for the update check (both below) – and
+  `ACCESS_NETWORK_STATE`,
   for "Nur über WLAN synchronisieren" (whether the phone is on Wi-Fi) – and,
   since 2026-11-06 (stage 2e, owner's OK), `ACCESS_LOCAL_NETWORK` for an SMB
   share in the home network (see "SMB shares (phone)"); the
   merged manifest adds androidx.biometric's `USE_BIOMETRIC` /
   `USE_FINGERPRINT` and androidx.core's signature-protected receiver
   permission – nothing else (the APK gate's allowlist `ANDROID_PERMISSIONS`,
-  `android-apk.mjs`, refuses any other). The only network code on the phone
-  is the sync's transport `remote::http` – the WebDAV client
-  (`remote::webdav`, "Server sync (WebDAV)") and, since stage 2d, the
-  Dropbox and Google Drive clients ("Cloud accounts (Dropbox, Google
-  Drive)") – and it runs only for the server or account the user linked (a
+  `android-apk.mjs`, refuses any other). The phone's network code is the
+  sync's transport `remote::http` – the WebDAV client (`remote::webdav`,
+  "Server sync (WebDAV)") and, since stage 2d, the Dropbox and Google Drive
+  clients ("Cloud accounts (Dropbox, Google Drive)") –, since stage 2e the
+  SMB client (`remote::smb`: the `smb2` crate's own TCP connection, not
+  `remote::http`; "SMB shares (phone)") and the update check
+  (`update::phone_check_update`: a `GET` of the channel's `latest.json`
+  from GitHub through `remote::http`, once per start about 3 s after the
+  welcome, unlock or main screen shows, unless `updateCheck` is off – it is
+  on by default and has no switch on the phone; "In-app updates"). The sync
+  clients run only for the server, share or account the user linked (a
   login itself happens in the system browser); a phone that syncs through a
-  cloud folder sends nothing. Its TLS is Rust's own (`remote::tls`: rustls with the
+  cloud folder, or that is linked to nothing, sends nothing but the update
+  check. The transport's TLS is Rust's own (`remote::tls`: rustls with the
   webpki roots – the platform verifier, which would need JNI set-up, is never
   used there – or exactly the one leaf certificate the user confirmed; a unit
   test, `on_the_phone_only_this_module_builds_an_http_client`, keeps every
   other HTTP client off the phone). `res/xml/network_security_config.xml`
   forbids cleartext and user-installed CAs for everything Android's own stack
   would do (the WebView loads only the app's pages). Still desktop-only: the
-  update check (About offers "Releases auf GitHub öffnen" – `openExternal`
-  hands the link to the browser – and the user installs the newer APK over
-  the old one, "Build, CI and signing" → Updates), the website-icon fetcher
+  updater (the phone only checks: a banner offers the newer APK and About
+  offers "Releases auf GitHub öffnen" – `openExternal` hands either link to
+  the browser – and the user installs the newer APK over the old one,
+  "Build, CI and signing" → Updates), the website-icon fetcher
   (the icons the PC stored are shown) and the leaked-password check. Up to
   stage 2b the APK had no `INTERNET` permission at all (no socket, a promise
   checkable in the manifest); since 2c the manifest still shows exactly what
@@ -285,9 +298,13 @@ folder and copies them in, and writes the vault files it changed back
   only by the device-unlock commands, `save_settings` keeps the stored
   value). `autoLockMinutes` and `clipboardClearSeconds` work as on the
   desktop; the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
-  `startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
-  `updateChannel`, `mirrorFolder`) are kept in the file but do nothing on
-  the phone.
+  `startInTray`, `browserIntegration`, `websiteIcons`, `mirrorFolder`) are
+  kept in the file but do nothing on the phone. `updateCheck` and
+  `updateChannel` have no row in the phone's settings, but
+  `phone_check_update` reads them: with `updateCheck` off it asks only on
+  request (`manual: true`, which the page never sends), and `updateChannel` is
+  the channel a stable build reads (a beta build always reads the beta
+  channel, "In-app updates").
 * **Error codes** of the phone's own commands (stable codes the UI
   translates: `error.unsupported.<detail>` / `error.input.<detail>` in
   `de.ts`/`en.ts`):
@@ -436,7 +453,9 @@ folder and copies them in, and writes the vault files it changed back
     unverified write goes over the first write's ETag only. Errors that
     end the whole sync instead of failing one file (`ends_sync`):
     `folder_access_lost`, `sync_offline`, `sync_auth_failed`,
-    `sync_server_certificate`. The sync reads the written file
+    `sync_server_certificate` and, for an SMB share, `smb_local_network`,
+    `smb_no_answer`, `smb_share_missing`, `smb_share_denied`,
+    `smb_not_a_folder` ("SMB shares (phone)"). The sync reads the written file
     back and compares the bytes; a mismatch is written once more, then
     reported (`failed`, `unsupported:sync_write_unverified`); only a
     verified write becomes the base (`pushed`). A vault the phone made and
@@ -1138,13 +1157,16 @@ updates"):
   SHA-256 and the signer certificate. The artifact `Keystead-<version>-
   android` holds `Keystead-<version>-android.apk`; the release job
   attaches it to the release.
-* **Updates**: the phone has no updater and no update check (the "new
-  version" hint through a Kotlin plugin that decision E6 planned for stage 2
-  was dropped; the network permission of stage 2c serves the server sync
-  only; About links to the releases page). The user downloads the newer APK from the releases page
-  and installs it over the old one; the package installer checks
-  certificate and versionCode, the app's data stays. `latest.json` and the
-  `updater-beta` channel stay desktop-only.
+* **Updates**: the phone has no updater, but since 2026-11-05 an update
+  check: `phone_check_update` reads the channel's `latest.json` from GitHub
+  (a beta build the `updater-beta` channel's, `update::phone_channel`) and
+  `PhoneUpdateBanner` offers the newer APK (see "In-app updates"; the "new
+  version" hint that decision E6 planned for stage 2 through a Kotlin
+  plugin, dropped at first, is this check – in Rust, without a plugin).
+  The app downloads and installs nothing: the browser fetches the APK –
+  from the banner or from the releases page About links to – and the user
+  installs it over the old one; the package installer checks
+  certificate and versionCode, the app's data stays.
 
 **Desktop-only, and why**:
 
@@ -1153,7 +1175,7 @@ updates"):
 | Browser bridge, extension, pairing (`browser_status`, `respond_pairing`, …) | Native Messaging exists for desktop browsers only; the phone's counterpart is an Autofill service (stage 3) |
 | Terminal UI, `open_terminal`, `open_data_dir`, `open_extension_dir` | no terminal, no file manager to show a path in |
 | Tray, single instance, `--background`, portable mode | no such concepts on Android (one task, app-private storage) |
-| In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; no update check on the phone (above) |
+| In-app updates (`check_update`, `pending_update`, `install_update`) | Android installs APKs itself and checks their signature; the phone only checks and offers the APK (`phone_check_update`, above) |
 | Website-icon fetcher, leaked-password check | they use reqwest's platform TLS verifier, which would need JNI set-up; permanently off on the phone (E6, unchanged by 2c) – stored icons are shown (`get_icons`) |
 | Master password, recovery key (`change_master_password`, `create_recovery_key`, `remove_recovery_key`, `unlock_with_recovery`), `delete_vault` | owner's decision for 2b: a new master password and the recovery key are made on the PC (the phone gets the new password with the next revision); deleting a vault stays a PC action. The phone edits items, folders, tags, the generator history and the vault name, and creates vaults (since 2b) |
 | Adding, saving and removing attachments (`add_attachment`, `save_attachment`, `remove_attachment`), import, export, `show_export` | they take file-dialog paths, and Android hands out `content://` URIs; the phone keeps attachments view-only (2b), so it never drops the PC's. The image preview `reveal_attachment` is on the phone; vaults and their attachments arrive through the cloud-folder sync |
@@ -1449,7 +1471,8 @@ below.
   phone conflict copy, `<id>.keystead.attachments[/<id>.bin]`; nothing
   else, `invalid_input:remote_path`). Codes (`unsupported:`):
   `sync_offline`, `sync_auth_failed`, `sync_not_writable`,
-  `sync_server_folder_missing`, `sync_server_not_webdav`,
+  `sync_not_readable` (only an SMB share: the account may not list the
+  folder or read the file), `sync_server_folder_missing`, `sync_server_not_webdav`,
   `sync_server_quota`, `sync_server_error`, `sync_server_response`,
   `sync_server_certificate`, `sync_remote_changed` (a failed precondition),
   `sync_file_missing`, `sync_file_too_large`.
@@ -1718,20 +1741,29 @@ than the picked tree; the phone never asks for access to all files).
   permission switched off in the settings – Android then offers a
   rationale, which the plugin notes in one flag, `refusedOnce`, whenever it
   sees it). After the next refusal Android shows no dialog; the plugin then
-  answers "denied" without starting the request (it would only pause the
-  activity). Not covered: a refusal for good that the plugin never saw
-  coming (two refusals under beta.30, a device policy) stays "prompt" – a
-  request without a dialog on every test. Without the permission the
+  answers "denied" without starting the request. A refusal for good that
+  the plugin never saw coming (two refusals under beta.30, a device
+  policy) stays "prompt" – harmless: Android 17 answers a request for a
+  permission that cannot be asked for any more inside the app, without
+  starting its permission activity (AOSP's `permission_request_short_circuit`,
+  read-only and on in the Android 17 release configuration; not checked on
+  a vendor build), so nothing pauses and the form shows the same
+  `smb_local_network`. No timing rule ("answered at once = refused for
+  good") on purpose: it could not tell that from an overlapping request
+  the framework cancels, and would then stop asking for good. Without the
+  permission the
   connection is still dialled: Android blocks by route (the phone's own
   subnet on Wi-Fi or Ethernet), so a share behind a VPN or in another
   routed subnet answers without it – the address alone tells nothing. Only
-  when the dial then fails as offline is the code
+  when the share then turns out `sync_offline` while the permission is not
+  granted – the dial fails or, for a share that had answered, the
+  connection breaks during a request – is the code
   `unsupported:smb_local_network` (the text says where to allow it), in the
   form and in a sync of a linked share (`localNetwork`, asked only after
   such a failure), which pauses like `sync_offline`. Asked for only by the
   SMB form, never at start. The dialog pauses the activity like the
-  system's folder picker: an open vault locks after "Im Hintergrund
-  sperren" (at once with "Sofort" – the form is gone then; after "Erlauben"
+  system's folder picker: an open vault locks after "Sperren im
+  Hintergrund" (at once with "Sofort" – the form is gone then; after "Erlauben"
   the next try needs no dialog, after a closed dialog or the first refusal
   it is asked, and locks, once more) – deliberately not one of the app's
   own prompts (`Core::begin_own_prompt`), because that dialog stays open
@@ -1797,7 +1829,10 @@ than the picked tree; the phone never asks for access to all files).
   phone: `adb logcat -s RustStdoutStderr`) and `SmbTest.detail`, which the
   form shows small below the error ("Technische Angabe"). Never smb2's own
   error text – it can name the user, the host or a path. A missing file or
-  name that the callers expect is not logged; a sync's status carries only
+  a name that is already taken, which the callers expect, is not logged
+  (only kept as the detail); a file where the folder should be
+  (`smb_not_a_folder`) is an answer the client reads itself, not a failed
+  request – no log line and no detail; a sync's status carries only
   the code (the detail is in the log and in the form's test).
 * **The form's test**: lists the folder, then writes and removes a test
   file. Only a refused write is "read-only" (`writable: false`); any other
@@ -1828,7 +1863,9 @@ than the picked tree; the phone never asks for access to all files).
   warning and a note in the unlock screen's sync line.
 * **Tests**: the form's normalization (the split login, a trailing dot,
   a server name with letters of more than one byte), the code and detail
-  of each kind of error, paths, an
+  of the kinds of error named above (not: a malformed answer, a file where
+  the folder should be, the fallback `sync_server_error`; a taken name only
+  against a real share), paths, an
   unreachable server and one that hangs up, the link's key and missing
   password; a real share only with
   `cargo test … against_a_real_share -- --ignored` and
@@ -2907,8 +2944,10 @@ value of `lockInBackgroundSeconds` ("never"), not a missing key: it is
 written as `null` and read back as `null`. `mirrorFolder`: a path is kept
 as written; empty (or only spaces) counts as `null`.
 On the phone the desktop-only fields (`lockOnSystemLock`, `minimizeToTray`,
-`startInTray`, `browserIntegration`, `websiteIcons`, `updateCheck`,
-`updateChannel`, `mirrorFolder`, `syncServer`, `syncCloud`) are kept but do nothing, as
+`startInTray`, `browserIntegration`, `websiteIcons`, `mirrorFolder`,
+`syncServer`, `syncCloud`) are kept but do nothing – `updateCheck` and
+`updateChannel` have no row there either, but the phone's update check
+reads them (`phone_check_update`, "In-app updates") –, as
 do the mobile fields on the desktop (`lockInBackgroundSeconds`,
 `deviceUnlock`, `syncWifiOnly`; see "Mobile (Android)").
 `generatorPresets` is parsed preset by preset (`id` and `name` must be
@@ -3043,7 +3082,7 @@ history. The bridge's own writes are not affected.
 | `phone_check_update` | `manual?: boolean` | **Phone only.** `PhoneUpdate { available, currentVersion, version, notes, apkUrl, releaseUrl }` – reads the channel's `latest.json` (the PC's file; a beta build reads the beta channel's – the phone has no channel choice, `update::phone_channel`; with `updateCheck` off only when `manual`) and names the newer version's APK on its release (`Keystead-<version>-android.apk`). The page shows it from the welcome screen on (no vault needed); "Herunterladen" opens the APK in the browser and Android's installer updates the app (same key, higher versionCode – the vaults stay). Redirects are followed only over https to GitHub's hosts. Not user activity |
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
-| `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, kind: "folder"\|"webdav"\|"dropbox"\|"gdrive"\|null, server: SyncServer\|null, cloud: SyncCloud\|null, writable, syncing, folderName, linkedAt, lastSyncAt, lastError, files, skipped: string\|null, retryAt: number\|null }` – the linked folder, server or cloud account (no password or token; `skipped`: why the last automatic sync did not run – `sync_wifi_only`, `sync_backoff`; `retryAt`: while automatic syncs pause after a server error), whether the app may write it, and what the last sync found (`files` as in `link.json`; without a folder the phone's vaults with outcome `localOnly`); no access to the folder, not user activity |
+| `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, kind: "folder"\|"webdav"\|"smb"\|"dropbox"\|"gdrive"\|null, server: SyncServer\|null, cloud: SyncCloud\|null, smb: SyncSmb\|null, writable, syncing, folderName, linkedAt, lastSyncAt, lastError, files, skipped: string\|null, retryAt: number\|null }` – the linked folder, server, share or cloud account (no password or token; `skipped`: why the last automatic sync did not run – `sync_wifi_only`, `sync_backoff`; `retryAt`: while automatic syncs pause after a server error), whether the app may write it, and what the last sync found (`files` as in `link.json`; without a folder the phone's vaults with outcome `localOnly`); no access to the folder, not user activity |
 | `link_folder` | – | **Phone only.** `FolderStatus \| null` – opens the system folder picker (at the linked folder), keeps read and write access to the choice (read only where the provider refuses write: `writable: false`), links it in place of the previous one (whose permission is given back and whose recorded conflicts are forgotten) and syncs – pushing the phone's own vaults; `null` when the picker was closed without a choice. A failed first sync is no error (the status has `lastError`). `unsupported:folder_picker` (no picker on the device), `unsupported:platform` (iOS: no folder plugin yet) |
 | `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_gdrive` | – | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Google login Google allowed (`gdrive_login`: the device code the user entered; `gdrive_login_ready`) and links the phone to the folder "Keystead" of that Drive in place of the previous link, then syncs. The refresh token is sealed by the Android Keystore and never returned. `unsupported:gdrive_login_expired`, `unsupported:gdrive_not_configured`; a failed first sync is no error (`lastError`) |
@@ -3066,7 +3105,7 @@ history. The bridge's own writes are not affected.
 | `disable_device_unlock` | `vaultId: string \| null` | **Phone only.** `DeviceUnlockStatus` – removes the vault's blob (`null`: all); `deviceUnlock` goes off with the last one |
 | `unlock_with_device` | `vaultId, prompt: { title, reason, cancel }` | **Phone only.** `VaultInfo` – unlocks with the fingerprint (system prompt → sealed KEK → `unlock_with_master_kek`). `unsupported:device_unlock_not_set` (none set up, or the feature off), `unsupported:device_unlock_invalid` (reset: the setup no longer opens the vault – removed), `unsupported:device_unlock_needs_password` (the vault's copy is on trial and the setup does not fit it – kept; unlock once with the password), `not_found`, the prompt's errors as for `enable_device_unlock` (the setup stays) |
 
-**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login`, `dropbox_login_waiting`, `gdrive_login`, `gdrive_login_ready` (the server, Dropbox and Google forms, both platforms), and the phone's own `folder_status`, `link_folder`, `phone_check_update`, `link_webdav`, `smb_test`, `smb_create_folder`, `link_smb`, `link_dropbox`, `link_gdrive`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server and cloud-account sync) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server and account settings and the network and desktop integrations (the server and account sync is the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
+**On the phone** (Android/iOS) only these commands are registered, everything else is unknown to its invoke handler: `app_info`, `list_vaults`, `session_state`, `create_vault`, `unlock_vault`, `lock_vault`, `touch_activity`, `list_items`, `list_folders`, `save_item`, `set_favorite`, `reveal_secret`, `copy_secret_field`, `totp_for_item`, `get_item_for_edit`, `trash_item`, `restore_item`, `delete_item`, `empty_trash`, `save_folder`, `delete_folder`, `rename_tag`, `delete_tag`, `reveal_attachment`, `generate_password`, `remember_generated`, `generator_history`, `reveal_generated`, `copy_generated`, `clear_generator_history`, `generator_presets`, `save_generator_preset`, `delete_generator_preset`, `set_default_generator_preset`, `password_strength`, `totp_code`, `copy_text`, `health_report`, `rename_vault`, `get_icons`, `get_settings`, `save_settings`, `sync_conflicts`, `resolve_sync_conflict` (the sync conflicts, registered on both platforms), `webdav_test`, `webdav_create_folder`, `dropbox_login`, `dropbox_login_waiting`, `gdrive_login`, `gdrive_login_ready` (the server, Dropbox and Google forms, both platforms), and the phone's own `folder_status`, `link_folder`, `phone_check_update`, `link_webdav`, `smb_test`, `smb_create_folder`, `link_smb`, `link_dropbox`, `link_gdrive`, `sync_now`, `unlink_folder` (`#[cfg(mobile)]`: the cloud-folder, server, share and cloud-account sync and the update check) and `device_unlock_status`, `enable_device_unlock`, `disable_device_unlock`, `unlock_with_device` (`#[cfg(mobile)]`: fingerprint unlock). Desktop-only stay the master password, recovery keys, deleting a vault, attachment changes, import/export, the PC's server and account settings and the network and desktop integrations (the server, share and account sync and the update check are the phone's only network code). Every change of a vault on the phone is pushed to the linked folder (`Core::request_mirror` → `mobile::sync::push_soon`). (A unit test in `gui.rs` keeps the handler lists and this section in step.)
 
 On the phone both unlocks – the master password's and the fingerprint's –
 (and on the desktop the master password's: `Core::unlock` goes through
@@ -4066,7 +4105,7 @@ are not involved (`ItemSummary` is unchanged).
 reads the same `latest.json` and offers the APK of a newer version
 (`PhoneUpdateBanner`, on the welcome, unlock and main screens – no vault
 needed; "Später" hides that version, `localStorage`). A beta build
-(`2.0.1-beta.30`) reads the beta channel's file, which carries every
+(`2.0.1-beta.31`, the first with this rule) reads the beta channel's file, which carries every
 published build; a stable build reads the configured channel's
 (`phone_channel` – the phone's settings have no channel choice, so until
 2026-11-13 a beta on the phone looked at the stable channel and was never

@@ -396,8 +396,9 @@ fn sync_locked(
     result
 }
 
-/// Runs `f` with the folder of `link`: a server's through the WebDAV
-/// client, a cloud app's through the plugin.
+/// Runs `f` with the folder of `link`: a server's, share's or cloud
+/// account's through its Rust client (`sync_server::target`; an SMB share's
+/// errors pass [`local_network_error`]), a cloud app's through the plugin.
 fn with_folder<T>(
     app: &AppHandle,
     core: &Core,
@@ -415,8 +416,9 @@ fn with_folder<T>(
 
 /// `sync_offline` from an SMB share while the phone may not reach the home
 /// network (Android 17+, the permission refused): that is the reason
-/// (`unsupported:smb_local_network`), not the server. Only after the dial
-/// failed – never from the address alone: Android blocks by route (the
+/// (`unsupported:smb_local_network`), not the server. Only after the share
+/// turned out offline (the dial failed, or the connection broke during a
+/// request) – never from the address alone: Android blocks by route (the
 /// phone's own subnet on Wi-Fi or Ethernet), so a share behind a VPN or in
 /// another routed subnet answers without the permission.
 fn local_network_error(e: AppError, allowed: impl FnOnce() -> bool) -> AppError {
@@ -452,7 +454,7 @@ fn local_network_allowed(_app: &AppHandle) -> bool {
 /// Unknown counts as yes.
 ///
 /// The dialog pauses the activity like the system's folder picker does: an
-/// open vault locks after "Im Hintergrund sperren" (at once with "Sofort" –
+/// open vault locks after "Sperren im Hintergrund" (at once with "Sofort" –
 /// the form is gone then; after "Erlauben" the next try needs no dialog,
 /// after a closed dialog or the first "Nicht erlauben" it is asked – and
 /// locks – once more, after the second refusal no more). It

@@ -786,7 +786,7 @@ mod tests {
         // (it calls a dialog that was merely closed "denied": the app would
         // never ask again). A second refusal – for good, no dialog any more
         // – is told from a closed dialog by the plugin's one flag; then the
-        // request is not started (it would pause the activity for nothing).
+        // request is not started (Android would answer it without a dialog).
         assert!(folder
             .contains("ActivityCompat.checkSelfPermission(activity, LOCAL_NETWORK_PERMISSION)"));
         assert!(folder.contains(

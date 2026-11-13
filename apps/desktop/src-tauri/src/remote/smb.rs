@@ -19,11 +19,16 @@
 //!   [`super::http::REQUEST_BASE`] plus its bytes at
 //!   [`super::http::MIN_RATE`]; a lost connection is made again for the
 //!   next request.
-//! * **Errors keep their reason**: every failure is noted as step, kind and
-//!   the server's status (`login: AuthRequired (SessionSetup
-//!   STATUS_LOGON_FAILURE)`) – in the log (logcat on the phone) and as the
-//!   form test's `detail`; never smb2's own text, which can name the user,
-//!   the host or a path. "Offline" is only a server that cannot be dialled.
+//! * **Errors keep their reason**: a failed request is noted as step, kind
+//!   and the server's status (`login: AuthRequired (SessionSetup
+//!   STATUS_LOGON_FAILURE)`) – in the log (logcat on the phone; not a
+//!   missing file or a taken name, which the callers expect) and as the
+//!   form test's `detail` (a file where the folder should be has none);
+//!   never smb2's own text, which can name the user, the host or a path.
+//!   "Offline" is only a server that cannot be dialled or named and a
+//!   connection that broke while it was in use; one that took the
+//!   connection and then closed it or fell silent before the share was
+//!   open, or that leaves a request without an answer, is `smb_no_answer`.
 //! * **Security**: NTLM does not prove the server's identity – meant for
 //!   the user's own network; the vault files are encrypted anyway. The
 //!   password is stored like a WebDAV password (`crate::credentials`).
@@ -633,7 +638,7 @@ impl SmbRemote {
     }
 
     /// The connection test of the form: share, login, folder, write access
-    /// (a test file is made and removed). A failure carries its
+    /// (a test file is made and removed). A failed request carries its
     /// [`SmbTest::detail`].
     pub fn test(cfg: &SmbConfig) -> SmbTest {
         let fail = |e: AppError, detail: Option<String>| SmbTest {

@@ -41,7 +41,9 @@ WebView2 (ist auf Win 10/11 vorhanden).
   `.github/workflows/build.yml` **nie umbenennen**. Seit Stufe 2e
   (2026-11-05) sucht die Android-App selbst nach Updates (`latest.json`) und
   zeigt ein Banner – auch ohne geöffneten Tresor; „Herunterladen“ holt die
-  APK, Android installiert sie über die alte. „Über Keystead“ verlinkt die
+  APK, Android installiert sie über die alte. Eine neue Beta bekommt ein
+  Handy erst ab beta.31 angeboten (bis beta.30 las es den stabilen Kanal;
+  `update::phone_channel`). „Über Keystead“ verlinkt die
   Releases. Release-Notes und README nennen sie
   „frühe Vorschau“: nur lesen, die Tresore kommen über den Cloud-Ordner
   (PC-Einstellung „Kopie im Cloud-Ordner aktuell halten“), einen Tresor
@@ -1330,8 +1332,11 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   Ordner …“), Benutzer, Passwort, Domäne nur unter „Erweitert“;
   „Verbindung testen“, „Ordner anlegen“),
   Einträge im Willkommensbildschirm und in den Handy-Einstellungen; Mock
-  (Server `demo` klappt, `fail` lehnt die Anmeldung ab). **Keine neue
-  Android-Berechtigung** (INTERNET war schon da). Der Anmeldefehler-Text
+  (Server `demo` klappt, `fail` lehnt die Anmeldung ab). Am 2026-11-05
+  (beta.28) **ohne neue Android-Berechtigung** (INTERNET war schon da); seit
+  2026-11-06 (beta.30) kommt `ACCESS_LOCAL_NETWORK` dazu – die
+  Laufzeit-Berechtigung fürs Heimnetz unter Android 17+, siehe „Server nicht
+  erreichbar“ unten. Der Anmeldefehler-Text
   sagt jetzt neutral „Benutzername und Passwort“ (vorher „App-Passwort“).
 - **2026-11-06 nachmittags:** Adresszeile lehnt ein PC-Laufwerk (`Z:\…`) mit
   Hinweis ab (Besitzer: „Ja, Hinweis einbauen“); `SmbConfig::share()` lehnt
@@ -1386,16 +1391,19 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     die Oberfläche über `adb exec-out uiautomator dump /dev/tty` lesen.
 - **2026-11-13 – Code-Durchsicht des SMB-Ablaufs** (Workflow, 4 Blickwinkel,
   8 Befunde gegengeprüft, alle bestätigt; Pfade/Freigabe/Login-Pfad für den
-  Ordner des Besitzers ohne Befund). **Eingearbeitet (noch nicht
-  veröffentlicht):**
+  Ordner des Besitzers ohne Befund). **Eingearbeitet (veröffentlicht als
+  v2.0.1-beta.31, s. u.):**
   - `remote/smb.rs`: Fehler nach Schritt (`code(e, step)`): „Zugriff
     verweigert“ ist nur beim Login ein falsches Passwort, sonst
     `smb_share_denied` / `sync_not_readable` / `sync_not_writable`;
     `sync_offline` nur noch für einen Server, der sich nicht anwählen oder
     auflösen lässt (und eine während einer Anfrage abgerissene Verbindung),
-    sonst `smb_no_answer`; `smb_not_a_folder`. Jeder Fehler wird als Schritt
-    + Art + Kommando/NT-Status notiert (Log und `SmbTest.detail`, im
-    Formular „Technische Angabe“) – nie smb2s eigener Text (Namen).
+    sonst `smb_no_answer`; `smb_not_a_folder`. Jeder Fehler einer Anfrage
+    wird als Schritt + Art + Kommando/NT-Status notiert (Log und
+    `SmbTest.detail`, im Formular „Technische Angabe“) – nie smb2s eigener
+    Text (Namen). Ausnahmen: Eine erwartete fehlende Datei und ein schon
+    vergebener Name stehen nur in der Angabe, nicht im Log;
+    `smb_not_a_folder` bekommt weder Logzeile noch Angabe.
     `CONNECT_LIMIT` 75 s (vorher 30 s, unter smb2s eigenen Fristen). Der
     Schreibtest meldet nur ein verweigertes Schreiben als „nur lesbar“;
     `put` prüft die geschriebene Länge vor dem Umbenennen und räumt die
@@ -1427,38 +1435,93 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     weil ein automatischer Abgleich keinen Toast zeigt – Warnung mit Grund
     in der Sync-Zeile des Entsperr-Bildschirms). Die Pausen-Notiz heißt
     jetzt neutral „Der letzte Abgleich ist fehlgeschlagen …“.
-  - **Gegenprüfung des Diffs** (Workflow `wf_ae26cf95-3ed`, 4 Blickwinkel,
-    12 Befunde, davon 9+ gegengeprüft bestätigt): eingearbeitet sind das
+  - **Gegenprüfung des Diffs** (Workflow `wf_ae26cf95-3ed`, 16 Agenten, 4
+    Blickwinkel, 12 Befunde gegengeprüft: 11 bestätigt, 1 widerlegt – die
+    Pause bei endgültiger Ablehnung, s. u.): eingearbeitet sind das
     VPN-Problem (s. o.), die unsichtbaren Datei-Fehler nach automatischem
     Abgleich, der Verweis auf eine „technische Angabe darunter“, die es nur
     im Formular gibt, `not_found` einer Cloud-Ordner-Datei als eigener
     Text, die fehlende Pause bei nicht lesbarem Ordner, die liegen
     gebliebene Temp-Datei, „Ordner anlegen“ nur bei Beweis abbrechen.
+  - **Veröffentlicht als v2.0.1-beta.31** (Code `1e5b6f8`, Release-Commit
+    `cf7b257`, CI-Lauf 43481499687 komplett grün – auch die Linux-Tests, auf
+    denen der neue Code zum ersten Mal lief; APK
+    `Keystead-2.0.1-beta.31-android.apk`, SHA-256 `c3ac91c5…5a1e`, Signatur
+    = `build.yml`; `updater-beta/latest.json` = 2.0.1-beta.31). Mit OK des
+    Besitzers per `adb install -r` auf dem S26 installiert (19:43); die
+    Berechtigung blieb erteilt. **Am Gerät bestätigt (20:12):** Nach dem
+    Update bleibt die Freigabe verbunden, der automatische Abgleich beim
+    Start läuft mit dem neuen SMB-Code („Zuletzt synchronisiert gerade
+    eben“), und im Log (`adb logcat -s RustStdoutStderr`) steht keine
+    `[keystead] smb …`-Zeile. beta.30 → beta.31 musste noch von Hand aufs
+    Handy (beta.30 las den stabilen Kanal); ab beta.31 bietet das Handy
+    Betas selbst an – **am Gerät noch nicht gesehen** (erst mit beta.32).
+  - **Doku-Abgleich nach beta.31** (2026-11-13 abends; Workflow
+    `wf_b10f939e-3d6`, 12 Agenten, 3 Blickwinkel: 9 Befunde gegengeprüft
+    bestätigt, 9 Nebenbefunde danach am Code nachgelesen – alle zutreffend).
+    **Eingearbeitet (nur Doku und Kommentare, kein Code, keine Beta):** Das
+    Handy **sucht nach Updates** (seit 2026-11-05, kurz nach dem Start, eine
+    Abfrage von `latest.json` bei GitHub; ohne Schalter am Handy) –
+    ARCHITECTURE („Mobile (Android)“, Einstellungen, Befehlsliste), README
+    (de/en), `CLAUDE.md`, Manifest-Kopf, `Cargo.toml` und ein Kommentar in
+    `SettingsPage.tsx` sagten noch das Gegenteil oder nannten den Abgleich
+    „den einzigen Netzwerk-Code“. Dazu: die dritte Berechtigung
+    `ACCESS_LOCAL_NETWORK` in README und oben; die `ends_sync`-Liste,
+    `sync_not_readable` und `FolderStatus` mit `smb` in ARCHITECTURE;
+    `smb_local_network` entsteht bei jedem `sync_offline` einer SMB-Freigabe
+    ohne Berechtigung (auch nach einer abgerissenen Verbindung); Moduldoku
+    von `smb.rs` (was „offline“ ist, was notiert wird).
+    **Offen – braucht das OK des Besitzers** (Texte bzw. Logik der App,
+    kommen erst mit einer nächsten Beta aufs Handy): `about.releasesDesc`
+    („Auf dem Handy sucht Keystead nicht selbst nach Updates“ – falsch);
+    `error.unsupported.sync_offline` (nennt „keine Internetverbindung“, bei
+    einer SMB-Freigabe geht es ums Heimnetz); `sync.skipped.backoff` (in der
+    ersten Pause „nächster automatischer Versuch gerade eben“, und zum
+    genannten Zeitpunkt läuft nichts von selbst); `smb_no_answer` (verweist
+    auf den Test im Formular, der bei einer verbundenen Freigabe ohne das
+    gespeicherte Passwort läuft); `sync.outcome.failed` und
+    `sync.linkedFailed*` (passen nicht, wenn das Schreiben in den Ordner
+    scheiterte); der feste Release-Text in `build.yml` („geht nur zu diesem
+    Server“). Der veröffentlichte Text von beta.31 nennt „nicht erreichbar
+    nur noch, wenn sich der Server nicht anwählen lässt“ – der Code meldet
+    das auch für einen nicht auflösbaren Namen und eine im Betrieb
+    abgerissene Verbindung.
   - **Nicht umgesetzt (offen):** `probe()` meldet immer `writable: true`
     (nur-lesbare Freigabe kippt nach dem ersten Sync auf schreibbar); der
     Verbindungstest übt `stat`/Lesen/Umbenennen nicht; echter anonymer Login
     (smb2 kann nur „leerer Benutzer → Gast-Mapping“); Temp-Dateien nach
     abgerissener Verbindung bleiben liegen (Aufräumlauf alter `.*.tmp`
     fehlt); eine endgültige Ablehnung, die das Plugin nicht kommen sah (zwei
-    Ablehnungen unter beta.30, Geräterichtlinie), bleibt „prompt“ – Anfrage
-    ohne Dialog bei jedem Test; die technische Angabe gibt es nur beim
+    Ablehnungen unter beta.30, Geräterichtlinie), bleibt „prompt“ – laut
+    Gegenprüfung harmlos, weil Android 17 so eine Anfrage in der App
+    beantwortet, ohne die Aktivität zu pausieren (auf One UI 9 nicht am Gerät
+    geprüft; bewusst keine Zeit-Regel); ein voller Datenträger lässt sich
+    nicht mehr verbinden (der Schreibtest scheitert mit „Speicher voll“,
+    beta.30 hätte nur-lesend verbunden); die technische Angabe gibt es nur beim
     Verbindungstest, nicht bei „Ordner anlegen“/„Verbinden“/Sync (dort nur
     im Log).
 
-**Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
+**Verifiziert (Windows, Stand beta.28 vom 2026-11-05 – seither kamen fünf
+Node-Tests (2026-11-06) und mit beta.31 vier Lib-Tests dazu; am 2026-11-13
+nach dem Doku-Abgleich: 337 Lib-Tests grün / 6 ignoriert, `node --test` 104
+grün, fmt, `tsc`):** `cargo test --lib` (src-tauri) 333 grün, Core/
 Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),
 `tsc`, `node --test` 99 grün, Gradle `compileUniversalDebugKotlin`;
 Debug-APK baut, installiert im Emulator, Berechtigungen im APK nur die
 erlaubten; Klick-Test im Mock (Handy): Update-Banner ohne Tresor, SMB-Test →
 Ordner anlegen → Verbinden → 2 Tresore, abgelehnte Anmeldung.
-**Nicht verifiziert:** SMB gegen eine echte Freigabe (impacket als
+**Damals nicht verifiziert, seit 2026-11-13 am Gerät belegt (s. o.):** SMB
+gegen eine echte Freigabe (impacket als
 Testserver wurde von Windows Defender als HackTool gesperrt – nicht
 umgangen; Docker fehlt). Test für den Besitzer: in der App mit der eigenen
 Freigabe, oder `cargo test -p keystead-desktop --lib against_a_real_share --
 --ignored` mit `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`, `_PASSWORD`,
 `_FOLDER`. Icon/Banner in der laufenden APK nicht angesehen (Emulator hing am
 Geräte-PIN). Die Beta mit diesem Stand muss einmal per Hand installiert
-werden; danach bietet das Banner Updates an. Veröffentlicht als
+werden. Betas bot das Banner danach aber nicht an: Bis beta.30 las das Handy
+den stabilen Kanal (2.0.0). Erst ab beta.31 liest ein Beta-Build den
+Beta-Kanal (`update::phone_channel`) – ein Handy mit beta.28–30 braucht
+deshalb noch einmal eine Installation von Hand. Veröffentlicht als
 `v2.0.1-beta.28` (2026-11-05).
 
 **Wunsch des Besitzers (2026-11-06):** lieber die SMB-Verbindung nutzen,
@@ -1466,8 +1529,9 @@ die schon in seiner Datei-App am Handy eingerichtet ist. Das geht ohne
 Codeänderung über „Cloud-Ordner wählen“ (System-Ordnerpicker, SAF) – aber
 nur, wenn die Datei-App ihr Netzlaufwerk als DocumentsProvider mit
 Ordnerauswahl anbietet; für Samsung „Eigene Dateien“ (Netzwerkspeicher)
-ist das unbelegt, eher nicht. Er prüft das selbst (Picker → ☰). Bis dahin
-der vereinfachte SMB-Dialog oben.
+ist das seit 2026-11-13 geklärt: nein – der Picker bietet auf dem S26 nur
+den Gerätespeicher und Termux an (s. o.). Es bleibt beim vereinfachten
+SMB-Dialog oben.
 
 ### Emulator-Checkliste für den Besitzer
 
@@ -1589,9 +1653,10 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    (Kotlin-`AlarmManager`, siehe „Bekannte Grenzen“ unten); TalkBack und
    der R8-Release-Build mit Ordner-, Keystore- und Biometrie-Plugin im
    Emulator.
-5. Update-Hinweis auf dem Handy: weiterhin **nicht** (die `INTERNET`-
-   Berechtigung seit 2c dient nur dem Server-Abgleich); nur wieder
-   aufnehmen, wenn der Besitzer das will.
+5. Update-Hinweis auf dem Handy: **erledigt in Stufe 2e** (2026-11-05:
+   `phone_check_update` und Banner; seit beta.31 liest ein Beta-Build den
+   Beta-Kanal). Am Gerät noch nicht gesehen – das geht erst mit einer
+   beta.32.
 6. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
    Signatur, nur Screenshots).
 

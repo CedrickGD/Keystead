@@ -66,9 +66,10 @@ base64 = "0.23.1"
 
 # Desktop only (Windows, Linux, macOS): everything the phone has no use for –
 # browser bridge, terminal UI, tray, single instance, updater, the website
-# icon fetcher and the leaked-password check (the phone's only network use
-# is the server sync, whose client `remote::tls` builds; no other reqwest
-# client on the phone – its rustls platform verifier would need JNI set-up
+# icon fetcher and the leaked-password check (the phone's network use is the
+# sync with a server, share or account and the update check; what of it
+# speaks HTTP uses the one client `remote::tls` builds – no other reqwest
+# client on the phone: its rustls platform verifier would need JNI set-up
 # there).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 keystead-bridge = { path = "../../../crates/keystead-bridge" }

@@ -116,7 +116,7 @@ pub fn version_label(package_version: &str) -> String {
 
 /// The channel the phone's update check reads. The phone's settings have no
 /// channel choice (the stored one stays `Stable`), so the running build
-/// decides: a beta (`2.0.1-beta.30`) reads the beta channel – which carries
+/// decides: a beta (`2.0.1-beta.31`) reads the beta channel – which carries
 /// every published build, stable releases too –, anything else the
 /// configured one. Without this a phone that runs a beta is never offered
 /// the next one (the stable channel only names older versions).

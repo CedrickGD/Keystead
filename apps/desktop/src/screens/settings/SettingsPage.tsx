@@ -1540,8 +1540,9 @@ function AboutSection() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
   const platform = PLATFORM_NAMES[info.platform] ?? PLATFORM_NAMES.linux;
-  // The phone app has no network permission, so no update check: new
-  // versions come as an APK from the releases page (installed over the old one).
+  // The phone has no updater and no update settings: `PhoneUpdateBanner`
+  // (`phone_check_update`) offers a newer APK, this page only links the
+  // releases page (the APK is installed over the old one).
   const phone = isPhonePlatform(info.platform);
 
   const check = async () => {

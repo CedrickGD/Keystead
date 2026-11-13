@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Network (stage 2c, E6 revised): INTERNET for the server and account
-     sync (WebDAV, Dropbox, Google Drive, SMB – the Rust clients, the only
-     network code of the phone app; a sign-in happens in the system browser),
+     sync (WebDAV, Dropbox, Google Drive, SMB) and the update check
+     (latest.json from GitHub) – the Rust clients, the only network code of
+     the phone app; a sign-in happens in the system browser –,
      ACCESS_NETWORK_STATE for "Nur über WLAN synchronisieren" and
      ACCESS_LOCAL_NETWORK for an SMB share in the home network (Android 17+
      blocks the local network without it; a runtime permission the app asks
