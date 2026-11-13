@@ -58,6 +58,13 @@ pub const AUTH_FAILED: &str = "sync_auth_failed";
 /// Error code: the server does not let the user write there (HTTP 403 on a
 /// write). Same code as the phone's folder without write permission.
 pub const NOT_WRITABLE: &str = "sync_not_writable";
+/// Error code: the login worked, but the account may not read this folder
+/// or file (SMB: access denied on a listing, a stat or a read). Not a
+/// wrong password. For one vault file it fails that file, not the sync;
+/// the linked folder itself not being listable ends the sync like any
+/// error of its listing (and pauses the automatic ones,
+/// `sync_server::backs_off`).
+pub const NOT_READABLE: &str = "sync_not_readable";
 /// Error code: the server's folder (collection) does not exist. It is
 /// never created by a sync – only by the user's "Ordner anlegen".
 pub const FOLDER_MISSING: &str = "sync_server_folder_missing";
@@ -92,13 +99,26 @@ pub fn has_code(e: &AppError, code: &str) -> bool {
 
 /// Errors that end a whole sync (the folder or server cannot be used right
 /// now) instead of failing one file: `folder_access_lost`, `sync_offline`,
-/// `sync_auth_failed`, `sync_server_certificate`.
+/// `sync_auth_failed`, `sync_server_certificate` – and what an SMB share
+/// answers before it is open (no home network, no answer after the
+/// connect, the share missing or denied, a file where the folder should
+/// be): the next file would only run into the same.
 // Used by the phone's engine (`folder_sync`, dead code outside Android).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn ends_sync(e: &AppError) -> bool {
-    ["folder_access_lost", OFFLINE, AUTH_FAILED, CERTIFICATE]
-        .iter()
-        .any(|code| has_code(e, code))
+    [
+        "folder_access_lost",
+        OFFLINE,
+        AUTH_FAILED,
+        CERTIFICATE,
+        smb::LOCAL_NETWORK,
+        smb::NO_ANSWER,
+        smb::SHARE_MISSING,
+        smb::SHARE_DENIED,
+        smb::NOT_A_FOLDER,
+    ]
+    .iter()
+    .any(|code| has_code(e, code))
 }
 
 /// One entry of a listing (a file or a folder).
@@ -321,10 +341,29 @@ mod tests {
 
     #[test]
     fn the_codes_that_end_a_sync() {
-        for code in ["folder_access_lost", OFFLINE, AUTH_FAILED, CERTIFICATE] {
+        for code in [
+            "folder_access_lost",
+            OFFLINE,
+            AUTH_FAILED,
+            CERTIFICATE,
+            smb::LOCAL_NETWORK,
+            smb::NO_ANSWER,
+            smb::SHARE_MISSING,
+            smb::SHARE_DENIED,
+            smb::NOT_A_FOLDER,
+        ] {
             assert!(ends_sync(&AppError::unsupported(code)), "{code}");
         }
-        for code in [CHANGED, FILE_MISSING, TOO_LARGE, SERVER_ERROR, QUOTA] {
+        // One file that cannot be read or written fails that file only.
+        for code in [
+            CHANGED,
+            FILE_MISSING,
+            TOO_LARGE,
+            SERVER_ERROR,
+            QUOTA,
+            NOT_READABLE,
+            NOT_WRITABLE,
+        ] {
             assert!(!ends_sync(&AppError::unsupported(code)), "{code}");
         }
         assert!(!ends_sync(&AppError::invalid(OFFLINE)));

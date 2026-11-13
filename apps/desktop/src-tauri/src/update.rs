@@ -19,7 +19,8 @@
 //! build gets a link to the release page instead.
 //!
 //! The phone does not install updates itself: `phone_check_update` reads the
-//! channel's `latest.json` (the same file) and, for a newer version, names
+//! channel's `latest.json` (the same file; a beta build reads the beta
+//! channel's, [`phone_channel`]) and, for a newer version, names
 //! its APK on the release ([`apk_url`]); the page offers it from the
 //! welcome screen on (no vault needed) and opens it in the browser, and
 //! Android's package installer updates the app (same key, higher
@@ -113,6 +114,20 @@ pub fn version_label(package_version: &str) -> String {
         .to_owned()
 }
 
+/// The channel the phone's update check reads. The phone's settings have no
+/// channel choice (the stored one stays `Stable`), so the running build
+/// decides: a beta (`2.0.1-beta.30`) reads the beta channel – which carries
+/// every published build, stable releases too –, anything else the
+/// configured one. Without this a phone that runs a beta is never offered
+/// the next one (the stable channel only names older versions).
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+pub fn phone_channel(current: &str, configured: UpdateChannel) -> UpdateChannel {
+    match semver::Version::parse(current) {
+        Ok(running) if !running.pre.is_empty() => UpdateChannel::Beta,
+        _ => configured,
+    }
+}
+
 /// The APK of `version` on its release.
 #[cfg_attr(not(any(mobile, test)), allow(dead_code))]
 pub fn apk_url(version: &str) -> String {
@@ -193,6 +208,7 @@ pub async fn phone_check_update(
         if !enabled && manual != Some(true) {
             return phone_update_from(c.app_version(), None);
         }
+        let channel = phone_channel(c.app_version(), channel);
         let http = crate::remote::http::Http::new(crate::remote::tls::Trust::System)?;
         let mut url = reqwest::Url::parse(endpoint(channel))
             .map_err(|_| crate::error::AppError::io("update_manifest"))?;
@@ -735,6 +751,36 @@ fn refuse_while_terminal_ui_runs() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_beta_on_the_phone_reads_the_beta_channel() {
+        use UpdateChannel::{Beta, Stable};
+        // The phone cannot choose a channel: the stored one is `Stable`.
+        for beta in ["2.0.1-beta.29", "2.0.1-beta.30", "3.0.0-rc.1"] {
+            assert_eq!(phone_channel(beta, Stable), Beta, "{beta}");
+            assert_eq!(phone_channel(beta, Beta), Beta, "{beta}");
+        }
+        // A stable build keeps the configured channel; so does a build
+        // without a version (development).
+        for current in ["2.0.0", "2.0.1", "2.0.1+build.7", "dev", ""] {
+            assert_eq!(phone_channel(current, Stable), Stable, "{current}");
+            assert_eq!(phone_channel(current, Beta), Beta, "{current}");
+        }
+        // What went wrong on 2026-11-13: beta.29 looked at the stable
+        // channel (2.0.0) and was never offered beta.30.
+        let stable = br#"{"version":"2.0.0","platforms":{}}"#;
+        assert!(
+            !phone_update_from("2.0.1-beta.29", Some(stable))
+                .unwrap()
+                .available
+        );
+        let beta = br#"{"version":"2.0.1-beta.30","platforms":{}}"#;
+        assert!(
+            phone_update_from("2.0.1-beta.29", Some(beta))
+                .unwrap()
+                .available
+        );
+    }
 
     #[test]
     fn the_phone_finds_a_newer_apk() {

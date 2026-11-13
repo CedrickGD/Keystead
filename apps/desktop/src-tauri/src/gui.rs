@@ -782,6 +782,25 @@ mod tests {
         assert!(folder.contains("Build.VERSION.SDK_INT < LOCAL_NETWORK_SDK -> \"granted\""));
         assert_eq!(folder.matches("requestPermissionForAlias(").count(), 1);
         assert!(!folder.contains("requestAllPermissions"));
+        // Android's own state decides, not Tauri's note of the last request
+        // (it calls a dialog that was merely closed "denied": the app would
+        // never ask again). A second refusal – for good, no dialog any more
+        // – is told from a closed dialog by the plugin's one flag; then the
+        // request is not started (it would pause the activity for nothing).
+        assert!(folder
+            .contains("ActivityCompat.checkSelfPermission(activity, LOCAL_NETWORK_PERMISSION)"));
+        assert!(folder.contains(
+            "ActivityCompat.shouldShowRequestPermissionRationale(activity, LOCAL_NETWORK_PERMISSION)"
+        ));
+        assert!(folder.contains(r#"private const val LOCAL_NETWORK_REFUSED_ONCE = "refusedOnce""#));
+        assert!(folder.contains(r#"if (state.getString("state") != "prompt")"#));
+        assert!(!folder.contains("getPermissionState"));
+        // The secret plugin opens a sealed empty password (a guest's): the
+        // IV and the tag alone.
+        let sealed = include_str!(
+            "../gen/android/app/src/main/java/io/github/cedrickgd/keystead/KeysteadSecretPlugin.kt"
+        );
+        assert!(sealed.contains("bytes.size < IV_BYTES + TAG_BYTES"));
 
         // The server password's plugin: AES-256-GCM in the Android
         // Keystore, no authentication per use but only while the phone is

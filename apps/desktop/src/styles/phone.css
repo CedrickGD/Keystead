@@ -644,6 +644,14 @@
   color: var(--warning-text);
 }
 
+/* Why a file failed (the sync's error for it). */
+.sync-file-error {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warning-text);
+  overflow-wrap: anywhere;
+}
+
 .sync-folder-name {
   display: block;
   color: var(--text);
@@ -715,6 +723,7 @@
   margin: 0;
   font-size: 12px;
   color: var(--warning-text);
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Dialogs and toasts ---------- */

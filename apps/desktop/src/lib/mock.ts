@@ -237,6 +237,8 @@ interface MockSync {
   lastError: string | null;
   files: SyncFileResult[];
   syncing: boolean;
+  /** `?sync=failed`: the first vault file cannot be read – a failed file in a sync that itself counts as done. */
+  failing: boolean;
   /** The PC's copies in the folder, by vault id. */
   folder: Map<string, { revision: number; password: string; newNotes: number }>;
   /** The revisions of the phone's copies (higher than the folder's: edits not written yet). */
@@ -435,7 +437,7 @@ function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock
 
 /** `mode`: `?sync=` – "linked", "readonly" (linked without write access) or none. */
 function initSync(mode: string | null, empty: boolean, now: number): MockSync {
-  const linked = mode === "linked" || mode === "readonly" || mode === "server";
+  const linked = mode === "linked" || mode === "readonly" || mode === "server" || mode === "failed";
   const folder = new Map([
     [PRIVATE_VAULT_ID, { revision: 42, password: DEMO_PASSWORD, newNotes: 0 }],
     [WORK_VAULT_ID, { revision: 17, password: DEMO_PASSWORD, newNotes: 0 }],
@@ -447,6 +449,7 @@ function initSync(mode: string | null, empty: boolean, now: number): MockSync {
     lastError: null,
     files: [],
     syncing: false,
+    failing: mode === "failed",
     folder,
     phone,
     lost: false,
@@ -460,6 +463,7 @@ function initSync(mode: string | null, empty: boolean, now: number): MockSync {
     // `?mock=empty`: linked before the PC's copies arrived – they are in the
     // folder now, and the sync at start brings them.
     sync.files = empty ? [] : [...folder].map(([id, copy]) => syncResult(id, copy.revision, "upToDate", false));
+    if (sync.failing) sync.files = withFailedFile(sync.files);
   }
   return sync;
 }
@@ -1445,6 +1449,11 @@ function sampleFor(id: string, now: number): SampleVault {
   return id === WORK_VAULT_ID ? workVault(now) : privateVault(now);
 }
 
+/** `?sync=failed`: the first file as one the server would not let the phone read. */
+function withFailedFile(files: SyncFileResult[]): SyncFileResult[] {
+  return files.map((file, index) => (index === 0 ? { ...file, outcome: "failed", error: "unsupported:sync_not_readable" } : file));
+}
+
 function syncResult(id: string, revision: number, outcome: SyncFileResult["outcome"], passwordChanged: boolean): SyncFileResult {
   const name = getStateOrNull()?.vaults.get(id)?.info.name ?? sampleFor(id, Date.now()).name;
   return {
@@ -1593,7 +1602,7 @@ async function mockSyncFolder(): Promise<FolderStatus> {
     const file = files.find((f) => f.vaultId === id);
     if (file) file.outcome = "conflict";
   }
-  sync.files = files;
+  sync.files = sync.failing ? withFailedFile(files) : files;
   sync.lastSyncAt = now;
   sync.lastError = null;
   if (lockedForKey) lock("keyChanged");
@@ -2422,13 +2431,27 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
     case "smb_create_folder": {
       // The server "demo" answers (folder "Keystead" after "Ordner anlegen"),
       // "fail" refuses the login, "lan" stands for the home network refused
-      // (Android 17+), anything else is offline.
+      // (Android 17+), "hangup" for a server that closes the connection and
+      // "denied" for a share the account may not use (both with the
+      // technical detail), anything else is offline.
       const cfg = (args.config ?? {}) as SmbConfig;
       await sleep(500);
       const server = String(cfg.server ?? "").trim();
       if (!server || !String(cfg.share ?? "").trim()) fail("invalid_input:smb_config");
       if (server === "fail") return { ok: false, code: "unsupported:sync_auth_failed", folderMissing: false, writable: false };
       if (server === "lan") return { ok: false, code: "unsupported:smb_local_network", folderMissing: false, writable: false };
+      if (server === "hangup") {
+        return { ok: false, code: "unsupported:smb_no_answer", folderMissing: false, writable: false, detail: "login: ConnectionLost" };
+      }
+      if (server === "denied") {
+        return {
+          ok: false,
+          code: "unsupported:smb_share_denied",
+          folderMissing: false,
+          writable: false,
+          detail: "share: AccessDenied (TreeConnect STATUS_ACCESS_DENIED)",
+        };
+      }
       if (server !== "demo") return { ok: false, code: "unsupported:sync_offline", folderMissing: false, writable: false };
       if (command === "smb_create_folder") mockSmbFolders.add(String(cfg.folder ?? ""));
       const exists = String(cfg.folder ?? "").trim() === "" || mockSmbFolders.has(String(cfg.folder ?? ""));

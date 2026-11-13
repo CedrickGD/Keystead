@@ -36,6 +36,7 @@ import {
   PhoneServerDialog,
   SyncFileList,
   SyncSteps,
+  failedFile,
   folderLost,
   providerName,
   providerOf,
@@ -233,8 +234,11 @@ function PhoneVaultSource() {
   const provider = providerOf(status);
   const lost = folderLost(status);
   const syncing = Boolean(status?.syncing) || busy === "sync";
-  const linkedTitle =
-    provider === "gdrive"
+  // A vault file is there but could not be fetched: not "no vault yet".
+  const failed = failedFile(status) !== null;
+  const linkedTitle = failed
+    ? t("sync.linkedFailedTitle")
+    : provider === "gdrive"
       ? t("sync.gdriveEmptyTitle")
       : provider === "dropbox"
         ? t("sync.dropboxEmptyTitle")
@@ -255,7 +259,11 @@ function PhoneVaultSource() {
       {linked && !lost ? (
         <>
           <p className="choice-desc">
-            {provider ? t("sync.cloudLinkedEmptyText", { account }) : t("sync.linkedEmptyText")}
+            {failed
+              ? t("sync.linkedFailedText")
+              : provider
+                ? t("sync.cloudLinkedEmptyText", { account })
+                : t("sync.linkedEmptyText")}
           </p>
           {status?.lastError && (
             <div className="callout callout-warning" role="status">

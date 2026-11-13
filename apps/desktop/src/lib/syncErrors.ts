@@ -6,7 +6,7 @@
 
 import { useCallback } from "react";
 import { ApiError } from "./api";
-import type { CloudProvider, FolderStatus } from "./types";
+import type { CloudProvider, FolderStatus, SyncFileResult } from "./types";
 import { useT } from "../i18n";
 
 /** The provider's name as the texts use it. */
@@ -17,6 +17,26 @@ export function providerName(provider: CloudProvider): string {
 /** The cloud account a phone's link goes to (`null`: a folder or a server). */
 export function providerOf(status: FolderStatus | null | undefined): CloudProvider | null {
   return status?.kind === "dropbox" || status?.kind === "gdrive" ? status.kind : null;
+}
+
+/**
+ * The text of a vault file's own error (`SyncFileResult.error`): the sync's texts, except for the
+ * cloud folder's bare `not_found` – the cloud app could not open the file; everywhere else that
+ * code is a vault item that was not found.
+ */
+export function useFileErrorText(): (code: string, provider?: CloudProvider | null) => string {
+  const { t } = useT();
+  const syncErrorFor = useSyncErrorText();
+  return useCallback(
+    (code: string, provider?: CloudProvider | null) =>
+      code === "not_found" ? t("sync.fileUnavailable") : syncErrorFor(code, provider),
+    [syncErrorFor, t],
+  );
+}
+
+/** A vault file the last sync could not read or write (its `error` says why), if any. */
+export function failedFile(status: FolderStatus | null | undefined): SyncFileResult | null {
+  return status?.files.find((file) => file.outcome === "failed" && file.error) ?? null;
 }
 
 /**

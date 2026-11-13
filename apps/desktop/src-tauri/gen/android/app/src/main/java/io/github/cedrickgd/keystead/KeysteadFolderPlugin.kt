@@ -30,7 +30,9 @@ package io.github.cedrickgd.keystead
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -38,7 +40,7 @@ import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import androidx.activity.result.ActivityResult
-import app.tauri.PermissionState
+import androidx.core.app.ActivityCompat
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -108,6 +110,12 @@ private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NE
 private const val LOCAL_NETWORK = "localNetwork"
 // Android 17: before it, INTERNET grants the local network too.
 private const val LOCAL_NETWORK_SDK = 37
+// Where the plugin notes that the user refused once – "Nicht erlauben", or
+// the permission switched off in the settings (one flag, nothing else):
+// the next refusal is for good, and only this note tells it from a dialog
+// that was merely closed.
+private const val LOCAL_NETWORK_PREFS = "KeysteadLocalNetwork"
+private const val LOCAL_NETWORK_REFUSED_ONCE = "refusedOnce"
 
 @TauriPlugin(permissions = [Permission(strings = [LOCAL_NETWORK_PERMISSION], alias = LOCAL_NETWORK)])
 class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
@@ -228,15 +236,18 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   // May the app reach the home network (an SMB share)? { state } –
-  // "granted" (always before Android 17), "prompt" or "denied" (the user
-  // refused for good: only the app's settings can allow it now).
+  // "granted" (always before Android 17), "prompt" (Android would still
+  // show its dialog) or "denied" (the user refused for good: only the
+  // app's settings can allow it now). No dialog is shown here.
   @Command
   fun localNetwork(invoke: Invoke) {
     invoke.resolve(localNetworkState())
   }
 
-  // Asks the user (the system's dialog) unless the answer is known; the
-  // same { state } as `localNetwork` once they answered.
+  // Asks the user while Android still shows its dialog; the same { state }
+  // as `localNetwork` once they answered. Not asked while it is granted,
+  // and not once it was refused for good: Android would answer without a
+  // dialog then, and the request would still pause the activity.
   @Command
   fun requestLocalNetwork(invoke: Invoke) {
     val state = localNetworkState()
@@ -252,11 +263,31 @@ class KeysteadFolderPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(localNetworkState())
   }
 
+  private fun localNetworkGranted(): Boolean =
+    ActivityCompat.checkSelfPermission(activity, LOCAL_NETWORK_PERMISSION) == PackageManager.PERMISSION_GRANTED
+
+  private fun localNetworkPrefs() = activity.getSharedPreferences(LOCAL_NETWORK_PREFS, Context.MODE_PRIVATE)
+
+  // Android's own state – not Tauri's note of the last request, which says
+  // "denied" after a dialog that was merely closed, too (Keystead would
+  // never ask again). Read before every request and after its answer.
   private fun localNetworkState(): JSObject {
     val state = when {
       Build.VERSION.SDK_INT < LOCAL_NETWORK_SDK -> "granted"
-      getPermissionState(LOCAL_NETWORK) == PermissionState.GRANTED -> "granted"
-      getPermissionState(LOCAL_NETWORK) == PermissionState.DENIED -> "denied"
+      localNetworkGranted() -> {
+        localNetworkPrefs().edit().remove(LOCAL_NETWORK_REFUSED_ONCE).apply()
+        "granted"
+      }
+      // "Nicht erlauben" once, or the permission switched off in the
+      // settings: Android offers a rationale and shows its dialog once
+      // more. Noted whenever it is seen – after the next refusal Android
+      // shows no dialog and offers no rationale, exactly like a dialog that
+      // was only closed (Back), which must be asked again.
+      ActivityCompat.shouldShowRequestPermissionRationale(activity, LOCAL_NETWORK_PERMISSION) -> {
+        localNetworkPrefs().edit().putBoolean(LOCAL_NETWORK_REFUSED_ONCE, true).apply()
+        "prompt"
+      }
+      localNetworkPrefs().getBoolean(LOCAL_NETWORK_REFUSED_ONCE, false) -> "denied"
       else -> "prompt"
     }
     return JSObject().apply { put("state", state) }

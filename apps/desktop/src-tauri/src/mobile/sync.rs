@@ -415,7 +415,10 @@ fn with_folder<T>(
 
 /// `sync_offline` from an SMB share while the phone may not reach the home
 /// network (Android 17+, the permission refused): that is the reason
-/// (`unsupported:smb_local_network`), not the server.
+/// (`unsupported:smb_local_network`), not the server. Only after the dial
+/// failed – never from the address alone: Android blocks by route (the
+/// phone's own subnet on Wi-Fi or Ethernet), so a share behind a VPN or in
+/// another routed subnet answers without the permission.
 fn local_network_error(e: AppError, allowed: impl FnOnce() -> bool) -> AppError {
     if remote::has_code(&e, remote::OFFLINE) && !allowed() {
         AppError::unsupported(smb::LOCAL_NETWORK)
@@ -444,8 +447,18 @@ fn local_network_allowed(_app: &AppHandle) -> bool {
 }
 
 /// Before the SMB form reaches a share: asks for the home network (the
-/// system's dialog, unless the user answered before) and returns whether it
-/// is allowed. Unknown counts as yes.
+/// system's dialog – not while it is granted, and not once the user refused
+/// it twice: Android shows none then) and returns whether it is allowed.
+/// Unknown counts as yes.
+///
+/// The dialog pauses the activity like the system's folder picker does: an
+/// open vault locks after "Im Hintergrund sperren" (at once with "Sofort" –
+/// the form is gone then; after "Erlauben" the next try needs no dialog,
+/// after a closed dialog or the first "Nicht erlauben" it is asked – and
+/// locks – once more, after the second refusal no more). It
+/// is deliberately not one of the app's own prompts
+/// (`Core::begin_own_prompt`): that dialog stays open while the user is
+/// away, and the vault must not stay open behind it.
 #[cfg(target_os = "android")]
 async fn ask_local_network(app: &AppHandle) -> bool {
     let Some(plugin) = app.try_state::<android::FolderPlugin>() else {
@@ -982,8 +995,9 @@ mod android {
                 .map_err(plugin_error)
         }
 
-        /// Asks the user for the home network unless they answered before;
-        /// the state then.
+        /// Asks the user for the home network while Android still shows
+        /// its dialog (not while it is granted, not once it was refused for
+        /// good – see the plugin); the state then.
         pub async fn request_local_network(&self) -> AppResult<String> {
             self.0
                 .run_mobile_plugin_async::<LocalNetwork>("requestLocalNetwork", ())

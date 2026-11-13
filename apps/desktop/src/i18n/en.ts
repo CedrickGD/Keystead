@@ -151,7 +151,14 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.gdrive_login_expired": "The Google sign-in expired. Start it again with “Sign in with Google”.",
   "error.input.gdrive_redirect": "Google did not confirm the sign-in (cancelled or not allowed). Start it again.",
   "error.input.smb_config":
-    "The server, share or folder is not valid like that (no spaces in the server name, no drive letter like Z:, no “..” in the folder).",
+    "The server, share or folder is not valid like that (no spaces in the server name, no drive letter like Z:, no “..” and no dot at the end of a folder name).",
+  "error.unsupported.smb_share_denied":
+    "The login worked, but this account may not use the share. Check the user's rights for this share on the server.",
+  "error.unsupported.smb_no_answer":
+    "The server took the connection, then closed it or did not answer. Try again. If it keeps happening, “Test connection” in the SMB form shows a technical detail.",
+  "error.unsupported.smb_not_a_folder": "This path names a file on the share, not a folder. Check the address.",
+  "error.unsupported.sync_not_readable":
+    "No read access: this account may not read the folder or the file on the server. Check the rights there.",
   "error.unsupported.smb_local_network":
     "Keystead may not reach your home network. Allow it under Settings → Apps → Keystead → Permissions → “Nearby devices” and try again.",
   "error.unsupported.smb_share_missing": "The server has no share of that name. Check the name (case does not matter).",
@@ -962,7 +969,7 @@ export const en: Record<MessageKey, string> = {
   "sync.wifiOnly": "Sync over Wi-Fi only",
   "sync.wifiOnlyDesc": "On mobile data the automatic sync waits until you are on Wi-Fi again. “Sync now” always works.",
   "sync.skipped.wifiOnly": "The automatic sync is waiting for Wi-Fi.",
-  "sync.skipped.backoff": "The server could not be reached just now – next automatic try {when}.",
+  "sync.skipped.backoff": "The last sync failed – next automatic try {when}.",
   "sync.serverNote":
     "Keystead transfers only its own encrypted vault files – straight to your server, with no Keystead server in between.",
   "sync.connectDropbox": "Connect to Dropbox",
@@ -1032,7 +1039,9 @@ export const en: Record<MessageKey, string> = {
   "smb.user": "User name",
   "smb.userHint": "The same login as in your file app.",
   "smb.password": "Password",
-  "smb.passwordHint": "Stored encrypted on this device. Guest access: leave name and password empty.",
+  "smb.passwordHint":
+    "Stored encrypted on this device. Guest access (only where your server allows guests): leave name and password empty.",
+  "smb.detail": "Technical detail: {detail}",
   "smb.advanced": "Advanced",
   "smb.domain": "Domain",
   "smb.domainHint": "Only needed in company networks; leave it empty otherwise.",
@@ -1064,6 +1073,12 @@ export const en: Record<MessageKey, string> = {
   "sync.linkedEmptyTitle": "No vault in the folder “{folder}” yet",
   "sync.linkedEmptyText": "Check on your PC that “Keep a copy in a cloud folder up to date” uses exactly this folder and that the cloud app has uploaded the file. Then tap “Sync now”.",
   "sync.linkedEmpty": "Folder “{folder}” linked – there is no vault in it yet.",
+  "sync.linkedFailedTitle": "The vault in the folder could not be fetched",
+  "sync.linkedFailedText":
+    "The folder holds a vault file, but Keystead could not take it over. The reason is shown below, next to the file. Then tap “Sync now”.",
+  "sync.fileFailed": "“{file}” could not be synced: {error}",
+  "sync.fileUnavailable":
+    "The cloud app could not open the file right now – it may not have downloaded it yet or is offline. Open the cloud app, then try again.",
   "sync.linkedVaults_one": "Folder “{folder}” linked – {n} vault is now on this phone.",
   "sync.linkedVaults_other": "Folder “{folder}” linked – {n} vaults are now on this phone.",
   "sync.doneChanged_one": "Synced – {n} vault updated",

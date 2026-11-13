@@ -9,11 +9,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, subscribeEffect } from "../lib/api";
-import type { FolderStatus, SmbConfig, WebDavConfig } from "../lib/types";
+import type { CloudProvider, FolderStatus, SmbConfig, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
-import { useSyncErrorText } from "../lib/syncErrors";
+import { failedFile, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
 
 export type SyncAction = "link" | "server" | "smb" | "dropbox" | "gdrive" | "sync" | "unlink";
 
@@ -76,10 +76,22 @@ export function FolderSyncProvider({
 }) {
   const { t, tp, errorText } = useT();
   const syncErrorFor = useSyncErrorText();
+  const fileErrorFor = useFileErrorText();
   const toast = useToast();
   const confirm = useConfirm();
   const [status, setStatus] = useState<FolderStatus | null>(null);
   const [busy, setBusy] = useState<SyncAction | null>(null);
+  // A vault file the sync could not read or write: an error toast with the
+  // reason (true), instead of "no vault there yet" or "all up to date".
+  const fileFailed = useCallback(
+    (synced: FolderStatus, provider: CloudProvider | null) => {
+      const file = failedFile(synced);
+      if (!file?.error) return false;
+      toast.error(t("sync.fileFailed", { file: file.vaultName ?? file.fileName, error: fileErrorFor(file.error, provider) }));
+      return true;
+    },
+    [fileErrorFor, t, toast],
+  );
   // One subscription for the provider's life; `onStatus` may change meanwhile.
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
@@ -143,6 +155,7 @@ export function FolderSyncProvider({
       onStatus(linked);
       const folder = linked.folderName ?? "";
       if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+      else if (fileFailed(linked, null)) return;
       else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
       else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
     } catch (err) {
@@ -150,7 +163,7 @@ export function FolderSyncProvider({
     } finally {
       setBusy(null);
     }
-  }, [errorText, onStatus, t, toast, tp]);
+  }, [errorText, fileFailed, onStatus, t, toast, tp]);
 
   const linkServer = useCallback(
     async (config: WebDavConfig) => {
@@ -161,6 +174,7 @@ export function FolderSyncProvider({
         onStatus(linked);
         const folder = linked.folderName ?? "";
         if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+        else if (fileFailed(linked, null)) return true;
         else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
         else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
         return true;
@@ -171,7 +185,7 @@ export function FolderSyncProvider({
         setBusy(null);
       }
     },
-    [errorText, onStatus, t, toast, tp],
+    [errorText, fileFailed, onStatus, t, toast, tp],
   );
 
   const linkSmb = useCallback(
@@ -183,6 +197,7 @@ export function FolderSyncProvider({
         onStatus(linked);
         const folder = linked.folderName ?? "";
         if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
+        else if (fileFailed(linked, null)) return true;
         else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
         else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
         return true;
@@ -193,7 +208,7 @@ export function FolderSyncProvider({
         setBusy(null);
       }
     },
-    [errorText, onStatus, t, toast, tp],
+    [errorText, fileFailed, onStatus, t, toast, tp],
   );
 
   const linkDropbox = useCallback(
@@ -204,6 +219,7 @@ export function FolderSyncProvider({
         setStatus(linked);
         onStatus(linked);
         if (linked.lastError) toast.error(syncErrorFor(linked.lastError, "dropbox"));
+        else if (fileFailed(linked, "dropbox")) return true;
         else if (usableVaults(linked) === 0) toast.info(t("sync.dropboxLinkedEmpty"));
         else toast.success(tp("sync.dropboxLinkedVaults", usableVaults(linked)));
         return true;
@@ -214,7 +230,7 @@ export function FolderSyncProvider({
         setBusy(null);
       }
     },
-    [errorText, onStatus, syncErrorFor, t, toast, tp],
+    [errorText, fileFailed, onStatus, syncErrorFor, t, toast, tp],
   );
 
   const linkGdrive = useCallback(async () => {
@@ -224,6 +240,7 @@ export function FolderSyncProvider({
       setStatus(linked);
       onStatus(linked);
       if (linked.lastError) toast.error(syncErrorFor(linked.lastError, "gdrive"));
+      else if (fileFailed(linked, "gdrive")) return true;
       else if (usableVaults(linked) === 0) toast.info(t("sync.gdriveLinkedEmpty"));
       else toast.success(tp("sync.gdriveLinkedVaults", usableVaults(linked)));
       return true;
@@ -233,7 +250,7 @@ export function FolderSyncProvider({
     } finally {
       setBusy(null);
     }
-  }, [errorText, onStatus, syncErrorFor, t, toast, tp]);
+  }, [errorText, fileFailed, onStatus, syncErrorFor, t, toast, tp]);
 
   const sync = useCallback(async () => {
     setBusy("sync");
@@ -241,6 +258,9 @@ export function FolderSyncProvider({
       const synced = await api.syncNow();
       setStatus(synced);
       onStatus(synced);
+      // A file that could not be read or written is no "all up to date".
+      const provider = synced.kind === "dropbox" || synced.kind === "gdrive" ? synced.kind : null;
+      if (fileFailed(synced, provider)) return;
       const changed = changedVaults(synced);
       toast.success(changed > 0 ? tp("sync.doneChanged", changed) : t("sync.doneUpToDate"));
     } catch (err) {
@@ -248,7 +268,7 @@ export function FolderSyncProvider({
     } finally {
       setBusy(null);
     }
-  }, [errorText, onStatus, t, toast, tp]);
+  }, [errorText, fileFailed, onStatus, t, toast, tp]);
 
   const unlink = useCallback(async () => {
     const ok = await confirm({

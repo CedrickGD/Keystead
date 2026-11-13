@@ -157,7 +157,14 @@ export const de = {
   "error.input.gdrive_redirect":
     "Google hat die Anmeldung nicht bestätigt (abgebrochen oder nicht erlaubt). Starte sie erneut.",
   "error.input.smb_config":
-    "Server, Freigabe oder Ordner sind so nicht gültig (keine Leerzeichen im Servernamen, kein Laufwerksbuchstabe wie Z:, kein „..“ im Ordner).",
+    "Server, Freigabe oder Ordner sind so nicht gültig (keine Leerzeichen im Servernamen, kein Laufwerksbuchstabe wie Z:, kein „..“ und kein Punkt am Ende eines Ordnernamens).",
+  "error.unsupported.smb_share_denied":
+    "Die Anmeldung hat geklappt, aber dieses Konto darf die Freigabe nicht verwenden. Prüfe am Server die Rechte des Benutzers für diese Freigabe.",
+  "error.unsupported.smb_no_answer":
+    "Der Server hat die Verbindung angenommen, dann aber abgebrochen oder nicht geantwortet. Versuch es noch einmal. Bleibt es dabei, zeigt „Verbindung testen“ im SMB-Formular eine technische Angabe dazu.",
+  "error.unsupported.smb_not_a_folder": "Unter diesem Pfad liegt auf der Freigabe eine Datei, kein Ordner. Prüfe die Adresse.",
+  "error.unsupported.sync_not_readable":
+    "Kein Lesezugriff: Dieses Konto darf den Ordner oder die Datei auf dem Server nicht lesen. Prüfe dort die Rechte.",
   "error.unsupported.smb_local_network":
     "Keystead darf dein Heimnetz nicht erreichen. Erlaube es unter Einstellungen → Apps → Keystead → Berechtigungen → „Geräte in der Nähe“ und versuch es noch mal.",
   "error.unsupported.smb_share_missing":
@@ -991,7 +998,7 @@ export const de = {
   "sync.wifiOnlyDesc":
     "Mit mobilen Daten wartet der automatische Abgleich, bis du wieder im WLAN bist. „Jetzt synchronisieren“ geht immer.",
   "sync.skipped.wifiOnly": "Der automatische Abgleich wartet auf WLAN.",
-  "sync.skipped.backoff": "Der Server war eben nicht erreichbar – nächster automatischer Versuch {when}.",
+  "sync.skipped.backoff": "Der letzte Abgleich ist fehlgeschlagen – nächster automatischer Versuch {when}.",
   "sync.serverNote":
     "Keystead überträgt nur seine eigenen, verschlüsselten Tresor-Dateien – direkt zu deinem Server, ohne Keystead-Server dazwischen.",
   "sync.connectDropbox": "Mit Dropbox verbinden",
@@ -1064,7 +1071,9 @@ export const de = {
   "smb.user": "Benutzername",
   "smb.userHint": "Dieselben Zugangsdaten wie in deiner Datei-App.",
   "smb.password": "Passwort",
-  "smb.passwordHint": "Wird verschlüsselt auf diesem Gerät gespeichert. Gastzugang: Name und Passwort leer lassen.",
+  "smb.passwordHint":
+    "Wird verschlüsselt auf diesem Gerät gespeichert. Gastzugang (nur wenn dein Server Gäste zulässt): Name und Passwort leer lassen.",
+  "smb.detail": "Technische Angabe: {detail}",
   "smb.advanced": "Erweitert",
   "smb.domain": "Domäne",
   "smb.domainHint": "Nur in Firmennetzen nötig; sonst leer lassen.",
@@ -1097,6 +1106,12 @@ export const de = {
   "sync.linkedEmptyTitle": "Im Ordner „{folder}“ liegt noch kein Tresor",
   "sync.linkedEmptyText": "Prüfe am PC, ob „Kopie im Cloud-Ordner aktuell halten“ genau diesen Ordner nutzt und die Cloud-App die Datei schon hochgeladen hat. Tippe dann auf „Jetzt synchronisieren“.",
   "sync.linkedEmpty": "Ordner „{folder}“ verbunden – darin liegt noch kein Tresor.",
+  "sync.linkedFailedTitle": "Der Tresor im Ordner konnte nicht geholt werden",
+  "sync.linkedFailedText":
+    "Im Ordner liegt eine Tresor-Datei, aber Keystead konnte sie nicht übernehmen. Der Grund steht unten bei der Datei. Tippe danach auf „Jetzt synchronisieren“.",
+  "sync.fileFailed": "„{file}“ konnte nicht abgeglichen werden: {error}",
+  "sync.fileUnavailable":
+    "Die Cloud-App konnte die Datei gerade nicht öffnen – vielleicht hat sie sie noch nicht geladen oder ist offline. Öffne die Cloud-App und versuch es dann noch einmal.",
   "sync.linkedVaults_one": "Ordner „{folder}“ verbunden – {n} Tresor ist jetzt auf dem Handy.",
   "sync.linkedVaults_other": "Ordner „{folder}“ verbunden – {n} Tresore sind jetzt auf dem Handy.",
   "sync.doneChanged_one": "Synchronisiert – {n} Tresor aktualisiert",

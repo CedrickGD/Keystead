@@ -9,14 +9,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { CloudOff, FolderOpen, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
 import type { FolderStatus, SyncFileResult, SyncServer } from "../lib/types";
-import { providerOf, useSyncErrorText } from "../lib/syncErrors";
+import { failedFile, providerOf, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
 import { useT, type MessageKey } from "../i18n";
 import { useFolderSync } from "../state/sync";
 import { useApp } from "../state/app";
 import { Button } from "./Controls";
 import { WebDavDialog } from "./WebDavForm";
 
-export { providerName, providerOf, useSyncErrorText } from "../lib/syncErrors";
+export { failedFile, providerName, providerOf, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
 
 const OUTCOME_KEYS: Record<SyncFileResult["outcome"], MessageKey> = {
   imported: "sync.outcome.imported",
@@ -196,9 +196,10 @@ export function useCloudProvidersText(): string | null {
   return null;
 }
 
-/** What the last sync did with each vault file of the folder. */
+/** What the last sync did with each vault file of the folder – with the reason where one failed. */
 export function SyncFileList({ files }: { files: SyncFileResult[] }) {
   const { t, tp } = useT();
+  const errorFor = useFileErrorText();
   if (files.length === 0) return null;
   return (
     <ul className="sync-files">
@@ -215,6 +216,7 @@ export function SyncFileList({ files }: { files: SyncFileResult[] }) {
               {t(OUTCOME_KEYS[file.outcome])}
               {extras.length > 0 && ` · ${extras.join(" · ")}`}
             </span>
+            {file.outcome === "failed" && file.error && <span className="sync-file-error">{errorFor(file.error)}</span>}
           </li>
         );
       })}
@@ -231,6 +233,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
   const { t, formatRelative } = useT();
   const folderSync = useFolderSync();
   const errorFor = useSyncErrorText();
+  const fileErrorFor = useFileErrorText();
   const skippedText = useSkippedText();
   useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt));
   if (!folderSync?.status) return null;
@@ -260,10 +263,15 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
   }
   const syncing = status.syncing || busy === "sync";
   const selected = status.files.find((f) => f.vaultId === vaultId);
+  // A vault file the last sync could not read or write: that sync still
+  // counts as done (no `lastError`), so the line has to say it – also after
+  // an automatic sync, which shows no toast.
+  const failed = failedFile(status);
+  const warn = Boolean(status.lastError) || failed !== null;
   return (
     <div className="sync-line-wrap">
-      <div className={`sync-line ${status.lastError ? "warning" : ""}`} role="status">
-        {status.lastError ? <TriangleAlert aria-hidden /> : <FolderSyncIcon aria-hidden />}
+      <div className={`sync-line ${warn ? "warning" : ""}`} role="status">
+        {warn ? <TriangleAlert aria-hidden /> : <FolderSyncIcon aria-hidden />}
         <span className="sync-line-text">
           {syncing
             ? t("sync.syncing")
@@ -284,6 +292,14 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
           {syncing ? <span className="spinner" aria-hidden /> : <RefreshCw />}
         </button>
       </div>
+      {!syncing && !status.lastError && failed?.error && (
+        <p className="sync-line-note">
+          {t("sync.fileFailed", {
+            file: failed.vaultName ?? failed.fileName,
+            error: fileErrorFor(failed.error, providerOf(status)),
+          })}
+        </p>
+      )}
       {selected?.outcome === "pcOlder" && <p className="sync-line-note">{t("sync.pcOlderHint")}</p>}
       {needsRelink(status) && <p className="sync-line-note">{t("sync.relink.short")}</p>}
       {skippedText(status) && <p className="sync-line-note">{skippedText(status)}</p>}

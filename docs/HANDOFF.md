@@ -1355,6 +1355,95 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   **Veröffentlicht als v2.0.1-beta.30** (Commit `b3278d1` `[release]`,
   CI-Lauf 42255436398 grün; APK-Berechtigungen laut Gate inkl.
   `ACCESS_LOCAL_NETWORK`; `updater-beta/latest.json` = 2.0.1-beta.30).
+- **2026-11-13 – am Gerät durchgespielt (Besitzer: „geh via adb auf mein
+  S26“; WLAN-adb, Galaxy S26 Ultra SM-S948B, Android 17 / One UI 9):**
+  - Auf dem Handy lief noch **beta.29** – das Handy hat keine Kanal-Auswahl
+    und las deshalb den stabilen Kanal (2.0.0): beta.30 wurde nie angeboten.
+    Das „Nein, Fehler“ des Besitzers zu „beta.30“ war beta.29.
+    **Behoben:** `update::phone_channel` – ein Beta-Build liest den
+    Beta-Kanal.
+  - beta.29: „Verbindung testen“ (Gast) → nach 15 s „Server nicht
+    erreichbar“, während die adb-Shell desselben Handys das NAS erreicht
+    (Ping, TCP 445) → Android-17-Sperre bestätigt. Das System kennt
+    `ACCESS_LOCAL_NETWORK` („Zugriff auf Geräte im lokalen Netzwerk“,
+    dangerous).
+  - beta.30 (mit OK des Besitzers per `adb install -r`, Signatur gegen
+    `build.yml` geprüft): Dialog „Zulassen, dass Keystead Geräte in der Nähe
+    finden … kann?“ erscheint, nach „Erlauben“ in 4 s „Der Server hat die
+    Anmeldung abgelehnt“ (Gast, erwartet) → **die App erreicht das NAS**.
+  - **Mit echten Zugangsdaten (vom Besitzer selbst getippt, 18:55):**
+    „Verbindung klappt – Keystead kann in den Ordner schreiben.“ Danach hat
+    der Besitzer verbunden und bestätigt: „hat geklappt“ – der Tresor ist am
+    Handy offen. **Damit ist SMB erstmals gegen eine echte Freigabe belegt**
+    (UGREEN-NAS, SMB 3.1.1, Ordner `Personal Data/VaultSync`): Login,
+    Freigabe, Listing, Schreibtest, erster Abgleich. Zugangsdaten nie von
+    einer Session eingeben lassen.
+  - „Cloud-Ordner wählen“ (System-Picker) bietet auf diesem Handy nur den
+    Gerätespeicher und Termux an – der Netzwerkspeicher der Samsung-Datei-App
+    ist dort nicht erreichbar (die alte offene Frage: geklärt, nein).
+  - App-Logs landen am Handy in logcat (`adb logcat -s RustStdoutStderr`,
+    tao leitet stderr um); Screenshots der App sind schwarz (FLAG_SECURE) –
+    die Oberfläche über `adb exec-out uiautomator dump /dev/tty` lesen.
+- **2026-11-13 – Code-Durchsicht des SMB-Ablaufs** (Workflow, 4 Blickwinkel,
+  8 Befunde gegengeprüft, alle bestätigt; Pfade/Freigabe/Login-Pfad für den
+  Ordner des Besitzers ohne Befund). **Eingearbeitet (noch nicht
+  veröffentlicht):**
+  - `remote/smb.rs`: Fehler nach Schritt (`code(e, step)`): „Zugriff
+    verweigert“ ist nur beim Login ein falsches Passwort, sonst
+    `smb_share_denied` / `sync_not_readable` / `sync_not_writable`;
+    `sync_offline` nur noch für einen Server, der sich nicht anwählen oder
+    auflösen lässt (und eine während einer Anfrage abgerissene Verbindung),
+    sonst `smb_no_answer`; `smb_not_a_folder`. Jeder Fehler wird als Schritt
+    + Art + Kommando/NT-Status notiert (Log und `SmbTest.detail`, im
+    Formular „Technische Angabe“) – nie smb2s eigener Text (Namen).
+    `CONNECT_LIMIT` 75 s (vorher 30 s, unter smb2s eigenen Fristen). Der
+    Schreibtest meldet nur ein verweigertes Schreiben als „nur lesbar“;
+    `put` prüft die geschriebene Länge vor dem Umbenennen und räumt die
+    Temp-Datei nach einem fehlgeschlagenen Schreiben weg, solange die
+    Verbindung steht; `NAS\max` wird in Domäne und Benutzer geteilt;
+    Ordnername mit Punkt am Ende abgelehnt; ein Servername mit Umlaut
+    (`Büro-PC`) lässt `share()` nicht mehr abstürzen (Byte-Schnitt, schon in
+    beta.28–30).
+  - Neue Codes in `remote::ends_sync` und `sync_server::backs_off`
+    (`sync_not_readable` nur in `backs_off`: der Ordner selbst nicht
+    lesbar).
+  - Berechtigung: `KeysteadFolderPlugin` richtet sich nach Androids eigenem
+    Zustand (nicht nach Tauris Cache, der einen nur geschlossenen Dialog als
+    „denied“ führt → nie wieder gefragt); erste Ablehnung über eigenes Flag
+    gemerkt (immer wenn Android eine Begründung anbietet), nach der
+    nächsten keine Anfrage mehr. **Kein Sofort-Ablehnen nach Adresse:** Das
+    hatte ich zuerst eingebaut (`SyncSmb::is_local`) und nach der
+    Gegenprüfung wieder entfernt – Android sperrt nach Route (eigenes
+    Subnetz des Handys), eine Freigabe hinter VPN/Tailscale oder in einem
+    anderen Subnetz geht auch ohne Berechtigung. Weiterhin: erst wählen,
+    bei „offline“ ohne Berechtigung → `smb_local_network`. **Bewusst kein**
+    `begin_own_prompt` (der Systemdialog bleibt offen, während der Nutzer
+    weg ist – der Tresor darf dahinter nicht offen bleiben; wie beim
+    Ordner-Picker sperrt „Sofort“).
+  - `KeysteadSecretPlugin`: ein leeres (Gast-)Passwort lässt sich wieder
+    öffnen (`<` statt `<=`).
+  - Oberfläche: fehlgeschlagene Tresor-Datei mit Grund (Zeile unter der
+    Datei, Fehler-Toast statt „noch kein Tresor“ / „alles aktuell“, und –
+    weil ein automatischer Abgleich keinen Toast zeigt – Warnung mit Grund
+    in der Sync-Zeile des Entsperr-Bildschirms). Die Pausen-Notiz heißt
+    jetzt neutral „Der letzte Abgleich ist fehlgeschlagen …“.
+  - **Gegenprüfung des Diffs** (Workflow `wf_ae26cf95-3ed`, 4 Blickwinkel,
+    12 Befunde, davon 9+ gegengeprüft bestätigt): eingearbeitet sind das
+    VPN-Problem (s. o.), die unsichtbaren Datei-Fehler nach automatischem
+    Abgleich, der Verweis auf eine „technische Angabe darunter“, die es nur
+    im Formular gibt, `not_found` einer Cloud-Ordner-Datei als eigener
+    Text, die fehlende Pause bei nicht lesbarem Ordner, die liegen
+    gebliebene Temp-Datei, „Ordner anlegen“ nur bei Beweis abbrechen.
+  - **Nicht umgesetzt (offen):** `probe()` meldet immer `writable: true`
+    (nur-lesbare Freigabe kippt nach dem ersten Sync auf schreibbar); der
+    Verbindungstest übt `stat`/Lesen/Umbenennen nicht; echter anonymer Login
+    (smb2 kann nur „leerer Benutzer → Gast-Mapping“); Temp-Dateien nach
+    abgerissener Verbindung bleiben liegen (Aufräumlauf alter `.*.tmp`
+    fehlt); eine endgültige Ablehnung, die das Plugin nicht kommen sah (zwei
+    Ablehnungen unter beta.30, Geräterichtlinie), bleibt „prompt“ – Anfrage
+    ohne Dialog bei jedem Test; die technische Angabe gibt es nur beim
+    Verbindungstest, nicht bei „Ordner anlegen“/„Verbinden“/Sync (dort nur
+    im Log).
 
 **Verifiziert (Windows):** `cargo test --lib` (src-tauri) 333 grün, Core/
 Bridge/TUI grün, fmt, Clippy `-D warnings` (Windows und aarch64-Android),

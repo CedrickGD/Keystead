@@ -81,7 +81,8 @@ class KeysteadSecretPlugin(private val activity: Activity) : Plugin(activity) {
       } catch (e: IllegalArgumentException) {
         null
       }
-      if (bytes == null || bytes.size <= IV_BYTES + TAG_BYTES) {
+      // An empty password (a guest's) seals to exactly the IV and the tag.
+      if (bytes == null || bytes.size < IV_BYTES + TAG_BYTES) {
         invoke.reject("not a sealed value", "invalid")
         return@execute
       }

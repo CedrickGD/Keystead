@@ -621,6 +621,15 @@ textarea.input {
   font-weight: 600;
 }
 
+/* The technical reason below an error's text (the SMB form's test). */
+.callout-detail {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
 .callout-warning {
   background: var(--warning-soft);
   border-color: var(--warning-border);

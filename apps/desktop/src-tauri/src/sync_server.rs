@@ -140,8 +140,8 @@ pub fn forget_password(core: &Core, old_key: &str, keep: Option<&str>) {
 /// Whether an error (its code) pauses the automatic syncs: the server
 /// cannot be reached, failed, answered nonsense or refused the login (a
 /// server that locks accounts after failed logins must not be asked every
-/// minute), its certificate changed, the folder is gone. Errors of single
-/// files do not.
+/// minute), its certificate changed, the folder is gone or may not be
+/// listed. Errors of single files do not (they are not a sync's error).
 pub fn backs_off(code: &str) -> bool {
     let Some(detail) = code.strip_prefix("unsupported:") else {
         return false;
@@ -149,6 +149,13 @@ pub fn backs_off(code: &str) -> bool {
     [
         remote::OFFLINE,
         remote::smb::LOCAL_NETWORK,
+        remote::smb::NO_ANSWER,
+        remote::smb::SHARE_MISSING,
+        remote::smb::SHARE_DENIED,
+        remote::smb::NOT_A_FOLDER,
+        // Only as a sync's own error – the linked folder may not be listed
+        // (one file that may not be read fails that file, not the sync).
+        remote::NOT_READABLE,
         remote::SERVER_ERROR,
         remote::BAD_RESPONSE,
         remote::QUOTA,
@@ -952,6 +959,11 @@ mod tests {
             remote::CERTIFICATE,
             remote::FOLDER_MISSING,
             remote::smb::LOCAL_NETWORK,
+            remote::smb::NO_ANSWER,
+            remote::smb::SHARE_MISSING,
+            remote::smb::SHARE_DENIED,
+            remote::smb::NOT_A_FOLDER,
+            remote::NOT_READABLE,
         ] {
             b.record(Some(&AppError::unsupported(code).code()), t0, w0);
             assert_eq!(b.delay(), Some(minutes(1)), "{code}");

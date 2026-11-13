@@ -1709,37 +1709,102 @@ than the picked tree; the phone never asks for access to all files).
   permission in the "Geräte in der Nähe" group; without it, a connection to
   a NAS or PC just times out. The manifest declares it; `smb_test`,
   `smb_create_folder` and `link_smb` first ask for it (the folder plugin's
-  `requestLocalNetwork`: the system's dialog unless the user answered
-  before; before Android 17 always granted, never asked). Refused, a share
-  that cannot be reached is `unsupported:smb_local_network` (the text says
-  where to allow it) instead of `sync_offline` – also for a sync of a linked
-  share (`localNetwork`, checked only after such an error), which pauses
-  like `sync_offline`. Asked for only by the SMB form, never at start.
+  `requestLocalNetwork`; before Android 17 always granted, never asked).
+  The plugin goes by Android's own state (`checkSelfPermission`), not by
+  Tauri's note of the last request – that note says "denied" after a dialog
+  that was merely closed (Back, a tap beside it) too, and Keystead would
+  never ask again. It asks while Android still shows its dialog: after a
+  closed dialog and after the first refusal ("Nicht erlauben", or the
+  permission switched off in the settings – Android then offers a
+  rationale, which the plugin notes in one flag, `refusedOnce`, whenever it
+  sees it). After the next refusal Android shows no dialog; the plugin then
+  answers "denied" without starting the request (it would only pause the
+  activity). Not covered: a refusal for good that the plugin never saw
+  coming (two refusals under beta.30, a device policy) stays "prompt" – a
+  request without a dialog on every test. Without the permission the
+  connection is still dialled: Android blocks by route (the phone's own
+  subnet on Wi-Fi or Ethernet), so a share behind a VPN or in another
+  routed subnet answers without it – the address alone tells nothing. Only
+  when the dial then fails as offline is the code
+  `unsupported:smb_local_network` (the text says where to allow it), in the
+  form and in a sync of a linked share (`localNetwork`, asked only after
+  such a failure), which pauses like `sync_offline`. Asked for only by the
+  SMB form, never at start. The dialog pauses the activity like the
+  system's folder picker: an open vault locks after "Im Hintergrund
+  sperren" (at once with "Sofort" – the form is gone then; after "Erlauben"
+  the next try needs no dialog, after a closed dialog or the first refusal
+  it is asked, and locks, once more) – deliberately not one of the app's
+  own prompts (`Core::begin_own_prompt`), because that dialog stays open
+  while the user is away. Verified on a Galaxy S26 Ultra
+  (Android 17, One UI 9) on 2026-11-13: beta.29 (no permission) ran into
+  the 15 s timeout while the adb shell reached the NAS; beta.30 showed the
+  dialog and, after "Erlauben", tested, linked and synced the share with
+  the owner's login (UGREEN NAS, SMB 3.1.1) – the first run of this client
+  against a real server.
 
 * **Client** (`remote::smb::SmbRemote`, a `Remote`): SMB 2/3 in pure Rust
   (`smb2` crate, MIT/Apache-2.0), NTLM login (user, password, optional
-  domain; empty user = guest), signing and encryption as the server asks, on
-  a current-thread runtime of its own. Connection 30 s, a request
-  `REQUEST_BASE` plus its bytes at `MIN_RATE` (`remote::http`); a lost
-  connection is made again for the next request.
+  domain – `NAS\max` or `.\max` in the user field is split into the two;
+  an empty user works only where the server maps unknown users to its
+  guest), signing and encryption as the server asks, on a current-thread
+  runtime of its own. The dial (name lookup and TCP) gets 15 s, each answer
+  after it smb2's 30 s of silence (a NAS may have to wake its disks), all
+  of a connection at most 75 s (`CONNECT_LIMIT`, the app's own cap so that
+  the form answers); a request `REQUEST_BASE` plus its bytes at
+  `MIN_RATE` (`remote::http`); a lost connection is made again for the next
+  request. A folder name that ends in a dot is refused (SMB cannot carry it
+  as it is).
 * **Writes**: to `.<name>.<random>.tmp` next to the file, then renamed over
   it (`replace_if_exists`; for "only if new" without replacing – an existing
   name is `sync_remote_changed`). No conditional write in SMB: `cas` false,
   the ETag is the change time and size, compared right before an update or a
   delete; a read checks it before and after (changed meanwhile:
-  `sync_remote_changed`). Answers capped like the other remotes.
+  `sync_remote_changed`). A temp file is never renamed over the vault
+  unless the server took all of it, and one that a refused write or flush
+  (a full volume), a short write or a failed rename leaves behind is
+  removed while the connection still stands; a temp left by a lost
+  connection stays (open: a sweep of old `.*.tmp` of this pattern).
+  Answers capped like the other remotes.
 * **Link**: `LinkState.kind` `"smb"`, `smb: SyncSmb { server, share, folder,
   user, domain }` (no password), `treeUri` = the key
   `smb://user@server/share/folder` (lower case), `folderName`
   `\\server\share\folder`. The password: `crate::credentials` under that key.
   Sync timing, "Nur über WLAN" and the pause after server errors as for a
   WebDAV server.
-* **Errors**: login refused / guest refused → `sync_auth_failed`, access
-  denied → `sync_not_writable` (writes) or `sync_auth_failed`, not found →
-  `sync_file_missing` (the folder: `sync_server_folder_missing`, the share:
-  `smb_share_missing`), disk full → `sync_server_quota`, connection lost,
-  timeout → `sync_offline`, malformed → `sync_server_response`, else
-  `sync_server_error`.
+* **Errors** (`code(error, step)` – the step decides): login refused /
+  guest refused → `sync_auth_failed`; access denied → `sync_auth_failed`
+  only at the login, `smb_share_denied` at the share (the account may not
+  use it), `sync_not_readable` for a listing, a stat or a read,
+  `sync_not_writable` for a write; not found → `sync_file_missing` (the
+  folder: `sync_server_folder_missing`, the share: `smb_share_missing`); a
+  file where the folder should be → `smb_not_a_folder`; disk full →
+  `sync_server_quota`; malformed → `sync_server_response`; else
+  `sync_server_error`. `sync_offline` is only a server that cannot be
+  dialled or named (also a name lookup that runs out of time) and a
+  connection that broke during a request; one that took the connection and
+  then closed it or fell silent before the share was open, or that leaves
+  a request without an answer, is `smb_no_answer`. What an SMB share
+  answers before it is open
+  (`smb_local_network`, `smb_no_answer`, `smb_share_missing`,
+  `smb_share_denied`, `smb_not_a_folder`) ends a sync and pauses the
+  automatic ones; `sync_not_readable` fails one vault file – but the linked
+  folder itself not being listable ends the sync (as any error of its
+  listing does) and pauses the automatic ones too.
+* **Diagnostics**: every failure of a request is noted as step, smb2's kind and – where
+  the server answered – the command and its NT status (`share:
+  AccessDenied (TreeConnect STATUS_ACCESS_DENIED)`, `login: ConnectionLost
+  (TCP: ConnectionRefused)`): a line `[keystead] smb …` in the log (on the
+  phone: `adb logcat -s RustStdoutStderr`) and `SmbTest.detail`, which the
+  form shows small below the error ("Technische Angabe"). Never smb2's own
+  error text – it can name the user, the host or a path. A missing file or
+  name that the callers expect is not logged; a sync's status carries only
+  the code (the detail is in the log and in the form's test).
+* **The form's test**: lists the folder, then writes and removes a test
+  file. Only a refused write is "read-only" (`writable: false`); any other
+  failure of the write is the test's error, and a test file that cannot be
+  removed again does not fail it. "Ordner anlegen" stops at a file in the
+  way (`smb_not_a_folder`) only on proof – a folder whose attributes the
+  account may not read is gone through.
 * **Security**: NTLM does not prove the server's identity – meant for the
   user's own network; the vault files are encrypted end to end anyway.
 * **UI** (`components/SmbDialog.tsx`): one address line as a file app or
@@ -1754,9 +1819,18 @@ than the picked tree; the phone never asks for access to all files).
   SMB-Freigabe verbinden"; a linked share shows `\\server\share\folder` and the
   user with "Freigabe ändern" (the address line filled in) / "Passwort
   erneut eingeben". Mock: server "demo" answers, "fail" refuses the login,
-  "lan" stands for the home network refused.
-* **Tests**: the form's normalization, paths, an unreachable server, the
-  link's key and missing password; a real share only with
+  "lan" stands for the home network refused, "hangup" and "denied" show an
+  error with its technical detail; `?sync=failed` is a link whose first
+  vault file cannot be read. A vault file a sync could not read or write
+  is shown with its reason: a line below the file (`SyncFileList`), an
+  error toast after linking or "Jetzt synchronisieren" (not "noch kein
+  Tresor" / "alles aktuell") and – an automatic sync shows no toast – the
+  warning and a note in the unlock screen's sync line.
+* **Tests**: the form's normalization (the split login, a trailing dot,
+  a server name with letters of more than one byte), the code and detail
+  of each kind of error, paths, an
+  unreachable server and one that hangs up, the link's key and missing
+  password; a real share only with
   `cargo test … against_a_real_share -- --ignored` and
   `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`, `_PASSWORD` (`_FOLDER`).
 
@@ -2966,7 +3040,7 @@ history. The bridge's own writes are not affected.
 | `open_extension_dir` | – | `null` (opens `<data_dir>/browser-extension`, writes it first if missing) |
 | `set_portable_mode` | `enabled: boolean` | `AppInfo` (moves vault files; requires locked or re-unlock) |
 | `check_update` | – | `UpdateInfo` – checks the configured channel now; network/HTTP errors → `io:<detail>` |
-| `phone_check_update` | `manual?: boolean` | **Phone only.** `PhoneUpdate { available, currentVersion, version, notes, apkUrl, releaseUrl }` – reads the channel's `latest.json` (the PC's file; with `updateCheck` off only when `manual`) and names the newer version's APK on its release (`Keystead-<version>-android.apk`). The page shows it from the welcome screen on (no vault needed); "Herunterladen" opens the APK in the browser and Android's installer updates the app (same key, higher versionCode – the vaults stay). Redirects are followed only over https to GitHub's hosts. Not user activity |
+| `phone_check_update` | `manual?: boolean` | **Phone only.** `PhoneUpdate { available, currentVersion, version, notes, apkUrl, releaseUrl }` – reads the channel's `latest.json` (the PC's file; a beta build reads the beta channel's – the phone has no channel choice, `update::phone_channel`; with `updateCheck` off only when `manual`) and names the newer version's APK on its release (`Keystead-<version>-android.apk`). The page shows it from the welcome screen on (no vault needed); "Herunterladen" opens the APK in the browser and Android's installer updates the app (same key, higher versionCode – the vaults stay). Redirects are followed only over https to GitHub's hosts. Not user activity |
 | `pending_update` | – | `UpdateInfo \| null` – the update the last check found (no network; a reloaded page shows its banner again) |
 | `install_update` | – | `null` – downloads, verifies, locks, installs, restarts (see "In-app updates"); answers only on failure: `unsupported:update_portable` (portable copy), `unsupported:update_platform` (no build for this OS), `not_found` (nothing newer), `invalid_input:update_in_progress`, `io:<detail>` |
 | `folder_status` | – | **Phone only** (see "Cloud-folder sync (phone)"). `FolderStatus { linked, kind: "folder"\|"webdav"\|"dropbox"\|"gdrive"\|null, server: SyncServer\|null, cloud: SyncCloud\|null, writable, syncing, folderName, linkedAt, lastSyncAt, lastError, files, skipped: string\|null, retryAt: number\|null }` – the linked folder, server or cloud account (no password or token; `skipped`: why the last automatic sync did not run – `sync_wifi_only`, `sync_backoff`; `retryAt`: while automatic syncs pause after a server error), whether the app may write it, and what the last sync found (`files` as in `link.json`; without a folder the phone's vaults with outcome `localOnly`); no access to the folder, not user activity |
@@ -2974,7 +3048,7 @@ history. The bridge's own writes are not affected.
 | `link_dropbox` | `code` | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Dropbox login the page started (`dropbox_login`) with the code the user copied and links the phone to Keystead's app folder on that account in place of the previous link (which is given back, forgotten or signed out), then syncs. The refresh token is sealed by the Android Keystore and never returned. `invalid_input:dropbox_code`, `unsupported:dropbox_login_expired`, `unsupported:dropbox_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_gdrive` | – | **Phone only** (see "Cloud accounts (Dropbox, Google Drive)"). `FolderStatus` – finishes the Google login Google allowed (`gdrive_login`: the device code the user entered; `gdrive_login_ready`) and links the phone to the folder "Keystead" of that Drive in place of the previous link, then syncs. The refresh token is sealed by the Android Keystore and never returned. `unsupported:gdrive_login_expired`, `unsupported:gdrive_not_configured`; a failed first sync is no error (`lastError`) |
 | `link_webdav` | `config: WebDavConfig` | **Phone only** (see "Server sync (WebDAV)"). `FolderStatus` – links the phone to a folder on a WebDAV server in place of the previous link (a cloud folder's permission is given back, another server's password removed, the recorded conflicts of another folder forgotten) and syncs. The connection test must pass (its code otherwise – e.g. `unsupported:sync_server_folder_missing`, `unsupported:sync_server_certificate`; nothing changes); the password is sealed by the Android Keystore and never returned. A failed first sync is no error (`lastError`). `invalid_input:webdav_config`, `invalid_input:server_url`, `invalid_input:server_folder` |
-| `smb_test` | `config: SmbConfig { server, share, folder, user, password, domain }` | **Phone only** (see "SMB shares (phone)"). `SmbTest { ok, code, folderMissing, writable }` – connects (SMB 2/3, NTLM), opens the share, lists the folder and writes and removes a test file. Nothing is stored; the password is not echoed. `invalid_input:smb_config`, `unsupported:smb_share_missing`, `unsupported:sync_auth_failed`, `unsupported:sync_offline`, `unsupported:smb_local_network` … as `code`. Asks for the home network first (Android 17+) |
+| `smb_test` | `config: SmbConfig { server, share, folder, user, password, domain }` | **Phone only** (see "SMB shares (phone)"). `SmbTest { ok, code, folderMissing, writable }` – connects (SMB 2/3, NTLM), opens the share, lists the folder and writes and removes a test file. Nothing is stored; the password is not echoed. `invalid_input:smb_config`, `unsupported:smb_share_missing`, `unsupported:sync_auth_failed`, `unsupported:sync_offline`, `unsupported:smb_local_network`, `unsupported:smb_no_answer`, `unsupported:smb_share_denied` … as `code`, with `detail` (the step, kind and server status – no names). Asks for the home network first (Android 17+) |
 | `smb_create_folder` | `config: SmbConfig` | **Phone only.** `SmbTest` – "Ordner anlegen": makes the folder on the share segment by segment (one that exists is fine), then tests again. Never done by a sync |
 | `link_smb` | `config: SmbConfig` | **Phone only.** `FolderStatus` – links the phone to the folder on the share in place of the previous link (the connection test must pass; its code otherwise, `unsupported:sync_server_folder_missing` for a missing folder) and syncs. The password is sealed by the Android Keystore under the share's key (`smb://user@server/share/folder`) and never returned; a failed first sync is no error (`lastError`) |
 | `sync_now` | – | **Phone only.** `FolderStatus` – syncs now (after a sync already running); the sync's error as the answer (also recorded as `lastError`): `unsupported:folder_access_lost`, `io:<detail>`; `unsupported:folder_not_linked` without a folder |
@@ -3991,7 +4065,12 @@ are not involved (`ItemSummary` is unchanged).
 **The phone** (since 2026-11-05): no self-install. `phone_check_update`
 reads the same `latest.json` and offers the APK of a newer version
 (`PhoneUpdateBanner`, on the welcome, unlock and main screens – no vault
-needed; "Später" hides that version, `localStorage`). The browser downloads
+needed; "Später" hides that version, `localStorage`). A beta build
+(`2.0.1-beta.30`) reads the beta channel's file, which carries every
+published build; a stable build reads the configured channel's
+(`phone_channel` – the phone's settings have no channel choice, so until
+2026-11-13 a beta on the phone looked at the stable channel and was never
+offered the next beta). The browser downloads
 it, Android's package installer updates over the installed app (same
 release key, the CI run number as versionCode), the data stays. No
 `REQUEST_INSTALL_PACKAGES`, no download in the app.

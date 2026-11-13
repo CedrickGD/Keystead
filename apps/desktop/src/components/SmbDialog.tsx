@@ -180,7 +180,10 @@ export function SmbDialog({
       {test?.code && (
         <div className="callout callout-danger" role="alert">
           <TriangleAlert />
-          <span>{errorText(new ApiError(test.code))}</span>
+          <span>
+            {errorText(new ApiError(test.code))}
+            {test.detail && <small className="callout-detail selectable">{t("smb.detail", { detail: test.detail })}</small>}
+          </span>
         </div>
       )}
       {error && (

@@ -2,8 +2,9 @@
 //! (2026-11-05): the phone reaches the folder the PC keeps its copies in
 //! (the PC mounts the share itself and uses it as its cloud folder). SMB
 //! 2/3 in pure Rust (`smb2`), NTLM login (user, password, an optional
-//! domain; an empty user is a guest), signing and encryption as the server
-//! asks; no Android permission beyond `INTERNET`.
+//! domain; an empty user works only where the server maps unknown users to
+//! its guest), signing and encryption as the server asks. On Android 17+
+//! the home network needs `ACCESS_LOCAL_NETWORK` (`mobile::sync` asks).
 //!
 //! * **Where**: the cloud folder's layout below `<share>/<folder>`
 //!   (`folder` may be nested, `""` is the share's top).
@@ -18,12 +19,17 @@
 //!   [`super::http::REQUEST_BASE`] plus its bytes at
 //!   [`super::http::MIN_RATE`]; a lost connection is made again for the
 //!   next request.
+//! * **Errors keep their reason**: every failure is noted as step, kind and
+//!   the server's status (`login: AuthRequired (SessionSetup
+//!   STATUS_LOGON_FAILURE)`) – in the log (logcat on the phone) and as the
+//!   form test's `detail`; never smb2's own text, which can name the user,
+//!   the host or a path. "Offline" is only a server that cannot be dialled.
 //! * **Security**: NTLM does not prove the server's identity – meant for
 //!   the user's own network; the vault files are encrypted anyway. The
 //!   password is stored like a WebDAV password (`crate::credentials`).
 
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use keystead_core::crypto;
 use serde::{Deserialize, Serialize};
@@ -34,9 +40,11 @@ use super::dropbox::LIST_ENTRIES_MAX;
 use super::http::{MIN_RATE, REQUEST_BASE};
 use super::{
     check_dir, check_path, Access, Precondition, Remote, RemoteMeta, AUTH_FAILED, BAD_RESPONSE,
-    CHANGED, FILE_MISSING, FOLDER_MISSING, NOT_WRITABLE, OFFLINE, QUOTA, SERVER_ERROR, TOO_LARGE,
+    CHANGED, FILE_MISSING, FOLDER_MISSING, NOT_READABLE, NOT_WRITABLE, OFFLINE, QUOTA,
+    SERVER_ERROR, TOO_LARGE,
 };
 use crate::error::{AppError, AppResult};
+use crate::state::log;
 
 /// `invalid_input:smb_config`: the form's server, share or folder is not one.
 pub const BAD_CONFIG: &str = "smb_config";
@@ -46,8 +54,25 @@ pub const SHARE_MISSING: &str = "smb_share_missing";
 /// (Android 17+ without `ACCESS_LOCAL_NETWORK` – its connections there time
 /// out); `mobile::sync` says so instead of `sync_offline`.
 pub const LOCAL_NETWORK: &str = "smb_local_network";
-/// The time a connection (TCP, negotiation, login, share) may take.
-pub const CONNECT_LIMIT: Duration = Duration::from_secs(30);
+/// `unsupported:smb_share_denied`: the login worked, but this account may
+/// not use the share.
+pub const SHARE_DENIED: &str = "smb_share_denied";
+/// `unsupported:smb_no_answer`: the server took the connection, then closed
+/// it or fell silent before the share was open, or it left a request
+/// without an answer – not "offline": something answers at that address.
+pub const NO_ANSWER: &str = "smb_no_answer";
+/// `unsupported:smb_not_a_folder`: the form's folder path names a file.
+pub const NOT_A_FOLDER: &str = "smb_not_a_folder";
+/// The most a connection (TCP, negotiation, login, share) may take – the
+/// app's own cap, so that the form answers. smb2's limits for the parts
+/// ([`CONNECT_TIMEOUT`] for the dial, then [`ANSWER_TIMEOUT`] of silence
+/// per answer – a NAS may have to wake its disks) could add up to more.
+pub const CONNECT_LIMIT: Duration = Duration::from_secs(75);
+/// The dial's budget: the name lookup and the TCP connect.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long smb2 waits for an answer before it gives a request up (its
+/// `RESPONSE_TIMEOUT`, the default of `ClientConfig::response_timeout`).
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_PORT: u16 = 445;
 
 /// What the form sends (`smb_test`, `smb_create_folder`, `link_smb`).
@@ -88,7 +113,12 @@ impl SmbConfig {
         let bad = || AppError::invalid(BAD_CONFIG);
         let mut server = self.server.trim();
         for prefix in ["smb://", "\\\\", "//"] {
-            if server.len() >= prefix.len() && server[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            // `get`, not a slice by bytes: a name such as `Büro-PC` has no
+            // character boundary there (a slice would panic).
+            if server
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            {
                 server = &server[prefix.len()..];
             }
         }
@@ -121,8 +151,9 @@ impl SmbConfig {
             if segment.is_empty() {
                 continue;
             }
-            if segment == "."
-                || segment == ".."
+            // A name ending in a dot (`.`, `..`, `Backup.`): SMB cannot carry
+            // it as it is – the client would ask for another name.
+            if segment.ends_with('.')
                 || segment
                     .chars()
                     .any(|c| matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
@@ -131,8 +162,18 @@ impl SmbConfig {
             }
             segments.push(segment);
         }
-        let user = self.user.trim();
-        let domain = self.domain.trim();
+        let mut user = self.user.trim();
+        let mut domain = self.domain.trim();
+        // `NAS\max` or `.\max`, as Windows writes a login: the part in front
+        // is the domain, the server knows the account by the name alone.
+        if domain.is_empty() {
+            if let Some((front, name)) = user.split_once('\\') {
+                if !name.is_empty() && !name.contains('\\') {
+                    domain = if front == "." { "" } else { front };
+                    user = name;
+                }
+            }
+        }
         if user.len() > 256 || domain.len() > 256 {
             return Err(bad());
         }
@@ -209,24 +250,140 @@ pub struct SmbTest {
     pub folder_missing: bool,
     /// The user may write the folder (a test file could be made).
     pub writable: bool,
+    /// What failed, technically ([`detail`]: step, kind, the server's
+    /// status) – shown small below the error. No names, no secrets.
+    pub detail: Option<String>,
 }
 
-/// The code of an SMB error (`write`: a change was asked for).
-fn code(e: &smb2::Error, write: bool) -> &'static str {
+/// What a request is for: it decides what "access denied" means and names
+/// the step in the diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// TCP, negotiation and the login.
+    Login,
+    /// Opening the share.
+    Share,
+    List,
+    Stat,
+    Read,
+    Write,
+    Rename,
+    Mkdir,
+    Delete,
+}
+
+impl Step {
+    fn name(self) -> &'static str {
+        match self {
+            Step::Login => "login",
+            Step::Share => "share",
+            Step::List => "list",
+            Step::Stat => "stat",
+            Step::Read => "read",
+            Step::Write => "write",
+            Step::Rename => "rename",
+            Step::Mkdir => "mkdir",
+            Step::Delete => "delete",
+        }
+    }
+
+    /// A change was asked for.
+    fn writes(self) -> bool {
+        matches!(
+            self,
+            Step::Write | Step::Rename | Step::Mkdir | Step::Delete
+        )
+    }
+
+    /// Before the share is open.
+    fn connecting(self) -> bool {
+        matches!(self, Step::Login | Step::Share)
+    }
+}
+
+/// The code of an SMB error at `step`.
+fn code(e: &smb2::Error, step: Step) -> &'static str {
     match e.kind() {
         ErrorKind::AuthRequired | ErrorKind::GuestSessionRefused => AUTH_FAILED,
-        ErrorKind::AccessDenied if write => NOT_WRITABLE,
-        ErrorKind::AccessDenied => AUTH_FAILED,
+        // Past the login the account was accepted: what is denied is the
+        // share, the folder or the file – not the password.
+        ErrorKind::AccessDenied => match step {
+            Step::Login => AUTH_FAILED,
+            Step::Share => SHARE_DENIED,
+            step if step.writes() => NOT_WRITABLE,
+            _ => NOT_READABLE,
+        },
+        ErrorKind::NotFound if step == Step::Share => SHARE_MISSING,
         ErrorKind::NotFound => FILE_MISSING,
         ErrorKind::AlreadyExists => CHANGED,
         ErrorKind::DiskFull => QUOTA,
         ErrorKind::ConnectionLost
         | ErrorKind::TimedOut
         | ErrorKind::SessionExpired
-        | ErrorKind::Io => OFFLINE,
+        | ErrorKind::Io => {
+            // "Offline" is a server that cannot be dialled or named, and a
+            // connection that broke while it was in use (the Wi-Fi, a NAS
+            // going to sleep). A server that took the connection and then
+            // closed it or fell silent before the share was open, or that
+            // leaves a request without an answer, is there – something is
+            // wrong with it or with what was sent. (A request that could
+            // not even be sent in time says nothing about the server: a
+            // dead link, offline.)
+            let undialled = matches!(e, smb2::Error::ConnectFailed { .. } | smb2::Error::Io(_));
+            let unanswered = matches!(e, smb2::Error::Timeout);
+            if step.connecting() && !undialled || !step.connecting() && unanswered {
+                NO_ANSWER
+            } else {
+                OFFLINE
+            }
+        }
         ErrorKind::InvalidData => BAD_RESPONSE,
         _ => SERVER_ERROR,
     }
+}
+
+/// The code of a failed login step (dial, negotiation, login) after
+/// `elapsed`: [`code`], except for the name lookup running out of time.
+/// smb2 reports that with the same error as a request without an answer
+/// (`Error::Timeout`), but within the dial's budget ([`CONNECT_TIMEOUT`]) –
+/// an unanswered request takes it at least [`ANSWER_TIMEOUT`] – and it is a
+/// server that cannot be named: offline.
+fn login_code(e: &smb2::Error, elapsed: Duration) -> &'static str {
+    if matches!(e, smb2::Error::Timeout) && elapsed < ANSWER_TIMEOUT {
+        OFFLINE
+    } else {
+        code(e, Step::Login)
+    }
+}
+
+/// What failed, for the log and the form test's small print: the step,
+/// smb2's kind and – where there is one – the command and the server's
+/// status. Never the error's own text: it can name the user, the host or a
+/// path.
+fn detail(step: Step, e: &smb2::Error) -> String {
+    let more = match e {
+        smb2::Error::Protocol {
+            status, command, ..
+        } => format!(" ({command:?} {status})"),
+        smb2::Error::ConnectFailed { attempts, .. } => {
+            let tried: Vec<String> = attempts
+                .iter()
+                .map(|attempt| match attempt.error_kind {
+                    Some(kind) => format!("{kind:?}"),
+                    None => "no answer".to_owned(),
+                })
+                .collect();
+            format!(" (TCP: {})", tried.join(", "))
+        }
+        smb2::Error::Io(err) => format!(" ({:?})", err.kind()),
+        smb2::Error::SendFailed {
+            command, source, ..
+        } => format!(" ({command:?}, {:?})", source.kind()),
+        smb2::Error::SendTimeout { command, .. }
+        | smb2::Error::SignatureInvalid { command, .. } => format!(" ({command:?})"),
+        _ => String::new(),
+    };
+    format!("{}: {:?}{more}", step.name(), e.kind())
 }
 
 /// A connection should be made again after this error.
@@ -249,6 +406,8 @@ pub struct SmbRemote {
     password: Zeroizing<String>,
     runtime: tokio::runtime::Runtime,
     conn: Mutex<Option<Conn>>,
+    /// The last failure's [`detail`] (the form's test shows it).
+    detail: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for SmbRemote {
@@ -293,7 +452,39 @@ impl SmbRemote {
             password,
             runtime,
             conn: Mutex::new(None),
+            detail: Mutex::new(None),
         })
+    }
+
+    /// Notes a failure: a line in the log (logcat on the phone, tag
+    /// `RustStdoutStderr`) and the detail the form's test shows.
+    fn note(&self, detail: String) {
+        log(format_args!("smb {detail}"));
+        *lock(&self.detail) = Some(detail);
+    }
+
+    /// An SMB error at `step` as the app's error ([`code`]), noted.
+    fn failed(&self, step: Step, e: &smb2::Error) -> AppError {
+        self.failed_as(step, e, code(e, step))
+    }
+
+    /// [`Self::failed`] with the code given. Noted – except a missing file
+    /// or name, which the callers expect and handle (only kept as the
+    /// detail, not logged).
+    fn failed_as(&self, step: Step, e: &smb2::Error, code: &'static str) -> AppError {
+        let expected = !step.connecting()
+            && matches!(e.kind(), ErrorKind::NotFound | ErrorKind::AlreadyExists);
+        if expected {
+            *lock(&self.detail) = Some(detail(step, e));
+        } else {
+            self.note(detail(step, e));
+        }
+        AppError::unsupported(code)
+    }
+
+    /// The last failure's detail (taken).
+    fn take_detail(&self) -> Option<String> {
+        lock(&self.detail).take()
     }
 
     /// The share path of `rel` (a path of the layout, `""` = the folder).
@@ -308,37 +499,45 @@ impl SmbRemote {
     async fn connect(&self) -> AppResult<Conn> {
         let config = ClientConfig {
             addr: self.share.addr(),
-            timeout: Duration::from_secs(15),
+            timeout: CONNECT_TIMEOUT,
             username: self.share.user.clone(),
             password: self.password.as_str().to_owned(),
             domain: self.share.domain.clone(),
             auto_reconnect: false,
             ..Default::default()
         };
+        let started = Instant::now();
         let connecting = async {
             let mut client = SmbClient::connect(config)
                 .await
-                .map_err(|e| AppError::unsupported(code(&e, false)))?;
-            let tree = client.connect_share(&self.share.share).await.map_err(|e| {
-                if e.kind() == ErrorKind::NotFound {
-                    AppError::unsupported(SHARE_MISSING)
-                } else {
-                    AppError::unsupported(code(&e, false))
-                }
-            })?;
+                .map_err(|e| self.failed_as(Step::Login, &e, login_code(&e, started.elapsed())))?;
+            let tree = client
+                .connect_share(&self.share.share)
+                .await
+                .map_err(|e| self.failed(Step::Share, &e))?;
             Ok(Conn { client, tree })
         };
-        tokio::time::timeout(CONNECT_LIMIT, connecting)
-            .await
-            .map_err(|_| AppError::unsupported(OFFLINE))?
+        match tokio::time::timeout(CONNECT_LIMIT, connecting).await {
+            Ok(connected) => connected,
+            // A server that cannot be dialled fails earlier
+            // ([`CONNECT_TIMEOUT`]): this one took the connection and did
+            // not get through the login and the share in time.
+            Err(_) => {
+                self.note(format!(
+                    "login: no answer within {} s",
+                    CONNECT_LIMIT.as_secs()
+                ));
+                Err(AppError::unsupported(NO_ANSWER))
+            }
+        }
     }
 
     /// Runs `f` on the connection (made first if there is none) within the
-    /// time of a request of `bytes`; an SMB error becomes its code
-    /// (`write`: a change was asked for), a lost connection is dropped.
+    /// time of a request of `bytes`; an SMB error becomes its code at
+    /// `step` ([`code`]) and is noted, a lost connection is dropped.
     fn run<T>(
         &self,
-        write: bool,
+        step: Step,
         bytes: u64,
         f: impl AsyncFnOnce(&mut Conn) -> smb2::Result<T>,
     ) -> AppResult<T> {
@@ -357,19 +556,27 @@ impl SmbRemote {
                     if drops_connection(&e) {
                         *guard = None;
                     }
-                    Err(AppError::unsupported(code(&e, write)))
+                    Err(self.failed(step, &e))
                 }
+                // The app's own limit for a request ran out on a
+                // connection that stood: no answer, not "offline".
                 Err(_) => {
                     *guard = None;
-                    Err(AppError::unsupported(OFFLINE))
+                    self.note(format!(
+                        "{}: no answer within {} s",
+                        step.name(),
+                        limit(bytes).as_secs()
+                    ));
+                    Err(AppError::unsupported(NO_ANSWER))
                 }
             }
         })
     }
 
-    /// The ETag and size of `path` (a share path), `None` if there is none.
+    /// The ETag and size of `path` (a share path) and whether it is a
+    /// folder; `None` if there is none.
     fn stat(&self, path: &str) -> AppResult<Option<(String, u64, bool)>> {
-        self.run(false, 0, async |c| {
+        self.run(Step::Stat, 0, async |c| {
             match c.client.stat(&mut c.tree, path).await {
                 Ok(info) => Ok(Some((
                     etag(info.changed.0, info.size),
@@ -392,57 +599,106 @@ impl SmbRemote {
             }
             path.push_str(segment);
             let dir = path.clone();
-            self.run(true, 0, async |c| {
+            let existed = self.run(Step::Mkdir, 0, async |c| {
                 match c.client.create_directory(&c.tree, &dir).await {
-                    Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
-                    other => other,
+                    Ok(()) => Ok(false),
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(true),
+                    Err(e) => Err(e),
                 }
             })?;
+            // The name is taken – by a folder, or by a file in the way. Only
+            // the proof of a file stops here: a folder whose attributes the
+            // account may not read is still a folder to go through, and
+            // anything else shows at the next segment or in the test.
+            if existed && matches!(self.stat(&path), Ok(Some((_, _, false)))) {
+                return Err(AppError::unsupported(NOT_A_FOLDER));
+            }
         }
         Ok(())
     }
 
+    /// Removes a file a failed write may have left behind (best effort):
+    /// only while the connection still stands – not worth a new dial –, and
+    /// the failure that led here stays the noted one.
+    fn remove_leftover(&self, path: &str) {
+        let standing = lock(&self.conn).is_some();
+        if !standing {
+            return;
+        }
+        let noted = self.take_detail();
+        let _ = self.run(Step::Delete, 0, async |c| {
+            c.client.delete_file(&c.tree, path).await
+        });
+        *lock(&self.detail) = noted;
+    }
+
     /// The connection test of the form: share, login, folder, write access
-    /// (a test file is made and removed).
+    /// (a test file is made and removed). A failure carries its
+    /// [`SmbTest::detail`].
     pub fn test(cfg: &SmbConfig) -> SmbTest {
-        let fail = |e: AppError| SmbTest {
+        let fail = |e: AppError, detail: Option<String>| SmbTest {
             code: Some(e.code()),
+            detail,
             ..SmbTest::default()
         };
         let share = match cfg.share() {
             Ok(share) => share,
-            Err(e) => return fail(e),
+            Err(e) => return fail(e, None),
         };
         let remote = match SmbRemote::new(&share, cfg.password.clone()) {
             Ok(remote) => remote,
-            Err(e) => return fail(e),
+            Err(e) => return fail(e, None),
         };
-        match remote.probe() {
-            Ok(access) if !access.exists => SmbTest {
+        // `None`: the folder is not there yet.
+        let tested = remote.probe().and_then(|access| {
+            if access.exists {
+                remote.write_test().map(Some)
+            } else {
+                Ok(None)
+            }
+        });
+        match tested {
+            Ok(None) => SmbTest {
                 folder_missing: true,
                 ..SmbTest::default()
             },
-            Ok(_) => SmbTest {
+            Ok(Some(writable)) => SmbTest {
                 ok: true,
-                writable: remote.write_test().is_ok(),
+                writable,
                 ..SmbTest::default()
             },
-            Err(e) => fail(e),
+            Err(e) => fail(e, remote.take_detail()),
         }
     }
 
-    fn write_test(&self) -> AppResult<()> {
+    /// Whether the folder can be written: a test file is made and removed
+    /// again. `Ok(false)`: the server refuses the account writes there –
+    /// any other failure (the connection, a full disk) is that error, not
+    /// "read-only".
+    fn write_test(&self) -> AppResult<bool> {
         let name = format!(
             ".keystead-write-test-{}",
             crypto::b64_encode(&crypto::random_array::<6>()?).replace(['+', '/', '='], "x")
         );
         let path = self.path(&name);
-        self.run(true, 4, async |c| {
+        if let Err(e) = self.run(Step::Write, 4, async |c| {
             c.client.write_file(&c.tree, &path, b"test").await
-        })?;
-        self.run(true, 0, async |c| {
+        }) {
+            // The server may have made the file before it refused the
+            // write or the write failed: not left behind.
+            self.remove_leftover(&path);
+            return if super::has_code(&e, NOT_WRITABLE) {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        // The write proved the access; removing the file is best effort
+        // (its failure is noted in the log).
+        let _ = self.run(Step::Delete, 0, async |c| {
             c.client.delete_file(&c.tree, &path).await
-        })
+        });
+        Ok(true)
     }
 
     /// A temporary name next to `path` (a share path).
@@ -464,15 +720,16 @@ impl Remote for SmbRemote {
 
     fn probe(&self) -> AppResult<Access> {
         let folder = self.path("");
-        let exists = self.run(false, 0, async |c| {
+        // `None`: the path names a file ("Ordner anlegen" could not help).
+        let found = self.run(Step::List, 0, async |c| {
             match c.client.list_directory(&mut c.tree, &folder).await {
-                Ok(_) => Ok(true),
-                Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-                    Ok(false)
-                }
+                Ok(_) => Ok(Some(true)),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(Some(false)),
+                Err(e) if e.kind() == ErrorKind::NotADirectory => Ok(None),
                 Err(e) => Err(e),
             }
         })?;
+        let exists = found.ok_or_else(|| AppError::unsupported(NOT_A_FOLDER))?;
         Ok(Access {
             exists,
             writable: true,
@@ -484,7 +741,7 @@ impl Remote for SmbRemote {
         check_dir(dir)?;
         let path = self.path(dir);
         let entries = self
-            .run(false, 0, async |c| {
+            .run(Step::List, 0, async |c| {
                 c.client.list_directory(&mut c.tree, &path).await
             })
             .map_err(|e| {
@@ -519,7 +776,7 @@ impl Remote for SmbRemote {
         if size > max {
             return Err(AppError::unsupported(TOO_LARGE));
         }
-        let bytes = self.run(false, size, async |c| {
+        let bytes = self.run(Step::Read, size, async |c| {
             c.client.read_file_pipelined(&mut c.tree, &share_path).await
         })?;
         if bytes.len() as u64 > max {
@@ -549,11 +806,26 @@ impl Remote for SmbRemote {
             _ => {}
         }
         let temp = Self::temp_of(&share_path)?;
-        self.run(true, bytes.len() as u64, async |c| {
+        let written = match self.run(Step::Write, bytes.len() as u64, async |c| {
             c.client.write_file(&c.tree, &temp, bytes).await
-        })?;
+        }) {
+            Ok(written) => written,
+            // The server may have made the temp file before the write
+            // failed (a full volume): not left behind while it can be
+            // removed. The copy in the folder is untouched.
+            Err(e) => {
+                self.remove_leftover(&temp);
+                return Err(e);
+            }
+        };
+        // Not all of it arrived: half a vault must never replace the copy.
+        if written != bytes.len() as u64 {
+            self.note(format!("write: {written} of {} bytes written", bytes.len()));
+            self.remove_leftover(&temp);
+            return Err(AppError::unsupported(SERVER_ERROR));
+        }
         let replace = pre != Precondition::IfNoneMatch;
-        let renamed = self.run(true, 0, async |c| {
+        let renamed = self.run(Step::Rename, 0, async |c| {
             c.client
                 .rename_with(
                     &c.tree,
@@ -564,9 +836,7 @@ impl Remote for SmbRemote {
                 .await
         });
         if let Err(e) = renamed {
-            let _ = self.run(true, 0, async |c| {
-                c.client.delete_file(&c.tree, &temp).await
-            });
+            self.remove_leftover(&temp);
             return Err(e);
         }
         let (etag, size, _) = self
@@ -587,7 +857,7 @@ impl Remote for SmbRemote {
             return Err(AppError::invalid(super::BAD_PATH));
         }
         let path = self.path(dir);
-        self.run(true, 0, async |c| {
+        self.run(Step::Mkdir, 0, async |c| {
             match c.client.create_directory(&c.tree, &path).await {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
                 other => other,
@@ -602,12 +872,12 @@ impl Remote for SmbRemote {
             for entry in self.list(path)? {
                 if !entry.dir {
                     let file = format!("{share_path}/{}", entry.name);
-                    self.run(true, 0, async |c| {
+                    self.run(Step::Delete, 0, async |c| {
                         c.client.delete_file(&c.tree, &file).await
                     })?;
                 }
             }
-            return self.run(true, 0, async |c| {
+            return self.run(Step::Delete, 0, async |c| {
                 c.client.delete_directory(&c.tree, &share_path).await
             });
         }
@@ -619,7 +889,7 @@ impl Remote for SmbRemote {
                 return Err(AppError::unsupported(CHANGED));
             }
         }
-        self.run(true, 0, async |c| {
+        self.run(Step::Delete, 0, async |c| {
             c.client.delete_file(&c.tree, &share_path).await
         })
     }
@@ -695,6 +965,9 @@ mod tests {
             ("nas", "x", "a/../b"),
             ("nas", "x", "a/./b"),
             ("nas", "x", "a*b"),
+            // SMB cannot carry a name that ends in a dot as it is.
+            ("nas", "x", "Backup."),
+            ("nas", "x", "a/b./c"),
         ] {
             assert_eq!(
                 config(server, share, folder).share().unwrap_err().code(),
@@ -702,6 +975,148 @@ mod tests {
                 "{server} {share} {folder}"
             );
         }
+        // A name with a letter of more than one byte where a prefix would
+        // end is a name like any other (cutting it by bytes panicked).
+        for (typed, server) in [
+            ("Büro-PC", "Büro-PC"),
+            ("\\\\Büro-PC\\", "Büro-PC"),
+            ("nas-büro", "nas-büro"),
+            ("smb://Büro-PC", "Büro-PC"),
+            ("ünas", "ünas"),
+        ] {
+            assert_eq!(config(typed, "x", "").share().unwrap().server, server);
+        }
+    }
+
+    #[test]
+    fn a_windows_style_login_is_split_into_domain_and_user() {
+        let login = |user: &str, domain: &str| {
+            let mut cfg = config("nas", "x", "");
+            cfg.user = user.into();
+            cfg.domain = domain.into();
+            let s = cfg.share().unwrap();
+            (s.user, s.domain)
+        };
+        let pair = |user: &str, domain: &str| (user.to_owned(), domain.to_owned());
+        assert_eq!(login("NAS\\max", ""), pair("max", "NAS"));
+        assert_eq!(login(" .\\max ", ""), pair("max", ""));
+        assert_eq!(login("Cedrick Grabe", ""), pair("Cedrick Grabe", ""));
+        assert_eq!(login("max@example.org", ""), pair("max@example.org", ""));
+        // A domain of its own wins; odd names stay as typed.
+        assert_eq!(login("NAS\\max", "FIRMA"), pair("NAS\\max", "FIRMA"));
+        assert_eq!(login("a\\b\\c", ""), pair("a\\b\\c", ""));
+        assert_eq!(login("NAS\\", ""), pair("NAS\\", ""));
+        // The key follows the split (the password is stored under it).
+        let mut cfg = config("nas", "x", "");
+        cfg.user = "NAS\\Max".into();
+        assert_eq!(cfg.share().unwrap().key(), "smb://max@nas/x/");
+    }
+
+    #[test]
+    fn errors_keep_their_step_and_reason() {
+        use smb2::types::status::NtStatus;
+        use smb2::types::Command;
+        let status = |status, command| smb2::Error::Protocol { status, command };
+        let denied = |command| status(NtStatus::ACCESS_DENIED, command);
+
+        // "Access denied" is a wrong password only at the login.
+        assert_eq!(
+            code(&denied(Command::SessionSetup), Step::Login),
+            AUTH_FAILED
+        );
+        assert_eq!(
+            code(&denied(Command::TreeConnect), Step::Share),
+            SHARE_DENIED
+        );
+        for step in [Step::List, Step::Stat, Step::Read] {
+            assert_eq!(code(&denied(Command::Create), step), NOT_READABLE);
+        }
+        for step in [Step::Write, Step::Rename, Step::Mkdir, Step::Delete] {
+            assert_eq!(code(&denied(Command::Create), step), NOT_WRITABLE);
+        }
+        let logon = status(NtStatus::LOGON_FAILURE, Command::SessionSetup);
+        assert_eq!(code(&logon, Step::Login), AUTH_FAILED);
+        assert_eq!(
+            detail(Step::Login, &logon),
+            "login: AuthRequired (SessionSetup STATUS_LOGON_FAILURE)"
+        );
+        let no_share = status(NtStatus::BAD_NETWORK_NAME, Command::TreeConnect);
+        assert_eq!(code(&no_share, Step::Share), SHARE_MISSING);
+        let no_file = status(NtStatus::OBJECT_NAME_NOT_FOUND, Command::Create);
+        assert_eq!(code(&no_file, Step::Stat), FILE_MISSING);
+        assert_eq!(
+            code(&status(NtStatus::DISK_FULL, Command::Write), Step::Write),
+            QUOTA
+        );
+
+        // "Offline" is only a server that cannot be dialled or named …
+        let refused = smb2::Error::ConnectFailed {
+            host: "nas".into(),
+            attempts: vec![smb2::transport::ConnectAttempt {
+                addr: "192.168.1.10:445".parse().unwrap(),
+                error_kind: Some(std::io::ErrorKind::ConnectionRefused),
+            }],
+        };
+        assert_eq!(code(&refused, Step::Login), OFFLINE);
+        // … and the detail names neither the host nor the address.
+        assert_eq!(
+            detail(Step::Login, &refused),
+            "login: ConnectionLost (TCP: ConnectionRefused)"
+        );
+        let unnamed = smb2::Error::Io(std::io::Error::other("lookup"));
+        assert_eq!(code(&unnamed, Step::Login), OFFLINE);
+        // … one that took the connection and then closed it or fell silent
+        // before the share was open is there:
+        for e in [smb2::Error::Disconnected, smb2::Error::Timeout] {
+            assert_eq!(code(&e, Step::Login), NO_ANSWER, "{e}");
+            assert_eq!(code(&e, Step::Share), NO_ANSWER, "{e}");
+        }
+        // Later a connection that broke is one that was lost (the Wi-Fi, a
+        // NAS going to sleep) – the sync ends and tries again –, and a
+        // request without an answer is still no "offline".
+        for step in [Step::List, Step::Read, Step::Write] {
+            assert_eq!(code(&smb2::Error::Disconnected, step), OFFLINE);
+            assert_eq!(code(&smb2::Error::Timeout, step), NO_ANSWER);
+        }
+        // The name lookup running out of time looks like an unanswered
+        // request, but comes within the dial's budget: no such server.
+        let secs = Duration::from_secs;
+        assert_eq!(login_code(&smb2::Error::Timeout, secs(15)), OFFLINE);
+        assert_eq!(login_code(&smb2::Error::Timeout, secs(31)), NO_ANSWER);
+        assert_eq!(login_code(&smb2::Error::Disconnected, secs(1)), NO_ANSWER);
+        assert_eq!(login_code(&refused, secs(1)), OFFLINE);
+        assert_eq!(login_code(&logon, secs(1)), AUTH_FAILED);
+        assert_eq!(
+            detail(Step::Share, &smb2::Error::Disconnected),
+            "share: ConnectionLost"
+        );
+        // A guest answer to a named login names no user in the detail.
+        let guest = smb2::Error::GuestSessionRefused {
+            username: "Max".into(),
+            anonymous: false,
+        };
+        assert_eq!(code(&guest, Step::Login), AUTH_FAILED);
+        assert_eq!(detail(Step::Login, &guest), "login: GuestSessionRefused");
+    }
+
+    #[test]
+    fn a_server_that_hangs_up_is_not_offline() {
+        // Something listens and takes the connection, then closes it at
+        // once – no SMB server, but not "unreachable" either.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepting = std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                drop(stream);
+            }
+        });
+        let test = SmbRemote::test(&config(&format!("127.0.0.1:{port}"), "x", ""));
+        accepting.join().unwrap();
+        assert!(!test.ok);
+        assert_eq!(test.code.as_deref(), Some("unsupported:smb_no_answer"));
+        let detail = test.detail.expect("a detail");
+        assert!(detail.starts_with("login: "), "{detail}");
+        assert!(!detail.contains("127.0.0.1"), "{detail}");
     }
 
     #[test]
@@ -737,6 +1152,13 @@ mod tests {
         let test = SmbRemote::test(&config(&format!("127.0.0.1:{port}"), "x", ""));
         assert!(!test.ok);
         assert_eq!(test.code.as_deref(), Some("unsupported:sync_offline"));
+        // The detail says what the dial did – without the address.
+        let detail = test.detail.expect("a detail");
+        assert!(
+            detail.starts_with("login: ConnectionLost (TCP: "),
+            "{detail}"
+        );
+        assert!(!detail.contains("127.0.0.1"), "{detail}");
     }
 
     /// Against a real share: `KEYSTEAD_TEST_SMB_SERVER`, `_SHARE`, `_USER`,

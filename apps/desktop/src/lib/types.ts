@@ -672,6 +672,8 @@ export interface SmbTest {
   code: string | null;
   folderMissing: boolean;
   writable: boolean;
+  /** What failed, technically (step, kind, the server's status) – shown small below the error. No names, no secrets. */
+  detail?: string | null;
 }
 
 /** A cloud provider of a `SyncCloud`. */
