@@ -71,7 +71,10 @@
 // (the same sample vaults), the PC's `set_sync_server` replaces the mirror
 // folder (and `clear_sync_server` turns it off); no password is kept.
 // `?sync=server` (phone) starts linked to a demo server, `?mirror=server` (PC)
-// with one set. Dropbox (stage 2d) is offered too: "Bei Dropbox anmelden"
+// with one set. `?sync=offline` (phone) starts linked to an SMB share that
+// cannot be reached: every sync fails as `sync_offline` and the automatic
+// ones wait 60 s (`&retry=<seconds>` for another pause) – linking anything
+// again ends it. Dropbox (stage 2d) is offered too: "Bei Dropbox anmelden"
 // opens Dropbox's real authorize page in a new tab (nothing is sent back to
 // it), the code "demo" connects (any other is `invalid_input:dropbox_code`);
 // the phone links the account like a folder, the PC keeps its copies there.
@@ -239,6 +242,12 @@ interface MockSync {
   syncing: boolean;
   /** `?sync=failed`: the first vault file cannot be read – a failed file in a sync that itself counts as done. */
   failing: boolean;
+  /** `?sync=offline`: the linked SMB share cannot be reached – every sync fails as `sync_offline`. */
+  offline: boolean;
+  /** How long the automatic syncs wait after such a failure (`?retry=<seconds>`, 60 like the app's first pause). */
+  pauseMs: number;
+  /** While the automatic syncs wait: when the next may run (`FolderStatus.retryAt`). */
+  retryAt: number | null;
   /** The PC's copies in the folder, by vault id. */
   folder: Map<string, { revision: number; password: string; newNotes: number }>;
   /** The revisions of the phone's copies (higher than the folder's: edits not written yet). */
@@ -412,7 +421,7 @@ function initState(): MockState {
       : [{ id: "c-7f3a", name: "Chrome – DESKTOP-4F2K9", createdAt: now - 32 * DAY, lastSeenAt: now - 2 * 3_600_000 }],
     pairings: new Map(),
     lastActivity: now,
-    sync: initSync(phone ? params.get("sync") : null, empty, now),
+    sync: initSync(phone ? params.get("sync") : null, empty, now, Number(params.get("retry")) || 60),
     mirror: { lastMirroredAt: null, lastPulledAt: null, lastError: null, lost: false, offers: [], copies: [] },
     deviceUnlock: initDeviceUnlock(phone ? params.get("fingerprint") : null, empty),
     conflicts: new Map(),
@@ -435,9 +444,15 @@ function initDeviceUnlock(mode: string | null, empty: boolean): MockDeviceUnlock
   };
 }
 
-/** `mode`: `?sync=` – "linked", "readonly" (linked without write access) or none. */
-function initSync(mode: string | null, empty: boolean, now: number): MockSync {
-  const linked = mode === "linked" || mode === "readonly" || mode === "server" || mode === "failed";
+/**
+ * `mode`: `?sync=` – "linked", "readonly" (linked without write access),
+ * "server" (a WebDAV server), "failed" (a vault file that cannot be read),
+ * "offline" (an SMB share that cannot be reached; `pauseSeconds`: `?retry=`)
+ * or none.
+ */
+function initSync(mode: string | null, empty: boolean, now: number, pauseSeconds: number): MockSync {
+  const linked =
+    mode === "linked" || mode === "readonly" || mode === "server" || mode === "failed" || mode === "offline";
   const folder = new Map([
     [PRIVATE_VAULT_ID, { revision: 42, password: DEMO_PASSWORD, newNotes: 0 }],
     [WORK_VAULT_ID, { revision: 17, password: DEMO_PASSWORD, newNotes: 0 }],
@@ -450,6 +465,9 @@ function initSync(mode: string | null, empty: boolean, now: number): MockSync {
     files: [],
     syncing: false,
     failing: mode === "failed",
+    offline: mode === "offline",
+    pauseMs: pauseSeconds * 1000,
+    retryAt: null,
     folder,
     phone,
     lost: false,
@@ -458,7 +476,16 @@ function initSync(mode: string | null, empty: boolean, now: number): MockSync {
     sync.link =
       mode === "server"
         ? { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: true, kind: "webdav", server: { ...MOCK_SERVER } }
-        : { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: mode !== "readonly", kind: "folder", server: null };
+        : mode === "offline"
+          ? {
+              folderName: "\\\\demo\\Daten\\Keystead",
+              linkedAt: now - 3 * DAY,
+              writable: true,
+              kind: "smb",
+              server: null,
+              smb: { server: "demo", share: "Daten", folder: "Keystead", user: "demo", domain: "" },
+            }
+          : { folderName: "Keystead", linkedAt: now - 3 * DAY, writable: mode !== "readonly", kind: "folder", server: null };
     sync.lastSyncAt = now - 4 * 60_000;
     // `?mock=empty`: linked before the PC's copies arrived – they are in the
     // folder now, and the sync at start brings them.
@@ -675,6 +702,8 @@ function startAutoSync(): void {
   const run = () => {
     const sync = state?.sync;
     if (!sync?.link || sync.syncing || Date.now() - lastMockSyncEnd < AUTO_SYNC_INTERVAL_MS) return;
+    // The pause after a failed sync (`?sync=offline`): only "Jetzt synchronisieren" runs.
+    if (sync.retryAt !== null && Date.now() < sync.retryAt) return;
     void mockSyncFolder().catch(() => undefined);
   };
   document.addEventListener("visibilitychange", () => {
@@ -1485,7 +1514,7 @@ function folderStatus(): FolderStatus {
     lastError: sync.link ? sync.lastError : null,
     files: sync.link ? clone(sync.files) : [],
     skipped: null,
-    retryAt: null,
+    retryAt: sync.link ? sync.retryAt : null,
   };
 }
 
@@ -1516,6 +1545,13 @@ async function mockSyncFolder(): Promise<FolderStatus> {
   lastMockSyncEnd = Date.now();
   if (sync.lost) {
     sync.lastError = "unsupported:folder_access_lost";
+    emitSyncStatus();
+    fail(sync.lastError);
+  }
+  if (sync.offline) {
+    // Like `mobile::sync::record_backoff`: the automatic syncs wait from now on.
+    sync.lastError = "unsupported:sync_offline";
+    sync.retryAt = Date.now() + sync.pauseMs;
     emitSyncStatus();
     fail(sync.lastError);
   }
@@ -1605,6 +1641,7 @@ async function mockSyncFolder(): Promise<FolderStatus> {
   sync.files = sync.failing ? withFailedFile(files) : files;
   sync.lastSyncAt = now;
   sync.lastError = null;
+  sync.retryAt = null;
   if (lockedForKey) lock("keyChanged");
   else if (changedOpen) emit("vault://changed", {});
   emitSyncStatus();
@@ -2401,6 +2438,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       await sleep(700);
       s.sync.link = { folderName: "Keystead", linkedAt: Date.now(), writable: true, kind: "folder", server: null };
       s.sync.lost = false;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
       try {
@@ -2417,6 +2456,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const server = mockConnect(cfg);
       s.sync.link = { folderName: server.folder, linkedAt: Date.now(), writable: true, kind: "webdav", server };
       s.sync.lost = false;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
       try {
@@ -2466,6 +2507,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       const folderName = "\\\\demo\\" + smb.share + (smb.folder ? "\\" + smb.folder.replace(/\//g, "\\") : "");
       s.sync.link = { folderName, linkedAt: Date.now(), writable: true, kind: "smb", server: null, smb };
       s.sync.lost = false;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
       try {
@@ -2481,6 +2524,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       await sleep(700);
       s.sync.link = { folderName: "Google Drive", linkedAt: Date.now(), writable: true, kind: "gdrive", server: null, cloud };
       s.sync.lost = false;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
       try {
@@ -2496,6 +2541,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       await sleep(700);
       s.sync.link = { folderName: "Dropbox", linkedAt: Date.now(), writable: true, kind: "dropbox", server: null, cloud };
       s.sync.lost = false;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       s.sync.lastError = null;
       s.lastActivity = Date.now();
       try {
@@ -2516,6 +2563,8 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       s.sync.files = [];
       s.sync.lastSyncAt = null;
       s.sync.lastError = null;
+      s.sync.offline = false;
+      s.sync.retryAt = null;
       emitSyncStatus();
       return folderStatus();
 

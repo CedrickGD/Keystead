@@ -867,8 +867,11 @@ folder and copies them in, and writes the vault files it changed back
     export and advanced sections (data folder, portable mode, terminal),
     tray switches, "Beim Sperren des Computers sperren", website icons,
     the Have I Been Pwned card, "Speichern unter …" for attachments, the
-    update banner, check, auto check and channel (and the boot's
-    `pending_update`); About says "Android · Daten im App-Speicher" and
+    desktop's update banner, check, auto check and channel (and the boot's
+    `pending_update`; the phone has its own banner, `PhoneUpdateBanner` –
+    "In-app updates"); About says "Android · Daten im App-Speicher", tells
+    that Keystead looks for a newer version shortly after the start (only a
+    version file from GitHub) and
     offers "Releases auf GitHub öffnen" (`openExternal`; Android opens the
     browser – no permission needed).
   * **Mock**: `?platform=android` (or `ios`) gives `attachmentsReadOnly` and the phone
@@ -1611,6 +1614,11 @@ comes later.
   Wi-Fi, counts as Wi-Fi). A push that waits is dropped – the phone's copy stays newer, and the
   next sync that runs pushes it. `FolderStatus` says why (`skipped`:
   `sync_wifi_only`, `sync_backoff`) and when the pause ends (`retryAt`, ms).
+  The UI's note names `retryAt` as the earliest moment for the next
+  automatic sync, not as an appointment – nothing runs at that time by
+  itself (a sync starts only at app start, on the return to the app and
+  after a change); a moment less than a minute away reads "in weniger als
+  einer Minute" (`formatUntil` in `i18n/index.tsx`, also for the PC's pause).
   `sync_now` and linking always run. No background service, as for the
   folder.
 * **PC** (`mirror.rs`, `Settings.syncServer`): one method per PC –
@@ -1856,7 +1864,13 @@ than the picked tree; the phone never asks for access to all files).
   erneut eingeben". Mock: server "demo" answers, "fail" refuses the login,
   "lan" stands for the home network refused, "hangup" and "denied" show an
   error with its technical detail; `?sync=failed` is a link whose first
-  vault file cannot be read. A vault file a sync could not read or write
+  vault file cannot be read, `?sync=offline` a linked share that cannot be
+  reached (every sync fails as `sync_offline`, the automatic ones pause –
+  `&retry=<seconds>`). A share's `sync_offline` is told in the share's own
+  words – "nicht im Heimnetz", not "keine Internetverbindung"
+  (`sync.smbError.offline`; `errorSourceOf` and `useSyncErrorText` in
+  `lib/syncErrors.ts`) – in the sync line, the settings, the welcome
+  screen, the toasts and the form. A vault file a sync could not read or write
   is shown with its reason: a line below the file (`SyncFileList`), an
   error toast after linking or "Jetzt synchronisieren" (not "noch kein
   Tresor" / "alles aktuell") and – an automatic sync shows no toast – the

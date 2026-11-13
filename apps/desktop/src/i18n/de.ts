@@ -24,6 +24,7 @@ export const de = {
   "common.undo": "Rückgängig",
   "common.yes": "Ja",
   "time.justNow": "gerade eben",
+  "time.underAMinute": "in weniger als einer Minute",
 
   // Errors (stable backend codes)
   "error.wrong_password": "Das Passwort ist falsch.",
@@ -161,7 +162,7 @@ export const de = {
   "error.unsupported.smb_share_denied":
     "Die Anmeldung hat geklappt, aber dieses Konto darf die Freigabe nicht verwenden. Prüfe am Server die Rechte des Benutzers für diese Freigabe.",
   "error.unsupported.smb_no_answer":
-    "Der Server hat die Verbindung angenommen, dann aber abgebrochen oder nicht geantwortet. Versuch es noch einmal. Bleibt es dabei, zeigt „Verbindung testen“ im SMB-Formular eine technische Angabe dazu.",
+    "Der Server hat die Verbindung angenommen, dann aber abgebrochen oder nicht geantwortet. Versuch es noch einmal. Bleibt es dabei, kann „Verbindung testen“ eine technische Angabe dazu zeigen – bei einer schon verbundenen Freigabe über „Freigabe ändern“ (das Passwort dort noch einmal eingeben).",
   "error.unsupported.smb_not_a_folder": "Unter diesem Pfad liegt auf der Freigabe eine Datei, kein Ordner. Prüfe die Adresse.",
   "error.unsupported.sync_not_readable":
     "Kein Lesezugriff: Dieses Konto darf den Ordner oder die Datei auf dem Server nicht lesen. Prüfe dort die Rechte.",
@@ -241,7 +242,7 @@ export const de = {
   "welcome.defaultVaultName": "Privat",
   "welcome.phoneSubtitle": "Dein Passwort-Tresor – verschlüsselt und unterwegs griffbereit.",
   "welcome.phoneFeatLocalDesc":
-    "Kein Keystead-Server, kein Konto – die App spricht nur mit deinem eigenen Server, wenn du einen verbindest.",
+    "Kein Keystead-Server, kein Konto – ins Netz geht die App nur für den Abgleich, den du selbst einrichtest, und um bei GitHub nach einer neueren Version zu sehen.",
   "welcome.phoneFeatLookup": "Nachschlagen, kopieren, bearbeiten",
   "welcome.phoneFeatLookupDesc": "Passwörter, 2FA-Codes und Notizen griffbereit – Änderungen kommen über den Cloud-Ordner auch auf den PC.",
   "welcome.or": "oder",
@@ -998,7 +999,8 @@ export const de = {
   "sync.wifiOnlyDesc":
     "Mit mobilen Daten wartet der automatische Abgleich, bis du wieder im WLAN bist. „Jetzt synchronisieren“ geht immer.",
   "sync.skipped.wifiOnly": "Der automatische Abgleich wartet auf WLAN.",
-  "sync.skipped.backoff": "Der letzte Abgleich ist fehlgeschlagen – nächster automatischer Versuch {when}.",
+  "sync.skipped.backoff":
+    "Der letzte Abgleich ist fehlgeschlagen – der nächste automatische Versuch ist frühestens {when} möglich.",
   "sync.serverNote":
     "Keystead überträgt nur seine eigenen, verschlüsselten Tresor-Dateien – direkt zu deinem Server, ohne Keystead-Server dazwischen.",
   "sync.connectDropbox": "Mit Dropbox verbinden",
@@ -1014,6 +1016,8 @@ export const de = {
   "sync.changeSmb": "Freigabe ändern",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox folgt bald.",
+  "sync.smbError.offline":
+    "Die Freigabe ist nicht erreichbar – das Handy ist nicht im Heimnetz, der PC oder das NAS ist aus, oder die Adresse stimmt nicht.",
   "sync.cloudError.authFailed":
     "{provider} erlaubt den Zugang nicht mehr. Melde dich unter Einstellungen → Synchronisierung erneut an.",
   "sync.cloudError.credentialsMissing":
@@ -1106,9 +1110,9 @@ export const de = {
   "sync.linkedEmptyTitle": "Im Ordner „{folder}“ liegt noch kein Tresor",
   "sync.linkedEmptyText": "Prüfe am PC, ob „Kopie im Cloud-Ordner aktuell halten“ genau diesen Ordner nutzt und die Cloud-App die Datei schon hochgeladen hat. Tippe dann auf „Jetzt synchronisieren“.",
   "sync.linkedEmpty": "Ordner „{folder}“ verbunden – darin liegt noch kein Tresor.",
-  "sync.linkedFailedTitle": "Der Tresor im Ordner konnte nicht geholt werden",
+  "sync.linkedFailedTitle": "Ein Tresor konnte nicht abgeglichen werden",
   "sync.linkedFailedText":
-    "Im Ordner liegt eine Tresor-Datei, aber Keystead konnte sie nicht übernehmen. Der Grund steht unten bei der Datei. Tippe danach auf „Jetzt synchronisieren“.",
+    "Keystead konnte eine Tresor-Datei nicht abgleichen. Der Grund steht unten bei der Datei. Tippe danach auf „Jetzt synchronisieren“.",
   "sync.fileFailed": "„{file}“ konnte nicht abgeglichen werden: {error}",
   "sync.fileUnavailable":
     "Die Cloud-App konnte die Datei gerade nicht öffnen – vielleicht hat sie sie noch nicht geladen oder ist offline. Öffne die Cloud-App und versuch es dann noch einmal.",
@@ -1140,7 +1144,7 @@ export const de = {
   "sync.outcome.misnamed": "Übersprungen: umbenannte Kopie oder Konfliktkopie der Cloud-App",
   "sync.outcome.unreadable": "Übersprungen: keine lesbare Tresordatei (beschädigt oder noch nicht vollständig hochgeladen)",
   "sync.outcome.tooLarge": "Übersprungen: größer als 64 MB",
-  "sync.outcome.failed": "Konnte nicht übernommen werden",
+  "sync.outcome.failed": "Konnte nicht abgeglichen werden",
   "sync.outcome.missing": "Nicht mehr im Ordner – bleibt auf dem Handy",
   "sync.outcome.rejected": "Nicht übernommen: Die Kopie im Ordner lässt sich nicht öffnen (beschädigt oder verändert)",
   "sync.outcome.pushed": "Vom Handy in den Ordner geschrieben",
@@ -1401,7 +1405,7 @@ export const de = {
   "about.phoneData": "Daten im App-Speicher",
   "about.releasesTitle": "Neue Versionen",
   "about.releasesDesc":
-    "Auf dem Handy sucht Keystead nicht selbst nach Updates. Lade die neue APK von der Releases-Seite und installiere sie über die alte; deine Daten bleiben erhalten.",
+    "Keystead sieht kurz nach dem Start bei GitHub nach, ob es eine neuere Version gibt – abgerufen wird nur eine Versionsdatei, keine Tresordaten – und bietet sie dann zum Herunterladen an. Installiert wird nichts von selbst: Öffne die heruntergeladene APK und installiere sie über die alte; deine Daten bleiben erhalten. Alle Versionen stehen auf der Releases-Seite.",
   "about.releasesOpen": "Releases auf GitHub öffnen",
   "about.wordlists": "Wortlisten für Passphrasen",
   "about.wordlistEn": "Englisch: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), Lizenz CC BY 4.0 (creativecommons.org/licenses/by/4.0), ohne die Würfelnummern.",

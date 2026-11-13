@@ -9,11 +9,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, events, subscribeEffect } from "../lib/api";
-import type { CloudProvider, FolderStatus, SmbConfig, WebDavConfig } from "../lib/types";
+import type { FolderStatus, SmbConfig, WebDavConfig } from "../lib/types";
 import { useT } from "../i18n";
 import { useToast } from "../components/Toasts";
 import { useConfirm } from "../components/Confirm";
-import { failedFile, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
+import { errorSourceOf, failedFile, useFileErrorText, useSyncErrorText, type ErrorSource } from "../lib/syncErrors";
 
 export type SyncAction = "link" | "server" | "smb" | "dropbox" | "gdrive" | "sync" | "unlink";
 
@@ -80,14 +80,17 @@ export function FolderSyncProvider({
   const toast = useToast();
   const confirm = useConfirm();
   const [status, setStatus] = useState<FolderStatus | null>(null);
+  // The link a failed "Jetzt synchronisieren" belongs to (its error is told in that link's words).
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [busy, setBusy] = useState<SyncAction | null>(null);
   // A vault file the sync could not read or write: an error toast with the
   // reason (true), instead of "no vault there yet" or "all up to date".
   const fileFailed = useCallback(
-    (synced: FolderStatus, provider: CloudProvider | null) => {
+    (synced: FolderStatus, source: ErrorSource | null) => {
       const file = failedFile(synced);
       if (!file?.error) return false;
-      toast.error(t("sync.fileFailed", { file: file.vaultName ?? file.fileName, error: fileErrorFor(file.error, provider) }));
+      toast.error(t("sync.fileFailed", { file: file.vaultName ?? file.fileName, error: fileErrorFor(file.error, source) }));
       return true;
     },
     [fileErrorFor, t, toast],
@@ -196,19 +199,19 @@ export function FolderSyncProvider({
         setStatus(linked);
         onStatus(linked);
         const folder = linked.folderName ?? "";
-        if (linked.lastError) toast.error(errorText(new ApiError(linked.lastError)));
-        else if (fileFailed(linked, null)) return true;
+        if (linked.lastError) toast.error(syncErrorFor(linked.lastError, "smb"));
+        else if (fileFailed(linked, "smb")) return true;
         else if (usableVaults(linked) === 0) toast.info(t("sync.linkedEmpty", { folder }));
         else toast.success(tp("sync.linkedVaults", usableVaults(linked), { folder }));
         return true;
       } catch (err) {
-        toast.error(errorText(err));
+        toast.error(err instanceof ApiError ? syncErrorFor(err.message, "smb") : errorText(err));
         return false;
       } finally {
         setBusy(null);
       }
     },
-    [errorText, fileFailed, onStatus, t, toast, tp],
+    [errorText, fileFailed, onStatus, syncErrorFor, t, toast, tp],
   );
 
   const linkDropbox = useCallback(
@@ -259,16 +262,17 @@ export function FolderSyncProvider({
       setStatus(synced);
       onStatus(synced);
       // A file that could not be read or written is no "all up to date".
-      const provider = synced.kind === "dropbox" || synced.kind === "gdrive" ? synced.kind : null;
-      if (fileFailed(synced, provider)) return;
+      if (fileFailed(synced, errorSourceOf(synced))) return;
       const changed = changedVaults(synced);
       toast.success(changed > 0 ? tp("sync.doneChanged", changed) : t("sync.doneUpToDate"));
     } catch (err) {
-      toast.error(errorText(err));
+      // In the link's words, as the sync line says it (an SMB share: "nicht im Heimnetz").
+      const source = errorSourceOf(statusRef.current);
+      toast.error(err instanceof ApiError ? syncErrorFor(err.message, source) : errorText(err));
     } finally {
       setBusy(null);
     }
-  }, [errorText, fileFailed, onStatus, t, toast, tp]);
+  }, [errorText, fileFailed, onStatus, syncErrorFor, t, toast, tp]);
 
   const unlink = useCallback(async () => {
     const ok = await confirm({

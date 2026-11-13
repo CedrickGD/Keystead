@@ -72,6 +72,7 @@ import {
   SyncFileList,
   SyncSteps,
   cloudNeedsSignIn,
+  errorSourceOf,
   folderLost,
   methodSoonKey,
   providerName,
@@ -1160,7 +1161,7 @@ function SyncSection() {
                 {status?.lastError && !syncing && (
                   <span className="callout callout-warning sync-error" role="status">
                     <TriangleAlert />
-                    <span>{errorFor(status.lastError, cloud?.provider ?? null)}</span>
+                    <span>{errorFor(status.lastError, errorSourceOf(status))}</span>
                   </span>
                 )}
                 {skipped && !syncing && <span className="sync-folder-desc">{skipped}</span>}
@@ -1229,7 +1230,7 @@ type SyncMethod = "none" | "folder" | "webdav" | CloudProvider;
  * (WebDAV)"); one method at a time.
  */
 function DesktopSyncSection() {
-  const { t, formatDateTime, formatRelative } = useT();
+  const { t, formatDateTime, formatRelative, formatUntil } = useT();
   const mirror = useMirror();
   const { info, settings } = useApp();
   const [serverForm, setServerForm] = useState<"new" | "edit" | null>(null);
@@ -1293,7 +1294,7 @@ function DesktopSyncSection() {
         </span>
       )}
       {status?.retryAt && status.retryAt > Date.now() && (
-        <span className="mirror-state">{t("mirror.retryAt", { when: formatRelative(status.retryAt) })}</span>
+        <span className="mirror-state">{t("mirror.retryAt", { when: formatUntil(status.retryAt) })}</span>
       )}
     </>
   );

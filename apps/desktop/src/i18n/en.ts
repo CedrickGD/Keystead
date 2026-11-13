@@ -24,6 +24,7 @@ export const en: Record<MessageKey, string> = {
   "common.undo": "Undo",
   "common.yes": "Yes",
   "time.justNow": "just now",
+  "time.underAMinute": "in less than a minute",
 
   // Errors
   "error.wrong_password": "The password is incorrect.",
@@ -155,7 +156,7 @@ export const en: Record<MessageKey, string> = {
   "error.unsupported.smb_share_denied":
     "The login worked, but this account may not use the share. Check the user's rights for this share on the server.",
   "error.unsupported.smb_no_answer":
-    "The server took the connection, then closed it or did not answer. Try again. If it keeps happening, “Test connection” in the SMB form shows a technical detail.",
+    "The server took the connection, then closed it or did not answer. Try again. If it keeps happening, “Test connection” can show a technical detail – for a share that is already linked through “Change share” (enter the password there again).",
   "error.unsupported.smb_not_a_folder": "This path names a file on the share, not a folder. Check the address.",
   "error.unsupported.sync_not_readable":
     "No read access: this account may not read the folder or the file on the server. Check the rights there.",
@@ -229,7 +230,7 @@ export const en: Record<MessageKey, string> = {
   "welcome.defaultVaultName": "Personal",
   "welcome.phoneSubtitle": "Your password vault – encrypted and at hand on the go.",
   "welcome.phoneFeatLocalDesc":
-    "No Keystead server, no account – the app only talks to your own server, if you connect one.",
+    "No Keystead server, no account – the app goes online only for the sync you set up yourself and to look for a newer version on GitHub.",
   "welcome.phoneFeatLookup": "Look up, copy, edit",
   "welcome.phoneFeatLookupDesc": "Passwords, 2FA codes and notes at hand – changes reach your PC through the cloud folder.",
   "welcome.or": "or",
@@ -969,7 +970,7 @@ export const en: Record<MessageKey, string> = {
   "sync.wifiOnly": "Sync over Wi-Fi only",
   "sync.wifiOnlyDesc": "On mobile data the automatic sync waits until you are on Wi-Fi again. “Sync now” always works.",
   "sync.skipped.wifiOnly": "The automatic sync is waiting for Wi-Fi.",
-  "sync.skipped.backoff": "The last sync failed – next automatic try {when}.",
+  "sync.skipped.backoff": "The last sync failed – the next automatic try is possible {when} at the earliest.",
   "sync.serverNote":
     "Keystead transfers only its own encrypted vault files – straight to your server, with no Keystead server in between.",
   "sync.connectDropbox": "Connect to Dropbox",
@@ -985,6 +986,8 @@ export const en: Record<MessageKey, string> = {
   "sync.changeSmb": "Change share",
   "sync.methodGdrive": "Google Drive",
   "sync.methodSoonDropbox": "Dropbox is coming soon.",
+  "sync.smbError.offline":
+    "The share cannot be reached – the phone is not on your home network, the PC or NAS is off, or the address is wrong.",
   "sync.cloudError.authFailed": "{provider} no longer allows the access. Sign in again under Settings → Sync.",
   "sync.cloudError.credentialsMissing":
     "The access to {provider} is missing on this device. Sign in again under Settings → Sync.",
@@ -1073,9 +1076,9 @@ export const en: Record<MessageKey, string> = {
   "sync.linkedEmptyTitle": "No vault in the folder “{folder}” yet",
   "sync.linkedEmptyText": "Check on your PC that “Keep a copy in a cloud folder up to date” uses exactly this folder and that the cloud app has uploaded the file. Then tap “Sync now”.",
   "sync.linkedEmpty": "Folder “{folder}” linked – there is no vault in it yet.",
-  "sync.linkedFailedTitle": "The vault in the folder could not be fetched",
+  "sync.linkedFailedTitle": "A vault could not be synced",
   "sync.linkedFailedText":
-    "The folder holds a vault file, but Keystead could not take it over. The reason is shown below, next to the file. Then tap “Sync now”.",
+    "Keystead could not sync a vault file. The reason is shown below, next to the file. Then tap “Sync now”.",
   "sync.fileFailed": "“{file}” could not be synced: {error}",
   "sync.fileUnavailable":
     "The cloud app could not open the file right now – it may not have downloaded it yet or is offline. Open the cloud app, then try again.",
@@ -1107,7 +1110,7 @@ export const en: Record<MessageKey, string> = {
   "sync.outcome.misnamed": "Skipped: a renamed copy or the cloud app's conflict copy",
   "sync.outcome.unreadable": "Skipped: not a readable vault file (damaged or not fully uploaded yet)",
   "sync.outcome.tooLarge": "Skipped: larger than 64 MB",
-  "sync.outcome.failed": "Could not be copied",
+  "sync.outcome.failed": "Could not be synced",
   "sync.outcome.missing": "No longer in the folder – stays on this phone",
   "sync.outcome.rejected": "Not taken: the copy in the folder does not open (damaged or altered)",
   "sync.outcome.pushed": "Written from the phone to the folder",
@@ -1365,7 +1368,7 @@ export const en: Record<MessageKey, string> = {
   "about.phoneData": "Data in app storage",
   "about.releasesTitle": "New versions",
   "about.releasesDesc":
-    "On the phone Keystead does not check for updates itself. Download the new APK from the releases page and install it over the old one; your data stays.",
+    "Shortly after it starts, Keystead checks on GitHub whether a newer version exists – only a version file is fetched, no vault data – and then offers it for download. Nothing installs by itself: open the downloaded APK and install it over the old one; your data stays. All versions are on the releases page.",
   "about.releasesOpen": "Open releases on GitHub",
   "about.wordlists": "Passphrase word lists",
   "about.wordlistEn": "English: EFF Large Wordlist © Electronic Frontier Foundation (eff.org/dice), licensed under CC BY 4.0 (creativecommons.org/licenses/by/4.0), without the dice numbers.",

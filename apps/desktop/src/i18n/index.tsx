@@ -24,6 +24,12 @@ export interface I18n {
   formatDate: (ms: number) => string;
   formatDateTime: (ms: number) => string;
   formatRelative: (ms: number) => string;
+  /**
+   * The relative time of a moment still to come ("in 2 Minuten"). Under a
+   * minute it says so – `formatRelative` only knows "gerade eben" there,
+   * which is the past.
+   */
+  formatUntil: (ms: number) => string;
   /** Translates any error thrown by the API layer into a user-facing message. */
   errorText: (err: unknown) => string;
 }
@@ -57,6 +63,8 @@ function createI18n(lang: Language): I18n {
     if (abs < 365 * day) return relFmt.format(Math.round(diff / (30 * day)), "month");
     return relFmt.format(Math.round(diff / (365 * day)), "year");
   };
+
+  const formatUntil = (ms: number) => (ms - Date.now() < 60_000 ? t("time.underAMinute") : formatRelative(ms));
 
   const errorText = (err: unknown): string => {
     const apiErr = err instanceof ApiError ? err : null;
@@ -102,6 +110,7 @@ function createI18n(lang: Language): I18n {
     formatDate: (ms) => dateFmt.format(new Date(ms)),
     formatDateTime: (ms) => dateTimeFmt.format(new Date(ms)),
     formatRelative,
+    formatUntil,
     errorText,
   };
 }

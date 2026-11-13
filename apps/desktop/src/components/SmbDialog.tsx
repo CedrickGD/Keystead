@@ -13,6 +13,7 @@ import { ChevronRight, CircleCheck, FolderPlus, HardDrive, PlugZap, TriangleAler
 import { ApiError, api } from "../lib/api";
 import { formatSmbAddress, isDriveAddress, parseSmbAddress } from "../lib/smbAddress.mjs";
 import type { SmbConfig, SmbTest, SyncSmb } from "../lib/types";
+import { useSyncErrorText } from "../lib/syncErrors";
 import { useT } from "../i18n";
 import { Button, Field, PasswordInput } from "./Controls";
 import { Modal } from "./Modal";
@@ -31,6 +32,8 @@ export function SmbDialog({
   onClose: () => void;
 }) {
   const { t, errorText } = useT();
+  // The share's own words ("nicht im Heimnetz" instead of "keine Internetverbindung").
+  const syncErrorFor = useSyncErrorText();
   const ids = { address: useId(), user: useId(), password: useId(), domain: useId() };
   const [address, setAddress] = useState(initial ? formatSmbAddress(initial) : "");
   const [user, setUser] = useState(initial?.user ?? "");
@@ -70,7 +73,7 @@ export function SmbDialog({
     try {
       setTest(what === "test" ? await api.smbTest(config) : await api.smbCreateFolder(config));
     } catch (err) {
-      setError(errorText(err));
+      setError(err instanceof ApiError ? syncErrorFor(err.message, "smb") : errorText(err));
     } finally {
       setBusy(null);
     }
@@ -181,7 +184,7 @@ export function SmbDialog({
         <div className="callout callout-danger" role="alert">
           <TriangleAlert />
           <span>
-            {errorText(new ApiError(test.code))}
+            {syncErrorFor(test.code, "smb")}
             {test.detail && <small className="callout-detail selectable">{t("smb.detail", { detail: test.detail })}</small>}
           </span>
         </div>

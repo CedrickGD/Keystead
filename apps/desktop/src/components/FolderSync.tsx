@@ -9,14 +9,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { CloudOff, FolderOpen, FolderSync as FolderSyncIcon, RefreshCw, TriangleAlert } from "lucide-react";
 import type { FolderStatus, SyncFileResult, SyncServer } from "../lib/types";
-import { failedFile, providerOf, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
+import { errorSourceOf, failedFile, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
 import { useT, type MessageKey } from "../i18n";
 import { useFolderSync } from "../state/sync";
 import { useApp } from "../state/app";
 import { Button } from "./Controls";
 import { WebDavDialog } from "./WebDavForm";
 
-export { failedFile, providerName, providerOf, useFileErrorText, useSyncErrorText } from "../lib/syncErrors";
+export {
+  errorSourceOf,
+  failedFile,
+  providerName,
+  providerOf,
+  useFileErrorText,
+  useSyncErrorText,
+} from "../lib/syncErrors";
 
 const OUTCOME_KEYS: Record<SyncFileResult["outcome"], MessageKey> = {
   imported: "sync.outcome.imported",
@@ -98,20 +105,22 @@ export function cloudNeedsSignIn(lastError: string | null | undefined): boolean 
 /**
  * Why the last automatic sync waited (no Wi-Fi with "Nur über WLAN", a
  * server error shortly before) – `null` when it did not. `when`: the
- * relative time of `retryAt`.
+ * relative time of `retryAt` – the earliest moment for the next automatic
+ * sync, not an appointment: one runs only at start, on the return to the
+ * app and after a change.
  */
 export function useSkippedText(): (status: FolderStatus | null) => string | null {
-  const { t, formatRelative } = useT();
+  const { t, formatUntil } = useT();
   return useCallback(
     (status: FolderStatus | null) => {
       if (!status?.linked || status.syncing) return null;
       if (status.skipped === "sync_wifi_only") return t("sync.skipped.wifiOnly");
       if (status.retryAt !== null && status.retryAt > Date.now()) {
-        return t("sync.skipped.backoff", { when: formatRelative(status.retryAt) });
+        return t("sync.skipped.backoff", { when: formatUntil(status.retryAt) });
       }
       return null;
     },
-    [formatRelative, t],
+    [formatUntil, t],
   );
 }
 
@@ -235,7 +244,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
   const errorFor = useSyncErrorText();
   const fileErrorFor = useFileErrorText();
   const skippedText = useSkippedText();
-  useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt));
+  useRelativeTimeTick(Boolean(folderSync?.status?.lastSyncAt || folderSync?.status?.retryAt));
   if (!folderSync?.status) return null;
   const { status, busy, link, sync } = folderSync;
 
@@ -276,7 +285,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
           {syncing
             ? t("sync.syncing")
             : status.lastError
-              ? errorFor(status.lastError, providerOf(status))
+              ? errorFor(status.lastError, errorSourceOf(status))
               : status.lastSyncAt
                 ? t("sync.lastSync", { when: formatRelative(status.lastSyncAt) })
                 : t("sync.neverSynced")}
@@ -296,7 +305,7 @@ export function SyncStatusLine({ vaultId }: { vaultId: string | undefined }) {
         <p className="sync-line-note">
           {t("sync.fileFailed", {
             file: failed.vaultName ?? failed.fileName,
-            error: fileErrorFor(failed.error, providerOf(status)),
+            error: fileErrorFor(failed.error, errorSourceOf(status)),
           })}
         </p>
       )}

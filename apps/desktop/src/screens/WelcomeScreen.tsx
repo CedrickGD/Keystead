@@ -36,6 +36,7 @@ import {
   PhoneServerDialog,
   SyncFileList,
   SyncSteps,
+  errorSourceOf,
   failedFile,
   folderLost,
   providerName,
@@ -234,7 +235,8 @@ function PhoneVaultSource() {
   const provider = providerOf(status);
   const lost = folderLost(status);
   const syncing = Boolean(status?.syncing) || busy === "sync";
-  // A vault file is there but could not be fetched: not "no vault yet".
+  // A vault file could not be synced (read from the folder or written to
+  // it): not "no vault yet".
   const failed = failedFile(status) !== null;
   const linkedTitle = failed
     ? t("sync.linkedFailedTitle")
@@ -268,7 +270,7 @@ function PhoneVaultSource() {
           {status?.lastError && (
             <div className="callout callout-warning" role="status">
               <TriangleAlert />
-              <span>{errorFor(status.lastError, provider)}</span>
+              <span>{errorFor(status.lastError, errorSourceOf(status))}</span>
             </div>
           )}
           {status && <SyncFileList files={status.files} />}

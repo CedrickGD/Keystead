@@ -1459,7 +1459,7 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
   - **Doku-Abgleich nach beta.31** (2026-11-13 abends; Workflow
     `wf_b10f939e-3d6`, 12 Agenten, 3 Blickwinkel: 9 Befunde gegengeprüft
     bestätigt, 9 Nebenbefunde danach am Code nachgelesen – alle zutreffend).
-    **Eingearbeitet (nur Doku und Kommentare, kein Code, keine Beta):** Das
+    **Eingearbeitet in `3bde010` (nur Doku und Kommentare, kein Code):** Das
     Handy **sucht nach Updates** (seit 2026-11-05, kurz nach dem Start, eine
     Abfrage von `latest.json` bei GitHub; ohne Schalter am Handy) –
     ARCHITECTURE („Mobile (Android)“, Einstellungen, Befehlsliste), README
@@ -1471,21 +1471,31 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     `smb_local_network` entsteht bei jedem `sync_offline` einer SMB-Freigabe
     ohne Berechtigung (auch nach einer abgerissenen Verbindung); Moduldoku
     von `smb.rs` (was „offline“ ist, was notiert wird).
-    **Offen – braucht das OK des Besitzers** (Texte bzw. Logik der App,
-    kommen erst mit einer nächsten Beta aufs Handy): `about.releasesDesc`
-    („Auf dem Handy sucht Keystead nicht selbst nach Updates“ – falsch);
-    `error.unsupported.sync_offline` (nennt „keine Internetverbindung“, bei
-    einer SMB-Freigabe geht es ums Heimnetz); `sync.skipped.backoff` (in der
-    ersten Pause „nächster automatischer Versuch gerade eben“, und zum
-    genannten Zeitpunkt läuft nichts von selbst); `smb_no_answer` (verweist
-    auf den Test im Formular, der bei einer verbundenen Freigabe ohne das
-    gespeicherte Passwort läuft); `sync.outcome.failed` und
-    `sync.linkedFailed*` (passen nicht, wenn das Schreiben in den Ordner
-    scheiterte); der feste Release-Text in `build.yml` („geht nur zu diesem
-    Server“). Der veröffentlichte Text von beta.31 nennt „nicht erreichbar
-    nur noch, wenn sich der Server nicht anwählen lässt“ – der Code meldet
-    das auch für einen nicht auflösbaren Namen und eine im Betrieb
-    abgerissene Verbindung.
+  - **App-Texte nach dem Abgleich** (Besitzer am 2026-11-13: „Ja, mit
+    beta.32“). „Über Keystead“ am Handy sagt jetzt, dass Keystead kurz nach
+    dem Start bei GitHub nach einer neueren Version sieht
+    (`about.releasesDesc`); denselben falschen Satz hatte „Lokal & offline“
+    auf dem Willkommensbildschirm („die App spricht nur mit deinem eigenen
+    Server“, `welcome.phoneFeatLocalDesc` – erst beim Klicktest gefunden).
+    Eine SMB-Freigabe, die nicht erreichbar ist, heißt „Die Freigabe ist
+    nicht erreichbar – das Handy ist nicht im Heimnetz, …“ statt „keine
+    Internetverbindung“ (`sync.smbError.offline`; `errorSourceOf` und
+    `useSyncErrorText` in `lib/syncErrors.ts` – in Sync-Zeile,
+    Einstellungen, Willkommensbildschirm, Toasts und Formular). Die
+    Pausen-Notiz nennt den frühesten Zeitpunkt („… der nächste automatische
+    Versuch ist frühestens {when} möglich“; zu diesem Zeitpunkt läuft nichts
+    von selbst) und unter einer Minute „in weniger als einer Minute“ statt
+    „gerade eben“ (`formatUntil`, auch für die Pause am PC).
+    `smb_no_answer` nennt den Weg über „Freigabe ändern“ (Passwort dort neu
+    eingeben); eine fehlgeschlagene Datei heißt neutral „Konnte nicht
+    abgeglichen werden“ (`sync.outcome.failed`, `sync.linkedFailed*` – das
+    gilt auch, wenn das Schreiben in den Ordner scheiterte). Fester
+    Release-Text in `build.yml`: „geht für den Abgleich nur zu diesem
+    Server“ und ein Satz zum Update-Check. Mock: `?sync=offline`
+    (`&retry=<Sekunden>`). Nicht geändert: der veröffentlichte Text von
+    beta.31 („nicht erreichbar nur noch, wenn sich der Server nicht
+    anwählen lässt“ – der Code meldet das auch für einen nicht auflösbaren
+    Namen und eine im Betrieb abgerissene Verbindung).
   - **Nicht umgesetzt (offen):** `probe()` meldet immer `writable: true`
     (nur-lesbare Freigabe kippt nach dem ersten Sync auf schreibbar); der
     Verbindungstest übt `stat`/Lesen/Umbenennen nicht; echter anonymer Login
