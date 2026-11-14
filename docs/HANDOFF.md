@@ -1455,7 +1455,10 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     eben“), und im Log (`adb logcat -s RustStdoutStderr`) steht keine
     `[keystead] smb …`-Zeile. beta.30 → beta.31 musste noch von Hand aufs
     Handy (beta.30 las den stabilen Kanal); ab beta.31 bietet das Handy
-    Betas selbst an – **am Gerät noch nicht gesehen** (erst mit beta.32).
+    Betas selbst an – **am Gerät bestätigt (2026-11-14):** Das Handy mit
+    beta.31 zeigt nach dem Öffnen das Banner für die beta.32 (Meldung des
+    Besitzers; keine Session hat es selbst gesehen). Unbelegt: ob
+    Herunterladen und Installieren über das Banner geklappt haben.
   - **Doku-Abgleich nach beta.31** (2026-11-13 abends; Workflow
     `wf_b10f939e-3d6`, 12 Agenten, 3 Blickwinkel: 9 Befunde gegengeprüft
     bestätigt, 9 Nebenbefunde danach am Code nachgelesen – alle zutreffend).
@@ -1506,9 +1509,14 @@ Handyspeicher, z. B. SMB“ stattdessen Vollzugriff auf den Speicher
     Klicktest im Mock (Handy, de/en: Entsperr-Bildschirm, Einstellungen,
     Toast nach „Jetzt synchronisieren“, Willkommensbildschirm mit
     fehlgeschlagener Datei, SMB-Formular). Nicht im Mock gesehen: die
-    Pausenzeile am PC (der Mock kennt dort keine Pause). **Am Gerät noch
-    nicht gesehen:** ob das Handy mit beta.31 die beta.32 von selbst
-    anbietet – der Besitzer sieht nach; nichts per adb installiert.
+    Pausenzeile am PC (der Mock kennt dort keine Pause). **Am Gerät
+    bestätigt (2026-11-14):** Der Besitzer meldet, dass sein Handy mit
+    beta.31 nach dem Öffnen das Banner für die beta.32 zeigt. Das
+    Update-Angebot für Betas ist damit am Gerät bestätigt – durch seine
+    Meldung; keine Session hat das Banner selbst gesehen, und per adb wurde
+    nichts installiert. **Unbelegt:** ob Herunterladen und Installieren
+    über das Banner geklappt haben und welche Version jetzt auf dem Handy
+    läuft.
   - **Nicht umgesetzt (offen):** `probe()` meldet immer `writable: true`
     (nur-lesbare Freigabe kippt nach dem ersten Sync auf schreibbar); der
     Verbindungstest übt `stat`/Lesen/Umbenennen nicht; echter anonymer Login
@@ -1678,8 +1686,10 @@ echten Desktop-App und dem Emulator prüfen (Checkliste oben, Schritt 5).
    Emulator.
 5. Update-Hinweis auf dem Handy: **erledigt in Stufe 2e** (2026-11-05:
    `phone_check_update` und Banner; seit beta.31 liest ein Beta-Build den
-   Beta-Kanal). Am Gerät noch nicht gesehen – das geht erst mit einer
-   beta.32.
+   Beta-Kanal). **Am Gerät bestätigt (2026-11-14):** Das Handy mit beta.31
+   zeigt nach dem Öffnen das Banner für die beta.32 (Meldung des
+   Besitzers; keine Session hat es selbst gesehen). Unbelegt: ob
+   Herunterladen und Installieren über das Banner geklappt haben.
 6. **iOS-Simulator-Job** in CI (E13, kostenloser macOS-Runner, ohne
    Signatur, nur Screenshots).
 
